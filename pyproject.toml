@@ -1,0 +1,112 @@
+[build-system]
+requires = ["setuptools>=80.9.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stratae"
+description = "A toolkit of composable tools for dependency injection, lifecycle management, and more."
+version = "0.0.1a"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Scott Wahl"}
+]
+classifiers = [
+    "Development Status :: Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit>=4.2.0",
+    "pyright>=1.1.403",
+    "ruff>=0.12.2",
+]
+test = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=6.1.1",
+    "pytest-mock>=3.14.1",
+]
+asgi = [
+    "httpx>=0.28.1",
+    "fastapi>=0.100.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["stratae*"]
+
+[tool.ruff]
+lint.select = ["E", "F", "B", "I", "D", "S", "W"]
+lint.ignore = ["D203", "D212", "B008"]
+lint.external = ["S7497"]
+line-length = 100
+
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    # at least these three should be fine in tests:
+    "S101", # asserts allowed in tests...
+    "ARG", # Unused function args -> fixtures nevertheless are functionally relevant...
+    "FBT", # Don't care about booleans as positional arguments in tests, e.g. via @pytest.mark.parametrize()
+    "S311", # Not using cryptographic safe randomness in tests, just getting random values
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = "tests/"
+cache_dir = ".pytest_cache"
+addopts = [
+    "--cov=stratae/",
+    "--cov-report=html:coverage/cov.html",
+    "--no-cov-on-fail"
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "asgi: ASGI framework integration tests (requires fastapi, httpx)",
+]
+
+[tool.coverage.run]
+omit = [
+    "*/venv/*",
+    "*/.venv/*",
+    "*/migrations/*",
+    "*/alembic/*",
+    "*/_version.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "@(abc\\.)?abstractmethod",
+    "^\\s*\\.\\.\\.$",
+    "if TYPE_CHECKING:"
+]
+
+[tool.pyright]
+include = ["stratae", "tests"]
+exclude = ["**/__pycache__"]
+
+typeCheckingMode = "strict"
+reportMissingImports = true
+reportMissingTypeStubs = false
+reportUnusedImport = true
+reportUnusedClass = true
+reportUnusedFunction = true
+reportUnusedVariable = true
+reportDuplicateImport = true
+reportOptionalSubscript = true
+reportOptionalMemberAccess = true
+reportOptionalCall = true
+reportOptionalIterable = true
+reportUntypedFunctionDecorator = true
+
+# Python version
+pythonVersion = "3.12"
