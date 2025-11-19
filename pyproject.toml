@@ -13,7 +13,7 @@ authors = [
     {name = "Scott Wahl"}
 ]
 classifiers = [
-    "Development Status :: Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -21,6 +21,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Eudaetics/stratae"
+Repository = "https://github.com/Eudaetics/stratae"
+Issues = "https://github.com/Eudaetics/stratae/issues"
 
 [project.optional-dependencies]
 dev = [
