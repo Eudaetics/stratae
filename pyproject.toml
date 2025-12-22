@@ -48,6 +48,9 @@ asgi = [
 where = ["."]
 include = ["stratae*"]
 
+[tool.setuptools.package-data]
+"stratae" = ["py.typed"]
+
 [tool.ruff]
 lint.select = ["E", "F", "B", "I", "D", "S", "W"]
 lint.ignore = ["D203", "D212", "B008"]
