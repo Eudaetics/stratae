@@ -74,7 +74,8 @@ cache_dir = ".pytest_cache"
 addopts = [
     "--cov=stratae/",
     "--cov-report=html:coverage/cov.html",
-    "--no-cov-on-fail"
+    "--no-cov-on-fail",
+    "--cov-fail-under=100"
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
