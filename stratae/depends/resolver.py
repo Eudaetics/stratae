@@ -150,12 +150,15 @@ class Resolver:
             if allow_override
             else set(resolved_deps.keys())
         )
+        return self._wrapper_factory(func)(func, resolved_deps, no_override)
 
+    def _wrapper_factory(self, func: Callable[..., Any]) -> Callable[..., Callable[..., Any]]:
+        """Determine the correct create wrapper function based on the function type."""
         if iscoroutinefunction(func):
-            return create_async_wrapper(func, resolved_deps, no_override)
+            return create_async_wrapper
         elif isasyncgenfunction(func):
-            return create_async_gen_wrapper(func, resolved_deps, no_override)
+            return create_async_gen_wrapper
         elif isgeneratorfunction(func):
-            return create_sync_gen_wrapper(func, resolved_deps, no_override)
+            return create_sync_gen_wrapper
         else:
-            return create_sync_wrapper(func, resolved_deps, no_override)
+            return create_sync_wrapper

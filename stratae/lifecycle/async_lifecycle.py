@@ -51,8 +51,8 @@ from stratae.cache import Cache, MemoryCache
 from stratae.lifecycle._context import AsyncLifecycleContext
 from stratae.lifecycle._decorators import AsyncCacheDecorator
 from stratae.lifecycle._scope import AsyncScope
+from stratae.lifecycle._validation import validate_config
 from stratae.lifecycle.exceptions import (
-    LifecycleConfigurationError,
     ScopeActivationError,
     ScopeInactiveError,
     ScopeNotFoundError,
@@ -64,15 +64,7 @@ class AsyncLifecycle:
 
     def __init__(self, scopes: Sequence[str], caches: dict[str, Cache] | None = None) -> None:
         """Initialize the LifecycleManager."""
-        if not scopes:
-            raise LifecycleConfigurationError("At least one scope must be defined.")
-        if any(not scope.isidentifier() for scope in scopes):
-            raise LifecycleConfigurationError("All scopes must be valid Python identifiers.")
-        if len(set(scopes)) != len(scopes):
-            raise LifecycleConfigurationError("All scopes must be unique.")
-        if caches and any(key not in scopes for key in caches.keys()):
-            raise LifecycleConfigurationError("All caches must correspond to defined scopes.")
-
+        validate_config(scopes, caches)
         self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
         self._caches = caches or {}
         self._stack: ContextVar[dict[str, AsyncScope]] = ContextVar("lifecycle_stack")
