@@ -136,7 +136,7 @@ async def test_async_publish_bound_event_returns_emit_publish_result(
     """
     # Arrange
     mock_emit = AsyncMock(return_value="dispatched")
-    async_publisher.emit_publish = mock_emit  # type: ignore[method-assign]
+    async_publisher.emit_publish = mock_emit
     bound = async_publisher.publish(_ItemShipped)
 
     # Act

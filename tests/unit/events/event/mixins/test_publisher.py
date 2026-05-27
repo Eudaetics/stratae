@@ -135,7 +135,7 @@ def test_publish_bound_event_returns_emit_publish_result(publisher: Publisher[No
     """
     # Arrange
     mock_emit = Mock(return_value="dispatched")
-    publisher.emit_publish = mock_emit  # type: ignore[method-assign]
+    publisher.emit_publish = mock_emit
     bound = publisher.publish(_ItemShipped)
 
     # Act

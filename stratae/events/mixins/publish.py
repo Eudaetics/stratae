@@ -1,9 +1,9 @@
 """Pub/sub mixins for synchronous and asynchronous event publishing."""
 
 from abc import ABC, abstractmethod
-from typing import Awaitable, Callable
+from typing import Callable
 
-from stratae.events.event import BoundEvent, Event
+from stratae.events.event import AsyncBoundEvent, BoundEvent, Event
 
 
 class Publisher[Resp](ABC):
@@ -45,14 +45,33 @@ class Publisher[Resp](ABC):
         ...
 
 
-class AsyncPublisher[Resp](Publisher[Awaitable[Resp]]):
+class AsyncPublisher[Resp](ABC):
     """
-    Async variant of ``Publisher`` for coroutine-based emitters.
+    Mixin that binds Event subclasses to an asynchronous publish emitter.
 
-    Specialises ``Publisher`` so that ``emit_publish`` is a coroutine.
-    Calling ``publish`` returns a ``BoundEvent`` whose result must be awaited
-    to dispatch the event and obtain ``Resp``.
+    Subclasses must implement ``emit_publish`` as a coroutine.  Call
+    ``publish`` with an ``Event`` subclass to receive an ``AsyncBoundEvent``
+    whose ``__call__`` is itself a coroutine that must be awaited to dispatch
+    the event and obtain ``Resp``.
     """
+
+    def publish[**P](self, event: Callable[P, Event]) -> AsyncBoundEvent[P, Resp]:
+        """
+        Bind an Event subclass to this bus's emit_publish.
+
+        Returns an ``AsyncBoundEvent`` so that callers can directly await
+        the result of calling the bound event.
+
+        Args:
+            event: An ``Event`` subclass whose constructor accepts ``P``.
+
+        Returns:
+            An ``AsyncBoundEvent`` that, when called and awaited with ``P``
+            arguments, constructs an instance of ``event`` and forwards it
+            to ``emit_publish``.
+
+        """
+        return AsyncBoundEvent(event, self.emit_publish)
 
     @abstractmethod
     async def emit_publish(self, event: Event) -> Resp:
