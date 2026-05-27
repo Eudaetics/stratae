@@ -2,11 +2,10 @@
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any
 
 from stratae.events.event import Event
-
-type Handler = Callable[[Event], Any]
+from stratae.events.handler import Handler
 
 
 class SubscriberBase:
@@ -20,22 +19,22 @@ class SubscriberBase:
 
     def __init__(self) -> None:
         """Initialise the handler storage mapping."""
-        self._handlers: dict[type[Event], set[Handler]] = defaultdict(set)
+        self._handlers: dict[type[Event], set[Handler[Any]]] = defaultdict(set)
         super().__init__()
 
-    def subscribe(self, event: type[Event], handler: Handler) -> None:
+    def subscribe[R](self, event: type[Event], handler: Handler[R]) -> None:
         """
         Register a handler for an event type.
 
         Args:
             event:   The ``Event`` subclass to subscribe to.
-            handler: The callable to invoke when an instance of ``event``
+            handler: The ``Handler`` to invoke when an instance of ``event``
                      is dispatched.
 
         """
         self._handlers[event].add(handler)
 
-    def get_handlers(self, event: type[Event]) -> set[Handler]:
+    def get_handlers(self, event: type[Event]) -> set[Handler[Any]]:
         """
         Return the set of handlers registered for an event type.
 
@@ -49,7 +48,7 @@ class SubscriberBase:
         """
         return self._handlers.get(event, set())
 
-    def unsubscribe(self, event: type[Event], handler: Handler) -> None:
+    def unsubscribe[R](self, event: type[Event], handler: Handler[R]) -> None:
         """
         Deregister a handler for an event type.
 
@@ -57,7 +56,7 @@ class SubscriberBase:
 
         Args:
             event:   The ``Event`` subclass to unsubscribe from.
-            handler: The callable to remove.
+            handler: The ``Handler`` to remove.
 
         """
         if event in self._handlers:
