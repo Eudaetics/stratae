@@ -17,8 +17,15 @@ class Handler[R]:
     coroutine function, so dispatchers can branch once on ``is_async`` rather
     than inspecting the callable on every dispatch.
 
-    Two ``Handler`` instances wrapping the same callable are considered equal
-    and hash identically, preventing duplicate registrations in a set.
+    Calling a ``Handler`` delegates directly to the wrapped callable.  For
+    async handlers, the result is a coroutine that the caller can ``await``;
+    a sync wrapper around an async callable naturally returns the coroutine
+    object, so ``await handler(event)`` works without ``Handler.__call__``
+    itself being declared ``async``.
+
+    A ``Handler`` compares equal to another ``Handler`` wrapping the same
+    callable, or to the raw callable itself, preventing duplicate registrations
+    and allowing unsubscription by passing the original callable.
     """
 
     def __init__(self, call: Callable[[Event], R]) -> None:
@@ -33,21 +40,38 @@ class Handler[R]:
         self.call: Callable[[Event], R] = call
         self.is_async: bool = iscoroutinefunction(call)
 
+    def __call__(self, event: Event) -> R:
+        """
+        Invoke the wrapped callable with the given event.
+
+        Args:
+            event: The event instance to pass to the handler.
+
+        Returns:
+            For sync handlers, the return value directly.  For async handlers,
+            a coroutine that the caller should ``await``.
+
+        """
+        return self.call(event)
+
     def __eq__(self, other: object) -> bool:
         """
         Return True if both handlers wrap the same callable.
 
         Args:
-            other: The object to compare against.
+            other: The object to compare against.  May be a ``Handler`` or a
+                   raw callable.
 
         Returns:
             ``True`` if ``other`` is a ``Handler`` wrapping the same callable,
-            ``NotImplemented`` if ``other`` is not a ``Handler``.
+            or the same callable itself.  ``NotImplemented`` otherwise.
 
         """
-        if not isinstance(other, Handler):
-            return NotImplemented
-        return self.call == other.call
+        if isinstance(other, Handler):
+            return self.call == other.call
+        if callable(other):
+            return self.call == other
+        return NotImplemented
 
     def __hash__(self) -> int:
         """

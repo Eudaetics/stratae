@@ -7,50 +7,52 @@ Handler:
 - is_async is False for a synchronous callable.
 - is_async is True for an asynchronous callable.
 - call stores the wrapped callable.
+- Calling a Handler invokes the wrapped sync callable.
+- Calling a Handler wrapping an async callable returns an awaitable.
 - Two Handlers wrapping the same callable are equal.
 - Two Handlers wrapping different callables are not equal.
-- A Handler is not equal to a non-Handler object.
+- A Handler is equal to the raw callable it wraps.
+- A raw callable is equal to a Handler wrapping it.
+- A Handler is not equal to a non-callable, non-Handler object.
 - Two Handlers wrapping the same callable have the same hash.
 """
+
+import asyncio
+from typing import Any, Callable
+
+import pytest
 
 from stratae.events.event import Event
 from stratae.events.handler import Handler
 
 
-def _sync_handler(event: Event) -> None:
+def _sync_handler(event: Event) -> int:
     """Define a simple sync handler for testing."""
-    pass
+    return 1
 
 
-async def _async_handler(event: Event) -> None:
+async def _async_handler(event: Event) -> int:
     """Define a simple async handler for testing."""
-    pass
+    await asyncio.sleep(0)
+    return 2
 
 
-def test_is_async_is_false_for_sync_callable():
+@pytest.mark.parametrize(
+    "call,expected",
+    [
+        (_sync_handler, False),
+        (_async_handler, True),
+    ],
+)
+def test_is_async_reflects_callable_type(call: Callable[[Event], Any], expected: bool):
     """
-    is_async should be False for a synchronous callable.
+    is_async should be False for sync callables and True for async callables.
 
-    Given: A synchronous callable
+    Given: A sync or async callable
     When: A Handler is constructed with it
-    Then: is_async should be False
+    Then: is_async should match whether the callable is a coroutine function
     """
-    handler = Handler(_sync_handler)
-
-    assert handler.is_async is False
-
-
-def test_is_async_is_true_for_async_callable():
-    """
-    is_async should be True for an asynchronous callable.
-
-    Given: An async callable
-    When: A Handler is constructed with it
-    Then: is_async should be True
-    """
-    handler = Handler(_async_handler)
-
-    assert handler.is_async is True
+    assert Handler(call).is_async is expected
 
 
 def test_call_stores_wrapped_callable():
@@ -64,6 +66,36 @@ def test_call_stores_wrapped_callable():
     handler = Handler(_sync_handler)
 
     assert handler.call is _sync_handler
+
+
+def test_calling_handler_invokes_sync_callable():
+    """
+    Calling a Handler wrapping a sync callable should return its result.
+
+    Given: A Handler wrapping a sync callable
+    When: The Handler is called with an event
+    Then: The result should be the callable's return value
+    """
+    event = Event()
+    handler = Handler(_sync_handler)
+
+    assert handler(event) == 1
+
+
+async def test_calling_handler_wrapping_async_callable_returns_awaitable():
+    """
+    Calling a Handler wrapping an async callable should return an awaitable.
+
+    Given: A Handler wrapping an async callable
+    When: The Handler is called with an event
+    Then: The result should be awaitable and resolve to the callable's return value
+    """
+    event = Event()
+    handler = Handler(_async_handler)
+
+    result = await handler(event)
+
+    assert result == 2
 
 
 def test_two_handlers_wrapping_same_callable_are_equal():
@@ -88,15 +120,37 @@ def test_two_handlers_wrapping_different_callables_are_not_equal():
     assert Handler(_sync_handler) != Handler(_async_handler)
 
 
-def test_handler_is_not_equal_to_non_handler():
+def test_handler_is_equal_to_its_raw_callable():
     """
-    A Handler should not be equal to a non-Handler object.
+    A Handler should be equal to the raw callable it wraps.
 
-    Given: A Handler instance and an arbitrary non-Handler object
+    Given: A Handler and the callable it wraps
+    When: They are compared with ==
+    Then: They should be equal
+    """
+    assert Handler(_sync_handler) == _sync_handler
+
+
+def test_raw_callable_is_equal_to_handler_wrapping_it():
+    """
+    A raw callable should be equal to a Handler wrapping it.
+
+    Given: A callable and a Handler wrapping it
+    When: They are compared with ==
+    Then: They should be equal (via reflected __eq__)
+    """
+    assert _sync_handler == Handler(_sync_handler)
+
+
+def test_handler_is_not_equal_to_non_callable_non_handler():
+    """
+    A Handler should not be equal to a non-callable, non-Handler object.
+
+    Given: A Handler instance and an arbitrary non-callable object
     When: They are compared with ==
     Then: They should not be equal
     """
-    assert Handler(_sync_handler) != _sync_handler
+    assert Handler(_sync_handler) != 42
 
 
 def test_two_handlers_wrapping_same_callable_have_same_hash():
