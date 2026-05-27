@@ -48,7 +48,7 @@ def test_publish_bus_is_abstract():
     When: An attempt is made to instantiate it
     Then: A TypeError should be raised
     """
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="Can't instantiate abstract class Publisher"):
         Publisher()  # pyright: ignore[reportAbstractUsage]
 
 
