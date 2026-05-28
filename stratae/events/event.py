@@ -1,4 +1,4 @@
-"""Base event and bound-event abstractions for the stratae event system."""
+"""Base event schema and bound-event abstractions for the stratae event system."""
 
 from typing import Awaitable, Callable
 
@@ -24,41 +24,39 @@ class EventSchema:
 
 class BoundEvent[**P, Resp]:
     """
-    Abstract base that binds an ``Event`` type to a synchronous emitter.
+    Binds an ``EventSchema`` subclass to a synchronous emitter.
 
     A ``BoundEvent`` acts as a callable façade: invoking it constructs an
-    instance of ``event`` from the supplied arguments and forwards it to
+    instance of ``schema`` from the supplied arguments and forwards it to
     ``emitter``, returning whatever the emitter produces.
 
     Type parameters:
         P:    The parameter specification of the bound event's ``__call__`` signature.
-        R:    The return type produced by each registered handler.
-        Resp: The return type produced by the emitter (e.g. an aggregated
-              collection of handler results).
+        Resp: The return type produced by the emitter.
     """
 
     def __init__(
         self,
-        event: Callable[P, EventSchema],
+        schema: Callable[P, EventSchema],
         emitter: Callable[[EventSchema], Resp],
     ) -> None:
         """
-        Bind an event type to its emitter.
+        Bind an event schema to its emitter.
 
         Args:
-            event:   The ``Event`` subclass whose instances will be emitted.
-            emitter: A callable that receives a constructed ``Event`` instance
+            schema:  The ``EventSchema`` subclass used to construct the event payload.
+            emitter: A callable that receives a constructed ``EventSchema`` instance
                      and returns ``Resp``.
 
         """
-        self.event = event
+        self.event = schema
         self.emitter = emitter
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
-        Construct the event and emit it.
+        Construct the schema instance and emit it.
 
-        Passes all positional and keyword arguments to the event constructor,
+        Passes all positional and keyword arguments to the schema constructor,
         then forwards the resulting instance to ``self.emitter``.
 
         Returns:
@@ -72,37 +70,35 @@ class AsyncBoundEvent[**P, Resp](BoundEvent[P, Awaitable[Resp]]):
     """
     Async variant of ``BoundEvent`` for use with coroutine-based emitters.
 
-    Specialises ``BoundEvent`` so that both the handlers and the emitter are
-    awaitable.  Invoking an ``AsyncBoundEvent`` returns a coroutine that must
-    be awaited by the caller.
+    Invoking an ``AsyncBoundEvent`` returns a coroutine that must be awaited
+    by the caller.
 
     Type parameters:
         P:    The parameter specification of the bound event's ``__call__`` signature.
-        R:    The type that each registered handler's coroutine resolves to.
         Resp: The type that the emitter's coroutine resolves to.
     """
 
     def __init__(
         self,
-        event: Callable[P, EventSchema],
+        schema: Callable[P, EventSchema],
         emitter: Callable[[EventSchema], Awaitable[Resp]],
     ) -> None:
         """
-        Bind an event type to its async emitter.
+        Bind an event schema to its async emitter.
 
         Args:
-            event:   The ``Event`` subclass whose instances will be emitted.
-            emitter: An async callable that receives a constructed ``Event``
+            schema:  The ``EventSchema`` subclass used to construct the event payload.
+            emitter: An async callable that receives a constructed ``EventSchema``
                      instance and returns an awaitable resolving to ``Resp``.
 
         """
-        super().__init__(event, emitter)
+        super().__init__(schema, emitter)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
-        Construct the event, emit it, and await the result.
+        Construct the schema instance, emit it, and await the result.
 
-        Passes all positional and keyword arguments to the event constructor,
+        Passes all positional and keyword arguments to the schema constructor,
         forwards the resulting instance to ``self.emitter``, and awaits the
         returned coroutine.
 
