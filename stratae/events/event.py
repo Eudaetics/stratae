@@ -5,14 +5,15 @@ from typing import Awaitable, Callable
 
 class EventSchema:
     """
-    Base class for event payload schemas in the stratae event system.
+    Marker base class for event payload schemas.
 
     Subclass ``EventSchema`` to define the data shape carried by an event.
-    Schemas are reusable across channels — the same class may be published
-    under different event type identifiers via ``BoundEvent``.
+    The contract is that subclasses must be serializable and deserializable —
+    the library does not enforce how, so any approach works: plain classes,
+    ``dataclasses``, ``msgspec.Struct``, ``pydantic.BaseModel``, etc.
 
-    ``EventSchema`` carries no routing metadata.  Channel, event type, and
-    version all live on ``BoundEvent``.
+    Schemas carry no routing metadata and are reusable across channels.
+    Routing information (channel, event type, version) lives on ``BoundEvent``.
 
     Example::
 
