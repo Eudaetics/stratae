@@ -1,35 +1,25 @@
 """Base event and bound-event abstractions for the stratae event system."""
 
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 
-class Event:
+class EventSchema:
     """
-    Base class for all events in the stratae event system.
+    Base class for event payload schemas in the stratae event system.
 
-    Subclasses may pass keyword arguments in their class definition, which are
-    collected and stored on the class as ``__event_meta__``. This allows event
-    types to carry declarative metadata (e.g. routing keys, priority) without
-    requiring runtime instance attributes.
+    Subclass ``EventSchema`` to define the data shape carried by an event.
+    Schemas are reusable across channels — the same class may be published
+    under different event type identifiers via ``BoundEvent``.
+
+    ``EventSchema`` carries no routing metadata.  Channel, event type, and
+    version all live on ``BoundEvent``.
 
     Example::
 
-        class UserCreated(Event, topic="user.created", priority=1):
-            def __init__(self, user_id: int) -> None:
-                self.user_id = user_id
+        class OrderPlaced(EventSchema):
+            def __init__(self, order_id: int) -> None:
+                self.order_id = order_id
     """
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        """
-        Collect class-level keyword arguments into ``__event_meta__``.
-
-        Merges any kwargs provided in the subclass definition with those
-        already present on the class, so metadata accumulates correctly
-        across multi-level inheritance.
-        """
-        super().__init_subclass__()
-        current = getattr(cls, "__event_meta__", {})
-        cls.__event_meta__ = {**current, **kwargs}
 
 
 class BoundEvent[**P, Resp]:
@@ -49,8 +39,8 @@ class BoundEvent[**P, Resp]:
 
     def __init__(
         self,
-        event: Callable[P, Event],
-        emitter: Callable[[Event], Resp],
+        event: Callable[P, EventSchema],
+        emitter: Callable[[EventSchema], Resp],
     ) -> None:
         """
         Bind an event type to its emitter.
@@ -94,8 +84,8 @@ class AsyncBoundEvent[**P, Resp](BoundEvent[P, Awaitable[Resp]]):
 
     def __init__(
         self,
-        event: Callable[P, Event],
-        emitter: Callable[[Event], Awaitable[Resp]],
+        event: Callable[P, EventSchema],
+        emitter: Callable[[EventSchema], Awaitable[Resp]],
     ) -> None:
         """
         Bind an event type to its async emitter.

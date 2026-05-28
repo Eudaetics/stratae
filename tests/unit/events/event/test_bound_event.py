@@ -13,10 +13,10 @@ from unittest.mock import Mock
 
 from pytest_mock import MockerFixture
 
-from stratae.events.event import BoundEvent, Event
+from stratae.events.event import BoundEvent, EventSchema
 
 
-class _OrderCreated(Event):
+class _OrderCreated(EventSchema):
     def __init__(self, order_id: int, status: str) -> None:
         self.order_id = order_id
         self.status = status

@@ -15,11 +15,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from stratae.events.event import Event
+from stratae.events.event import EventSchema
 from stratae.events.mixins.subscribe import AsyncSubscriber, SubscriberBase
 
 
-class _ItemShipped(Event):
+class _ItemShipped(EventSchema):
     def __init__(self, item_id: int, quantity: int) -> None:
         self.item_id = item_id
         self.quantity = quantity

@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Callable
 
-from stratae.events.event import AsyncBoundEvent, BoundEvent, Event
+from stratae.events.event import AsyncBoundEvent, BoundEvent, EventSchema
 
 
 class Publisher[Resp](ABC):
@@ -16,7 +16,7 @@ class Publisher[Resp](ABC):
     that event through ``emit_publish``.
     """
 
-    def publish[**P](self, event: Callable[P, Event]) -> BoundEvent[P, Resp]:
+    def publish[**P](self, event: Callable[P, EventSchema]) -> BoundEvent[P, Resp]:
         """
         Bind an Event subclass to this bus's emit_publish.
 
@@ -31,7 +31,7 @@ class Publisher[Resp](ABC):
         return BoundEvent(event, self.emit_publish)
 
     @abstractmethod
-    def emit_publish(self, event: Event) -> Resp:
+    def emit_publish(self, event: EventSchema) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
@@ -55,7 +55,7 @@ class AsyncPublisher[Resp](ABC):
     the event and obtain ``Resp``.
     """
 
-    def publish[**P](self, event: Callable[P, Event]) -> AsyncBoundEvent[P, Resp]:
+    def publish[**P](self, event: Callable[P, EventSchema]) -> AsyncBoundEvent[P, Resp]:
         """
         Bind an Event subclass to this bus's emit_publish.
 
@@ -74,7 +74,7 @@ class AsyncPublisher[Resp](ABC):
         return AsyncBoundEvent(event, self.emit_publish)
 
     @abstractmethod
-    async def emit_publish(self, event: Event) -> Resp:
+    async def emit_publish(self, event: EventSchema) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 

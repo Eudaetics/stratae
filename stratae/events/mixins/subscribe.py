@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any
 
-from stratae.events.event import Event
+from stratae.events.event import EventSchema
 from stratae.events.handler import Handler
 
 
@@ -19,10 +19,10 @@ class SubscriberBase:
 
     def __init__(self) -> None:
         """Initialise the handler storage mapping."""
-        self._handlers: dict[type[Event], set[Handler[Any]]] = defaultdict(set)
+        self._handlers: dict[type[EventSchema], set[Handler[Any]]] = defaultdict(set)
         super().__init__()
 
-    def subscribe[R](self, event: type[Event], handler: Handler[R]) -> None:
+    def subscribe[R](self, event: type[EventSchema], handler: Handler[R]) -> None:
         """
         Register a handler for an event type.
 
@@ -34,7 +34,7 @@ class SubscriberBase:
         """
         self._handlers[event].add(handler)
 
-    def get_handlers(self, event: type[Event]) -> set[Handler[Any]]:
+    def get_handlers(self, event: type[EventSchema]) -> set[Handler[Any]]:
         """
         Return the set of handlers registered for an event type.
 
@@ -48,7 +48,7 @@ class SubscriberBase:
         """
         return self._handlers.get(event, set())
 
-    def unsubscribe[R](self, event: type[Event], handler: Handler[R]) -> None:
+    def unsubscribe[R](self, event: type[EventSchema], handler: Handler[R]) -> None:
         """
         Deregister a handler for an event type.
 
@@ -72,7 +72,7 @@ class Subscriber(SubscriberBase, ABC):
     """
 
     @abstractmethod
-    def handle_subscribe(self, event: Event) -> None:
+    def handle_subscribe(self, event: EventSchema) -> None:
         """
         Dispatch a constructed event to all registered handlers.
 
@@ -93,7 +93,7 @@ class AsyncSubscriber(SubscriberBase, ABC):
     """
 
     @abstractmethod
-    async def handle_subscribe(self, event: Event) -> None:
+    async def handle_subscribe(self, event: EventSchema) -> None:
         """
         Dispatch a constructed event to all registered handlers.
 

@@ -22,16 +22,16 @@ from typing import Any, Callable
 
 import pytest
 
-from stratae.events.event import Event
+from stratae.events.event import EventSchema
 from stratae.events.handler import Handler
 
 
-def _sync_handler(event: Event) -> int:
+def _sync_handler(event: EventSchema) -> int:
     """Define a simple sync handler for testing."""
     return 1
 
 
-async def _async_handler(event: Event) -> int:
+async def _async_handler(event: EventSchema) -> int:
     """Define a simple async handler for testing."""
     await asyncio.sleep(0)
     return 2
@@ -44,7 +44,7 @@ async def _async_handler(event: Event) -> int:
         (_async_handler, True),
     ],
 )
-def test_is_async_reflects_callable_type(call: Callable[[Event], Any], expected: bool):
+def test_is_async_reflects_callable_type(call: Callable[[EventSchema], Any], expected: bool):
     """
     is_async should be False for sync callables and True for async callables.
 
@@ -76,7 +76,7 @@ def test_calling_handler_invokes_sync_callable():
     When: The Handler is called with an event
     Then: The result should be the callable's return value
     """
-    event = Event()
+    event = EventSchema()
     handler = Handler(_sync_handler)
 
     assert handler(event) == 1
@@ -90,7 +90,7 @@ async def test_calling_handler_wrapping_async_callable_returns_awaitable():
     When: The Handler is called with an event
     Then: The result should be awaitable and resolve to the callable's return value
     """
-    event = Event()
+    event = EventSchema()
     handler = Handler(_async_handler)
 
     result = await handler(event)

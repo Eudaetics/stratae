@@ -3,7 +3,7 @@
 from inspect import iscoroutinefunction
 from typing import Callable
 
-from stratae.events.event import Event
+from stratae.events.event import EventSchema
 
 
 class Handler[R]:
@@ -28,7 +28,7 @@ class Handler[R]:
     and allowing unsubscription by passing the original callable.
     """
 
-    def __init__(self, call: Callable[[Event], R]) -> None:
+    def __init__(self, call: Callable[[EventSchema], R]) -> None:
         """
         Wrap a callable as an event handler.
 
@@ -37,10 +37,10 @@ class Handler[R]:
                   single ``Event`` instance as its argument.
 
         """
-        self.call: Callable[[Event], R] = call
+        self.call: Callable[[EventSchema], R] = call
         self.is_async: bool = iscoroutinefunction(call)
 
-    def __call__(self, event: Event) -> R:
+    def __call__(self, event: EventSchema) -> R:
         """
         Invoke the wrapped callable with the given event.
 
