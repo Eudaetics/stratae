@@ -18,11 +18,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.events.event import Event
+from stratae.events.event import EventSchema
 from stratae.events.mixins.subscribe import SubscriberBase
 
 
-class _ItemShipped(Event):
+class _ItemShipped(EventSchema):
     def __init__(self, item_id: int, quantity: int) -> None:
         self.item_id = item_id
         self.quantity = quantity
@@ -33,7 +33,7 @@ class _ItemShipped(Event):
         return self.item_id == value.item_id and self.quantity == value.quantity
 
 
-class _OrderCancelled(Event):
+class _OrderCancelled(EventSchema):
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 

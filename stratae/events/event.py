@@ -1,74 +1,63 @@
-"""Base event and bound-event abstractions for the stratae event system."""
+"""Base event schema and bound-event abstractions for the stratae event system."""
 
-from typing import Any, Awaitable, Callable
+from typing import Awaitable, Callable
 
 
-class Event:
+class EventSchema:
     """
-    Base class for all events in the stratae event system.
+    Marker base class for event payload schemas.
 
-    Subclasses may pass keyword arguments in their class definition, which are
-    collected and stored on the class as ``__event_meta__``. This allows event
-    types to carry declarative metadata (e.g. routing keys, priority) without
-    requiring runtime instance attributes.
+    Subclass ``EventSchema`` to define the data shape carried by an event.
+    The contract is that subclasses must be serializable and deserializable —
+    the library does not enforce how, so any approach works: plain classes,
+    ``dataclasses``, ``msgspec.Struct``, ``pydantic.BaseModel``, etc.
+
+    Schemas carry no routing metadata and are reusable across channels.
+    Routing information (channel, event type, version) lives on ``BoundEvent``.
 
     Example::
 
-        class UserCreated(Event, topic="user.created", priority=1):
-            def __init__(self, user_id: int) -> None:
-                self.user_id = user_id
+        class OrderPlaced(EventSchema):
+            def __init__(self, order_id: int) -> None:
+                self.order_id = order_id
     """
-
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        """
-        Collect class-level keyword arguments into ``__event_meta__``.
-
-        Merges any kwargs provided in the subclass definition with those
-        already present on the class, so metadata accumulates correctly
-        across multi-level inheritance.
-        """
-        super().__init_subclass__()
-        current = getattr(cls, "__event_meta__", {})
-        cls.__event_meta__ = {**current, **kwargs}
 
 
 class BoundEvent[**P, Resp]:
     """
-    Abstract base that binds an ``Event`` type to a synchronous emitter.
+    Binds an ``EventSchema`` subclass to a synchronous emitter.
 
     A ``BoundEvent`` acts as a callable façade: invoking it constructs an
-    instance of ``event`` from the supplied arguments and forwards it to
+    instance of ``schema`` from the supplied arguments and forwards it to
     ``emitter``, returning whatever the emitter produces.
 
     Type parameters:
         P:    The parameter specification of the bound event's ``__call__`` signature.
-        R:    The return type produced by each registered handler.
-        Resp: The return type produced by the emitter (e.g. an aggregated
-              collection of handler results).
+        Resp: The return type produced by the emitter.
     """
 
     def __init__(
         self,
-        event: Callable[P, Event],
-        emitter: Callable[[Event], Resp],
+        schema: Callable[P, EventSchema],
+        emitter: Callable[[EventSchema], Resp],
     ) -> None:
         """
-        Bind an event type to its emitter.
+        Bind an event schema to its emitter.
 
         Args:
-            event:   The ``Event`` subclass whose instances will be emitted.
-            emitter: A callable that receives a constructed ``Event`` instance
+            schema:  The ``EventSchema`` subclass used to construct the event payload.
+            emitter: A callable that receives a constructed ``EventSchema`` instance
                      and returns ``Resp``.
 
         """
-        self.event = event
+        self.event = schema
         self.emitter = emitter
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
-        Construct the event and emit it.
+        Construct the schema instance and emit it.
 
-        Passes all positional and keyword arguments to the event constructor,
+        Passes all positional and keyword arguments to the schema constructor,
         then forwards the resulting instance to ``self.emitter``.
 
         Returns:
@@ -82,37 +71,35 @@ class AsyncBoundEvent[**P, Resp](BoundEvent[P, Awaitable[Resp]]):
     """
     Async variant of ``BoundEvent`` for use with coroutine-based emitters.
 
-    Specialises ``BoundEvent`` so that both the handlers and the emitter are
-    awaitable.  Invoking an ``AsyncBoundEvent`` returns a coroutine that must
-    be awaited by the caller.
+    Invoking an ``AsyncBoundEvent`` returns a coroutine that must be awaited
+    by the caller.
 
     Type parameters:
         P:    The parameter specification of the bound event's ``__call__`` signature.
-        R:    The type that each registered handler's coroutine resolves to.
         Resp: The type that the emitter's coroutine resolves to.
     """
 
     def __init__(
         self,
-        event: Callable[P, Event],
-        emitter: Callable[[Event], Awaitable[Resp]],
+        schema: Callable[P, EventSchema],
+        emitter: Callable[[EventSchema], Awaitable[Resp]],
     ) -> None:
         """
-        Bind an event type to its async emitter.
+        Bind an event schema to its async emitter.
 
         Args:
-            event:   The ``Event`` subclass whose instances will be emitted.
-            emitter: An async callable that receives a constructed ``Event``
+            schema:  The ``EventSchema`` subclass used to construct the event payload.
+            emitter: An async callable that receives a constructed ``EventSchema``
                      instance and returns an awaitable resolving to ``Resp``.
 
         """
-        super().__init__(event, emitter)
+        super().__init__(schema, emitter)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
-        Construct the event, emit it, and await the result.
+        Construct the schema instance, emit it, and await the result.
 
-        Passes all positional and keyword arguments to the event constructor,
+        Passes all positional and keyword arguments to the schema constructor,
         forwards the resulting instance to ``self.emitter``, and awaits the
         returned coroutine.
 

@@ -17,11 +17,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.event import BoundEvent, Event
+from stratae.events.event import BoundEvent, EventSchema
 from stratae.events.mixins.publish import AsyncPublisher
 
 
-class _ItemShipped(Event):
+class _ItemShipped(EventSchema):
     def __init__(self, item_id: int, quantity: int) -> None:
         self.item_id = item_id
         self.quantity = quantity
