@@ -9,7 +9,7 @@ This test suite verifies the following behaviors:
 """
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
@@ -17,6 +17,11 @@ from pytest_mock import MockerFixture
 from stratae.events import EventMeta
 from stratae.events.channel import Channel
 from stratae.events.event import AsyncBoundEvent, EventSchema
+
+
+async def _emitter_spec(
+    channel: Channel, payload: EventSchema, *, meta: EventMeta | None
+) -> Any: ...
 
 
 class _PaymentReceived(EventSchema):
@@ -45,7 +50,7 @@ def test_init_stores_schema_emitter_and_meta(meta: EventMeta):
     Then: The schema, emitter, and meta attributes should reference the supplied objects
     """
     # Arrange
-    emitter = AsyncMock()
+    emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
 
     # Act
@@ -69,7 +74,7 @@ async def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: Mo
     """
     # Arrange
     spy = mocker.spy(_PaymentReceived, "__init__")
-    emitter = AsyncMock()
+    emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
     bound: AsyncBoundEvent[[int, int], EventMeta, Any] = AsyncBoundEvent(
         channel, _PaymentReceived, emitter, meta
@@ -80,7 +85,7 @@ async def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: Mo
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 42, 100)
-    emitter.assert_called_once_with(channel, meta, _PaymentReceived(42, 100))
+    emitter.assert_called_once_with(channel, _PaymentReceived(42, 100), meta=meta)
 
 
 async def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixture):
@@ -93,7 +98,7 @@ async def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: Mocke
     """
     # Arrange
     spy = mocker.spy(_PaymentReceived, "__init__")
-    emitter = AsyncMock()
+    emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
     bound = AsyncBoundEvent(channel, _PaymentReceived, emitter, meta)
 
@@ -102,7 +107,7 @@ async def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: Mocke
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, payment_id=7, amount=50)
-    emitter.assert_called_once_with(channel, meta, _PaymentReceived(7, 50))
+    emitter.assert_called_once_with(channel, _PaymentReceived(7, 50), meta=meta)
 
 
 async def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture):
@@ -115,7 +120,7 @@ async def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerF
     """
     # Arrange
     spy = mocker.spy(_PaymentReceived, "__init__")
-    emitter = AsyncMock()
+    emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
     bound = AsyncBoundEvent(channel, _PaymentReceived, emitter, meta)
 
@@ -124,7 +129,7 @@ async def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerF
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 42, amount=100)
-    emitter.assert_called_once_with(channel, meta, _PaymentReceived(42, 100))
+    emitter.assert_called_once_with(channel, _PaymentReceived(42, 100), meta=meta)
 
 
 async def test_call_returns_emitter_result(meta: EventMeta):
@@ -136,7 +141,7 @@ async def test_call_returns_emitter_result(meta: EventMeta):
     Then: The return value should match the emitter's resolved value
     """
     # Arrange
-    emitter = AsyncMock(return_value="dispatched")
+    emitter = create_autospec(_emitter_spec, return_value="dispatched")
     channel = Channel("test")
     bound: AsyncBoundEvent[[int, int], EventMeta, str] = AsyncBoundEvent(
         channel, _PaymentReceived, emitter, meta

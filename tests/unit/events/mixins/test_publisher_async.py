@@ -8,6 +8,7 @@ AsyncPublisher:
 - The AsyncBoundEvent stores the correct schema, emitter, and meta.
 - AsyncPublisher cannot be instantiated directly (abstract).
 - Awaiting the result of calling the AsyncBoundEvent calls emit_publish with meta and event.
+- Awaiting the result of calling the AsyncBoundEvent with no meta calls emit_publish with None.
 - The resolved return value from emit_publish is returned to the caller.
 """
 
@@ -36,6 +37,13 @@ class _ItemShipped(EventSchema):
 @pytest.fixture
 def async_publisher() -> AsyncPublisher[EventMeta, None]:
     """Yield an AsyncPublisher instance with abstract methods cleared for testing."""
+    with patch.object(AsyncPublisher, "__abstractmethods__", frozenset[str]()):
+        return AsyncPublisher()  # pyright: ignore[reportAbstractUsage]
+
+
+@pytest.fixture
+def none_async_publisher() -> AsyncPublisher[None, None]:
+    """Return an AsyncPublisher[None, None] instance for testing the no-meta path."""
     with patch.object(AsyncPublisher, "__abstractmethods__", frozenset[str]()):
         return AsyncPublisher()  # pyright: ignore[reportAbstractUsage]
 
@@ -72,7 +80,7 @@ def test_async_publish_returns_async_bound_event(
     channel = Channel("test")
 
     # Act
-    bound = async_publisher.publish(channel, _ItemShipped, meta)
+    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Assert
     assert isinstance(bound, AsyncBoundEvent)
@@ -92,7 +100,7 @@ def test_async_publish_bound_event_stores_schema_emitter_and_meta(
     channel = Channel("test")
 
     # Act
-    bound = async_publisher.publish(channel, _ItemShipped, meta)
+    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Assert
     assert bound.channel is channel
@@ -114,13 +122,13 @@ async def test_async_publish_bound_event_calls_emit_publish_with_positional_args
     # Arrange
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
     channel = Channel("test")
-    bound = async_publisher.publish(channel, _ItemShipped, meta)
+    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Act
     await bound(1, 10)
 
     # Assert
-    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(1, 10))
+    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=meta)
 
 
 async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
@@ -136,13 +144,13 @@ async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
     # Arrange
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
     channel = Channel("test")
-    bound = async_publisher.publish(channel, _ItemShipped, meta)
+    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Act
     await bound(item_id=2, quantity=5)
 
     # Assert
-    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(2, 5))
+    mock_emit.assert_called_once_with(channel, _ItemShipped(2, 5), meta=meta)
 
 
 async def test_async_publish_bound_event_returns_emit_publish_result(
@@ -160,10 +168,53 @@ async def test_async_publish_bound_event_returns_emit_publish_result(
     mock_emit = AsyncMock(return_value="dispatched")
     async_publisher.emit_publish = mock_emit
     channel = Channel("test")
-    bound = async_publisher.publish(channel, _ItemShipped, meta)
+    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Act
     result = await bound(1, 10)
 
     # Assert
     assert result == "dispatched"
+
+
+def test_async_publish_without_meta_returns_async_bound_event(
+    none_async_publisher: AsyncPublisher[None, None],
+):
+    """
+    Publish called without meta should return an AsyncBoundEvent with meta set to None.
+
+    Given: An AsyncPublisher[None, None] instance with abstract methods cleared
+    When: publish is called with only a channel and schema
+    Then: An AsyncBoundEvent should be returned with meta set to None
+    """
+    # Arrange
+    channel = Channel("test")
+
+    # Act
+    bound = none_async_publisher.publish(channel, _ItemShipped)
+
+    # Assert
+    assert isinstance(bound, AsyncBoundEvent)
+    assert bound.meta is None
+
+
+async def test_async_publish_without_meta_calls_emit_publish_with_none(
+    none_async_publisher: AsyncPublisher[None, None], mocker: MockerFixture
+):
+    """
+    AsyncBoundEvent from a no-meta publish should call emit_publish with None as meta.
+
+    Given: An AsyncBoundEvent returned by publish with no meta
+    When: The AsyncBoundEvent is called and awaited
+    Then: emit_publish should be called with None as meta
+    """
+    # Arrange
+    mock_emit = mocker.patch.object(none_async_publisher, "emit_publish", new=AsyncMock())
+    channel = Channel("test")
+    bound = none_async_publisher.publish(channel, _ItemShipped)
+
+    # Act
+    await bound(1, 10)
+
+    # Assert
+    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=None)

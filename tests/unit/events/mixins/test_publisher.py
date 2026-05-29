@@ -8,6 +8,7 @@ Publisher:
 - The BoundEvent stores the correct schema, emitter, and meta.
 - Publisher cannot be instantiated directly (abstract).
 - Calling the BoundEvent constructs the event and calls emit_publish with meta and event.
+- Calling the BoundEvent with no meta calls emit_publish with None.
 - The return value from emit_publish is returned to the caller.
 
 """
@@ -42,6 +43,13 @@ def publisher() -> Publisher[EventMeta, None]:
 
 
 @pytest.fixture
+def none_publisher() -> Publisher[None, None]:
+    """Return a Publisher[None, None] instance for testing the no-meta path."""
+    with patch.object(Publisher, "__abstractmethods__", frozenset[str]()):
+        return Publisher()  # pyright: ignore[reportAbstractUsage]
+
+
+@pytest.fixture
 def meta() -> EventMeta:
     """Return an EventMeta instance for use in publish calls."""
     return EventMeta()
@@ -71,7 +79,7 @@ def test_publish_returns_bound_event(publisher: Publisher[EventMeta, None], meta
     channel = Channel("test")
 
     # Act
-    bound = publisher.publish(channel, _ItemShipped, meta)
+    bound = publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Assert
     assert isinstance(bound, BoundEvent)
@@ -91,7 +99,7 @@ def test_publish_bound_event_stores_schema_emitter_and_meta(
     channel = Channel("test")
 
     # Act
-    bound = publisher.publish(channel, _ItemShipped, meta)
+    bound = publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Assert
     assert bound.channel is channel
@@ -113,13 +121,13 @@ def test_publish_bound_event_calls_emit_publish_with_positional_args(
     # Arrange
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
     channel = Channel("test")
-    bound = publisher.publish(channel, _ItemShipped, meta)
+    bound = publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Act
     bound(1, 10)
 
     # Assert
-    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(1, 10))
+    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=meta)
 
 
 def test_publish_bound_event_calls_emit_publish_with_keyword_args(
@@ -135,13 +143,13 @@ def test_publish_bound_event_calls_emit_publish_with_keyword_args(
     # Arrange
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
     channel = Channel("test")
-    bound = publisher.publish(channel, _ItemShipped, meta)
+    bound = publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Act
     bound(item_id=2, quantity=5)
 
     # Assert
-    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(2, 5))
+    mock_emit.assert_called_once_with(channel, _ItemShipped(2, 5), meta=meta)
 
 
 def test_publish_bound_event_returns_emit_publish_result(
@@ -158,10 +166,51 @@ def test_publish_bound_event_returns_emit_publish_result(
     mock_emit = Mock(return_value="dispatched")
     publisher.emit_publish = mock_emit
     channel = Channel("test")
-    bound = publisher.publish(channel, _ItemShipped, meta)
+    bound = publisher.publish(channel, _ItemShipped, meta=meta)
 
     # Act
     result = bound(1, 10)
 
     # Assert
     assert result == "dispatched"
+
+
+def test_publish_without_meta_returns_bound_event(none_publisher: Publisher[None, None]):
+    """
+    Publish called without meta should return a BoundEvent with meta set to None.
+
+    Given: A Publisher[None, None] instance with abstract methods cleared
+    When: publish is called with only a channel and schema
+    Then: A BoundEvent should be returned with meta set to None
+    """
+    # Arrange
+    channel = Channel("test")
+
+    # Act
+    bound = none_publisher.publish(channel, _ItemShipped)
+
+    # Assert
+    assert isinstance(bound, BoundEvent)
+    assert bound.meta is None
+
+
+def test_publish_without_meta_calls_emit_publish_with_none(
+    none_publisher: Publisher[None, None], mocker: MockerFixture
+):
+    """
+    BoundEvent from a no-meta publish should call emit_publish with None as meta.
+
+    Given: A BoundEvent returned by publish with no meta
+    When: The BoundEvent is called
+    Then: emit_publish should be called with None as meta
+    """
+    # Arrange
+    mock_emit = mocker.patch.object(none_publisher, "emit_publish", new=Mock())
+    channel = Channel("test")
+    bound = none_publisher.publish(channel, _ItemShipped)
+
+    # Act
+    bound(1, 10)
+
+    # Assert
+    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=None)

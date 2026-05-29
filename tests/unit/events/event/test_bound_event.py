@@ -9,7 +9,7 @@ This test suite verifies the following behaviors:
 """
 
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
@@ -17,6 +17,9 @@ from pytest_mock import MockerFixture
 from stratae.events import EventMeta
 from stratae.events.channel import Channel
 from stratae.events.event import BoundEvent, EventSchema
+
+
+def _emitter_spec(channel: Channel, payload: EventSchema, *, meta: EventMeta | None) -> Any: ...
 
 
 class _OrderCreated(EventSchema):
@@ -45,7 +48,7 @@ def test_init_stores_schema_emitter_and_meta(meta: EventMeta):
     Then: The schema, emitter, and meta attributes should reference the supplied objects
     """
     # Arrange
-    emitter = Mock()
+    emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
 
     # Act
@@ -69,7 +72,7 @@ def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: MockerFi
     """
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = Mock()
+    emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
     bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(
         channel, _OrderCreated, emitter, meta
@@ -80,7 +83,7 @@ def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: MockerFi
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(channel, meta, _OrderCreated(1, "pending"))
+    emitter.assert_called_once_with(channel, _OrderCreated(1, "pending"), meta=meta)
 
 
 def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixture):
@@ -93,7 +96,7 @@ def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixtu
     """
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = Mock()
+    emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
     bound = BoundEvent(channel, _OrderCreated, emitter, meta)
 
@@ -102,7 +105,7 @@ def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixtu
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, order_id=2, status="complete")
-    emitter.assert_called_once_with(channel, meta, _OrderCreated(2, "complete"))
+    emitter.assert_called_once_with(channel, _OrderCreated(2, "complete"), meta=meta)
 
 
 def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture):
@@ -115,7 +118,7 @@ def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture
     """
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = Mock()
+    emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
     bound = BoundEvent(channel, _OrderCreated, emitter, meta)
 
@@ -124,7 +127,7 @@ def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, status="pending")
-    emitter.assert_called_once_with(channel, meta, _OrderCreated(1, "pending"))
+    emitter.assert_called_once_with(channel, _OrderCreated(1, "pending"), meta=meta)
 
 
 def test_call_returns_emitter_result(meta: EventMeta):
@@ -136,7 +139,7 @@ def test_call_returns_emitter_result(meta: EventMeta):
     Then: The return value should match the emitter's return value
     """
     # Arrange
-    emitter = Mock(return_value="dispatched")
+    emitter = create_autospec(_emitter_spec, return_value="dispatched")
     channel = Channel("test")
     bound: BoundEvent[[int, str], EventMeta, str] = BoundEvent(
         channel, _OrderCreated, emitter, meta
