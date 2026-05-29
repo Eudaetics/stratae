@@ -64,8 +64,8 @@ class BoundEvent[**P, Metadata: (EventMeta | None), Resp]:
         self,
         channel: Channel,
         schema: Callable[P, EventSchema],
-        emitter: Callable[[Channel, Metadata | None, EventSchema], Resp],
-        meta: Metadata | None = None,
+        emitter: Callable[[Channel, Metadata, EventSchema], Resp],
+        meta: Metadata = None,
     ) -> None:
         """
         Bind an event schema to its emitter with routing metadata.
@@ -113,8 +113,8 @@ class AsyncBoundEvent[**P, Metadata: (EventMeta | None), Resp](
         self,
         channel: Channel,
         schema: Callable[P, EventSchema],
-        emitter: Callable[[Channel, Metadata | None, EventSchema], Awaitable[Resp]],
-        meta: Metadata | None = None,
+        emitter: Callable[[Channel, Metadata, EventSchema], Awaitable[Resp]],
+        meta: Metadata = None,
     ) -> None:
         """
         Bind an event schema to its async emitter with routing metadata.

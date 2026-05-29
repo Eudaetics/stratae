@@ -7,7 +7,7 @@ from stratae.events.channel import Channel
 from stratae.events.event import AsyncBoundEvent, BoundEvent, EventMeta, EventSchema
 
 
-class Publisher[Meta: (EventMeta | None), Resp](ABC):
+class Publisher[Metadata: (EventMeta | None), Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to a synchronous publish emitter.
 
@@ -31,8 +31,8 @@ class Publisher[Meta: (EventMeta | None), Resp](ABC):
     """
 
     def publish[**P](
-        self, channel: Channel, schema: Callable[P, EventSchema], meta: Meta | None = None
-    ) -> BoundEvent[P, Meta, Resp]:
+        self, channel: Channel, schema: Callable[P, EventSchema], meta: Metadata = None
+    ) -> BoundEvent[P, Metadata, Resp]:
         """
         Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
 
@@ -49,7 +49,7 @@ class Publisher[Meta: (EventMeta | None), Resp](ABC):
         return BoundEvent(channel, schema, self.emit_publish, meta)
 
     @abstractmethod
-    def emit_publish(self, channel: Channel, meta: Meta | None, payload: EventSchema) -> Resp:
+    def emit_publish(self, channel: Channel, meta: Metadata, payload: EventSchema) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
@@ -65,7 +65,7 @@ class Publisher[Meta: (EventMeta | None), Resp](ABC):
         ...
 
 
-class AsyncPublisher[Meta: (EventMeta | None), Resp](ABC):
+class AsyncPublisher[Metadata: (EventMeta | None), Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to an asynchronous publish emitter.
 
@@ -81,8 +81,8 @@ class AsyncPublisher[Meta: (EventMeta | None), Resp](ABC):
         self,
         channel: Channel,
         schema: Callable[P, EventSchema],
-        meta: Meta | None = None,
-    ) -> AsyncBoundEvent[P, Meta, Resp]:
+        meta: Metadata = None,
+    ) -> AsyncBoundEvent[P, Metadata, Resp]:
         """
         Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
 
@@ -100,7 +100,7 @@ class AsyncPublisher[Meta: (EventMeta | None), Resp](ABC):
         return AsyncBoundEvent(channel, schema, self.emit_publish, meta)
 
     @abstractmethod
-    async def emit_publish(self, channel: Channel, meta: Meta | None, payload: EventSchema) -> Resp:
+    async def emit_publish(self, channel: Channel, meta: Metadata, payload: EventSchema) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
