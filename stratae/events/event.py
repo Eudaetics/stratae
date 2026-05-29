@@ -1,6 +1,6 @@
 """Base event schema and bound-event abstractions for the stratae event system."""
 
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Protocol
 
 from stratae.events.channel import Channel
 
@@ -45,6 +45,14 @@ class EventSchema:
     """
 
 
+class Emitter[Metadata, Resp](Protocol):
+    """Protocol for the emit format to ensure meta is keyword only."""
+
+    def __call__(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
+        """Definition of the emit call."""
+        ...
+
+
 class BoundEvent[**P, Metadata: (EventMeta | None), Resp]:
     """
     Binds an ``EventSchema`` subclass to a synchronous emitter with routing metadata.
@@ -64,7 +72,7 @@ class BoundEvent[**P, Metadata: (EventMeta | None), Resp]:
         self,
         channel: Channel,
         schema: Callable[P, EventSchema],
-        emitter: Callable[[Channel, Metadata, EventSchema], Resp],
+        emitter: Emitter[Metadata, Resp],
         meta: Metadata = None,
     ) -> None:
         """
@@ -91,7 +99,7 @@ class BoundEvent[**P, Metadata: (EventMeta | None), Resp]:
             Whatever ``self.emitter`` returns.
 
         """
-        return self.emitter(self.channel, self.meta, self.schema(*args, **kwargs))
+        return self.emitter(self.channel, self.schema(*args, **kwargs), meta=self.meta)
 
 
 class AsyncBoundEvent[**P, Metadata: (EventMeta | None), Resp](
@@ -113,7 +121,7 @@ class AsyncBoundEvent[**P, Metadata: (EventMeta | None), Resp](
         self,
         channel: Channel,
         schema: Callable[P, EventSchema],
-        emitter: Callable[[Channel, Metadata, EventSchema], Awaitable[Resp]],
+        emitter: Emitter[Metadata, Awaitable[Resp]],
         meta: Metadata = None,
     ) -> None:
         """
@@ -137,4 +145,4 @@ class AsyncBoundEvent[**P, Metadata: (EventMeta | None), Resp](
             The resolved value of ``self.emitter``'s coroutine.
 
         """
-        return await self.emitter(self.channel, self.meta, self.schema(*args, **kwargs))
+        return await self.emitter(self.channel, self.schema(*args, **kwargs), meta=self.meta)

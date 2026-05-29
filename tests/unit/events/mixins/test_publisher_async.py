@@ -128,7 +128,7 @@ async def test_async_publish_bound_event_calls_emit_publish_with_positional_args
     await bound(1, 10)
 
     # Assert
-    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(1, 10))
+    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=meta)
 
 
 async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
@@ -150,7 +150,7 @@ async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
     await bound(item_id=2, quantity=5)
 
     # Assert
-    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(2, 5))
+    mock_emit.assert_called_once_with(channel, _ItemShipped(2, 5), meta=meta)
 
 
 async def test_async_publish_bound_event_returns_emit_publish_result(
@@ -217,4 +217,4 @@ async def test_async_publish_without_meta_calls_emit_publish_with_none(
     await bound(1, 10)
 
     # Assert
-    mock_emit.assert_called_once_with(channel, None, _ItemShipped(1, 10))
+    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=None)

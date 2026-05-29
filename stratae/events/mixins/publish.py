@@ -19,7 +19,7 @@ class Publisher[Metadata: (EventMeta | None), Resp](ABC):
     Example::
 
         class KafkaPublisher(Publisher[KafkaMeta, None]):
-            def emit_publish(self, channel, meta, payload):
+            def emit_publish(self, channel, payload, *, meta):
                 ...  # forward to Kafka using meta.topic, meta.partition_key, etc.
 
         emit_order = publisher.publish(channel, OrderPlaced, meta=KafkaMeta("orders"))
@@ -45,14 +45,14 @@ class Publisher[Metadata: (EventMeta | None), Resp](ABC):
         return BoundEvent(channel, schema, self.emit_publish, meta)
 
     @abstractmethod
-    def emit_publish(self, channel: Channel, meta: Metadata, payload: EventSchema) -> Resp:
+    def emit_publish(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
             channel: A Channel over which to publish the event.
-            meta:    The adapter-specific routing metadata.
             payload: The constructed ``EventSchema`` instance to dispatch.
+            meta:    The adapter-specific routing metadata.
 
         Returns:
             ``Resp`` as defined by the concrete subclass.
@@ -95,14 +95,14 @@ class AsyncPublisher[Metadata: (EventMeta | None), Resp](ABC):
         return AsyncBoundEvent(channel, schema, self.emit_publish, meta)
 
     @abstractmethod
-    async def emit_publish(self, channel: Channel, meta: Metadata, payload: EventSchema) -> Resp:
+    async def emit_publish(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
             channel: A Channel over which to publish the event.
-            meta:    The adapter-specific routing metadata.
             payload: The constructed ``EventSchema`` instance to dispatch.
+            meta:    The adapter-specific routing metadata.
 
         Returns:
             ``Resp`` as defined by the concrete subclass.
