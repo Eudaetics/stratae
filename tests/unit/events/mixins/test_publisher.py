@@ -5,9 +5,9 @@ This test suite verifies the following behaviors:
 
 Publisher:
 - publish returns a BoundEvent bound to emit_publish.
-- The BoundEvent stores the correct event class and emitter.
+- The BoundEvent stores the correct schema, emitter, and meta.
 - Publisher cannot be instantiated directly (abstract).
-- Calling the BoundEvent constructs the event and calls emit_publish.
+- Calling the BoundEvent constructs the event and calls emit_publish with meta and event.
 - The return value from emit_publish is returned to the caller.
 
 """
@@ -18,7 +18,7 @@ from unittest.mock import Mock, patch
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.event import BoundEvent, EventSchema
+from stratae.events.event import BoundEvent, EventMeta, EventSchema
 from stratae.events.mixins.publish import Publisher
 
 
@@ -34,10 +34,16 @@ class _ItemShipped(EventSchema):
 
 
 @pytest.fixture
-def publisher() -> Publisher[None]:
+def publisher() -> Publisher[EventMeta, None]:
     """Yield a Publisher instance with abstract methods cleared for testing."""
     with patch.object(Publisher, "__abstractmethods__", frozenset[str]()):
         return Publisher()  # pyright: ignore[reportAbstractUsage]
+
+
+@pytest.fixture
+def meta() -> EventMeta:
+    """Return an EventMeta instance for use in publish calls."""
+    return EventMeta()
 
 
 def test_publish_bus_is_abstract():
@@ -52,80 +58,85 @@ def test_publish_bus_is_abstract():
         Publisher()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_publish_returns_bound_event(publisher: Publisher[None]):
+def test_publish_returns_bound_event(publisher: Publisher[EventMeta, None], meta: EventMeta):
     """
     Publish should return a BoundEvent instance.
 
     Given: A Publisher instance with abstract methods cleared
-    When: publish is called with an event class
+    When: publish is called with a schema and meta
     Then: A BoundEvent instance should be returned
     """
     # Act
-    bound = publisher.publish(_ItemShipped)
+    bound = publisher.publish(_ItemShipped, meta)
 
     # Assert
     assert isinstance(bound, BoundEvent)
 
 
-def test_publish_bound_event_stores_event_and_emitter(publisher: Publisher[None]):
+def test_publish_bound_event_stores_schema_emitter_and_meta(
+    publisher: Publisher[EventMeta, None], meta: EventMeta
+):
     """
-    BoundEvent returned by publish should store the event class and emit_publish.
+    BoundEvent returned by publish should store the schema, emit_publish, and meta.
 
     Given: A Publisher instance with abstract methods cleared
-    When: publish is called with an event class
-    Then: The BoundEvent should store that event class and emit_publish as the emitter
+    When: publish is called with a schema and meta
+    Then: The BoundEvent should store that schema, emit_publish, and meta
     """
     # Act
-    bound = publisher.publish(_ItemShipped)
+    bound = publisher.publish(_ItemShipped, meta)
 
     # Assert
-    assert bound.event is _ItemShipped
+    assert bound.schema is _ItemShipped
     assert bound.emitter == publisher.emit_publish
+    assert bound.meta is meta
 
 
 def test_publish_bound_event_calls_emit_publish_with_positional_args(
-    publisher: Publisher[None], mocker: MockerFixture
+    publisher: Publisher[EventMeta, None], meta: EventMeta, mocker: MockerFixture
 ):
     """
     BoundEvent called with positional args should construct the event and call emit_publish.
 
     Given: A BoundEvent returned by publish
     When: The BoundEvent is called with positional arguments
-    Then: emit_publish should be called with the constructed event
+    Then: emit_publish should be called with the meta and the constructed event
     """
     # Arrange
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
-    bound = publisher.publish(_ItemShipped)
+    bound = publisher.publish(_ItemShipped, meta)
 
     # Act
     bound(1, 10)
 
     # Assert
-    mock_emit.assert_called_once_with(_ItemShipped(1, 10))
+    mock_emit.assert_called_once_with(meta, _ItemShipped(1, 10))
 
 
 def test_publish_bound_event_calls_emit_publish_with_keyword_args(
-    publisher: Publisher[None], mocker: MockerFixture
+    publisher: Publisher[EventMeta, None], meta: EventMeta, mocker: MockerFixture
 ):
     """
     BoundEvent called with keyword args should construct the event and call emit_publish.
 
     Given: A BoundEvent returned by publish
     When: The BoundEvent is called with keyword arguments
-    Then: emit_publish should be called with the constructed event
+    Then: emit_publish should be called with the meta and the constructed event
     """
     # Arrange
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
-    bound = publisher.publish(_ItemShipped)
+    bound = publisher.publish(_ItemShipped, meta)
 
     # Act
     bound(item_id=2, quantity=5)
 
     # Assert
-    mock_emit.assert_called_once_with(_ItemShipped(2, 5))
+    mock_emit.assert_called_once_with(meta, _ItemShipped(2, 5))
 
 
-def test_publish_bound_event_returns_emit_publish_result(publisher: Publisher[None]):
+def test_publish_bound_event_returns_emit_publish_result(
+    publisher: Publisher[EventMeta, None], meta: EventMeta
+):
     """
     Return value from emit_publish should be returned to the caller.
 
@@ -136,7 +147,7 @@ def test_publish_bound_event_returns_emit_publish_result(publisher: Publisher[No
     # Arrange
     mock_emit = Mock(return_value="dispatched")
     publisher.emit_publish = mock_emit
-    bound = publisher.publish(_ItemShipped)
+    bound = publisher.publish(_ItemShipped, meta)
 
     # Act
     result = bound(1, 10)

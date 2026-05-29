@@ -3,40 +3,59 @@
 from abc import ABC, abstractmethod
 from typing import Callable
 
-from stratae.events.event import AsyncBoundEvent, BoundEvent, EventSchema
+from stratae.events.event import AsyncBoundEvent, BoundEvent, EventMeta, EventSchema
 
 
-class Publisher[Resp](ABC):
+class Publisher[Meta: EventMeta, Resp](ABC):
     """
-    Mixin that binds Event subclasses to a synchronous publish emitter.
+    Mixin that binds ``EventSchema`` subclasses to a synchronous publish emitter.
 
-    Subclasses must implement ``emit_publish``, which receives a constructed
-    ``Event`` instance and returns ``Resp``.  Call ``publish`` with an ``Event``
-    subclass to receive a ``BoundEvent`` that constructs and emits instances of
-    that event through ``emit_publish``.
+    Subclasses must implement ``emit_publish``, which receives the adapter-specific
+    ``Meta`` and a constructed ``EventSchema`` instance and returns ``Resp``.
+
+    Override ``publish`` to accept the routing parameters your adapter requires
+    (e.g. topic, partition key), construct a ``Meta`` instance, and call the
+    base implementation, which wires everything into a ``BoundEvent``.
+
+    Example::
+
+        class KafkaPublisher(Publisher[KafkaMeta, None]):
+            def publish[**P](
+                self,
+                schema: Callable[P, EventSchema],
+                topic: str,
+                partition_key: str | None = None,
+            ) -> BoundEvent[P, KafkaMeta, None]:
+                return super().publish(schema, KafkaMeta(topic, partition_key))
     """
 
-    def publish[**P](self, event: Callable[P, EventSchema]) -> BoundEvent[P, Resp]:
+    def publish[**P](
+        self,
+        schema: Callable[P, EventSchema],
+        meta: Meta,
+    ) -> BoundEvent[P, Meta, Resp]:
         """
-        Bind an Event subclass to this bus's emit_publish.
+        Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
 
         Args:
-            event: An ``Event`` subclass whose constructor accepts ``P``.
+            schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
+            meta:   The adapter-specific routing metadata for this binding.
 
         Returns:
             A ``BoundEvent`` that, when called with ``P`` arguments, constructs
-            an instance of ``event`` and forwards it to ``emit_publish``.
+            an instance of ``schema`` and forwards it to ``emit_publish``.
 
         """
-        return BoundEvent(event, self.emit_publish)
+        return BoundEvent(schema, self.emit_publish, meta)
 
     @abstractmethod
-    def emit_publish(self, event: EventSchema) -> Resp:
+    def emit_publish(self, meta: Meta, event: EventSchema) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
-            event: The ``Event`` instance to dispatch.
+            meta:  The adapter-specific routing metadata.
+            event: The constructed ``EventSchema`` instance to dispatch.
 
         Returns:
             ``Resp`` as defined by the concrete subclass.
@@ -45,41 +64,46 @@ class Publisher[Resp](ABC):
         ...
 
 
-class AsyncPublisher[Resp](ABC):
+class AsyncPublisher[Meta: EventMeta, Resp](ABC):
     """
-    Mixin that binds Event subclasses to an asynchronous publish emitter.
+    Mixin that binds ``EventSchema`` subclasses to an asynchronous publish emitter.
 
-    Subclasses must implement ``emit_publish`` as a coroutine.  Call
-    ``publish`` with an ``Event`` subclass to receive an ``AsyncBoundEvent``
-    whose ``__call__`` is itself a coroutine that must be awaited to dispatch
-    the event and obtain ``Resp``.
+    Subclasses must implement ``emit_publish`` as a coroutine, which receives the
+    adapter-specific ``Meta`` and a constructed ``EventSchema`` instance and returns
+    an awaitable resolving to ``Resp``.
+
+    Override ``publish`` to accept the routing parameters your adapter requires,
+    construct a ``Meta`` instance, and call the base implementation.
     """
 
-    def publish[**P](self, event: Callable[P, EventSchema]) -> AsyncBoundEvent[P, Resp]:
+    def publish[**P](
+        self,
+        schema: Callable[P, EventSchema],
+        meta: Meta,
+    ) -> AsyncBoundEvent[P, Meta, Resp]:
         """
-        Bind an Event subclass to this bus's emit_publish.
-
-        Returns an ``AsyncBoundEvent`` so that callers can directly await
-        the result of calling the bound event.
+        Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
 
         Args:
-            event: An ``Event`` subclass whose constructor accepts ``P``.
+            schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
+            meta:   The adapter-specific routing metadata for this binding.
 
         Returns:
             An ``AsyncBoundEvent`` that, when called and awaited with ``P``
-            arguments, constructs an instance of ``event`` and forwards it
+            arguments, constructs an instance of ``schema`` and forwards it
             to ``emit_publish``.
 
         """
-        return AsyncBoundEvent(event, self.emit_publish)
+        return AsyncBoundEvent(schema, self.emit_publish, meta)
 
     @abstractmethod
-    async def emit_publish(self, event: EventSchema) -> Resp:
+    async def emit_publish(self, meta: Meta, event: EventSchema) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
-            event: The ``Event`` instance to dispatch.
+            meta:  The adapter-specific routing metadata.
+            event: The constructed ``EventSchema`` instance to dispatch.
 
         Returns:
             ``Resp`` as defined by the concrete subclass.
