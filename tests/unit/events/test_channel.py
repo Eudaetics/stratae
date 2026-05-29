@@ -14,14 +14,6 @@ import pytest
 from stratae.events.channel import Channel
 
 
-@pytest.fixture(autouse=True)
-def clear_channel_registry():
-    """Clear the Channel registry before and after every test."""
-    Channel._registry.clear()  # pyright: ignore[reportPrivateUsage]
-    yield
-    Channel._registry.clear()  # pyright: ignore[reportPrivateUsage]
-
-
 def test_init_stores_name():
     """
     Name should be stored on the channel at initialisation.

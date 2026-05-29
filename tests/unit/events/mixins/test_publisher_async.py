@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pytest_mock import MockerFixture
 
+from stratae.events.channel import Channel
 from stratae.events.event import AsyncBoundEvent, EventMeta, EventSchema
 from stratae.events.mixins.publish import AsyncPublisher
 
@@ -64,11 +65,14 @@ def test_async_publish_returns_async_bound_event(
     Publish should return an AsyncBoundEvent instance.
 
     Given: An AsyncPublisher instance with abstract methods cleared
-    When: publish is called with a schema and meta
+    When: publish is called with a channel, schema, and meta
     Then: An AsyncBoundEvent instance should be returned
     """
+    # Arrange
+    channel = Channel("test")
+
     # Act
-    bound = async_publisher.publish(_ItemShipped, meta)
+    bound = async_publisher.publish(channel, _ItemShipped, meta)
 
     # Assert
     assert isinstance(bound, AsyncBoundEvent)
@@ -78,16 +82,20 @@ def test_async_publish_bound_event_stores_schema_emitter_and_meta(
     async_publisher: AsyncPublisher[EventMeta, None], meta: EventMeta
 ):
     """
-    AsyncBoundEvent returned by publish should store the schema, emit_publish, and meta.
+    AsyncBoundEvent returned by publish should store the channel, schema, emit_publish, and meta.
 
     Given: An AsyncPublisher instance with abstract methods cleared
-    When: publish is called with a schema and meta
-    Then: The AsyncBoundEvent should store that schema, emit_publish, and meta
+    When: publish is called with a channel, schema, and meta
+    Then: The AsyncBoundEvent should store that channel, schema, emit_publish, and meta
     """
+    # Arrange
+    channel = Channel("test")
+
     # Act
-    bound = async_publisher.publish(_ItemShipped, meta)
+    bound = async_publisher.publish(channel, _ItemShipped, meta)
 
     # Assert
+    assert bound.channel is channel
     assert bound.schema is _ItemShipped
     assert bound.emitter == async_publisher.emit_publish
     assert bound.meta is meta
@@ -105,13 +113,14 @@ async def test_async_publish_bound_event_calls_emit_publish_with_positional_args
     """
     # Arrange
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
-    bound = async_publisher.publish(_ItemShipped, meta)
+    channel = Channel("test")
+    bound = async_publisher.publish(channel, _ItemShipped, meta)
 
     # Act
     await bound(1, 10)
 
     # Assert
-    mock_emit.assert_called_once_with(meta, _ItemShipped(1, 10))
+    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(1, 10))
 
 
 async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
@@ -126,13 +135,14 @@ async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
     """
     # Arrange
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
-    bound = async_publisher.publish(_ItemShipped, meta)
+    channel = Channel("test")
+    bound = async_publisher.publish(channel, _ItemShipped, meta)
 
     # Act
     await bound(item_id=2, quantity=5)
 
     # Assert
-    mock_emit.assert_called_once_with(meta, _ItemShipped(2, 5))
+    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(2, 5))
 
 
 async def test_async_publish_bound_event_returns_emit_publish_result(
@@ -149,7 +159,8 @@ async def test_async_publish_bound_event_returns_emit_publish_result(
     # Arrange
     mock_emit = AsyncMock(return_value="dispatched")
     async_publisher.emit_publish = mock_emit
-    bound = async_publisher.publish(_ItemShipped, meta)
+    channel = Channel("test")
+    bound = async_publisher.publish(channel, _ItemShipped, meta)
 
     # Act
     result = await bound(1, 10)

@@ -8,28 +8,16 @@ Subscriber:
 - Subscriber inherits storage behaviour from SubscriberBase.
 """
 
-from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
-from stratae.events.event import EventSchema
+from stratae.events.channel import Channel
 from stratae.events.mixins.subscribe import Subscriber, SubscriberBase
 
 
-class _ItemShipped(EventSchema):
-    def __init__(self, item_id: int, quantity: int) -> None:
-        self.item_id = item_id
-        self.quantity = quantity
-
-    def __eq__(self, value: Any) -> bool:
-        if not isinstance(value, _ItemShipped):
-            return False
-        return self.item_id == value.item_id and self.quantity == value.quantity
-
-
 @pytest.fixture
-def subscriber() -> Subscriber:
+def subscriber() -> Subscriber[None]:  # pyright: ignore[reportMissingTypeArgument]
     """Return a Subscriber instance with abstract methods cleared for testing."""
     with patch.object(Subscriber, "__abstractmethods__", frozenset[str]()):
         return Subscriber()  # pyright: ignore[reportAbstractUsage]
@@ -49,7 +37,9 @@ with pytest.raises(TypeError, match="Can't instantiate abstract class Subscriber
     Subscriber()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_subscriber_inherits_from_subscriber_base(subscriber: Subscriber):
+def test_subscriber_inherits_from_subscriber_base(
+    subscriber: Subscriber[None],  # pyright: ignore[reportMissingTypeArgument]
+):
     """
     Subscriber should be an instance of SubscriberBase.
 
@@ -60,7 +50,9 @@ def test_subscriber_inherits_from_subscriber_base(subscriber: Subscriber):
     assert isinstance(subscriber, SubscriberBase)
 
 
-def test_subscriber_inherits_storage_from_subscriber_base(subscriber: Subscriber):
+def test_subscriber_inherits_storage_from_subscriber_base(
+    subscriber: Subscriber[None],  # pyright: ignore[reportMissingTypeArgument]
+):
     """
     Subscriber should inherit subscribe and unsubscribe from SubscriberBase.
 
@@ -69,16 +61,17 @@ def test_subscriber_inherits_storage_from_subscriber_base(subscriber: Subscriber
     Then: Storage should reflect both operations correctly
     """
     # Arrange
-    handler = Mock()
+    channel = Channel("test")
+    fn = Mock()
 
     # Act
-    subscriber.subscribe(_ItemShipped, handler)
+    subscriber.subscribe(channel, None, fn)
 
     # Assert
-    assert handler in subscriber.get_handlers(_ItemShipped)
+    assert fn in subscriber.get_handlers(channel)
 
     # Act
-    subscriber.unsubscribe(_ItemShipped, handler)
+    subscriber.unsubscribe(channel, fn)
 
     # Assert
-    assert handler not in subscriber.get_handlers(_ItemShipped)
+    assert fn not in subscriber.get_handlers(channel)

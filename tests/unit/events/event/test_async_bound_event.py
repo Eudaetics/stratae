@@ -15,6 +15,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events import EventMeta
+from stratae.events.channel import Channel
 from stratae.events.event import AsyncBoundEvent, EventSchema
 
 
@@ -45,10 +46,11 @@ def test_init_stores_schema_emitter_and_meta(meta: EventMeta):
     """
     # Arrange
     emitter = AsyncMock()
+    channel = Channel("test")
 
     # Act
     bound: AsyncBoundEvent[[int, int], EventMeta, Any] = AsyncBoundEvent(
-        _PaymentReceived, emitter, meta
+        channel, _PaymentReceived, emitter, meta
     )
 
     # Assert
@@ -68,8 +70,9 @@ async def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: Mo
     # Arrange
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
+    channel = Channel("test")
     bound: AsyncBoundEvent[[int, int], EventMeta, Any] = AsyncBoundEvent(
-        _PaymentReceived, emitter, meta
+        channel, _PaymentReceived, emitter, meta
     )
 
     # Act
@@ -77,7 +80,7 @@ async def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: Mo
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 42, 100)
-    emitter.assert_called_once_with(meta, _PaymentReceived(42, 100))
+    emitter.assert_called_once_with(channel, meta, _PaymentReceived(42, 100))
 
 
 async def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixture):
@@ -91,14 +94,15 @@ async def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: Mocke
     # Arrange
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(_PaymentReceived, emitter, meta)
+    channel = Channel("test")
+    bound = AsyncBoundEvent(channel, _PaymentReceived, emitter, meta)
 
     # Act
     await bound(payment_id=7, amount=50)
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, payment_id=7, amount=50)
-    emitter.assert_called_once_with(meta, _PaymentReceived(7, 50))
+    emitter.assert_called_once_with(channel, meta, _PaymentReceived(7, 50))
 
 
 async def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture):
@@ -112,14 +116,15 @@ async def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerF
     # Arrange
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(_PaymentReceived, emitter, meta)
+    channel = Channel("test")
+    bound = AsyncBoundEvent(channel, _PaymentReceived, emitter, meta)
 
     # Act
     await bound(42, amount=100)
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 42, amount=100)
-    emitter.assert_called_once_with(meta, _PaymentReceived(42, 100))
+    emitter.assert_called_once_with(channel, meta, _PaymentReceived(42, 100))
 
 
 async def test_call_returns_emitter_result(meta: EventMeta):
@@ -132,8 +137,9 @@ async def test_call_returns_emitter_result(meta: EventMeta):
     """
     # Arrange
     emitter = AsyncMock(return_value="dispatched")
+    channel = Channel("test")
     bound: AsyncBoundEvent[[int, int], EventMeta, str] = AsyncBoundEvent(
-        _PaymentReceived, emitter, meta
+        channel, _PaymentReceived, emitter, meta
     )
 
     # Act

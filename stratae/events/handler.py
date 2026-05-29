@@ -3,10 +3,10 @@
 from inspect import iscoroutinefunction
 from typing import Callable
 
-from stratae.events.event import EventSchema
+from stratae.events.event import EventMeta, EventSchema
 
 
-class Handler[R]:
+class Handler[Metadata: (EventMeta | None), R]:
     """
     Wraps an event handler callable with async detection and value equality.
 
@@ -20,7 +20,7 @@ class Handler[R]:
     Calling a ``Handler`` delegates directly to the wrapped callable.  For
     async handlers, the result is a coroutine that the caller can ``await``;
     a sync wrapper around an async callable naturally returns the coroutine
-    object, so ``await handler(event)`` works without ``Handler.__call__``
+    object, so ``await handler(payload)`` works without ``Handler.__call__``
     itself being declared ``async``.
 
     A ``Handler`` compares equal to another ``Handler`` wrapping the same
@@ -28,31 +28,34 @@ class Handler[R]:
     and allowing unsubscription by passing the original callable.
     """
 
-    def __init__(self, call: Callable[[EventSchema], R]) -> None:
+    def __init__(self, call: Callable[[EventSchema], R], meta: Metadata = None) -> None:
         """
         Wrap a callable as an event handler.
 
         Args:
             call: The sync or async callable to wrap.  Must accept a
-                  single ``Event`` instance as its argument.
+                  single ``EventSchema`` instance as its argument.
+            meta: Optional adapter-specific metadata used for filtering at
+                  dispatch time.  Never passed to ``call``.
 
         """
-        self.call: Callable[[EventSchema], R] = call
+        self.call = call
+        self.meta = meta
         self.is_async: bool = iscoroutinefunction(call)
 
-    def __call__(self, event: EventSchema) -> R:
+    def __call__(self, payload: EventSchema) -> R:
         """
-        Invoke the wrapped callable with the given event.
+        Invoke the wrapped callable with the given payload.
 
         Args:
-            event: The event instance to pass to the handler.
+            payload: The event instance to pass to the handler.
 
         Returns:
             For sync handlers, the return value directly.  For async handlers,
             a coroutine that the caller should ``await``.
 
         """
-        return self.call(event)
+        return self.call(payload)
 
     def __eq__(self, other: object) -> bool:
         """
