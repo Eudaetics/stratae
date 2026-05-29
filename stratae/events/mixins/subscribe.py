@@ -22,12 +22,14 @@ class SubscriberBase[Meta: (EventMeta | None)]:
         @bus.subscribe(orders)
         def on_order(payload: OrderPlaced) -> None: ...
 
-        bus.subscribe(orders, on_order)
+        handle = bus.subscribe(orders, on_order)
+        bus.unsubscribe(orders, handle)
 
     Adapter-specific metadata is passed as a keyword argument::
 
         @bus.subscribe(orders, meta=kafka_meta)
         def on_order(payload: OrderPlaced) -> None: ...
+        # on_order is a Handler; pass it to unsubscribe to deregister
     """
 
     def __init__(self) -> None:
@@ -42,7 +44,7 @@ class SubscriberBase[Meta: (EventMeta | None)]:
         fn: Callable[[EventSchema], R],
         *,
         meta: Meta = ...,
-    ) -> Callable[[EventSchema], R]: ...
+    ) -> Handler[Meta, R]: ...
 
     @overload
     def subscribe[R](
@@ -50,7 +52,7 @@ class SubscriberBase[Meta: (EventMeta | None)]:
         channel: Channel,
         *,
         meta: Meta = ...,
-    ) -> Callable[[Callable[[EventSchema], R]], Callable[[EventSchema], R]]: ...
+    ) -> Callable[[Callable[[EventSchema], R]], Handler[Meta, R]]: ...
 
     def subscribe[R](
         self,
@@ -58,26 +60,27 @@ class SubscriberBase[Meta: (EventMeta | None)]:
         fn: Callable[[EventSchema], R] | None = None,
         *,
         meta: Meta = None,
-    ) -> (
-        Callable[[EventSchema], R]
-        | Callable[[Callable[[EventSchema], R]], Callable[[EventSchema], R]]
-    ):
+    ) -> Handler[Meta, R] | Callable[[Callable[[EventSchema], R]], Handler[Meta, R]]:
         """
         Register a handler callable for a channel, as a decorator or direct call.
 
+        Returns the ``Handler`` instance in both forms so callers can pass it
+        to ``unsubscribe`` later.
+
         Args:
             channel: The ``Channel`` to subscribe to.
-            fn:      When supplied, registers ``fn`` directly and returns it.
-                     When omitted, returns a decorator that registers and
-                     returns the decorated callable.
+            fn:      When supplied, registers ``fn`` directly and returns its
+                     ``Handler``.  When omitted, returns a decorator that
+                     registers and returns the ``Handler``.
             meta:    Optional adapter-specific metadata used for filtering at
                      dispatch time.
 
         """
 
-        def decorator(f: Callable[[EventSchema], R]) -> Callable[[EventSchema], R]:
-            self._handlers[channel].add(Handler(f, meta))
-            return f
+        def decorator(f: Callable[[EventSchema], R]) -> Handler[Meta, R]:
+            handler: Handler[Meta, R] = Handler(f, meta)
+            self._handlers[channel].add(handler)
+            return handler
 
         if fn is not None:
             return decorator(fn)
@@ -97,19 +100,19 @@ class SubscriberBase[Meta: (EventMeta | None)]:
         """
         return self._handlers.get(channel, set())
 
-    def unsubscribe(self, channel: Channel, fn: Callable[..., Any]) -> None:
+    def unsubscribe(self, channel: Channel, handler: Handler[Meta, Any]) -> None:
         """
-        Deregister a handler for a channel by its original callable.
+        Deregister a handler for a channel.
 
-        A no-op if ``fn`` is not currently registered for ``channel``.
+        A no-op if ``handler`` is not currently registered for ``channel``.
 
         Args:
             channel: The ``Channel`` to unsubscribe from.
-            fn:      The original callable passed to ``subscribe``.
+            handler: The ``Handler`` returned by ``subscribe``.
 
         """
         if channel in self._handlers:
-            self._handlers[channel].discard(fn)  # pyright: ignore[reportArgumentType]
+            self._handlers[channel].discard(handler)
 
 
 class Subscriber[Meta: (EventMeta | None)](SubscriberBase[Meta], ABC):

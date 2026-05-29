@@ -54,17 +54,17 @@ def test_async_subscriber_subscribe_adds_handler(async_subscriber: AsyncSubscrib
 
     Given: An AsyncSubscriber instance, a channel, and a handler callable
     When: subscribe is called with the channel and handler
-    Then: The handler should appear in get_handlers for that channel
+    Then: The returned Handler should appear in get_handlers for that channel
     """
     # Arrange
     channel = Channel("test")
     fn = Mock()
 
     # Act
-    async_subscriber.subscribe(channel, fn)
+    handle = async_subscriber.subscribe(channel, fn)
 
     # Assert
-    assert fn in async_subscriber.get_handlers(channel)
+    assert handle in async_subscriber.get_handlers(channel)
 
 
 def test_async_subscriber_unsubscribe_removes_handler(async_subscriber: AsyncSubscriber[None]):
@@ -72,16 +72,16 @@ def test_async_subscriber_unsubscribe_removes_handler(async_subscriber: AsyncSub
     Unsubscribe should remove a previously registered handler.
 
     Given: An AsyncSubscriber instance with a registered handler
-    When: unsubscribe is called with the original callable
+    When: unsubscribe is called with the Handler returned by subscribe
     Then: The handler should no longer appear in get_handlers for that channel
     """
     # Arrange
     channel = Channel("test")
     fn = Mock()
-    async_subscriber.subscribe(channel, fn)
+    handle = async_subscriber.subscribe(channel, fn)
 
     # Act
-    async_subscriber.unsubscribe(channel, fn)
+    async_subscriber.unsubscribe(channel, handle)
 
     # Assert
-    assert fn not in async_subscriber.get_handlers(channel)
+    assert handle not in async_subscriber.get_handlers(channel)

@@ -1,4 +1,4 @@
-"""Event handler wrapper carrying async detection and equality semantics."""
+"""Event handler wrapper carrying async detection semantics."""
 
 from inspect import iscoroutinefunction
 from typing import Callable
@@ -23,9 +23,11 @@ class Handler[Metadata: (EventMeta | None), R]:
     object, so ``await handler(payload)`` works without ``Handler.__call__``
     itself being declared ``async``.
 
-    A ``Handler`` compares equal to another ``Handler`` wrapping the same
-    callable, or to the raw callable itself, preventing duplicate registrations
-    and allowing unsubscription by passing the original callable.
+    Identity is object identity.  Each call to ``subscribe`` produces a
+    distinct ``Handler`` instance, so the same callable may be registered
+    multiple times (with different metadata, or independently) without
+    deduplication.  Callers unsubscribe by passing the ``Handler`` returned
+    from ``subscribe``.
     """
 
     def __init__(self, call: Callable[[EventSchema], R], meta: Metadata = None) -> None:
@@ -56,32 +58,3 @@ class Handler[Metadata: (EventMeta | None), R]:
 
         """
         return self.call(payload)
-
-    def __eq__(self, other: object) -> bool:
-        """
-        Return True if both handlers wrap the same callable.
-
-        Args:
-            other: The object to compare against.  May be a ``Handler`` or a
-                   raw callable.
-
-        Returns:
-            ``True`` if ``other`` is a ``Handler`` wrapping the same callable,
-            or the same callable itself.  ``NotImplemented`` otherwise.
-
-        """
-        if isinstance(other, Handler):
-            return self.call == other.call
-        if callable(other):
-            return self.call == other
-        return NotImplemented
-
-    def __hash__(self) -> int:
-        """
-        Return a hash derived from the wrapped callable.
-
-        Returns:
-            Hash of the wrapped callable, consistent with ``__eq__``.
-
-        """
-        return hash(self.call)
