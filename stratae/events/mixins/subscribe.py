@@ -125,14 +125,16 @@ class Subscriber[Meta: (EventMeta | None)](SubscriberBase[Meta], ABC):
     """
 
     @abstractmethod
-    def handle_subscribe(self, channel: Channel, meta: Meta | None, payload: EventSchema) -> None:
+    def handle_subscribe(
+        self, channel: Channel, payload: EventSchema, *, meta: Meta | None
+    ) -> None:
         """
         Dispatch a payload to all handlers registered for a channel.
 
         Args:
             channel: The ``Channel`` the event arrived on.
-            meta:    The adapter-specific routing metadata.
             payload: The constructed ``EventSchema`` instance to dispatch.
+            meta:    The adapter-specific routing metadata.
 
         """
         ...
@@ -149,15 +151,15 @@ class AsyncSubscriber[Meta: (EventMeta | None)](SubscriberBase[Meta], ABC):
 
     @abstractmethod
     async def handle_subscribe(
-        self, channel: Channel, meta: Meta | None, payload: EventSchema
+        self, channel: Channel, payload: EventSchema, *, meta: Meta | None
     ) -> None:
         """
         Dispatch a payload to all handlers registered for a channel.
 
         Args:
             channel: The ``Channel`` the event arrived on.
-            meta:    The adapter-specific routing metadata.
             payload: The constructed ``EventSchema`` instance to dispatch.
+            meta:    The adapter-specific routing metadata.
 
         """
         ...
