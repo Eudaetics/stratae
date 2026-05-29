@@ -3,11 +3,10 @@
 import asyncio
 from functools import wraps
 from inspect import signature
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 from unittest.mock import Mock
 
 import pytest
-from typing_extensions import Annotated
 
 from stratae.depends import AUTO, Depends, Resolver
 from stratae.depends.exceptions import (
