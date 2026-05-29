@@ -15,6 +15,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events import EventMeta
+from stratae.events.channel import Channel
 from stratae.events.event import BoundEvent, EventSchema
 
 
@@ -45,9 +46,12 @@ def test_init_stores_schema_emitter_and_meta(meta: EventMeta):
     """
     # Arrange
     emitter = Mock()
+    channel = Channel("test")
 
     # Act
-    bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(_OrderCreated, emitter, meta)
+    bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(
+        channel, _OrderCreated, emitter, meta
+    )
 
     # Assert
     assert bound.schema is _OrderCreated
@@ -66,14 +70,17 @@ def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: MockerFi
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(_OrderCreated, emitter, meta)
+    channel = Channel("test")
+    bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(
+        channel, _OrderCreated, emitter, meta
+    )
 
     # Act
     bound(1, "pending")
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(meta, _OrderCreated(1, "pending"))
+    emitter.assert_called_once_with(channel, meta, _OrderCreated(1, "pending"))
 
 
 def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixture):
@@ -87,14 +94,15 @@ def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixtu
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(_OrderCreated, emitter, meta)
+    channel = Channel("test")
+    bound = BoundEvent(channel, _OrderCreated, emitter, meta)
 
     # Act
     bound(order_id=2, status="complete")
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, order_id=2, status="complete")
-    emitter.assert_called_once_with(meta, _OrderCreated(2, "complete"))
+    emitter.assert_called_once_with(channel, meta, _OrderCreated(2, "complete"))
 
 
 def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture):
@@ -108,14 +116,15 @@ def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(_OrderCreated, emitter, meta)
+    channel = Channel("test")
+    bound = BoundEvent(channel, _OrderCreated, emitter, meta)
 
     # Act
     bound(1, status="pending")
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, status="pending")
-    emitter.assert_called_once_with(meta, _OrderCreated(1, "pending"))
+    emitter.assert_called_once_with(channel, meta, _OrderCreated(1, "pending"))
 
 
 def test_call_returns_emitter_result(meta: EventMeta):
@@ -128,7 +137,10 @@ def test_call_returns_emitter_result(meta: EventMeta):
     """
     # Arrange
     emitter = Mock(return_value="dispatched")
-    bound: BoundEvent[[int, str], EventMeta, str] = BoundEvent(_OrderCreated, emitter, meta)
+    channel = Channel("test")
+    bound: BoundEvent[[int, str], EventMeta, str] = BoundEvent(
+        channel, _OrderCreated, emitter, meta
+    )
 
     # Act
     result = bound(1, "pending")

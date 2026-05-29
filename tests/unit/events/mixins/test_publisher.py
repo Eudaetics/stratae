@@ -18,6 +18,7 @@ from unittest.mock import Mock, patch
 import pytest
 from pytest_mock import MockerFixture
 
+from stratae.events.channel import Channel
 from stratae.events.event import BoundEvent, EventMeta, EventSchema
 from stratae.events.mixins.publish import Publisher
 
@@ -63,11 +64,14 @@ def test_publish_returns_bound_event(publisher: Publisher[EventMeta, None], meta
     Publish should return a BoundEvent instance.
 
     Given: A Publisher instance with abstract methods cleared
-    When: publish is called with a schema and meta
+    When: publish is called with a channel, schema, and meta
     Then: A BoundEvent instance should be returned
     """
+    # Arrange
+    channel = Channel("test")
+
     # Act
-    bound = publisher.publish(_ItemShipped, meta)
+    bound = publisher.publish(channel, _ItemShipped, meta)
 
     # Assert
     assert isinstance(bound, BoundEvent)
@@ -77,16 +81,20 @@ def test_publish_bound_event_stores_schema_emitter_and_meta(
     publisher: Publisher[EventMeta, None], meta: EventMeta
 ):
     """
-    BoundEvent returned by publish should store the schema, emit_publish, and meta.
+    BoundEvent returned by publish should store the channel, schema, emit_publish, and meta.
 
     Given: A Publisher instance with abstract methods cleared
-    When: publish is called with a schema and meta
-    Then: The BoundEvent should store that schema, emit_publish, and meta
+    When: publish is called with a channel, schema, and meta
+    Then: The BoundEvent should store that channel, schema, emit_publish, and meta
     """
+    # Arrange
+    channel = Channel("test")
+
     # Act
-    bound = publisher.publish(_ItemShipped, meta)
+    bound = publisher.publish(channel, _ItemShipped, meta)
 
     # Assert
+    assert bound.channel is channel
     assert bound.schema is _ItemShipped
     assert bound.emitter == publisher.emit_publish
     assert bound.meta is meta
@@ -104,13 +112,14 @@ def test_publish_bound_event_calls_emit_publish_with_positional_args(
     """
     # Arrange
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
-    bound = publisher.publish(_ItemShipped, meta)
+    channel = Channel("test")
+    bound = publisher.publish(channel, _ItemShipped, meta)
 
     # Act
     bound(1, 10)
 
     # Assert
-    mock_emit.assert_called_once_with(meta, _ItemShipped(1, 10))
+    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(1, 10))
 
 
 def test_publish_bound_event_calls_emit_publish_with_keyword_args(
@@ -125,13 +134,14 @@ def test_publish_bound_event_calls_emit_publish_with_keyword_args(
     """
     # Arrange
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
-    bound = publisher.publish(_ItemShipped, meta)
+    channel = Channel("test")
+    bound = publisher.publish(channel, _ItemShipped, meta)
 
     # Act
     bound(item_id=2, quantity=5)
 
     # Assert
-    mock_emit.assert_called_once_with(meta, _ItemShipped(2, 5))
+    mock_emit.assert_called_once_with(channel, meta, _ItemShipped(2, 5))
 
 
 def test_publish_bound_event_returns_emit_publish_result(
@@ -147,7 +157,8 @@ def test_publish_bound_event_returns_emit_publish_result(
     # Arrange
     mock_emit = Mock(return_value="dispatched")
     publisher.emit_publish = mock_emit
-    bound = publisher.publish(_ItemShipped, meta)
+    channel = Channel("test")
+    bound = publisher.publish(channel, _ItemShipped, meta)
 
     # Act
     result = bound(1, 10)

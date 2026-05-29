@@ -2,6 +2,8 @@
 
 from typing import Awaitable, Callable
 
+from stratae.events.channel import Channel
+
 
 class EventMeta:
     """
@@ -60,20 +62,23 @@ class BoundEvent[**P, Metadata: EventMeta, Resp]:
 
     def __init__(
         self,
+        channel: Channel,
         schema: Callable[P, EventSchema],
-        emitter: Callable[[Metadata, EventSchema], Resp],
-        meta: Metadata,
+        emitter: Callable[[Channel, Metadata | None, EventSchema], Resp],
+        meta: Metadata | None = None,
     ) -> None:
         """
         Bind an event schema to its emitter with routing metadata.
 
         Args:
+            channel: The Channel over which the event will be emitted.
             schema:  The ``EventSchema`` subclass used to construct the event payload.
-            emitter: A callable that receives a ``Meta`` and a constructed
+            emitter: A callable that receives a ``Channel``, ``Meta`` and a constructed
                      ``EventSchema`` instance, and returns ``Resp``.
             meta:    The adapter-specific routing metadata for this binding.
 
         """
+        self.channel = channel
         self.schema = schema
         self.emitter = emitter
         self.meta = meta
@@ -86,10 +91,10 @@ class BoundEvent[**P, Metadata: EventMeta, Resp]:
             Whatever ``self.emitter`` returns.
 
         """
-        return self.emitter(self.meta, self.schema(*args, **kwargs))
+        return self.emitter(self.channel, self.meta, self.schema(*args, **kwargs))
 
 
-class AsyncBoundEvent[**P, Meta: EventMeta, Resp](BoundEvent[P, Meta, Awaitable[Resp]]):
+class AsyncBoundEvent[**P, Metadata: EventMeta, Resp](BoundEvent[P, Metadata, Awaitable[Resp]]):
     """
     Async variant of ``BoundEvent`` for use with coroutine-based emitters.
 
@@ -104,21 +109,23 @@ class AsyncBoundEvent[**P, Meta: EventMeta, Resp](BoundEvent[P, Meta, Awaitable[
 
     def __init__(
         self,
+        channel: Channel,
         schema: Callable[P, EventSchema],
-        emitter: Callable[[Meta, EventSchema], Awaitable[Resp]],
-        meta: Meta,
+        emitter: Callable[[Channel, Metadata | None, EventSchema], Awaitable[Resp]],
+        meta: Metadata | None = None,
     ) -> None:
         """
         Bind an event schema to its async emitter with routing metadata.
 
         Args:
+            channel: The Channel over which the event will be emitted.
             schema:  The ``EventSchema`` subclass used to construct the event payload.
-            emitter: An async callable that receives a ``Meta`` and a constructed
+            emitter: An async callable that receives a ``Channel``, ``Meta`` and a constructed
                      ``EventSchema`` instance, and returns an awaitable resolving to ``Resp``.
             meta:    The adapter-specific routing metadata for this binding.
 
         """
-        super().__init__(schema, emitter, meta)
+        super().__init__(channel, schema, emitter, meta)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
@@ -128,4 +135,4 @@ class AsyncBoundEvent[**P, Meta: EventMeta, Resp](BoundEvent[P, Meta, Awaitable[
             The resolved value of ``self.emitter``'s coroutine.
 
         """
-        return await self.emitter(self.meta, self.schema(*args, **kwargs))
+        return await self.emitter(self.channel, self.meta, self.schema(*args, **kwargs))
