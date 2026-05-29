@@ -6,32 +6,20 @@ This test suite verifies the following behaviors:
 AsyncSubscriber:
 - AsyncSubscriber cannot be instantiated directly (abstract).
 - AsyncSubscriber inherits storage behaviour from SubscriberBase.
-- subscribe adds a handler to the mapping for an event type.
+- subscribe adds a handler to the mapping for a channel.
 - unsubscribe removes a previously registered handler.
 """
 
-from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
-from stratae.events.event import EventSchema
+from stratae.events.channel import Channel
 from stratae.events.mixins.subscribe import AsyncSubscriber, SubscriberBase
 
 
-class _ItemShipped(EventSchema):
-    def __init__(self, item_id: int, quantity: int) -> None:
-        self.item_id = item_id
-        self.quantity = quantity
-
-    def __eq__(self, value: Any) -> bool:
-        if not isinstance(value, _ItemShipped):
-            return False
-        return self.item_id == value.item_id and self.quantity == value.quantity
-
-
 @pytest.fixture
-def async_subscriber() -> AsyncSubscriber:
+def async_subscriber() -> AsyncSubscriber[None]:  # pyright: ignore[reportMissingTypeArgument]
     """Return an AsyncSubscriber instance with abstract methods cleared for testing."""
     with patch.object(AsyncSubscriber, "__abstractmethods__", frozenset[str]()):
         return AsyncSubscriber()  # pyright: ignore[reportAbstractUsage]
@@ -49,7 +37,9 @@ def test_async_subscriber_is_abstract():
         AsyncSubscriber()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_async_subscriber_inherits_from_subscriber_base(async_subscriber: AsyncSubscriber):
+def test_async_subscriber_inherits_from_subscriber_base(
+    async_subscriber: AsyncSubscriber[None],  # pyright: ignore[reportMissingTypeArgument]
+):
     """
     AsyncSubscriber should be an instance of SubscriberBase.
 
@@ -60,38 +50,44 @@ def test_async_subscriber_inherits_from_subscriber_base(async_subscriber: AsyncS
     assert isinstance(async_subscriber, SubscriberBase)
 
 
-def test_async_subscriber_subscribe_adds_handler(async_subscriber: AsyncSubscriber):
+def test_async_subscriber_subscribe_adds_handler(
+    async_subscriber: AsyncSubscriber[None],  # pyright: ignore[reportMissingTypeArgument]
+):
     """
-    Subscribe should add the handler to the mapping for the given event type.
+    Subscribe should add the handler to the mapping for the given channel.
 
-    Given: An AsyncSubscriber instance and a handler callable
-    When: subscribe is called with an event type and the handler
-    Then: The handler should appear in get_handlers for that event type
+    Given: An AsyncSubscriber instance, a channel, and a handler callable
+    When: subscribe is called with the channel and handler
+    Then: The handler should appear in get_handlers for that channel
     """
     # Arrange
-    handler = Mock()
+    channel = Channel("test")
+    fn = Mock()
 
     # Act
-    async_subscriber.subscribe(_ItemShipped, handler)
+    async_subscriber.subscribe(channel, None, fn)
 
     # Assert
-    assert handler in async_subscriber.get_handlers(_ItemShipped)
+    assert fn in async_subscriber.get_handlers(channel)
 
 
-def test_async_subscriber_unsubscribe_removes_handler(async_subscriber: AsyncSubscriber):
+def test_async_subscriber_unsubscribe_removes_handler(
+    async_subscriber: AsyncSubscriber[None],  # pyright: ignore[reportMissingTypeArgument]
+):
     """
     Unsubscribe should remove a previously registered handler.
 
     Given: An AsyncSubscriber instance with a registered handler
-    When: unsubscribe is called with that handler
-    Then: The handler should no longer appear in get_handlers for that event type
+    When: unsubscribe is called with the original callable
+    Then: The handler should no longer appear in get_handlers for that channel
     """
     # Arrange
-    handler = Mock()
-    async_subscriber.subscribe(_ItemShipped, handler)
+    channel = Channel("test")
+    fn = Mock()
+    async_subscriber.subscribe(channel, None, fn)
 
     # Act
-    async_subscriber.unsubscribe(_ItemShipped, handler)
+    async_subscriber.unsubscribe(channel, fn)
 
     # Assert
-    assert handler not in async_subscriber.get_handlers(_ItemShipped)
+    assert fn not in async_subscriber.get_handlers(channel)

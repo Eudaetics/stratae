@@ -45,7 +45,7 @@ class EventSchema:
     """
 
 
-class BoundEvent[**P, Metadata: EventMeta, Resp]:
+class BoundEvent[**P, Metadata: (EventMeta | None), Resp]:
     """
     Binds an ``EventSchema`` subclass to a synchronous emitter with routing metadata.
 
@@ -94,7 +94,9 @@ class BoundEvent[**P, Metadata: EventMeta, Resp]:
         return self.emitter(self.channel, self.meta, self.schema(*args, **kwargs))
 
 
-class AsyncBoundEvent[**P, Metadata: EventMeta, Resp](BoundEvent[P, Metadata, Awaitable[Resp]]):
+class AsyncBoundEvent[**P, Metadata: (EventMeta | None), Resp](
+    BoundEvent[P, Metadata, Awaitable[Resp]]
+):
     """
     Async variant of ``BoundEvent`` for use with coroutine-based emitters.
 

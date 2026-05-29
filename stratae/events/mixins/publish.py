@@ -7,7 +7,7 @@ from stratae.events.channel import Channel
 from stratae.events.event import AsyncBoundEvent, BoundEvent, EventMeta, EventSchema
 
 
-class Publisher[Meta: EventMeta, Resp](ABC):
+class Publisher[Meta: (EventMeta | None), Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to a synchronous publish emitter.
 
@@ -65,7 +65,7 @@ class Publisher[Meta: EventMeta, Resp](ABC):
         ...
 
 
-class AsyncPublisher[Meta: EventMeta, Resp](ABC):
+class AsyncPublisher[Meta: (EventMeta | None), Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to an asynchronous publish emitter.
 
