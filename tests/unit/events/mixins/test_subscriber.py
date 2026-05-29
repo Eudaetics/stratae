@@ -61,13 +61,13 @@ def test_subscriber_inherits_storage_from_subscriber_base(subscriber: Subscriber
     fn = Mock()
 
     # Act
-    subscriber.subscribe(channel, fn)
+    handle = subscriber.subscribe(channel, fn)
 
     # Assert
-    assert fn in subscriber.get_handlers(channel)
+    assert handle in subscriber.get_handlers(channel)
 
     # Act
-    subscriber.unsubscribe(channel, fn)
+    subscriber.unsubscribe(channel, handle)
 
     # Assert
-    assert fn not in subscriber.get_handlers(channel)
+    assert handle not in subscriber.get_handlers(channel)
