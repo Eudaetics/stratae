@@ -17,7 +17,7 @@ from stratae.events.mixins.subscribe import Subscriber, SubscriberBase
 
 
 @pytest.fixture
-def subscriber() -> Subscriber[None]:  # pyright: ignore[reportMissingTypeArgument]
+def subscriber() -> Subscriber[None]:
     """Return a Subscriber instance with abstract methods cleared for testing."""
     with patch.object(Subscriber, "__abstractmethods__", frozenset[str]()):
         return Subscriber()  # pyright: ignore[reportAbstractUsage]
@@ -37,9 +37,7 @@ with pytest.raises(TypeError, match="Can't instantiate abstract class Subscriber
     Subscriber()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_subscriber_inherits_from_subscriber_base(
-    subscriber: Subscriber[None],  # pyright: ignore[reportMissingTypeArgument]
-):
+def test_subscriber_inherits_from_subscriber_base(subscriber: Subscriber[None]):
     """
     Subscriber should be an instance of SubscriberBase.
 
@@ -50,14 +48,12 @@ def test_subscriber_inherits_from_subscriber_base(
     assert isinstance(subscriber, SubscriberBase)
 
 
-def test_subscriber_inherits_storage_from_subscriber_base(
-    subscriber: Subscriber[None],  # pyright: ignore[reportMissingTypeArgument]
-):
+def test_subscriber_inherits_storage_from_subscriber_base(subscriber: Subscriber[None]):
     """
     Subscriber should inherit subscribe and unsubscribe from SubscriberBase.
 
     Given: A Subscriber instance with abstract methods cleared
-    When: A handler is subscribed and then unsubscribed
+    When: A handler is subscribed via direct call and then unsubscribed
     Then: Storage should reflect both operations correctly
     """
     # Arrange
@@ -65,7 +61,7 @@ def test_subscriber_inherits_storage_from_subscriber_base(
     fn = Mock()
 
     # Act
-    subscriber.subscribe(channel, None, fn)
+    subscriber.subscribe(channel, fn)
 
     # Assert
     assert fn in subscriber.get_handlers(channel)

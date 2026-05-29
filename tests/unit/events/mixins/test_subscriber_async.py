@@ -19,7 +19,7 @@ from stratae.events.mixins.subscribe import AsyncSubscriber, SubscriberBase
 
 
 @pytest.fixture
-def async_subscriber() -> AsyncSubscriber[None]:  # pyright: ignore[reportMissingTypeArgument]
+def async_subscriber() -> AsyncSubscriber[None]:
     """Return an AsyncSubscriber instance with abstract methods cleared for testing."""
     with patch.object(AsyncSubscriber, "__abstractmethods__", frozenset[str]()):
         return AsyncSubscriber()  # pyright: ignore[reportAbstractUsage]
@@ -37,9 +37,7 @@ def test_async_subscriber_is_abstract():
         AsyncSubscriber()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_async_subscriber_inherits_from_subscriber_base(
-    async_subscriber: AsyncSubscriber[None],  # pyright: ignore[reportMissingTypeArgument]
-):
+def test_async_subscriber_inherits_from_subscriber_base(async_subscriber: AsyncSubscriber[None]):
     """
     AsyncSubscriber should be an instance of SubscriberBase.
 
@@ -50,9 +48,7 @@ def test_async_subscriber_inherits_from_subscriber_base(
     assert isinstance(async_subscriber, SubscriberBase)
 
 
-def test_async_subscriber_subscribe_adds_handler(
-    async_subscriber: AsyncSubscriber[None],  # pyright: ignore[reportMissingTypeArgument]
-):
+def test_async_subscriber_subscribe_adds_handler(async_subscriber: AsyncSubscriber[None]):
     """
     Subscribe should add the handler to the mapping for the given channel.
 
@@ -65,15 +61,13 @@ def test_async_subscriber_subscribe_adds_handler(
     fn = Mock()
 
     # Act
-    async_subscriber.subscribe(channel, None, fn)
+    async_subscriber.subscribe(channel, fn)
 
     # Assert
     assert fn in async_subscriber.get_handlers(channel)
 
 
-def test_async_subscriber_unsubscribe_removes_handler(
-    async_subscriber: AsyncSubscriber[None],  # pyright: ignore[reportMissingTypeArgument]
-):
+def test_async_subscriber_unsubscribe_removes_handler(async_subscriber: AsyncSubscriber[None]):
     """
     Unsubscribe should remove a previously registered handler.
 
@@ -84,7 +78,7 @@ def test_async_subscriber_unsubscribe_removes_handler(
     # Arrange
     channel = Channel("test")
     fn = Mock()
-    async_subscriber.subscribe(channel, None, fn)
+    async_subscriber.subscribe(channel, fn)
 
     # Act
     async_subscriber.unsubscribe(channel, fn)

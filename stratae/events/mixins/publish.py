@@ -11,27 +11,23 @@ class Publisher[Metadata: (EventMeta | None), Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to a synchronous publish emitter.
 
-    Subclasses must implement ``emit_publish``, which receives the adapter-specific
-    ``Meta`` and a constructed ``EventSchema`` instance and returns ``Resp``.
-
-    Override ``publish`` to accept the routing parameters your adapter requires
-    (e.g. topic, partition key), construct a ``Meta`` instance, and call the
-    base implementation, which wires everything into a ``BoundEvent``.
+    Subclasses must implement ``emit_publish``, which receives the channel,
+    adapter-specific metadata, and a constructed ``EventSchema`` instance and
+    returns ``Resp``.  Routing metadata is passed by callers via the ``meta``
+    keyword argument on ``publish``.
 
     Example::
 
         class KafkaPublisher(Publisher[KafkaMeta, None]):
-            def publish[**P](
-                self,
-                schema: Callable[P, EventSchema],
-                topic: str,
-                partition_key: str | None = None,
-            ) -> BoundEvent[P, KafkaMeta, None]:
-                return super().publish(schema, KafkaMeta(topic, partition_key))
+            def emit_publish(self, channel, meta, payload):
+                ...  # forward to Kafka using meta.topic, meta.partition_key, etc.
+
+        emit_order = publisher.publish(channel, OrderPlaced, meta=KafkaMeta("orders"))
+        emit_order(order_id=42)
     """
 
     def publish[**P](
-        self, channel: Channel, schema: Callable[P, EventSchema], meta: Metadata = None
+        self, channel: Channel, schema: Callable[P, EventSchema], *, meta: Metadata = None
     ) -> BoundEvent[P, Metadata, Resp]:
         """
         Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
@@ -70,17 +66,16 @@ class AsyncPublisher[Metadata: (EventMeta | None), Resp](ABC):
     Mixin that binds ``EventSchema`` subclasses to an asynchronous publish emitter.
 
     Subclasses must implement ``emit_publish`` as a coroutine, which receives the
-    adapter-specific ``Meta`` and a constructed ``EventSchema`` instance and returns
-    an awaitable resolving to ``Resp``.
-
-    Override ``publish`` to accept the routing parameters your adapter requires,
-    construct a ``Meta`` instance, and call the base implementation.
+    channel, adapter-specific metadata, and a constructed ``EventSchema`` instance
+    and returns an awaitable resolving to ``Resp``.  Routing metadata is passed by
+    callers via the ``meta`` keyword argument on ``publish``.
     """
 
     def publish[**P](
         self,
         channel: Channel,
         schema: Callable[P, EventSchema],
+        *,
         meta: Metadata = None,
     ) -> AsyncBoundEvent[P, Metadata, Resp]:
         """

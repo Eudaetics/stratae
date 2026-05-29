@@ -19,10 +19,15 @@ class SubscriberBase[Meta: (EventMeta | None)]:
 
     ``subscribe`` may be used as a decorator factory or as a direct call::
 
-        @bus.subscribe(orders, meta)
+        @bus.subscribe(orders)
         def on_order(payload: OrderPlaced) -> None: ...
 
-        bus.subscribe(orders, meta, on_order)
+        bus.subscribe(orders, on_order)
+
+    Adapter-specific metadata is passed as a keyword argument::
+
+        @bus.subscribe(orders, meta=kafka_meta)
+        def on_order(payload: OrderPlaced) -> None: ...
     """
 
     def __init__(self) -> None:
@@ -34,22 +39,25 @@ class SubscriberBase[Meta: (EventMeta | None)]:
     def subscribe[R](
         self,
         channel: Channel,
+        fn: Callable[[EventSchema], R],
+        *,
         meta: Meta = ...,
-    ) -> Callable[[Callable[[EventSchema], R]], Callable[[EventSchema], R]]: ...
+    ) -> Callable[[EventSchema], R]: ...
 
     @overload
     def subscribe[R](
         self,
         channel: Channel,
-        meta: Meta,
-        fn: Callable[[EventSchema], R],
-    ) -> Callable[[EventSchema], R]: ...
+        *,
+        meta: Meta = ...,
+    ) -> Callable[[Callable[[EventSchema], R]], Callable[[EventSchema], R]]: ...
 
     def subscribe[R](
         self,
         channel: Channel,
-        meta: Meta = None,
         fn: Callable[[EventSchema], R] | None = None,
+        *,
+        meta: Meta = None,
     ) -> (
         Callable[[EventSchema], R]
         | Callable[[Callable[[EventSchema], R]], Callable[[EventSchema], R]]
@@ -59,11 +67,11 @@ class SubscriberBase[Meta: (EventMeta | None)]:
 
         Args:
             channel: The ``Channel`` to subscribe to.
-            meta:    Optional adapter-specific metadata used for filtering at
-                     dispatch time.
             fn:      When supplied, registers ``fn`` directly and returns it.
                      When omitted, returns a decorator that registers and
                      returns the decorated callable.
+            meta:    Optional adapter-specific metadata used for filtering at
+                     dispatch time.
 
         """
 
