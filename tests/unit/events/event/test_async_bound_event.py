@@ -55,7 +55,7 @@ def test_init_stores_schema_emitter_and_meta(meta: EventMeta):
 
     # Act
     bound: AsyncBoundEvent[[int, int], EventMeta, Any] = AsyncBoundEvent(
-        channel, _PaymentReceived, emitter, meta
+        channel, _PaymentReceived, emitter, meta=meta
     )
 
     # Assert
@@ -77,7 +77,7 @@ async def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: Mo
     emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
     bound: AsyncBoundEvent[[int, int], EventMeta, Any] = AsyncBoundEvent(
-        channel, _PaymentReceived, emitter, meta
+        channel, _PaymentReceived, emitter, meta=meta
     )
 
     # Act
@@ -100,7 +100,7 @@ async def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: Mocke
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
-    bound = AsyncBoundEvent(channel, _PaymentReceived, emitter, meta)
+    bound = AsyncBoundEvent(channel, _PaymentReceived, emitter, meta=meta)
 
     # Act
     await bound(payment_id=7, amount=50)
@@ -122,7 +122,7 @@ async def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerF
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
-    bound = AsyncBoundEvent(channel, _PaymentReceived, emitter, meta)
+    bound = AsyncBoundEvent(channel, _PaymentReceived, emitter, meta=meta)
 
     # Act
     await bound(42, amount=100)
@@ -144,7 +144,7 @@ async def test_call_returns_emitter_result(meta: EventMeta):
     emitter = create_autospec(_emitter_spec, return_value="dispatched")
     channel = Channel("test")
     bound: AsyncBoundEvent[[int, int], EventMeta, str] = AsyncBoundEvent(
-        channel, _PaymentReceived, emitter, meta
+        channel, _PaymentReceived, emitter, meta=meta
     )
 
     # Act

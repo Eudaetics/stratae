@@ -53,7 +53,7 @@ def test_init_stores_schema_emitter_and_meta(meta: EventMeta):
 
     # Act
     bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(
-        channel, _OrderCreated, emitter, meta
+        channel, _OrderCreated, emitter, meta=meta
     )
 
     # Assert
@@ -75,7 +75,7 @@ def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: MockerFi
     emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
     bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(
-        channel, _OrderCreated, emitter, meta
+        channel, _OrderCreated, emitter, meta=meta
     )
 
     # Act
@@ -98,7 +98,7 @@ def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixtu
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
-    bound = BoundEvent(channel, _OrderCreated, emitter, meta)
+    bound = BoundEvent(channel, _OrderCreated, emitter, meta=meta)
 
     # Act
     bound(order_id=2, status="complete")
@@ -120,7 +120,7 @@ def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = create_autospec(_emitter_spec)
     channel = Channel("test")
-    bound = BoundEvent(channel, _OrderCreated, emitter, meta)
+    bound = BoundEvent(channel, _OrderCreated, emitter, meta=meta)
 
     # Act
     bound(1, status="pending")
@@ -142,7 +142,7 @@ def test_call_returns_emitter_result(meta: EventMeta):
     emitter = create_autospec(_emitter_spec, return_value="dispatched")
     channel = Channel("test")
     bound: BoundEvent[[int, str], EventMeta, str] = BoundEvent(
-        channel, _OrderCreated, emitter, meta
+        channel, _OrderCreated, emitter, meta=meta
     )
 
     # Act

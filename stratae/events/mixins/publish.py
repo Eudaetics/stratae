@@ -42,7 +42,7 @@ class Publisher[Metadata: (EventMeta | None), Resp](ABC):
             an instance of ``schema`` and forwards it to ``emit_publish``.
 
         """
-        return BoundEvent(channel, schema, self.emit_publish, meta)
+        return BoundEvent(channel, schema, self.emit_publish, meta=meta)
 
     @abstractmethod
     def emit_publish(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
@@ -92,7 +92,7 @@ class AsyncPublisher[Metadata: (EventMeta | None), Resp](ABC):
             to ``emit_publish``.
 
         """
-        return AsyncBoundEvent(channel, schema, self.emit_publish, meta)
+        return AsyncBoundEvent(channel, schema, self.emit_publish, meta=meta)
 
     @abstractmethod
     async def emit_publish(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
