@@ -73,6 +73,7 @@ class BoundEvent[**P, Metadata: (EventMeta | None), Resp]:
         channel: Channel,
         schema: Callable[P, EventSchema],
         emitter: Emitter[Metadata, Resp],
+        *,
         meta: Metadata = None,
     ) -> None:
         """
@@ -122,6 +123,7 @@ class AsyncBoundEvent[**P, Metadata: (EventMeta | None), Resp](
         channel: Channel,
         schema: Callable[P, EventSchema],
         emitter: Emitter[Metadata, Awaitable[Resp]],
+        *,
         meta: Metadata = None,
     ) -> None:
         """
@@ -135,7 +137,7 @@ class AsyncBoundEvent[**P, Metadata: (EventMeta | None), Resp](
             meta:    The adapter-specific routing metadata for this binding.
 
         """
-        super().__init__(channel, schema, emitter, meta)
+        super().__init__(channel, schema, emitter, meta=meta)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
