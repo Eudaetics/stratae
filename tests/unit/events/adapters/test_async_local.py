@@ -1,0 +1,376 @@
+"""
+Unit tests for the AsyncLocalBus adapter.
+
+This test suite verifies the following behaviors:
+
+AsyncLocalBus:
+- publish returns an AsyncBoundEvent.
+- Awaiting the AsyncBoundEvent dispatches the payload to a registered sync handler.
+- Awaiting the AsyncBoundEvent dispatches the payload to a registered async handler.
+- Mixed sync and async handlers on the same channel both receive the payload.
+- All handlers on a channel receive the payload.
+- Handlers on different channels are isolated from each other.
+- subscribe returns a Handler.
+- unsubscribe removes a handler; subsequent emits do not invoke it.
+- The same callable may be registered multiple times independently.
+- emit_publish directly dispatches to handle_subscribe.
+- handle_subscribe invokes all handlers registered on the channel.
+- Handlers can access the EventEnvelope during dispatch.
+- Each top-level emission creates an independent envelope.
+- A handler that emits an event receives a child envelope.
+- The envelope is cleaned up after dispatch completes.
+"""
+
+from typing import Any
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from stratae.events.adapters.async_local import AsyncLocalBus
+from stratae.events.channel import Channel
+from stratae.events.envelope import EventEnvelope
+from stratae.events.event import AsyncBoundEvent, EventSchema
+
+
+class _TaskCreated(EventSchema):
+    def __init__(self, task_id: int) -> None:
+        self.task_id = task_id
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, _TaskCreated):
+            return NotImplemented
+        return self.task_id == other.task_id
+
+
+@pytest.fixture
+def bus() -> AsyncLocalBus:
+    """Return a fresh AsyncLocalBus instance."""
+    return AsyncLocalBus()
+
+
+@pytest.fixture
+def channel() -> Channel:
+    """Return a Channel for use in tests."""
+    return Channel("tasks")
+
+
+def test_publish_returns_async_bound_event(bus: AsyncLocalBus, channel: Channel):
+    """
+    Publish should return an AsyncBoundEvent bound to emit_publish.
+
+    Given: An AsyncLocalBus and a channel
+    When: publish is called with a schema
+    Then: An AsyncBoundEvent should be returned
+    """
+    assert isinstance(bus.publish(channel, _TaskCreated), AsyncBoundEvent)
+
+
+async def test_dispatches_to_sync_handler(bus: AsyncLocalBus, channel: Channel):
+    """
+    Awaiting a BoundEvent should dispatch the payload to a registered sync handler.
+
+    Given: A sync handler subscribed to a channel
+    When: The AsyncBoundEvent for that channel is awaited
+    Then: The handler should be called with the constructed payload
+    """
+    # Arrange
+    handler = Mock()
+    bus.subscribe(channel, handler)
+    emit = bus.publish(channel, _TaskCreated)
+
+    # Act
+    await emit(task_id=1)
+
+    # Assert
+    handler.assert_called_once_with(_TaskCreated(1))
+
+
+async def test_dispatches_to_async_handler(bus: AsyncLocalBus, channel: Channel):
+    """
+    Awaiting a BoundEvent should dispatch the payload to a registered async handler.
+
+    Given: An async handler subscribed to a channel
+    When: The AsyncBoundEvent for that channel is awaited
+    Then: The handler should be called with the constructed payload
+    """
+    # Arrange
+    handler = AsyncMock()
+    bus.subscribe(channel, handler)
+    emit = bus.publish(channel, _TaskCreated)
+
+    # Act
+    await emit(task_id=2)
+
+    # Assert
+    handler.assert_called_once_with(_TaskCreated(2))
+
+
+async def test_dispatches_to_mixed_handlers(bus: AsyncLocalBus, channel: Channel):
+    """
+    Both sync and async handlers on the same channel should receive the payload.
+
+    Given: A sync handler and an async handler subscribed to the same channel
+    When: An event is emitted
+    Then: Both handlers should be called with the payload
+    """
+    # Arrange
+    sync_handler = Mock()
+    async_handler = AsyncMock()
+    bus.subscribe(channel, sync_handler)
+    bus.subscribe(channel, async_handler)
+    emit = bus.publish(channel, _TaskCreated)
+
+    # Act
+    await emit(task_id=3)
+
+    # Assert
+    sync_handler.assert_called_once_with(_TaskCreated(3))
+    async_handler.assert_called_once_with(_TaskCreated(3))
+
+
+async def test_dispatches_to_all_handlers_on_channel(bus: AsyncLocalBus, channel: Channel):
+    """
+    All handlers registered on a channel should receive the payload.
+
+    Given: Two async handlers subscribed to the same channel
+    When: An event is emitted on that channel
+    Then: Both handlers should be called with the payload
+    """
+    # Arrange
+    handler_a = AsyncMock()
+    handler_b = AsyncMock()
+    bus.subscribe(channel, handler_a)
+    bus.subscribe(channel, handler_b)
+    emit = bus.publish(channel, _TaskCreated)
+
+    # Act
+    await emit(task_id=4)
+
+    # Assert
+    handler_a.assert_called_once_with(_TaskCreated(4))
+    handler_b.assert_called_once_with(_TaskCreated(4))
+
+
+async def test_channel_isolation(bus: AsyncLocalBus):
+    """
+    Handlers on one channel should not receive events emitted on another channel.
+
+    Given: Two handlers each subscribed to a different channel
+    When: An event is emitted on one channel
+    Then: Only the handler on that channel should be called
+    """
+    # Arrange
+    tasks = Channel("tasks")
+    orders = Channel("orders")
+    task_handler = AsyncMock()
+    order_handler = AsyncMock()
+    bus.subscribe(tasks, task_handler)
+    bus.subscribe(orders, order_handler)
+    emit_task = bus.publish(tasks, _TaskCreated)
+
+    # Act
+    await emit_task(task_id=5)
+
+    # Assert
+    task_handler.assert_called_once_with(_TaskCreated(5))
+    order_handler.assert_not_called()
+
+
+def test_subscribe_returns_handler(bus: AsyncLocalBus, channel: Channel):
+    """
+    Subscribe should return the Handler wrapping the registered callable.
+
+    Given: An AsyncLocalBus and a channel
+    When: subscribe is called with a callable
+    Then: The returned Handler should wrap that callable
+    """
+    fn = Mock()
+    handle = bus.subscribe(channel, fn)
+
+    assert handle.call is fn
+
+
+async def test_unsubscribe_prevents_further_dispatch(bus: AsyncLocalBus, channel: Channel):
+    """
+    Unsubscribed handlers should not receive subsequent emissions.
+
+    Given: A handler subscribed and then unsubscribed from a channel
+    When: An event is emitted on that channel
+    Then: The handler should not be called
+    """
+    # Arrange
+    handler = AsyncMock()
+    handle = bus.subscribe(channel, handler)
+    bus.unsubscribe(channel, handle)
+    emit = bus.publish(channel, _TaskCreated)
+
+    # Act
+    await emit(task_id=6)
+
+    # Assert
+    handler.assert_not_called()
+
+
+async def test_same_callable_registered_twice_called_twice(bus: AsyncLocalBus, channel: Channel):
+    """
+    Registering the same callable twice should produce two independent subscriptions.
+
+    Given: The same callable subscribed to a channel twice
+    When: An event is emitted on that channel
+    Then: The callable should be invoked twice
+    """
+    # Arrange
+    handler = AsyncMock()
+    bus.subscribe(channel, handler)
+    bus.subscribe(channel, handler)
+    emit = bus.publish(channel, _TaskCreated)
+
+    # Act
+    await emit(task_id=7)
+
+    # Assert
+    assert handler.call_count == 2
+
+
+async def test_emit_publish_dispatches_directly(bus: AsyncLocalBus, channel: Channel):
+    """
+    emit_publish should dispatch the payload directly to all registered handlers.
+
+    Given: A handler subscribed to a channel
+    When: emit_publish is called directly
+    Then: The handler should receive the payload
+    """
+    # Arrange
+    handler = AsyncMock()
+    bus.subscribe(channel, handler)
+    payload = _TaskCreated(8)
+
+    # Act
+    await bus.emit_publish(channel, payload)
+
+    # Assert
+    handler.assert_called_once_with(payload)
+
+
+async def test_handle_subscribe_invokes_all_handlers(bus: AsyncLocalBus, channel: Channel):
+    """
+    handle_subscribe should invoke every handler registered on the channel.
+
+    Given: Two handlers subscribed to a channel
+    When: handle_subscribe is called directly
+    Then: Both handlers should receive the payload
+    """
+    # Arrange
+    handler_a = AsyncMock()
+    handler_b = AsyncMock()
+    bus.subscribe(channel, handler_a)
+    bus.subscribe(channel, handler_b)
+    payload = _TaskCreated(9)
+
+    # Act
+    await bus.handle_subscribe(channel, payload)
+
+    # Assert
+    handler_a.assert_called_once_with(payload)
+    handler_b.assert_called_once_with(payload)
+
+
+async def test_handler_can_access_envelope_during_dispatch(bus: AsyncLocalBus, channel: Channel):
+    """
+    Handlers should be able to access a valid EventEnvelope during dispatch.
+
+    Given: A handler that captures the current envelope
+    When: An event is emitted
+    Then: The captured value should be an EventEnvelope instance
+    """
+    # Arrange
+    captured: list[EventEnvelope] = []
+
+    @bus.subscribe(channel)
+    async def _(_payload: EventSchema) -> None:
+        captured.append(EventEnvelope.current())
+
+    # Act
+    await bus.publish(channel, _TaskCreated)(task_id=1)
+
+    # Assert
+    assert len(captured) == 1
+    assert isinstance(captured[0], EventEnvelope)
+
+
+async def test_each_emission_creates_independent_envelope(bus: AsyncLocalBus, channel: Channel):
+    """
+    Each top-level emission should produce an envelope with a unique correlation id.
+
+    Given: A handler that captures the current envelope
+    When: Two separate events are emitted
+    Then: Each emission should have a distinct correlation id
+    """
+    # Arrange
+    captured: list[EventEnvelope] = []
+
+    @bus.subscribe(channel)
+    async def _(_payload: EventSchema) -> None:
+        captured.append(EventEnvelope.current())
+
+    emit = bus.publish(channel, _TaskCreated)
+
+    # Act
+    await emit(task_id=1)
+    await emit(task_id=2)
+
+    # Assert
+    assert captured[0].correlation_id != captured[1].correlation_id
+
+
+async def test_nested_emission_produces_child_envelope(bus: AsyncLocalBus):
+    """
+    A handler that emits an event should receive a child envelope linked to the outer one.
+
+    Given: An outer handler that emits on a second channel, and an inner handler on that channel
+    When: The outer event is emitted
+    Then: The inner envelope should share the outer correlation id and
+          have the outer message id as its causation id
+    """
+    # Arrange
+    outer_channel = Channel("outer")
+    inner_channel = Channel("inner")
+    outer_envelopes: list[EventEnvelope] = []
+    inner_envelopes: list[EventEnvelope] = []
+    emit_inner = bus.publish(inner_channel, _TaskCreated)
+
+    @bus.subscribe(outer_channel)
+    async def _(_payload: EventSchema) -> None:
+        outer_envelopes.append(EventEnvelope.current())
+        await emit_inner(task_id=99)
+
+    @bus.subscribe(inner_channel)
+    async def _(_payload: EventSchema) -> None:
+        inner_envelopes.append(EventEnvelope.current())
+
+    # Act
+    await bus.publish(outer_channel, _TaskCreated)(task_id=1)
+
+    # Assert
+    assert inner_envelopes[0].correlation_id == outer_envelopes[0].correlation_id
+    assert inner_envelopes[0].causation_id == outer_envelopes[0].message_id
+    assert inner_envelopes[0].message_id != outer_envelopes[0].message_id
+
+
+async def test_envelope_cleaned_up_after_dispatch(bus: AsyncLocalBus, channel: Channel):
+    """
+    The EventEnvelope should not be accessible after dispatch completes.
+
+    Given: An AsyncLocalBus with a subscribed handler
+    When: An event is emitted and dispatch completes
+    Then: Accessing the current envelope should raise LookupError
+    """
+    # Arrange
+    bus.subscribe(channel, AsyncMock())
+
+    # Act
+    await bus.publish(channel, _TaskCreated)(task_id=1)
+
+    # Assert
+    with pytest.raises(LookupError):
+        EventEnvelope.current()
