@@ -34,33 +34,33 @@ class SubscriberBase[Meta: (EventMeta | None)]:
 
     def __init__(self) -> None:
         """Initialise the handler storage mapping."""
-        self._handlers: dict[Channel, set[Handler[Meta, Any]]] = defaultdict(set)
+        self._handlers: dict[Channel, set[Handler[Any, Meta, Any]]] = defaultdict(set)
         super().__init__()
 
     @overload
-    def subscribe[R](
+    def subscribe[**P, R](
         self,
         channel: Channel,
-        fn: Callable[[EventSchema], R],
+        fn: Callable[P, R],
         *,
         meta: Meta = ...,
-    ) -> Handler[Meta, R]: ...
+    ) -> Handler[P, Meta, R]: ...
 
     @overload
-    def subscribe[R](
+    def subscribe[**P, R](
         self,
         channel: Channel,
         *,
         meta: Meta = ...,
-    ) -> Callable[[Callable[[EventSchema], R]], Handler[Meta, R]]: ...
+    ) -> Callable[[Callable[P, R]], Handler[P, Meta, R]]: ...
 
-    def subscribe[R](
+    def subscribe[**P, R](
         self,
         channel: Channel,
-        fn: Callable[[EventSchema], R] | None = None,
+        fn: Callable[P, R] | None = None,
         *,
         meta: Meta = None,
-    ) -> Handler[Meta, R] | Callable[[Callable[[EventSchema], R]], Handler[Meta, R]]:
+    ) -> Handler[P, Meta, R] | Callable[[Callable[P, R]], Handler[P, Meta, R]]:
         """
         Register a handler callable for a channel, as a decorator or direct call.
 
@@ -77,8 +77,8 @@ class SubscriberBase[Meta: (EventMeta | None)]:
 
         """
 
-        def decorator(f: Callable[[EventSchema], R]) -> Handler[Meta, R]:
-            handler: Handler[Meta, R] = Handler(f, meta)
+        def decorator(f: Callable[P, R]) -> Handler[P, Meta, R]:
+            handler: Handler[P, Meta, R] = Handler(f, meta)
             self._handlers[channel].add(handler)
             return handler
 
@@ -86,7 +86,7 @@ class SubscriberBase[Meta: (EventMeta | None)]:
             return decorator(fn)
         return decorator
 
-    def get_handlers(self, channel: Channel) -> set[Handler[Meta, Any]]:
+    def get_handlers(self, channel: Channel) -> set[Handler[Any, Meta, Any]]:
         """
         Return the set of handlers registered for a channel.
 
@@ -100,7 +100,7 @@ class SubscriberBase[Meta: (EventMeta | None)]:
         """
         return self._handlers.get(channel, set())
 
-    def unsubscribe(self, channel: Channel, handler: Handler[Meta, Any]) -> None:
+    def unsubscribe(self, channel: Channel, handler: Handler[Any, Meta, Any]) -> None:
         """
         Deregister a handler for a channel.
 

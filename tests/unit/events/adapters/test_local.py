@@ -324,8 +324,10 @@ def test_envelope_cleaned_up_after_dispatch(bus: LocalBus, channel: Channel):
     When: An event is emitted and dispatch completes
     Then: Accessing the current envelope should raise LookupError
     """
+
     # Arrange
-    bus.subscribe(channel, lambda _payload: None)
+    @bus.subscribe(channel)
+    def _(_: _TaskCreated) -> None: ...
 
     # Act
     bus.publish(channel, _TaskCreated)(task_id=1)
