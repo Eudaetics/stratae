@@ -74,4 +74,9 @@ class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[None]):
             else:
                 handler(payload)
 
-        await asyncio.gather(*(_call(h) for h in self.get_handlers(channel)))
+        results = await asyncio.gather(
+            *(_call(h) for h in self.get_handlers(channel)), return_exceptions=True
+        )
+        exceptions = [r for r in results if isinstance(r, Exception)]
+        if exceptions:
+            raise ExceptionGroup("handler errors", exceptions)

@@ -54,5 +54,11 @@ class LocalBus(Publisher[None, None], Subscriber[None]):
             meta:    Unused; present to satisfy the ``Subscriber`` interface.
 
         """
+        exceptions: list[Exception] = []
         for handler in self.get_handlers(channel):
-            handler(payload)
+            try:
+                handler(payload)
+            except Exception as exc:
+                exceptions.append(exc)
+        if exceptions:
+            raise ExceptionGroup("Handler Errors", exceptions)
