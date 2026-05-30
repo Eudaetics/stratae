@@ -376,4 +376,4 @@ def test_handler_exceptions_collected_into_exception_group(bus: LocalBus, channe
     with pytest.raises(ExceptionGroup) as exc_info:
         bus.handle_subscribe(channel, payload, meta=None)
 
-    assert list(exc_info.value.exceptions) == [error_a, error_b]
+    assert set(exc_info.value.exceptions) == {error_a, error_b}

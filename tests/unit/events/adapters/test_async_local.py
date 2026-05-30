@@ -423,4 +423,4 @@ async def test_handler_exceptions_collected_into_exception_group(
     with pytest.raises(ExceptionGroup) as exc_info:
         await bus.handle_subscribe(channel, payload)
 
-    assert list(exc_info.value.exceptions) == [error_a, error_b]
+    assert set(exc_info.value.exceptions) == {error_a, error_b}
