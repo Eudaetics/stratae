@@ -19,6 +19,8 @@ AsyncLocalBus:
 - Each top-level emission creates an independent envelope.
 - A handler that emits an event receives a child envelope.
 - The envelope is cleaned up after dispatch completes.
+- A raising handler does not prevent other handlers from running.
+- All handler exceptions are collected and re-raised as an ExceptionGroup.
 """
 
 from typing import Any
@@ -374,3 +376,51 @@ async def test_envelope_cleaned_up_after_dispatch(bus: AsyncLocalBus, channel: C
     # Assert
     with pytest.raises(LookupError):
         EventEnvelope.current()
+
+
+async def test_raising_handler_does_not_prevent_other_handlers(
+    bus: AsyncLocalBus, channel: Channel
+):
+    """
+    A handler that raises should not prevent subsequent handlers from running.
+
+    Given: Two handlers subscribed to a channel, the first of which raises
+    When: An event is emitted on that channel
+    Then: The second handler should still be called
+    """
+    # Arrange
+    second_handler = AsyncMock()
+    bus.subscribe(channel, AsyncMock(side_effect=ValueError("boom")))
+    bus.subscribe(channel, second_handler)
+    payload = _TaskCreated(10)
+
+    # Act
+    with pytest.raises(ExceptionGroup):
+        await bus.handle_subscribe(channel, payload)
+
+    # Assert
+    second_handler.assert_called_once_with(payload)
+
+
+async def test_handler_exceptions_collected_into_exception_group(
+    bus: AsyncLocalBus, channel: Channel
+):
+    """
+    All handler exceptions should be collected and raised together as an ExceptionGroup.
+
+    Given: Two handlers subscribed to a channel, both of which raise
+    When: An event is emitted on that channel
+    Then: An ExceptionGroup containing both exceptions should be raised
+    """
+    # Arrange
+    error_a = ValueError("first")
+    error_b = RuntimeError("second")
+    bus.subscribe(channel, AsyncMock(side_effect=error_a))
+    bus.subscribe(channel, AsyncMock(side_effect=error_b))
+    payload = _TaskCreated(11)
+
+    # Act / Assert
+    with pytest.raises(ExceptionGroup) as exc_info:
+        await bus.handle_subscribe(channel, payload)
+
+    assert list(exc_info.value.exceptions) == [error_a, error_b]

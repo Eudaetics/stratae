@@ -17,6 +17,8 @@ LocalBus:
 - Each top-level emission creates an independent envelope.
 - A handler that emits an event receives a child envelope.
 - The envelope is cleaned up after dispatch completes.
+- A raising handler does not prevent other handlers from running.
+- All handler exceptions are collected and re-raised as an ExceptionGroup.
 """
 
 from typing import Any
@@ -331,3 +333,47 @@ def test_envelope_cleaned_up_after_dispatch(bus: LocalBus, channel: Channel):
     # Assert
     with pytest.raises(LookupError):
         EventEnvelope.current()
+
+
+def test_raising_handler_does_not_prevent_other_handlers(bus: LocalBus, channel: Channel):
+    """
+    A handler that raises should not prevent subsequent handlers from running.
+
+    Given: Two handlers subscribed to a channel, the first of which raises
+    When: An event is emitted on that channel
+    Then: The second handler should still be called
+    """
+    # Arrange
+    second_handler = Mock()
+    bus.subscribe(channel, Mock(side_effect=ValueError("boom")))
+    bus.subscribe(channel, second_handler)
+    payload = _TaskCreated(10)
+
+    # Act
+    with pytest.raises(ExceptionGroup):
+        bus.handle_subscribe(channel, payload, meta=None)
+
+    # Assert
+    second_handler.assert_called_once_with(payload)
+
+
+def test_handler_exceptions_collected_into_exception_group(bus: LocalBus, channel: Channel):
+    """
+    All handler exceptions should be collected and raised together as an ExceptionGroup.
+
+    Given: Two handlers subscribed to a channel, both of which raise
+    When: An event is emitted on that channel
+    Then: An ExceptionGroup containing both exceptions should be raised
+    """
+    # Arrange
+    error_a = ValueError("first")
+    error_b = RuntimeError("second")
+    bus.subscribe(channel, Mock(side_effect=error_a))
+    bus.subscribe(channel, Mock(side_effect=error_b))
+    payload = _TaskCreated(11)
+
+    # Act / Assert
+    with pytest.raises(ExceptionGroup) as exc_info:
+        bus.handle_subscribe(channel, payload, meta=None)
+
+    assert list(exc_info.value.exceptions) == [error_a, error_b]
