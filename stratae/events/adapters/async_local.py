@@ -68,7 +68,7 @@ class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[None]):
 
         """
 
-        async def _call(handler: Handler[None, Any]) -> None:
+        async def _call(handler: Handler[Any, None, Any]) -> None:
             if handler.is_async:
                 await handler(payload)
             else:
