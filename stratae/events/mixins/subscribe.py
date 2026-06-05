@@ -74,13 +74,13 @@ class SubscriberBase[HandlerConfig: Any]:
 
     def get_handlers(self, config: HandlerConfig) -> set[Handler[Any, HandlerConfig, Any]]:
         """
-        Return the set of handlers registered for a channel.
+        Return the set of handlers registered for a config.
 
         Args:
             config: Configuration option used to define a mapping to handlers.
 
         Returns:
-            The set of handlers registered for ``channel``, or an empty set if
+            The set of handlers registered for ``config``, or an empty set if
             none have been registered.
 
         """
@@ -88,9 +88,9 @@ class SubscriberBase[HandlerConfig: Any]:
 
     def unsubscribe(self, handler: Handler[Any, HandlerConfig, Any]) -> None:
         """
-        Deregister a handler for a channel.
+        Deregister a handler using its config.
 
-        A no-op if ``handler`` is not currently registered for ``channel``.
+        A no-op if ``handler`` is not currently registered for ``config``.
 
         Args:
             handler: The ``Handler`` returned by ``subscribe``.
@@ -106,15 +106,14 @@ class Subscriber[HandlerConfig: Any](SubscriberBase[HandlerConfig], ABC):
     """
     Mixin that provides synchronous event subscription.
 
-    Subclasses must implement ``handle_subscribe``, which receives the channel,
-    adapter metadata, and event payload and is responsible for invoking the
-    registered handlers.
+    Subclasses must implement ``handle_subscribe``, which receives the event
+    payload and config and is responsible for invoking the registered handlers.
     """
 
     @abstractmethod
     def handle_subscribe(self, payload: EventSchema, *, config: HandlerConfig) -> None:
         """
-        Dispatch a payload to all handlers registered for a channel.
+        Dispatch a payload to all handlers registered for a config.
 
         Args:
             payload: The constructed ``EventSchema`` instance to dispatch.
@@ -129,14 +128,14 @@ class AsyncSubscriber[HandlerConfig: Any](SubscriberBase[HandlerConfig], ABC):
     Mixin that provides asynchronous event subscription.
 
     Subclasses must implement ``handle_subscribe`` as a coroutine, which
-    receives the channel, adapter metadata, and event payload and is
-    responsible for invoking the registered handlers.
+    receives the event payload and config and is responsible for invoking
+    the registered handlers.
     """
 
     @abstractmethod
     async def handle_subscribe(self, payload: EventSchema, *, config: HandlerConfig) -> None:
         """
-        Dispatch a payload to all handlers registered for a channel.
+        Dispatch a payload to all handlers registered for a config.
 
         Args:
             payload: The constructed ``EventSchema`` instance to dispatch.
