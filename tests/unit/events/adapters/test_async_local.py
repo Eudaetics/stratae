@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from stratae.events.adapters.async_local import AsyncLocalBus
+from stratae.events.adapters.local_async import AsyncLocalBus
 from stratae.events.envelope import EventEnvelope
 from stratae.events.event import AsyncBoundEvent, EventSchema
 
