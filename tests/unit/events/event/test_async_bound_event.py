@@ -9,7 +9,6 @@ This test suite verifies the following behaviors:
 - The resolved value from the async emitter is returned to the caller.
 """
 
-from typing import Any
 from unittest.mock import AsyncMock
 
 from pytest_mock import MockerFixture
@@ -22,7 +21,7 @@ class _PaymentReceived(EventSchema):
         self.payment_id = payment_id
         self.amount = amount
 
-    def __eq__(self, value: Any) -> bool:
+    def __eq__(self, value: object) -> bool:
         if not isinstance(value, _PaymentReceived):
             return False
         return self.payment_id == value.payment_id and self.amount == value.amount
@@ -39,9 +38,7 @@ def test_init_stores_schema_emitter_and_config():
     emitter = AsyncMock()
     config = object()
 
-    bound: AsyncBoundEvent[[int, int], Any, Any] = AsyncBoundEvent(
-        _PaymentReceived, emitter, config=config
-    )
+    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=config)
 
     assert bound.schema is _PaymentReceived
     assert bound.emitter is emitter
@@ -59,7 +56,7 @@ async def test_call_passes_positional_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound: AsyncBoundEvent[[int, int], Any, Any] = AsyncBoundEvent(_PaymentReceived, emitter)
+    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=None)
 
     await bound(42, 100)
 
@@ -78,7 +75,7 @@ async def test_call_passes_keyword_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(_PaymentReceived, emitter)
+    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=None)
 
     await bound(payment_id=7, amount=50)
 
@@ -97,7 +94,7 @@ async def test_call_passes_mixed_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(_PaymentReceived, emitter)
+    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=None)
 
     await bound(42, amount=100)
 
@@ -114,7 +111,7 @@ async def test_call_returns_emitter_result():
     Then: The return value should match the emitter's resolved value
     """
     emitter = AsyncMock(return_value="dispatched")
-    bound: AsyncBoundEvent[[int, int], Any, str] = AsyncBoundEvent(_PaymentReceived, emitter)
+    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=None)
 
     result = await bound(42, 100)
 

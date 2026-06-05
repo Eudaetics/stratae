@@ -9,7 +9,6 @@ This test suite verifies the following behaviors:
 - The return value from the emitter is returned to the caller.
 """
 
-from typing import Any
 from unittest.mock import Mock
 
 from pytest_mock import MockerFixture
@@ -22,7 +21,7 @@ class _OrderCreated(EventSchema):
         self.order_id = order_id
         self.status = status
 
-    def __eq__(self, value: Any) -> bool:
+    def __eq__(self, value: object) -> bool:
         if not isinstance(value, _OrderCreated):
             return False
         return self.order_id == value.order_id and self.status == value.status
@@ -39,7 +38,7 @@ def test_init_stores_schema_emitter_and_config():
     emitter = Mock()
     config = object()
 
-    bound: BoundEvent[[int, str], Any, Any] = BoundEvent(_OrderCreated, emitter, config=config)
+    bound = BoundEvent(_OrderCreated, emitter, config=config)
 
     assert bound.schema is _OrderCreated
     assert bound.emitter is emitter
@@ -57,7 +56,7 @@ def test_call_passes_positional_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound: BoundEvent[[int, str], Any, Any] = BoundEvent(_OrderCreated, emitter)
+    bound = BoundEvent(_OrderCreated, emitter, config=None)
 
     bound(1, "pending")
 
@@ -76,7 +75,7 @@ def test_call_passes_keyword_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(_OrderCreated, emitter)
+    bound = BoundEvent(_OrderCreated, emitter, config=None)
 
     bound(order_id=2, status="complete")
 
@@ -95,7 +94,7 @@ def test_call_passes_mixed_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(_OrderCreated, emitter)
+    bound = BoundEvent(_OrderCreated, emitter, config=None)
 
     bound(1, status="pending")
 
@@ -112,7 +111,7 @@ def test_call_returns_emitter_result():
     Then: The return value should match the emitter's return value
     """
     emitter = Mock(return_value="dispatched")
-    bound: BoundEvent[[int, str], Any, str] = BoundEvent(_OrderCreated, emitter)
+    bound = BoundEvent(_OrderCreated, emitter, config=None)
 
     result = bound(1, "pending")
 

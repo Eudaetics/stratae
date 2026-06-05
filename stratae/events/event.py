@@ -14,8 +14,7 @@ class EventSchema:
     the library does not enforce how, so any approach works: plain classes,
     ``dataclasses``, ``msgspec.Struct``, ``pydantic.BaseModel``, etc.
 
-    Schemas carry no routing metadata and are reusable across channels.
-    Routing information lives on the adapter-specific ``EventMeta`` subclass.
+    Schemas carry no routing config and are reusable across adapters.
 
     Example::
 
@@ -27,17 +26,16 @@ class EventSchema:
 
 class BoundEvent[**P, EventConfig: Any, Resp]:
     """
-    Binds an ``EventSchema`` subclass to a synchronous emitter with routing metadata.
+    Binds an ``EventSchema`` subclass to a synchronous emitter with routing config.
 
     A ``BoundEvent`` acts as a callable façade: invoking it constructs an
     instance of ``schema`` from the supplied arguments and forwards the
-    routing metadata and payload to ``emitter``, returning whatever the
-    emitter produces.
+    payload and itself to ``emitter``, returning whatever the emitter produces.
 
     Type parameters:
-        P:    The parameter specification of the bound event's ``__call__`` signature.
-        Meta: The ``EventMeta`` subclass carrying adapter-specific routing metadata.
-        Resp: The return type produced by the emitter.
+        P:           The parameter specification of the bound event's ``__call__`` signature.
+        EventConfig: The adapter-specific routing config type.
+        Resp:        The return type produced by the emitter.
     """
 
     def __init__(
@@ -45,16 +43,16 @@ class BoundEvent[**P, EventConfig: Any, Resp]:
         schema: Callable[P, EventSchema],
         emitter: Callable[[EventSchema, BoundEvent[P, EventConfig, Resp]], Resp],
         *,
-        config: EventConfig = None,
+        config: EventConfig,
     ) -> None:
         """
-        Bind an event schema to its emitter with routing metadata.
+        Bind an event schema to its emitter with routing config.
 
         Args:
             schema:  The ``EventSchema`` subclass used to construct the event payload.
-            emitter: A callable that receives a ``Channel``, ``Meta`` and a constructed
-                     ``EventSchema`` instance, and returns ``Resp``.
-            config:    The adapter-specific configuration for this binding.
+            emitter: A callable that receives the constructed payload and this
+                     ``BoundEvent``, and returns ``Resp``.
+            config:  The adapter-specific routing config for this binding.
 
         """
         self.schema = schema
@@ -63,7 +61,7 @@ class BoundEvent[**P, EventConfig: Any, Resp]:
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
-        Construct the schema instance and emit it with routing metadata.
+        Construct the schema instance and forward it to the emitter.
 
         Returns:
             Whatever ``self.emitter`` returns.
@@ -80,14 +78,14 @@ class AsyncBoundEvent[**P, EventConfig: Any, Resp](BoundEvent[P, EventConfig, Aw
     by the caller.
 
     Type parameters:
-        P:    The parameter specification of the bound event's ``__call__`` signature.
-        Meta: The ``EventMeta`` subclass carrying adapter-specific routing metadata.
-        Resp: The type that the emitter's coroutine resolves to.
+        P:           The parameter specification of the bound event's ``__call__`` signature.
+        EventConfig: The adapter-specific routing config type.
+        Resp:        The type that the emitter's coroutine resolves to.
     """
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
-        Construct the schema instance, emit it with routing metadata, and await the result.
+        Construct the schema instance, forward it to the emitter, and await the result.
 
         Returns:
             The resolved value of ``self.emitter``'s coroutine.
