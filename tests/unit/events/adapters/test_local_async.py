@@ -15,12 +15,14 @@ AsyncLocalBus:
 - The same callable may be registered multiple times independently.
 - emit_publish directly dispatches to handle_subscribe.
 - handle_subscribe invokes all handlers registered on the channel.
+- A raising handler does not prevent other handlers from running.
+- All handler exceptions are collected and re-raised as an ExceptionGroup.
+
+AsyncLocalBus (with envelope):
 - Handlers can access the EventEnvelope during dispatch.
 - Each top-level emission creates an independent envelope.
 - A handler that emits an event receives a child envelope.
 - The envelope is cleaned up after dispatch completes.
-- A raising handler does not prevent other handlers from running.
-- All handler exceptions are collected and re-raised as an ExceptionGroup.
 """
 
 from typing import Any
@@ -45,8 +47,14 @@ class _TaskCreated(EventSchema):
 
 @pytest.fixture
 def bus() -> AsyncLocalBus:
-    """Return a fresh AsyncLocalBus instance."""
+    """Return a fresh AsyncLocalBus instance with no envelope."""
     return AsyncLocalBus()
+
+
+@pytest.fixture
+def bus_with_envelope() -> AsyncLocalBus:
+    """Return a fresh AsyncLocalBus instance with envelope tracking enabled."""
+    return AsyncLocalBus(use_envelope=True)
 
 
 def test_publish_returns_async_bound_event(bus: AsyncLocalBus):
@@ -272,107 +280,6 @@ async def test_handle_subscribe_invokes_all_handlers(bus: AsyncLocalBus):
     handler_b.assert_called_once_with(payload)
 
 
-async def test_handler_can_access_envelope_during_dispatch(bus: AsyncLocalBus):
-    """
-    Handlers should be able to access a valid EventEnvelope during dispatch.
-
-    Given: A handler that captures the current envelope
-    When: An event is emitted
-    Then: The captured value should be an EventEnvelope instance
-    """
-    # Arrange
-    emit = bus.publish(_TaskCreated)
-    captured: list[EventEnvelope] = []
-
-    @bus.subscribe(emit)
-    async def _(_: EventSchema) -> None:
-        captured.append(EventEnvelope.current())
-
-    # Act
-    await emit(task_id=1)
-
-    # Assert
-    assert len(captured) == 1
-    assert isinstance(captured[0], EventEnvelope)
-
-
-async def test_each_emission_creates_independent_envelope(bus: AsyncLocalBus):
-    """
-    Each top-level emission should produce an envelope with a unique correlation id.
-
-    Given: A handler that captures the current envelope
-    When: Two separate events are emitted
-    Then: Each emission should have a distinct correlation id
-    """
-    # Arrange
-    emit = bus.publish(_TaskCreated)
-    captured: list[EventEnvelope] = []
-
-    @bus.subscribe(emit)
-    async def _(_: EventSchema) -> None:
-        captured.append(EventEnvelope.current())
-
-    # Act
-    await emit(task_id=1)
-    await emit(task_id=2)
-
-    # Assert
-    assert captured[0].correlation_id != captured[1].correlation_id
-
-
-async def test_nested_emission_produces_child_envelope(bus: AsyncLocalBus):
-    """
-    A handler that emits an event should receive a child envelope linked to the outer one.
-
-    Given: An outer handler that emits on a second BoundEvent, and an inner handler on that event
-    When: The outer event is emitted
-    Then: The inner envelope should share the outer correlation id and
-          have the outer message id as its causation id
-    """
-    # Arrange
-    emit_outer = bus.publish(_TaskCreated)
-    emit_inner = bus.publish(_TaskCreated)
-    outer_envelopes: list[EventEnvelope] = []
-    inner_envelopes: list[EventEnvelope] = []
-
-    @bus.subscribe(emit_outer)
-    async def _(_: EventSchema) -> None:
-        outer_envelopes.append(EventEnvelope.current())
-        await emit_inner(task_id=99)
-
-    @bus.subscribe(emit_inner)
-    async def _(_: EventSchema) -> None:
-        inner_envelopes.append(EventEnvelope.current())
-
-    # Act
-    await emit_outer(task_id=1)
-
-    # Assert
-    assert inner_envelopes[0].correlation_id == outer_envelopes[0].correlation_id
-    assert inner_envelopes[0].causation_id == outer_envelopes[0].message_id
-    assert inner_envelopes[0].message_id != outer_envelopes[0].message_id
-
-
-async def test_envelope_cleaned_up_after_dispatch(bus: AsyncLocalBus):
-    """
-    The EventEnvelope should not be accessible after dispatch completes.
-
-    Given: An AsyncLocalBus with a subscribed handler
-    When: An event is emitted and dispatch completes
-    Then: Accessing the current envelope should raise LookupError
-    """
-    # Arrange
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, AsyncMock())
-
-    # Act
-    await emit(task_id=1)
-
-    # Assert
-    with pytest.raises(LookupError):
-        EventEnvelope.current()
-
-
 async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncLocalBus):
     """
     A handler that raises should not prevent subsequent handlers from running.
@@ -417,3 +324,111 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncLocal
         await bus.handle_subscribe(payload, config=emit)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
+
+
+async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: AsyncLocalBus):
+    """
+    Handlers should be able to access a valid EventEnvelope during dispatch.
+
+    Given: A handler that captures the current envelope
+    When: An event is emitted
+    Then: The captured value should be an EventEnvelope instance
+    """
+    # Arrange
+    emit = bus_with_envelope.publish(_TaskCreated)
+    captured: list[EventEnvelope] = []
+
+    @bus_with_envelope.subscribe(emit)
+    async def _(_: EventSchema) -> None:
+        envelope = EventEnvelope.current()
+        assert envelope is not None
+        captured.append(envelope)
+
+    # Act
+    await emit(task_id=1)
+
+    # Assert
+    assert len(captured) == 1
+    assert isinstance(captured[0], EventEnvelope)
+
+
+async def test_each_emission_creates_independent_envelope(bus_with_envelope: AsyncLocalBus):
+    """
+    Each top-level emission should produce an envelope with a unique correlation id.
+
+    Given: A handler that captures the current envelope
+    When: Two separate events are emitted
+    Then: Each emission should have a distinct correlation id
+    """
+    # Arrange
+    emit = bus_with_envelope.publish(_TaskCreated)
+    captured: list[EventEnvelope] = []
+
+    @bus_with_envelope.subscribe(emit)
+    async def _(_: EventSchema) -> None:
+        envelope = EventEnvelope.current()
+        assert envelope is not None
+        captured.append(envelope)
+
+    # Act
+    await emit(task_id=1)
+    await emit(task_id=2)
+
+    # Assert
+    assert captured[0].correlation_id != captured[1].correlation_id
+
+
+async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncLocalBus):
+    """
+    A handler that emits an event should receive a child envelope linked to the outer one.
+
+    Given: An outer handler that emits on a second BoundEvent, and an inner handler on that event
+    When: The outer event is emitted
+    Then: The inner envelope should share the outer correlation id and
+          have the outer message id as its causation id
+    """
+    # Arrange
+    emit_outer = bus_with_envelope.publish(_TaskCreated)
+    emit_inner = bus_with_envelope.publish(_TaskCreated)
+    outer_envelopes: list[EventEnvelope] = []
+    inner_envelopes: list[EventEnvelope] = []
+
+    @bus_with_envelope.subscribe(emit_outer)
+    async def _(_: EventSchema) -> None:
+        envelope = EventEnvelope.current()
+        assert envelope is not None
+        outer_envelopes.append(envelope)
+        await emit_inner(task_id=99)
+
+    @bus_with_envelope.subscribe(emit_inner)
+    async def _(_: EventSchema) -> None:
+        envelope = EventEnvelope.current()
+        assert envelope is not None
+        inner_envelopes.append(envelope)
+
+    # Act
+    await emit_outer(task_id=1)
+
+    # Assert
+    assert inner_envelopes[0].correlation_id == outer_envelopes[0].correlation_id
+    assert inner_envelopes[0].causation_id == outer_envelopes[0].message_id
+    assert inner_envelopes[0].message_id != outer_envelopes[0].message_id
+
+
+async def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: AsyncLocalBus):
+    """
+    The EventEnvelope should not be accessible after dispatch completes.
+
+    Given: An AsyncLocalBus with a subscribed handler
+    When: An event is emitted and dispatch completes
+    Then: Accessing the current envelope should return None
+    """
+    # Arrange
+    emit = bus_with_envelope.publish(_TaskCreated)
+    bus_with_envelope.subscribe(emit, AsyncMock())
+
+    # Act
+    await emit(task_id=1)
+
+    # Assert
+    assert EventEnvelope.current() is None

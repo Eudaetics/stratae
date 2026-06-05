@@ -27,9 +27,9 @@ class EventEnvelope:
         )
 
     @staticmethod
-    def current() -> EventEnvelope:
-        """Retrieve the current context."""
-        return _current.get()
+    def current() -> EventEnvelope | None:
+        """Retrieve the current envelope, or ``None`` if no envelope is active."""
+        return _current.get(None)
 
 
 _current: ContextVar[EventEnvelope] = ContextVar("_current_envelope")
@@ -44,10 +44,8 @@ def scoped_envelope(envelope: EventEnvelope | None = None) -> Generator[EventEnv
     creates a new root envelope if there is no current context.
     """
     if envelope is None:
-        try:
-            envelope = _current.get().child()
-        except LookupError:
-            envelope = EventEnvelope()
+        parent = _current.get(None)
+        envelope = parent.child() if parent else EventEnvelope()
     token = _current.set(envelope)
     try:
         yield envelope

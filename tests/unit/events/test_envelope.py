@@ -112,17 +112,16 @@ def test_child_has_distinct_message_id():
     assert child.message_id != parent.message_id
 
 
-def test_current_raises_outside_context():
+def test_current_returns_none_outside_context():
     """
-    current() has no valid answer outside a dispatch context.
+    current() returns None when no envelope is active.
 
     Given: No active scoped_envelope context.
     When: EventEnvelope.current() is called.
-    Then: A LookupError is raised.
+    Then: None is returned.
     """
     # Act & Assert
-    with pytest.raises(LookupError):
-        EventEnvelope.current()
+    assert EventEnvelope.current() is None
 
 
 def test_scoped_envelope_sets_current():
@@ -187,15 +186,14 @@ def test_scoped_envelope_clears_context_on_exit():
 
     Given: A scoped_envelope context that has exited.
     When: EventEnvelope.current() is called.
-    Then: A LookupError is raised.
+    Then: None is returned.
     """
     # Arrange
     with scoped_envelope() as envelope:
         assert EventEnvelope.current() is envelope
 
     # Act & Assert
-    with pytest.raises(LookupError):
-        EventEnvelope.current()
+    assert EventEnvelope.current() is None
 
 
 def test_scoped_envelope_explicit_envelope():
@@ -266,7 +264,9 @@ async def test_async_context_isolation():
     async def run(name: str) -> None:
         with scoped_envelope():
             await asyncio.sleep(0)
-            results[name] = EventEnvelope.current()
+            envelope = EventEnvelope.current()
+            assert envelope is not None
+            results[name] = envelope
 
     # Act
     await asyncio.gather(asyncio.create_task(run("a")), asyncio.create_task(run("b")))
@@ -289,7 +289,9 @@ async def test_async_spawned_task_inherits_parent_envelope():
 
     async def child() -> None:
         await asyncio.sleep(0)
-        seen.append(EventEnvelope.current())
+        envelope = EventEnvelope.current()
+        assert envelope is not None
+        seen.append(envelope)
 
     # Act
     with scoped_envelope() as parent:
