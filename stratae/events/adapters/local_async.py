@@ -6,12 +6,12 @@ from typing import Any, Awaitable
 from stratae.events.envelope import scoped_envelope
 from stratae.events.event import BoundEvent, EventSchema
 from stratae.events.handler import Handler
-from stratae.events.mixins.publish import AsyncPublisher
+from stratae.events.mixins.publish import AsyncBasicPublisher
 from stratae.events.mixins.subscribe import AsyncSubscriber
 
 
 class AsyncLocalBus(
-    AsyncPublisher[None, None], AsyncSubscriber[BoundEvent[Any, None, Awaitable[None]]]
+    AsyncBasicPublisher[None], AsyncSubscriber[BoundEvent[Any, None, Awaitable[None]]]
 ):
     """
     In-process, asynchronous event bus with no routing config.

@@ -4,11 +4,11 @@ from typing import Any
 
 from stratae.events.envelope import scoped_envelope
 from stratae.events.event import BoundEvent, EventSchema
-from stratae.events.mixins.publish import Publisher
+from stratae.events.mixins.publish import BasicPublisher
 from stratae.events.mixins.subscribe import Subscriber
 
 
-class LocalBus(Publisher[None, None], Subscriber[BoundEvent[Any, None, None]]):
+class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
     """
     In-process, synchronous event bus with no routing config.
 
