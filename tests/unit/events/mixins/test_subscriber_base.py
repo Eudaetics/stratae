@@ -181,7 +181,7 @@ def test_unsubscribe_is_noop_when_handler_not_registered(subscriber_base: Subscr
     config = object()
     registered = Mock()
     handle = subscriber_base.subscribe(config, registered)
-    unregistered_handle = Handler(Mock())
+    unregistered_handle = Handler(Mock(), object())
 
     subscriber_base.unsubscribe(unregistered_handle)
 
@@ -196,4 +196,4 @@ def test_unsubscribe_is_noop_when_config_has_no_handlers(subscriber_base: Subscr
     When: unsubscribe is called for a config that has never been subscribed to
     Then: No exception should be raised
     """
-    subscriber_base.unsubscribe(Handler(Mock()))
+    subscriber_base.unsubscribe(Handler(Mock(), object()))
