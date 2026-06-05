@@ -10,7 +10,9 @@ from stratae.events.mixins.publish import AsyncPublisher
 from stratae.events.mixins.subscribe import AsyncSubscriber
 
 
-class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[BoundEvent[Any, Any, Any]]):
+class AsyncLocalBus(
+    AsyncPublisher[None, None], AsyncSubscriber[BoundEvent[Any, None, Awaitable[None]]]
+):
     """
     In-process, asynchronous event bus with no routing metadata.
 
@@ -24,18 +26,16 @@ class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[BoundEvent[Any, 
 
         bus = AsyncLocalBus()
 
-        emit_order = bus.publish(OrderPlaced)
+        order_placed = bus.publish(OrderPlaced)
 
-        @bus.subscribe(config=emit_order)
+        @bus.subscribe(order_placed)
         async def on_order(payload: OrderPlaced) -> None: ...
 
-        await emit_order(order_id=42)
-
-        bus.unsubscribe(on_order)
+        await order_placed(order_id=42)
     """
 
     async def emit_publish[**P](
-        self, payload: EventSchema, event: BoundEvent[P, Any, Awaitable[None]]
+        self, payload: EventSchema, event: BoundEvent[P, None, Awaitable[None]]
     ) -> None:
         """
         Open a scoped envelope and dispatch the payload to all handlers on the channel.
@@ -51,14 +51,14 @@ class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[BoundEvent[Any, 
         with scoped_envelope():
             await self.handle_subscribe(payload, config=event)
 
-    async def handle_subscribe(
-        self, payload: EventSchema, *, config: BoundEvent[Any, None, Awaitable[None]]
+    async def handle_subscribe[**P](
+        self, payload: EventSchema, *, config: BoundEvent[P, None, Awaitable[None]]
     ) -> None:
         """
         Invoke every handler registered on the channel concurrently.
 
         Sync handlers are called directly; async handlers are awaited.  Both
-        are dispatched via ``asyncio.gather`` so all run concurrently.
+        are dispatched via ``asyncio.gather``.
 
         Args:
             payload: The constructed ``EventSchema`` instance to dispatch.
@@ -66,7 +66,9 @@ class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[BoundEvent[Any, 
 
         """
 
-        async def _call(handler: Handler[Any, BoundEvent[Any, Any, Any], Any]) -> None:
+        async def _call(
+            handler: Handler[[EventSchema], BoundEvent[P, None, Awaitable[None]], Any],
+        ) -> None:
             if handler.is_async:
                 await handler(payload)
             else:
