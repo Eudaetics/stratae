@@ -14,7 +14,8 @@ class LocalBus(Publisher[None, None], Subscriber[BoundEvent[Any, None, None]]):
 
     The ``BoundEvent`` returned by ``publish`` serves as both the emit handle and
     the subscription key.  Pass it as ``config`` to ``subscribe`` to register a
-    handler; call it to emit an event.
+    handler; call it to emit an event. Each call to ``subscribe`` is an independent
+    registration; the same callable may be subscribed multiple times.
 
     Example::
 

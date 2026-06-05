@@ -14,13 +14,14 @@ class AsyncLocalBus(
     AsyncPublisher[None, None], AsyncSubscriber[BoundEvent[Any, None, Awaitable[None]]]
 ):
     """
-    In-process, asynchronous event bus with no routing metadata.
+    In-process, asynchronous event bus with no routing config.
 
-    Dispatches every event emitted on a channel to all handlers registered
-    on that channel.  Sync and async handlers are both supported; all are
-    dispatched concurrently via ``asyncio.gather``.  Each call to
-    ``subscribe`` is an independent registration; the same callable may be
-    subscribed multiple times.
+    The ``BoundEvent`` returned by ``publish`` serves as both the emit handle and
+    the subscription key.  Pass it as ``config`` to ``subscribe`` to register a
+    handler; await it to emit an event.  Sync and async handlers are both
+    supported; all are dispatched concurrently via ``asyncio.gather``.  Each
+    call to ``subscribe`` is an independent registration; the same callable may
+    be subscribed multiple times.
 
     Example::
 
@@ -38,14 +39,14 @@ class AsyncLocalBus(
         self, payload: EventSchema, event: BoundEvent[P, None, Awaitable[None]]
     ) -> None:
         """
-        Open a scoped envelope and dispatch the payload to all handlers on the channel.
+        Open a scoped envelope and dispatch the payload to all registered handlers.
 
         Each emission runs inside its own ``EventEnvelope``, or a child of the
         currently active one, enabling correlation across nested emissions.
 
         Args:
             payload: The constructed ``EventSchema`` instance to dispatch.
-            event:   The event being emitted.
+            event:   The ``BoundEvent`` used as the handler lookup key.
 
         """
         with scoped_envelope():
@@ -55,14 +56,14 @@ class AsyncLocalBus(
         self, payload: EventSchema, *, config: BoundEvent[P, None, Awaitable[None]]
     ) -> None:
         """
-        Invoke every handler registered on the channel concurrently.
+        Invoke every handler registered for the given bound event concurrently.
 
         Sync handlers are called directly; async handlers are awaited.  Both
         are dispatched via ``asyncio.gather``.
 
         Args:
             payload: The constructed ``EventSchema`` instance to dispatch.
-            config:    Unused; present to satisfy the ``AsyncSubscriber`` interface.
+            config:  The ``BoundEvent`` used as the handler lookup key.
 
         """
 
