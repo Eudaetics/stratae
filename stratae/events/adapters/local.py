@@ -17,6 +17,12 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
     handler; call it to emit an event. Each call to ``subscribe`` is an independent
     registration; the same callable may be subscribed multiple times.
 
+    Args:
+        use_envelope: When ``True``, each emission opens a scoped
+                      ``EventEnvelope`` for correlation tracking.  Defaults to
+                      ``False`` for pure in-process dispatch with no envelope
+                      overhead.
+
     Example::
 
         bus = LocalBus()
@@ -27,7 +33,13 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
         def save_book(book: Book) -> None: ...
 
         create_book(title="Dune", author="Herbert")
+
     """
+
+    def __init__(self, *, use_envelope: bool = False) -> None:
+        """Initialise the bus with optional envelope tracking."""
+        super().__init__()
+        self._use_envelope = use_envelope
 
     def emit_publish[**P](self, payload: EventSchema, event: BoundEvent[P, None, None]) -> None:
         """
@@ -38,7 +50,10 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
             event:   The ``BoundEvent`` used as the handler lookup key.
 
         """
-        with scoped_envelope():
+        if self._use_envelope:
+            with scoped_envelope():
+                self.handle_subscribe(payload, config=event)
+        else:
             self.handle_subscribe(payload, config=event)
 
     def handle_subscribe[**P](

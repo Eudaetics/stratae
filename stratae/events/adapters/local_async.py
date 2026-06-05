@@ -21,6 +21,12 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
     call to ``subscribe`` is an independent registration; the same callable may
     be subscribed multiple times.
 
+    Args:
+        use_envelope: When ``True``, each emission opens a scoped
+                      ``EventEnvelope`` for correlation tracking.  Defaults to
+                      ``False`` for pure in-process dispatch with no envelope
+                      overhead.
+
     Example::
 
         bus = AsyncLocalBus()
@@ -31,7 +37,13 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
         async def on_order(payload: OrderPlaced) -> None: ...
 
         await order_placed(order_id=42)
+
     """
+
+    def __init__(self, *, use_envelope: bool = False) -> None:
+        """Initialise the bus with optional envelope tracking."""
+        super().__init__()
+        self._use_envelope = use_envelope
 
     async def emit_publish[**P](
         self, payload: EventSchema, event: AsyncBoundEvent[P, None, None]
@@ -47,7 +59,10 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
             event:   The ``AsyncBoundEvent`` used as the handler lookup key.
 
         """
-        with scoped_envelope():
+        if self._use_envelope:
+            with scoped_envelope():
+                await self.handle_subscribe(payload, config=event)
+        else:
             await self.handle_subscribe(payload, config=event)
 
     async def handle_subscribe[**P](
