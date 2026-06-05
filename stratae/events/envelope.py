@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 
 @dataclass(frozen=True)
-class EventEnvelope:
+class Envelope:
     """Message envelope for tracking events."""
 
     message_id: UUID = field(default_factory=uuid4)
@@ -19,21 +19,21 @@ class EventEnvelope:
     causation_id: UUID | None = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
-    def child(self) -> EventEnvelope:
+    def child(self) -> Envelope:
         """Create a child envelope with the same correlation id and this as the parent."""
-        return EventEnvelope(
+        return Envelope(
             correlation_id=self.correlation_id,
             causation_id=self.message_id,
         )
 
     @staticmethod
-    def current() -> EventEnvelope | None:
+    def current() -> Envelope | None:
         """Retrieve the current envelope, or ``None`` if no envelope is active."""
         return _current.get(None)
 
     @classmethod
     @contextmanager
-    def scope(cls, envelope: EventEnvelope | None = None) -> Generator[EventEnvelope, None, None]:
+    def scope(cls, envelope: Envelope | None = None) -> Generator[Envelope, None, None]:
         """
         Set the active envelope for the duration of the block, then restore the previous one.
 
@@ -50,4 +50,4 @@ class EventEnvelope:
             _current.reset(token)
 
 
-_current: ContextVar[EventEnvelope] = ContextVar("_current_envelope")
+_current: ContextVar[Envelope] = ContextVar("_current_envelope")

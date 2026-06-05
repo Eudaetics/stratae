@@ -19,7 +19,7 @@ AsyncLocalBus:
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
 
 AsyncLocalBus (with envelope):
-- Handlers can access the EventEnvelope during dispatch.
+- Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
 - A handler that emits an event receives a child envelope.
 - The envelope is cleaned up after dispatch completes.
@@ -31,7 +31,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from stratae.events.adapters.local_async import AsyncLocalBus
-from stratae.events.envelope import EventEnvelope
+from stratae.events.envelope import Envelope
 from stratae.events.event import AsyncBoundEvent, EventSchema
 
 
@@ -328,19 +328,19 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncLocal
 
 async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: AsyncLocalBus):
     """
-    Handlers should be able to access a valid EventEnvelope during dispatch.
+    Handlers should be able to access a valid Envelope during dispatch.
 
     Given: A handler that captures the current envelope
     When: An event is emitted
-    Then: The captured value should be an EventEnvelope instance
+    Then: The captured value should be an Envelope instance
     """
     # Arrange
     emit = bus_with_envelope.publish(_TaskCreated)
-    captured: list[EventEnvelope] = []
+    captured: list[Envelope] = []
 
     @bus_with_envelope.subscribe(emit)
     async def _(_: EventSchema) -> None:
-        envelope = EventEnvelope.current()
+        envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
 
@@ -349,7 +349,7 @@ async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: As
 
     # Assert
     assert len(captured) == 1
-    assert isinstance(captured[0], EventEnvelope)
+    assert isinstance(captured[0], Envelope)
 
 
 async def test_each_emission_creates_independent_envelope(bus_with_envelope: AsyncLocalBus):
@@ -362,11 +362,11 @@ async def test_each_emission_creates_independent_envelope(bus_with_envelope: Asy
     """
     # Arrange
     emit = bus_with_envelope.publish(_TaskCreated)
-    captured: list[EventEnvelope] = []
+    captured: list[Envelope] = []
 
     @bus_with_envelope.subscribe(emit)
     async def _(_: EventSchema) -> None:
-        envelope = EventEnvelope.current()
+        envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
 
@@ -390,19 +390,19 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncL
     # Arrange
     emit_outer = bus_with_envelope.publish(_TaskCreated)
     emit_inner = bus_with_envelope.publish(_TaskCreated)
-    outer_envelopes: list[EventEnvelope] = []
-    inner_envelopes: list[EventEnvelope] = []
+    outer_envelopes: list[Envelope] = []
+    inner_envelopes: list[Envelope] = []
 
     @bus_with_envelope.subscribe(emit_outer)
     async def _(_: EventSchema) -> None:
-        envelope = EventEnvelope.current()
+        envelope = Envelope.current()
         assert envelope is not None
         outer_envelopes.append(envelope)
         await emit_inner(task_id=99)
 
     @bus_with_envelope.subscribe(emit_inner)
     async def _(_: EventSchema) -> None:
-        envelope = EventEnvelope.current()
+        envelope = Envelope.current()
         assert envelope is not None
         inner_envelopes.append(envelope)
 
@@ -417,7 +417,7 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncL
 
 async def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: AsyncLocalBus):
     """
-    The EventEnvelope should not be accessible after dispatch completes.
+    The Envelope should not be accessible after dispatch completes.
 
     Given: An AsyncLocalBus with a subscribed handler
     When: An event is emitted and dispatch completes
@@ -431,4 +431,4 @@ async def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: AsyncLocalB
     await emit(task_id=1)
 
     # Assert
-    assert EventEnvelope.current() is None
+    assert Envelope.current() is None

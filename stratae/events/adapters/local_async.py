@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from stratae.events.envelope import EventEnvelope
+from stratae.events.envelope import Envelope
 from stratae.events.event import AsyncBoundEvent, EventSchema
 from stratae.events.handler import Handler
 from stratae.events.mixins.publish import AsyncBasicPublisher
@@ -23,7 +23,7 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
 
     Args:
         use_envelope: When ``True``, each emission opens a scoped
-                      ``EventEnvelope`` for correlation tracking.  Defaults to
+                      ``Envelope`` for correlation tracking.  Defaults to
                       ``False`` for pure in-process dispatch with no envelope
                       overhead.
 
@@ -51,7 +51,7 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
         """
         Open a scoped envelope and dispatch the payload to all registered handlers.
 
-        Each emission runs inside its own ``EventEnvelope``, or a child of the
+        Each emission runs inside its own ``Envelope``, or a child of the
         currently active one, enabling correlation across nested emissions.
 
         Args:
@@ -60,7 +60,7 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
 
         """
         if self._use_envelope:
-            with EventEnvelope.scope():
+            with Envelope.scope():
                 await self.handle_subscribe(payload, config=event)
         else:
             await self.handle_subscribe(payload, config=event)

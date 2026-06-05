@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from stratae.events.envelope import EventEnvelope
+from stratae.events.envelope import Envelope
 from stratae.events.event import BoundEvent, EventSchema
 from stratae.events.mixins.publish import BasicPublisher
 from stratae.events.mixins.subscribe import Subscriber
@@ -19,7 +19,7 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
 
     Args:
         use_envelope: When ``True``, each emission opens a scoped
-                      ``EventEnvelope`` for correlation tracking.  Defaults to
+                      ``Envelope`` for correlation tracking.  Defaults to
                       ``False`` for pure in-process dispatch with no envelope
                       overhead.
 
@@ -51,7 +51,7 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
 
         """
         if self._use_envelope:
-            with EventEnvelope.scope():
+            with Envelope.scope():
                 self.handle_subscribe(payload, config=event)
         else:
             self.handle_subscribe(payload, config=event)
