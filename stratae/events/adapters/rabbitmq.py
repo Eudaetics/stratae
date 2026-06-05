@@ -6,20 +6,19 @@ from typing import TYPE_CHECKING
 
 from aiormq import connect
 
-from stratae.events.channel import Channel
-from stratae.events.event import EventMeta, EventSchema
+from stratae.events.event import AsyncBoundEvent, EventSchema
 from stratae.events.mixins.publish import AsyncPublisher
 
 if TYPE_CHECKING:
     from aiormq.abc import AbstractChannel, AbstractConnection
 
 
-class RabbitMQMeta(EventMeta):
-    """Routing metadata for a RabbitMQ publish binding."""
+class RabbitMQConfig:
+    """Routing config for a RabbitMQ publish binding."""
 
     def __init__(self, exchange: str, routing_key: str) -> None:
         """
-        Bind routing metadata for a single publish target.
+        Bind routing config for a single publish target.
 
         Args:
             exchange:    The RabbitMQ exchange to publish to.
@@ -30,7 +29,7 @@ class RabbitMQMeta(EventMeta):
         self.routing_key = routing_key
 
 
-class RabbitMQPublisher(AsyncPublisher[RabbitMQMeta, None]):
+class RabbitMQPublisher(AsyncPublisher[RabbitMQConfig, None]):
     """
     Async RabbitMQ publish adapter.
 
@@ -39,9 +38,10 @@ class RabbitMQPublisher(AsyncPublisher[RabbitMQMeta, None]):
 
         async with RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher:
             emit_order = publisher.publish(
-                            orders, OrderPlaced, meta=RabbitMQMeta("events", "order.placed")
+                            OrderPlaced, config=RabbitMQConfig("events", "order.placed")
                         )
             await emit_order(order_id=42)
+
     """
 
     def __init__(self, url: str) -> None:
@@ -52,6 +52,7 @@ class RabbitMQPublisher(AsyncPublisher[RabbitMQMeta, None]):
             url: AMQP connection URL, e.g. ``"amqp://guest:guest@localhost/"``.
 
         """
+        super().__init__()
         self._url = url
         self._connection: AbstractConnection | None = None
         self._channel: AbstractChannel | None = None
@@ -73,16 +74,15 @@ class RabbitMQPublisher(AsyncPublisher[RabbitMQMeta, None]):
         if self._connection is not None:
             await self._connection.close()
 
-    async def emit_publish(
-        self, channel: Channel, payload: EventSchema, *, meta: RabbitMQMeta
+    async def emit_publish[**P](
+        self, payload: EventSchema, event: AsyncBoundEvent[P, RabbitMQConfig, None]
     ) -> None:
         """
         Publish a serialized event payload to RabbitMQ.
 
         Args:
-            channel: The stratae channel the event was emitted on.
             payload: The constructed ``EventSchema`` instance to publish.
-            meta:    Routing metadata carrying the exchange name and routing key.
+            event:   The bound event carrying the RabbitMQ routing config.
 
         """
         ...

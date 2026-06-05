@@ -27,10 +27,6 @@ repos:
     hooks:
       - id: pyright
         additional_dependencies:
+          - aiormq
           - fastapi
-          - msgpack
-          - msgpack-types
-          - pydantic
-          - pydantic-settings
-          - pyzmq
         exclude: ^tests/
