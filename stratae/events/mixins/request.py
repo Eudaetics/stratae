@@ -1,13 +1,12 @@
 """Req/rep mixins for synchronous and asynchronous event requesting."""
 
 from abc import ABC, abstractmethod
-from typing import Callable
+from typing import Any, Awaitable, Callable
 
-from stratae.events.channel import Channel
-from stratae.events.event import AsyncBoundEvent, BoundEvent, EventMeta, EventSchema
+from stratae.events.event import AsyncBoundEvent, BoundEvent, EventSchema
 
 
-class Requester[Metadata: (EventMeta | None), Resp](ABC):
+class Requester[EventConfig: Any, Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to a synchronous request emitter.
 
@@ -28,37 +27,34 @@ class Requester[Metadata: (EventMeta | None), Resp](ABC):
 
     def request[**P](
         self,
-        channel: Channel,
         schema: Callable[P, EventSchema],
         *,
-        meta: Metadata = None,
-    ) -> BoundEvent[P, Metadata, Resp]:
+        config: EventConfig = None,
+    ) -> BoundEvent[P, EventConfig, Resp]:
         """
         Bind an ``EventSchema`` subclass to this requester's ``emit_request``.
 
         Args:
-            channel: A Channel over which to send the request.
             schema:  An ``EventSchema`` subclass whose constructor accepts ``P``.
-            meta:    The adapter-specific routing metadata for this binding,
-                     including any response type or deserialization hints.
+            config:  The adapter-specific configuration for a request.
 
         Returns:
             A ``BoundEvent`` that, when called with ``P`` arguments, constructs
             an instance of ``schema`` and forwards it to ``emit_request``.
 
         """
-        return BoundEvent(channel, schema, self.emit_request, meta=meta)
+        return BoundEvent(schema, self.emit_request, config=config)
 
     @abstractmethod
-    def emit_request(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
+    def emit_request[**P](
+        self, payload: EventSchema, event: BoundEvent[P, EventConfig, Resp]
+    ) -> Resp:
         """
         Send a constructed request event and return the response.
 
         Args:
-            channel: A Channel over which to send the request.
             payload: The constructed ``EventSchema`` instance to send.
-            meta:    The adapter-specific routing metadata, including any
-                     response type or deserialization hints.
+            event:  The bound event being emitted.
 
         Returns:
             ``Resp`` as defined by the concrete subclass.
@@ -67,7 +63,7 @@ class Requester[Metadata: (EventMeta | None), Resp](ABC):
         ...
 
 
-class AsyncRequester[Metadata: (EventMeta | None), Resp](ABC):
+class AsyncRequester[EventConfig: Any, Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to an asynchronous request emitter.
 
@@ -80,19 +76,16 @@ class AsyncRequester[Metadata: (EventMeta | None), Resp](ABC):
 
     def request[**P](
         self,
-        channel: Channel,
         schema: Callable[P, EventSchema],
         *,
-        meta: Metadata = None,
-    ) -> AsyncBoundEvent[P, Metadata, Resp]:
+        config: EventConfig = None,
+    ) -> AsyncBoundEvent[P, EventConfig, Resp]:
         """
         Bind an ``EventSchema`` subclass to this requester's ``emit_request``.
 
         Args:
-            channel: A Channel over which to send the request.
             schema:  An ``EventSchema`` subclass whose constructor accepts ``P``.
-            meta:    The adapter-specific routing metadata for this binding,
-                     including any response type or deserialization hints.
+            config:  The adapter-specific configuration for a request.
 
         Returns:
             An ``AsyncBoundEvent`` that, when called and awaited with ``P``
@@ -100,18 +93,18 @@ class AsyncRequester[Metadata: (EventMeta | None), Resp](ABC):
             to ``emit_request``.
 
         """
-        return AsyncBoundEvent(channel, schema, self.emit_request, meta=meta)
+        return AsyncBoundEvent(schema, self.emit_request, config=config)
 
     @abstractmethod
-    async def emit_request(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
+    async def emit_request[**P](
+        self, payload: EventSchema, event: BoundEvent[P, EventConfig, Awaitable[Resp]]
+    ) -> Resp:
         """
         Send a constructed request event and return the awaitable response.
 
         Args:
-            channel: A Channel over which to send the request.
             payload: The constructed ``EventSchema`` instance to send.
-            meta:    The adapter-specific routing metadata, including any
-                     response type or deserialization hints.
+            event:  The adapter-specific configuration for a request.
 
         Returns:
             ``Resp`` as defined by the concrete subclass.

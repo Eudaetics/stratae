@@ -8,16 +8,16 @@ Subscriber:
 - Subscriber inherits storage behaviour from SubscriberBase.
 """
 
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
-from stratae.events.channel import Channel
 from stratae.events.mixins.subscribe import Subscriber, SubscriberBase
 
 
 @pytest.fixture
-def subscriber() -> Subscriber[None]:
+def subscriber() -> Subscriber[Any]:
     """Return a Subscriber instance with abstract methods cleared for testing."""
     with patch.object(Subscriber, "__abstractmethods__", frozenset[str]()):
         return Subscriber()  # pyright: ignore[reportAbstractUsage]
@@ -31,13 +31,11 @@ def test_subscriber_is_abstract():
     When: An attempt is made to instantiate it
     Then: A TypeError should be raised
     """
+    with pytest.raises(TypeError, match="Can't instantiate abstract class Subscriber"):
+        Subscriber()  # pyright: ignore[reportAbstractUsage]
 
 
-with pytest.raises(TypeError, match="Can't instantiate abstract class Subscriber"):
-    Subscriber()  # pyright: ignore[reportAbstractUsage]
-
-
-def test_subscriber_inherits_from_subscriber_base(subscriber: Subscriber[None]):
+def test_subscriber_inherits_from_subscriber_base(subscriber: Subscriber[Any]):
     """
     Subscriber should be an instance of SubscriberBase.
 
@@ -48,7 +46,7 @@ def test_subscriber_inherits_from_subscriber_base(subscriber: Subscriber[None]):
     assert isinstance(subscriber, SubscriberBase)
 
 
-def test_subscriber_inherits_storage_from_subscriber_base(subscriber: Subscriber[None]):
+def test_subscriber_inherits_storage_from_subscriber_base(subscriber: Subscriber[Any]):
     """
     Subscriber should inherit subscribe and unsubscribe from SubscriberBase.
 
@@ -56,18 +54,13 @@ def test_subscriber_inherits_storage_from_subscriber_base(subscriber: Subscriber
     When: A handler is subscribed via direct call and then unsubscribed
     Then: Storage should reflect both operations correctly
     """
-    # Arrange
-    channel = Channel("test")
+    config = object()
     fn = Mock()
 
-    # Act
-    handle = subscriber.subscribe(channel, fn)
+    handle = subscriber.subscribe(config, fn)
 
-    # Assert
-    assert handle in subscriber.get_handlers(channel)
+    assert handle in subscriber.get_handlers(config)
 
-    # Act
-    subscriber.unsubscribe(channel, handle)
+    subscriber.unsubscribe(handle)
 
-    # Assert
-    assert handle not in subscriber.get_handlers(channel)
+    assert handle not in subscriber.get_handlers(config)

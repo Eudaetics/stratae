@@ -4,118 +4,105 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any, Callable, overload
 
-from stratae.events.channel import Channel
-from stratae.events.event import EventMeta, EventSchema
+from stratae.events.event import EventSchema
 from stratae.events.handler import Handler
 
 
-class SubscriberBase[Meta: (EventMeta | None)]:
+class SubscriberBase[HandlerConfig: Any]:
     """
     Base mixin providing shared handler storage for subscriber mixins.
 
-    Maintains a mapping from ``Channel`` to sets of registered ``Handler``
-    instances.  Both ``Subscriber`` and ``AsyncSubscriber`` inherit from this
-    class to share the same storage contract.
+    Maintains a mapping from config to sets of registered ``Handler`` instances.
+    Both ``Subscriber`` and ``AsyncSubscriber`` inherit from this class to share
+    the same storage contract.
 
-    ``subscribe`` may be used as a decorator factory or as a direct call::
+    ``subscribe`` may be used as a decorator or as a direct call::
 
-        @bus.subscribe(orders)
+        @bus.subscribe(emit_order)
         def on_order(payload: OrderPlaced) -> None: ...
 
-        handle = bus.subscribe(orders, on_order)
-        bus.unsubscribe(orders, handle)
-
-    Adapter-specific metadata is passed as a keyword argument::
-
-        @bus.subscribe(orders, meta=kafka_meta)
-        def on_order(payload: OrderPlaced) -> None: ...
-        # on_order is a Handler; pass it to unsubscribe to deregister
+        handle = bus.subscribe(emit_order, on_order)
+        bus.unsubscribe(handle)
     """
 
     def __init__(self) -> None:
         """Initialise the handler storage mapping."""
-        self._handlers: dict[Channel, set[Handler[Any, Meta, Any]]] = defaultdict(set)
+        self._handlers: dict[Any, set[Handler[Any, HandlerConfig, Any]]] = defaultdict(set)
         super().__init__()
 
     @overload
     def subscribe[**P, R](
         self,
-        channel: Channel,
+        config: HandlerConfig,
         fn: Callable[P, R],
-        *,
-        meta: Meta = ...,
-    ) -> Handler[P, Meta, R]: ...
+    ) -> Handler[P, HandlerConfig, R]: ...
 
     @overload
     def subscribe[**P, R](
         self,
-        channel: Channel,
-        *,
-        meta: Meta = ...,
-    ) -> Callable[[Callable[P, R]], Handler[P, Meta, R]]: ...
+        config: HandlerConfig,
+        fn: None = None,
+    ) -> Callable[[Callable[P, R]], Handler[P, HandlerConfig, R]]: ...
 
     def subscribe[**P, R](
         self,
-        channel: Channel,
+        config: HandlerConfig,
         fn: Callable[P, R] | None = None,
-        *,
-        meta: Meta = None,
-    ) -> Handler[P, Meta, R] | Callable[[Callable[P, R]], Handler[P, Meta, R]]:
+    ) -> Handler[P, HandlerConfig, R] | Callable[[Callable[P, R]], Handler[P, HandlerConfig, R]]:
         """
-        Register a handler callable for a channel, as a decorator or direct call.
+        Register a handler callable for a config, as a decorator or direct call.
 
         Returns the ``Handler`` instance in both forms so callers can pass it
         to ``unsubscribe`` later.
 
         Args:
-            channel: The ``Channel`` to subscribe to.
-            fn:      When supplied, registers ``fn`` directly and returns its
-                     ``Handler``.  When omitted, returns a decorator that
-                     registers and returns the ``Handler``.
-            meta:    Optional adapter-specific metadata used for filtering at
-                     dispatch time.
+            config: The adapter-specific config used as the handler routing key.
+            fn:     When supplied, registers ``fn`` directly and returns its
+                    ``Handler``.  When omitted, returns a decorator that
+                    registers and returns the ``Handler``.
 
         """
 
-        def decorator(f: Callable[P, R]) -> Handler[P, Meta, R]:
-            handler: Handler[P, Meta, R] = Handler(f, meta)
-            self._handlers[channel].add(handler)
+        def decorator(f: Callable[P, R]) -> Handler[P, HandlerConfig, R]:
+            handler: Handler[P, HandlerConfig, R] = Handler(f, config)
+            self._handlers[self._make_handler_key(config)].add(handler)
             return handler
 
         if fn is not None:
             return decorator(fn)
         return decorator
 
-    def get_handlers(self, channel: Channel) -> set[Handler[Any, Meta, Any]]:
+    def get_handlers(self, config: HandlerConfig) -> set[Handler[Any, HandlerConfig, Any]]:
         """
         Return the set of handlers registered for a channel.
 
         Args:
-            channel: The ``Channel`` to look up.
+            config: Configuration option used to define a mapping to handlers.
 
         Returns:
             The set of handlers registered for ``channel``, or an empty set if
             none have been registered.
 
         """
-        return self._handlers.get(channel, set())
+        return self._handlers.get(self._make_handler_key(config), set())
 
-    def unsubscribe(self, channel: Channel, handler: Handler[Any, Meta, Any]) -> None:
+    def unsubscribe(self, handler: Handler[Any, HandlerConfig, Any]) -> None:
         """
         Deregister a handler for a channel.
 
         A no-op if ``handler`` is not currently registered for ``channel``.
 
         Args:
-            channel: The ``Channel`` to unsubscribe from.
             handler: The ``Handler`` returned by ``subscribe``.
 
         """
-        if channel in self._handlers:
-            self._handlers[channel].discard(handler)
+        self._handlers[self._make_handler_key(handler.config)].discard(handler)
+
+    def _make_handler_key(self, config: HandlerConfig) -> Any:
+        return config
 
 
-class Subscriber[Meta: (EventMeta | None)](SubscriberBase[Meta], ABC):
+class Subscriber[HandlerConfig: Any](SubscriberBase[HandlerConfig], ABC):
     """
     Mixin that provides synchronous event subscription.
 
@@ -125,22 +112,19 @@ class Subscriber[Meta: (EventMeta | None)](SubscriberBase[Meta], ABC):
     """
 
     @abstractmethod
-    def handle_subscribe(
-        self, channel: Channel, payload: EventSchema, *, meta: Meta | None
-    ) -> None:
+    def handle_subscribe(self, payload: EventSchema, *, config: HandlerConfig) -> None:
         """
         Dispatch a payload to all handlers registered for a channel.
 
         Args:
-            channel: The ``Channel`` the event arrived on.
             payload: The constructed ``EventSchema`` instance to dispatch.
-            meta:    The adapter-specific routing metadata.
+            config:    The adapter-specific handler configuration.
 
         """
         ...
 
 
-class AsyncSubscriber[Meta: (EventMeta | None)](SubscriberBase[Meta], ABC):
+class AsyncSubscriber[HandlerConfig: Any](SubscriberBase[HandlerConfig], ABC):
     """
     Mixin that provides asynchronous event subscription.
 
@@ -150,16 +134,13 @@ class AsyncSubscriber[Meta: (EventMeta | None)](SubscriberBase[Meta], ABC):
     """
 
     @abstractmethod
-    async def handle_subscribe(
-        self, channel: Channel, payload: EventSchema, *, meta: Meta | None
-    ) -> None:
+    async def handle_subscribe(self, payload: EventSchema, *, config: HandlerConfig) -> None:
         """
         Dispatch a payload to all handlers registered for a channel.
 
         Args:
-            channel: The ``Channel`` the event arrived on.
             payload: The constructed ``EventSchema`` instance to dispatch.
-            meta:    The adapter-specific routing metadata.
+            config:    The adapter-specific handler configuration.
 
         """
         ...

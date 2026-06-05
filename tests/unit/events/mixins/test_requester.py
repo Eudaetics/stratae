@@ -4,22 +4,22 @@ Unit tests for the Requester mixin.
 This test suite verifies the following behaviors:
 
 Requester:
-- request returns a BoundEvent bound to emit_request.
-- The BoundEvent stores the correct channel, schema, emitter, and meta.
 - Requester cannot be instantiated directly (abstract).
-- Calling the BoundEvent constructs the event and calls emit_request with meta and event.
-- Calling the BoundEvent with no meta calls emit_request with None.
+- request returns a BoundEvent bound to emit_request.
+- The BoundEvent stores the correct schema, emitter, and config.
+- Calling the BoundEvent constructs the event and calls emit_request with the payload and itself.
+- Calling the BoundEvent with keyword args calls emit_request with the payload and itself.
 - The return value from emit_request is returned to the caller.
+- request without config stores None on the BoundEvent.
 """
 
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.channel import Channel
-from stratae.events.event import BoundEvent, EventMeta, EventSchema
+from stratae.events.event import BoundEvent, EventSchema
 from stratae.events.mixins.request import Requester
 
 
@@ -35,23 +35,12 @@ class _GetPrice(EventSchema):
 
 
 @pytest.fixture
-def requester() -> Requester[EventMeta, Any]:
+def requester() -> Requester[Any, Any]:
     """Return a Requester instance with abstract methods cleared for testing."""
+    from unittest.mock import patch
+
     with patch.object(Requester, "__abstractmethods__", frozenset[str]()):
         return Requester()  # pyright: ignore[reportAbstractUsage]
-
-
-@pytest.fixture
-def none_requester() -> Requester[None, Any]:
-    """Return a Requester[None, Any] instance for testing the no-meta path."""
-    with patch.object(Requester, "__abstractmethods__", frozenset[str]()):
-        return Requester()  # pyright: ignore[reportAbstractUsage]
-
-
-@pytest.fixture
-def meta() -> EventMeta:
-    """Return an EventMeta instance for use in request calls."""
-    return EventMeta()
 
 
 def test_request_is_abstract():
@@ -66,94 +55,71 @@ def test_request_is_abstract():
         Requester()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_request_returns_bound_event(requester: Requester[EventMeta, Any], meta: EventMeta):
+def test_request_returns_bound_event(requester: Requester[Any, Any]):
     """
     Request should return a BoundEvent instance.
 
     Given: A Requester instance with abstract methods cleared
-    When: request is called with a channel, schema, and meta
+    When: request is called with a schema and config
     Then: A BoundEvent instance should be returned
     """
-    # Arrange
-    channel = Channel("test")
-
-    # Act
-    bound = requester.request(channel, _GetPrice, meta=meta)
-
-    # Assert
-    assert isinstance(bound, BoundEvent)
+    assert isinstance(requester.request(_GetPrice, config=object()), BoundEvent)
 
 
-def test_request_bound_event_stores_channel_schema_emitter_and_meta(
-    requester: Requester[EventMeta, Any], meta: EventMeta
-):
+def test_request_stores_schema_emitter_and_config(requester: Requester[Any, Any]):
     """
-    BoundEvent returned by request should store the channel, schema, emit_request, and meta.
+    BoundEvent returned by request should store the schema, emit_request, and config.
 
     Given: A Requester instance with abstract methods cleared
-    When: request is called with a channel, schema, and meta
-    Then: The BoundEvent should store that channel, schema, emit_request, and meta
+    When: request is called with a schema and config
+    Then: The BoundEvent should store that schema, emit_request, and config
     """
-    # Arrange
-    channel = Channel("test")
+    config = object()
 
-    # Act
-    bound = requester.request(channel, _GetPrice, meta=meta)
+    bound = requester.request(_GetPrice, config=config)
 
-    # Assert
-    assert bound.channel is channel
     assert bound.schema is _GetPrice
     assert bound.emitter == requester.emit_request
-    assert bound.meta is meta
+    assert bound.config is config
 
 
 def test_request_bound_event_calls_emit_request_with_positional_args(
-    requester: Requester[EventMeta, Any], meta: EventMeta, mocker: MockerFixture
+    requester: Requester[Any, Any], mocker: MockerFixture
 ):
     """
     BoundEvent called with positional args should construct the event and call emit_request.
 
     Given: A BoundEvent returned by request
     When: The BoundEvent is called with positional arguments
-    Then: emit_request should be called with the channel, constructed event, and meta
+    Then: emit_request should be called with the constructed payload and the BoundEvent itself
     """
-    # Arrange
     mock_emit = mocker.patch.object(requester, "emit_request", new=Mock())
-    channel = Channel("test")
-    bound = requester.request(channel, _GetPrice, meta=meta)
+    bound = requester.request(_GetPrice)
 
-    # Act
     bound(1, "USD")
 
-    # Assert
-    mock_emit.assert_called_once_with(channel, _GetPrice(1, "USD"), meta=meta)
+    mock_emit.assert_called_once_with(_GetPrice(1, "USD"), bound)
 
 
 def test_request_bound_event_calls_emit_request_with_keyword_args(
-    requester: Requester[EventMeta, Any], meta: EventMeta, mocker: MockerFixture
+    requester: Requester[Any, Any], mocker: MockerFixture
 ):
     """
     BoundEvent called with keyword args should construct the event and call emit_request.
 
     Given: A BoundEvent returned by request
     When: The BoundEvent is called with keyword arguments
-    Then: emit_request should be called with the channel, constructed event, and meta
+    Then: emit_request should be called with the constructed payload and the BoundEvent itself
     """
-    # Arrange
     mock_emit = mocker.patch.object(requester, "emit_request", new=Mock())
-    channel = Channel("test")
-    bound = requester.request(channel, _GetPrice, meta=meta)
+    bound = requester.request(_GetPrice)
 
-    # Act
     bound(item_id=2, currency="EUR")
 
-    # Assert
-    mock_emit.assert_called_once_with(channel, _GetPrice(2, "EUR"), meta=meta)
+    mock_emit.assert_called_once_with(_GetPrice(2, "EUR"), bound)
 
 
-def test_request_bound_event_returns_emit_request_result(
-    requester: Requester[EventMeta, Any], meta: EventMeta
-):
+def test_request_bound_event_returns_emit_request_result(requester: Requester[Any, Any]):
     """
     Return value from emit_request should be returned to the caller.
 
@@ -161,55 +127,24 @@ def test_request_bound_event_returns_emit_request_result(
     When: The BoundEvent is called
     Then: The return value should match what emit_request returned
     """
-    # Arrange
     mock_emit = Mock(return_value="9.99")
-    requester.emit_request = mock_emit
-    channel = Channel("test")
-    bound = requester.request(channel, _GetPrice, meta=meta)
+    requester.emit_request = mock_emit  # pyright: ignore[reportAttributeAccessIssue]
+    bound = requester.request(_GetPrice)
 
-    # Act
     result = bound(1, "USD")
 
-    # Assert
     assert result == "9.99"
 
 
-def test_request_without_meta_returns_bound_event(none_requester: Requester[None, Any]):
+def test_request_without_config_stores_none(requester: Requester[Any, Any]):
     """
-    Request called without meta should return a BoundEvent with meta set to None.
+    Request called without config should return a BoundEvent with config set to None.
 
-    Given: A Requester[None, Any] instance with abstract methods cleared
-    When: request is called with only a channel and schema
-    Then: A BoundEvent should be returned with meta set to None
+    Given: A Requester instance with abstract methods cleared
+    When: request is called with only a schema
+    Then: A BoundEvent should be returned with config set to None
     """
-    # Arrange
-    channel = Channel("test")
+    bound = requester.request(_GetPrice)
 
-    # Act
-    bound = none_requester.request(channel, _GetPrice)
-
-    # Assert
     assert isinstance(bound, BoundEvent)
-    assert bound.meta is None
-
-
-def test_request_without_meta_calls_emit_request_with_none(
-    none_requester: Requester[None, Any], mocker: MockerFixture
-):
-    """
-    BoundEvent from a no-meta request should call emit_request with None as meta.
-
-    Given: A BoundEvent returned by request with no meta
-    When: The BoundEvent is called
-    Then: emit_request should be called with None as meta
-    """
-    # Arrange
-    mock_emit = mocker.patch.object(none_requester, "emit_request", new=Mock())
-    channel = Channel("test")
-    bound = none_requester.request(channel, _GetPrice)
-
-    # Act
-    bound(1, "USD")
-
-    # Assert
-    mock_emit.assert_called_once_with(channel, _GetPrice(1, "USD"), meta=None)
+    assert bound.config is None

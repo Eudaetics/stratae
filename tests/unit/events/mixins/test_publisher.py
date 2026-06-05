@@ -4,23 +4,22 @@ Unit tests for the Publisher mixin.
 This test suite verifies the following behaviors:
 
 Publisher:
-- publish returns a BoundEvent bound to emit_publish.
-- The BoundEvent stores the correct schema, emitter, and meta.
 - Publisher cannot be instantiated directly (abstract).
-- Calling the BoundEvent constructs the event and calls emit_publish with meta and event.
-- Calling the BoundEvent with no meta calls emit_publish with None.
+- publish returns a BoundEvent bound to emit_publish.
+- The BoundEvent stores the correct schema, emitter, and config.
+- Calling the BoundEvent constructs the event and calls emit_publish with the payload and itself.
+- Calling the BoundEvent with keyword args calls emit_publish with the payload and itself.
 - The return value from emit_publish is returned to the caller.
-
+- publish without config stores None on the BoundEvent.
 """
 
 from typing import Any
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.channel import Channel
-from stratae.events.event import BoundEvent, EventMeta, EventSchema
+from stratae.events.event import BoundEvent, EventSchema
 from stratae.events.mixins.publish import Publisher
 
 
@@ -36,23 +35,12 @@ class _ItemShipped(EventSchema):
 
 
 @pytest.fixture
-def publisher() -> Publisher[EventMeta, None]:
-    """Yield a Publisher instance with abstract methods cleared for testing."""
+def publisher() -> Publisher[Any, None]:
+    """Return a Publisher instance with abstract methods cleared for testing."""
+    from unittest.mock import patch
+
     with patch.object(Publisher, "__abstractmethods__", frozenset[str]()):
         return Publisher()  # pyright: ignore[reportAbstractUsage]
-
-
-@pytest.fixture
-def none_publisher() -> Publisher[None, None]:
-    """Return a Publisher[None, None] instance for testing the no-meta path."""
-    with patch.object(Publisher, "__abstractmethods__", frozenset[str]()):
-        return Publisher()  # pyright: ignore[reportAbstractUsage]
-
-
-@pytest.fixture
-def meta() -> EventMeta:
-    """Return an EventMeta instance for use in publish calls."""
-    return EventMeta()
 
 
 def test_publish_bus_is_abstract():
@@ -67,94 +55,71 @@ def test_publish_bus_is_abstract():
         Publisher()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_publish_returns_bound_event(publisher: Publisher[EventMeta, None], meta: EventMeta):
+def test_publish_returns_bound_event(publisher: Publisher[Any, None]):
     """
     Publish should return a BoundEvent instance.
 
     Given: A Publisher instance with abstract methods cleared
-    When: publish is called with a channel, schema, and meta
+    When: publish is called with a schema
     Then: A BoundEvent instance should be returned
     """
-    # Arrange
-    channel = Channel("test")
-
-    # Act
-    bound = publisher.publish(channel, _ItemShipped, meta=meta)
-
-    # Assert
-    assert isinstance(bound, BoundEvent)
+    assert isinstance(publisher.publish(_ItemShipped), BoundEvent)
 
 
-def test_publish_bound_event_stores_schema_emitter_and_meta(
-    publisher: Publisher[EventMeta, None], meta: EventMeta
-):
+def test_publish_stores_schema_emitter_and_config(publisher: Publisher[Any, None]):
     """
-    BoundEvent returned by publish should store the channel, schema, emit_publish, and meta.
+    BoundEvent returned by publish should store the schema, emit_publish, and config.
 
     Given: A Publisher instance with abstract methods cleared
-    When: publish is called with a channel, schema, and meta
-    Then: The BoundEvent should store that channel, schema, emit_publish, and meta
+    When: publish is called with a schema and config
+    Then: The BoundEvent should store that schema, emit_publish, and config
     """
-    # Arrange
-    channel = Channel("test")
+    config = object()
 
-    # Act
-    bound = publisher.publish(channel, _ItemShipped, meta=meta)
+    bound = publisher.publish(_ItemShipped, config=config)
 
-    # Assert
-    assert bound.channel is channel
     assert bound.schema is _ItemShipped
     assert bound.emitter == publisher.emit_publish
-    assert bound.meta is meta
+    assert bound.config is config
 
 
 def test_publish_bound_event_calls_emit_publish_with_positional_args(
-    publisher: Publisher[EventMeta, None], meta: EventMeta, mocker: MockerFixture
+    publisher: Publisher[Any, None], mocker: MockerFixture
 ):
     """
     BoundEvent called with positional args should construct the event and call emit_publish.
 
     Given: A BoundEvent returned by publish
     When: The BoundEvent is called with positional arguments
-    Then: emit_publish should be called with the meta and the constructed event
+    Then: emit_publish should be called with the constructed payload and the BoundEvent itself
     """
-    # Arrange
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
-    channel = Channel("test")
-    bound = publisher.publish(channel, _ItemShipped, meta=meta)
+    bound = publisher.publish(_ItemShipped)
 
-    # Act
     bound(1, 10)
 
-    # Assert
-    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=meta)
+    mock_emit.assert_called_once_with(_ItemShipped(1, 10), bound)
 
 
 def test_publish_bound_event_calls_emit_publish_with_keyword_args(
-    publisher: Publisher[EventMeta, None], meta: EventMeta, mocker: MockerFixture
+    publisher: Publisher[Any, None], mocker: MockerFixture
 ):
     """
     BoundEvent called with keyword args should construct the event and call emit_publish.
 
     Given: A BoundEvent returned by publish
     When: The BoundEvent is called with keyword arguments
-    Then: emit_publish should be called with the meta and the constructed event
+    Then: emit_publish should be called with the constructed payload and the BoundEvent itself
     """
-    # Arrange
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
-    channel = Channel("test")
-    bound = publisher.publish(channel, _ItemShipped, meta=meta)
+    bound = publisher.publish(_ItemShipped)
 
-    # Act
     bound(item_id=2, quantity=5)
 
-    # Assert
-    mock_emit.assert_called_once_with(channel, _ItemShipped(2, 5), meta=meta)
+    mock_emit.assert_called_once_with(_ItemShipped(2, 5), bound)
 
 
-def test_publish_bound_event_returns_emit_publish_result(
-    publisher: Publisher[EventMeta, None], meta: EventMeta
-):
+def test_publish_bound_event_returns_emit_publish_result(publisher: Publisher[Any, None]):
     """
     Return value from emit_publish should be returned to the caller.
 
@@ -162,55 +127,24 @@ def test_publish_bound_event_returns_emit_publish_result(
     When: The BoundEvent is called
     Then: The return value should match what emit_publish returned
     """
-    # Arrange
     mock_emit = Mock(return_value="dispatched")
-    publisher.emit_publish = mock_emit
-    channel = Channel("test")
-    bound = publisher.publish(channel, _ItemShipped, meta=meta)
+    publisher.emit_publish = mock_emit  # pyright: ignore[reportAttributeAccessIssue]
+    bound = publisher.publish(_ItemShipped)
 
-    # Act
     result = bound(1, 10)
 
-    # Assert
     assert result == "dispatched"
 
 
-def test_publish_without_meta_returns_bound_event(none_publisher: Publisher[None, None]):
+def test_publish_without_config_stores_none(publisher: Publisher[Any, None]):
     """
-    Publish called without meta should return a BoundEvent with meta set to None.
+    Publish called without config should return a BoundEvent with config set to None.
 
-    Given: A Publisher[None, None] instance with abstract methods cleared
-    When: publish is called with only a channel and schema
-    Then: A BoundEvent should be returned with meta set to None
+    Given: A Publisher instance with abstract methods cleared
+    When: publish is called with only a schema
+    Then: A BoundEvent should be returned with config set to None
     """
-    # Arrange
-    channel = Channel("test")
+    bound = publisher.publish(_ItemShipped)
 
-    # Act
-    bound = none_publisher.publish(channel, _ItemShipped)
-
-    # Assert
     assert isinstance(bound, BoundEvent)
-    assert bound.meta is None
-
-
-def test_publish_without_meta_calls_emit_publish_with_none(
-    none_publisher: Publisher[None, None], mocker: MockerFixture
-):
-    """
-    BoundEvent from a no-meta publish should call emit_publish with None as meta.
-
-    Given: A BoundEvent returned by publish with no meta
-    When: The BoundEvent is called
-    Then: emit_publish should be called with None as meta
-    """
-    # Arrange
-    mock_emit = mocker.patch.object(none_publisher, "emit_publish", new=Mock())
-    channel = Channel("test")
-    bound = none_publisher.publish(channel, _ItemShipped)
-
-    # Act
-    bound(1, 10)
-
-    # Assert
-    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=None)
+    assert bound.config is None

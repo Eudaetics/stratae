@@ -4,22 +4,22 @@ Unit tests for the AsyncPublisher mixin.
 This test suite verifies the following behaviors:
 
 AsyncPublisher:
-- publish returns an AsyncBoundEvent bound to emit_publish.
-- The AsyncBoundEvent stores the correct schema, emitter, and meta.
 - AsyncPublisher cannot be instantiated directly (abstract).
-- Awaiting the result of calling the AsyncBoundEvent calls emit_publish with meta and event.
-- Awaiting the result of calling the AsyncBoundEvent with no meta calls emit_publish with None.
+- publish returns an AsyncBoundEvent bound to emit_publish.
+- The AsyncBoundEvent stores the correct schema, emitter, and config.
+- Awaiting the AsyncBoundEvent calls emit_publish with the payload and itself.
+- Awaiting the AsyncBoundEvent with keyword args calls emit_publish with the payload and itself.
 - The resolved return value from emit_publish is returned to the caller.
+- publish without config stores None on the AsyncBoundEvent.
 """
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.channel import Channel
-from stratae.events.event import AsyncBoundEvent, EventMeta, EventSchema
+from stratae.events.event import AsyncBoundEvent, EventSchema
 from stratae.events.mixins.publish import AsyncPublisher
 
 
@@ -35,23 +35,12 @@ class _ItemShipped(EventSchema):
 
 
 @pytest.fixture
-def async_publisher() -> AsyncPublisher[EventMeta, None]:
-    """Yield an AsyncPublisher instance with abstract methods cleared for testing."""
+def async_publisher() -> AsyncPublisher[Any, None]:
+    """Return an AsyncPublisher instance with abstract methods cleared for testing."""
+    from unittest.mock import patch
+
     with patch.object(AsyncPublisher, "__abstractmethods__", frozenset[str]()):
         return AsyncPublisher()  # pyright: ignore[reportAbstractUsage]
-
-
-@pytest.fixture
-def none_async_publisher() -> AsyncPublisher[None, None]:
-    """Return an AsyncPublisher[None, None] instance for testing the no-meta path."""
-    with patch.object(AsyncPublisher, "__abstractmethods__", frozenset[str]()):
-        return AsyncPublisher()  # pyright: ignore[reportAbstractUsage]
-
-
-@pytest.fixture
-def meta() -> EventMeta:
-    """Return an EventMeta instance for use in publish calls."""
-    return EventMeta()
 
 
 def test_async_publish_bus_is_abstract():
@@ -66,155 +55,100 @@ def test_async_publish_bus_is_abstract():
         AsyncPublisher()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_async_publish_returns_async_bound_event(
-    async_publisher: AsyncPublisher[EventMeta, None], meta: EventMeta
-):
+def test_async_publish_returns_async_bound_event(async_publisher: AsyncPublisher[Any, None]):
     """
     Publish should return an AsyncBoundEvent instance.
 
     Given: An AsyncPublisher instance with abstract methods cleared
-    When: publish is called with a channel, schema, and meta
+    When: publish is called with a schema
     Then: An AsyncBoundEvent instance should be returned
     """
-    # Arrange
-    channel = Channel("test")
-
-    # Act
-    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
-
-    # Assert
-    assert isinstance(bound, AsyncBoundEvent)
+    assert isinstance(async_publisher.publish(_ItemShipped), AsyncBoundEvent)
 
 
-def test_async_publish_bound_event_stores_schema_emitter_and_meta(
-    async_publisher: AsyncPublisher[EventMeta, None], meta: EventMeta
+def test_async_publish_stores_schema_emitter_and_config(
+    async_publisher: AsyncPublisher[Any, None],
 ):
     """
-    AsyncBoundEvent returned by publish should store the channel, schema, emit_publish, and meta.
+    AsyncBoundEvent returned by publish should store the schema, emit_publish, and config.
 
     Given: An AsyncPublisher instance with abstract methods cleared
-    When: publish is called with a channel, schema, and meta
-    Then: The AsyncBoundEvent should store that channel, schema, emit_publish, and meta
+    When: publish is called with a schema and config
+    Then: The AsyncBoundEvent should store that schema, emit_publish, and config
     """
-    # Arrange
-    channel = Channel("test")
+    config = object()
 
-    # Act
-    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
+    bound = async_publisher.publish(_ItemShipped, config=config)
 
-    # Assert
-    assert bound.channel is channel
     assert bound.schema is _ItemShipped
     assert bound.emitter == async_publisher.emit_publish
-    assert bound.meta is meta
+    assert bound.config is config
 
 
 async def test_async_publish_bound_event_calls_emit_publish_with_positional_args(
-    async_publisher: AsyncPublisher[EventMeta, None], meta: EventMeta, mocker: MockerFixture
+    async_publisher: AsyncPublisher[Any, None], mocker: MockerFixture
 ):
     """
     AsyncBoundEvent called with positional args should construct the event and call emit_publish.
 
-    Given: An AsyncBoundEvent returned by an AsyncPublisher's publish
-    When: The AsyncBoundEvent is called with positional arguments and the result is awaited
-    Then: emit_publish should be called with the meta and the constructed event
+    Given: An AsyncBoundEvent returned by publish
+    When: The AsyncBoundEvent is called and awaited with positional arguments
+    Then: emit_publish should be called with the constructed payload and the AsyncBoundEvent itself
     """
-    # Arrange
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
-    channel = Channel("test")
-    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
+    bound = async_publisher.publish(_ItemShipped)
 
-    # Act
     await bound(1, 10)
 
-    # Assert
-    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=meta)
+    mock_emit.assert_called_once_with(_ItemShipped(1, 10), bound)
 
 
 async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
-    async_publisher: AsyncPublisher[EventMeta, None], meta: EventMeta, mocker: MockerFixture
+    async_publisher: AsyncPublisher[Any, None], mocker: MockerFixture
 ):
     """
     AsyncBoundEvent called with keyword args should construct the event and call emit_publish.
 
-    Given: An AsyncBoundEvent returned by an AsyncPublisher's publish
-    When: The AsyncBoundEvent is called with keyword arguments and the result is awaited
-    Then: emit_publish should be called with the meta and the constructed event
+    Given: An AsyncBoundEvent returned by publish
+    When: The AsyncBoundEvent is called and awaited with keyword arguments
+    Then: emit_publish should be called with the constructed payload and the AsyncBoundEvent itself
     """
-    # Arrange
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
-    channel = Channel("test")
-    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
+    bound = async_publisher.publish(_ItemShipped)
 
-    # Act
     await bound(item_id=2, quantity=5)
 
-    # Assert
-    mock_emit.assert_called_once_with(channel, _ItemShipped(2, 5), meta=meta)
+    mock_emit.assert_called_once_with(_ItemShipped(2, 5), bound)
 
 
 async def test_async_publish_bound_event_returns_emit_publish_result(
-    async_publisher: AsyncPublisher[EventMeta, None], meta: EventMeta
+    async_publisher: AsyncPublisher[Any, None],
 ):
     """
     Resolved return value from emit_publish should be returned to the caller.
 
-    Given: An AsyncBoundEvent returned by an AsyncPublisher whose emit_publish resolves to a
-    known value
-    When: The AsyncBoundEvent is called and the result is awaited
+    Given: An AsyncBoundEvent returned by publish whose emit_publish resolves to a known value
+    When: The AsyncBoundEvent is called and awaited
     Then: The return value should match what emit_publish resolved to
     """
-    # Arrange
     mock_emit = AsyncMock(return_value="dispatched")
-    async_publisher.emit_publish = mock_emit
-    channel = Channel("test")
-    bound = async_publisher.publish(channel, _ItemShipped, meta=meta)
+    async_publisher.emit_publish = mock_emit  # pyright: ignore[reportAttributeAccessIssue]
+    bound = async_publisher.publish(_ItemShipped)
 
-    # Act
     result = await bound(1, 10)
 
-    # Assert
     assert result == "dispatched"
 
 
-def test_async_publish_without_meta_returns_async_bound_event(
-    none_async_publisher: AsyncPublisher[None, None],
-):
+def test_async_publish_without_config_stores_none(async_publisher: AsyncPublisher[Any, None]):
     """
-    Publish called without meta should return an AsyncBoundEvent with meta set to None.
+    Publish called without config should return an AsyncBoundEvent with config set to None.
 
-    Given: An AsyncPublisher[None, None] instance with abstract methods cleared
-    When: publish is called with only a channel and schema
-    Then: An AsyncBoundEvent should be returned with meta set to None
+    Given: An AsyncPublisher instance with abstract methods cleared
+    When: publish is called with only a schema
+    Then: An AsyncBoundEvent should be returned with config set to None
     """
-    # Arrange
-    channel = Channel("test")
+    bound = async_publisher.publish(_ItemShipped)
 
-    # Act
-    bound = none_async_publisher.publish(channel, _ItemShipped)
-
-    # Assert
     assert isinstance(bound, AsyncBoundEvent)
-    assert bound.meta is None
-
-
-async def test_async_publish_without_meta_calls_emit_publish_with_none(
-    none_async_publisher: AsyncPublisher[None, None], mocker: MockerFixture
-):
-    """
-    AsyncBoundEvent from a no-meta publish should call emit_publish with None as meta.
-
-    Given: An AsyncBoundEvent returned by publish with no meta
-    When: The AsyncBoundEvent is called and awaited
-    Then: emit_publish should be called with None as meta
-    """
-    # Arrange
-    mock_emit = mocker.patch.object(none_async_publisher, "emit_publish", new=AsyncMock())
-    channel = Channel("test")
-    bound = none_async_publisher.publish(channel, _ItemShipped)
-
-    # Act
-    await bound(1, 10)
-
-    # Assert
-    mock_emit.assert_called_once_with(channel, _ItemShipped(1, 10), meta=None)
+    assert bound.config is None

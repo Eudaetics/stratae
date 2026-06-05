@@ -1,12 +1,10 @@
 """Event handler wrapper carrying async detection semantics."""
 
 from inspect import iscoroutinefunction
-from typing import Callable
-
-from stratae.events.event import EventMeta
+from typing import Any, Callable
 
 
-class Handler[**P, Metadata: (EventMeta | None), R]:
+class Handler[**P, HandlerConfig: Any, R]:
     """
     Wraps an event handler callable with async detection and value equality.
 
@@ -30,19 +28,18 @@ class Handler[**P, Metadata: (EventMeta | None), R]:
     from ``subscribe``.
     """
 
-    def __init__(self, call: Callable[P, R], meta: Metadata = None) -> None:
+    def __init__(self, call: Callable[P, R], config: HandlerConfig = None) -> None:
         """
         Wrap a callable as an event handler.
 
         Args:
             call: The sync or async callable to wrap.  Must accept a
                   single ``EventSchema`` instance as its argument.
-            meta: Optional adapter-specific metadata used for filtering at
-                  dispatch time.  Never passed to ``call``.
+            config: Optional adapter-specific configuration.
 
         """
         self.call = call
-        self.meta = meta
+        self.config = config
         self.is_async: bool = iscoroutinefunction(call)
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:

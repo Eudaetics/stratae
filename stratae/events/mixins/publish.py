@@ -1,13 +1,12 @@
 """Pub/sub mixins for synchronous and asynchronous event publishing."""
 
 from abc import ABC, abstractmethod
-from typing import Callable
+from typing import Any, Awaitable, Callable
 
-from stratae.events.channel import Channel
-from stratae.events.event import AsyncBoundEvent, BoundEvent, EventMeta, EventSchema
+from stratae.events.event import AsyncBoundEvent, BoundEvent, EventSchema
 
 
-class Publisher[Metadata: (EventMeta | None), Resp](ABC):
+class Publisher[EventConfig: Any, Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to a synchronous publish emitter.
 
@@ -27,32 +26,33 @@ class Publisher[Metadata: (EventMeta | None), Resp](ABC):
     """
 
     def publish[**P](
-        self, channel: Channel, schema: Callable[P, EventSchema], *, meta: Metadata = None
-    ) -> BoundEvent[P, Metadata, Resp]:
+        self, schema: Callable[P, EventSchema], *, config: Any = None
+    ) -> BoundEvent[P, EventConfig, Resp]:
         """
         Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
 
         Args:
             channel: A Channel over which to publish the event.
             schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
-            meta:   The adapter-specific routing metadata for this binding.
+            config:   The adapter-specific configuration for this binding.
 
         Returns:
             A ``BoundEvent`` that, when called with ``P`` arguments, constructs
             an instance of ``schema`` and forwards it to ``emit_publish``.
 
         """
-        return BoundEvent(channel, schema, self.emit_publish, meta=meta)
+        return BoundEvent(schema, self.emit_publish, config=config)
 
     @abstractmethod
-    def emit_publish(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
+    def emit_publish[**P](
+        self, payload: EventSchema, event: BoundEvent[P, EventConfig, Resp]
+    ) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
-            channel: A Channel over which to publish the event.
             payload: The constructed ``EventSchema`` instance to dispatch.
-            meta:    The adapter-specific routing metadata.
+            event:   The bound event being emitted.
 
         Returns:
             ``Resp`` as defined by the concrete subclass.
@@ -61,7 +61,7 @@ class Publisher[Metadata: (EventMeta | None), Resp](ABC):
         ...
 
 
-class AsyncPublisher[Metadata: (EventMeta | None), Resp](ABC):
+class AsyncPublisher[EventConfig: Any, Resp](ABC):
     """
     Mixin that binds ``EventSchema`` subclasses to an asynchronous publish emitter.
 
@@ -73,18 +73,17 @@ class AsyncPublisher[Metadata: (EventMeta | None), Resp](ABC):
 
     def publish[**P](
         self,
-        channel: Channel,
         schema: Callable[P, EventSchema],
         *,
-        meta: Metadata = None,
-    ) -> AsyncBoundEvent[P, Metadata, Resp]:
+        config: EventConfig = None,
+    ) -> AsyncBoundEvent[P, EventConfig, Resp]:
         """
         Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
 
         Args:
             channel: A Channel over which to publish the event.
             schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
-            meta:   The adapter-specific routing metadata for this binding.
+            config:   The adapter-specific configuration for this binding.
 
         Returns:
             An ``AsyncBoundEvent`` that, when called and awaited with ``P``
@@ -92,17 +91,18 @@ class AsyncPublisher[Metadata: (EventMeta | None), Resp](ABC):
             to ``emit_publish``.
 
         """
-        return AsyncBoundEvent(channel, schema, self.emit_publish, meta=meta)
+        return AsyncBoundEvent(schema, self.emit_publish, config=config)
 
     @abstractmethod
-    async def emit_publish(self, channel: Channel, payload: EventSchema, *, meta: Metadata) -> Resp:
+    async def emit_publish[**P](
+        self, payload: EventSchema, event: BoundEvent[P, EventConfig, Awaitable[Resp]]
+    ) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
-            channel: A Channel over which to publish the event.
             payload: The constructed ``EventSchema`` instance to dispatch.
-            meta:    The adapter-specific routing metadata.
+            event:   The bound event being emitted.
 
         Returns:
             ``Resp`` as defined by the concrete subclass.

@@ -1,17 +1,16 @@
 """Direct, in-process asynchronous event bus."""
 
 import asyncio
-from typing import Any
+from typing import Any, Awaitable
 
-from stratae.events.channel import Channel
 from stratae.events.envelope import scoped_envelope
-from stratae.events.event import EventSchema
+from stratae.events.event import BoundEvent, EventSchema
 from stratae.events.handler import Handler
 from stratae.events.mixins.publish import AsyncPublisher
 from stratae.events.mixins.subscribe import AsyncSubscriber
 
 
-class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[None]):
+class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[BoundEvent[Any, Any, Any]]):
     """
     In-process, asynchronous event bus with no routing metadata.
 
@@ -24,18 +23,19 @@ class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[None]):
     Example::
 
         bus = AsyncLocalBus()
-        orders = Channel("orders")
 
-        handle = bus.subscribe(orders, on_order)
+        emit_order = bus.publish(OrderPlaced)
 
-        emit_order = bus.publish(orders, OrderPlaced)
+        @bus.subscribe(config=emit_order)
+        async def on_order(payload: OrderPlaced) -> None: ...
+
         await emit_order(order_id=42)
 
-        bus.unsubscribe(orders, handle)
+        bus.unsubscribe(on_order)
     """
 
-    async def emit_publish(
-        self, channel: Channel, payload: EventSchema, *, meta: None = None
+    async def emit_publish[**P](
+        self, payload: EventSchema, event: BoundEvent[P, Any, Awaitable[None]]
     ) -> None:
         """
         Open a scoped envelope and dispatch the payload to all handlers on the channel.
@@ -44,16 +44,15 @@ class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[None]):
         currently active one, enabling correlation across nested emissions.
 
         Args:
-            channel: The channel the event was emitted on.
             payload: The constructed ``EventSchema`` instance to dispatch.
-            meta:    Unused; present to satisfy the ``AsyncPublisher`` interface.
+            event:   The event being emitted.
 
         """
         with scoped_envelope():
-            await self.handle_subscribe(channel, payload, meta=meta)
+            await self.handle_subscribe(payload, config=event)
 
     async def handle_subscribe(
-        self, channel: Channel, payload: EventSchema, *, meta: None = None
+        self, payload: EventSchema, *, config: BoundEvent[Any, None, Awaitable[None]]
     ) -> None:
         """
         Invoke every handler registered on the channel concurrently.
@@ -62,20 +61,19 @@ class AsyncLocalBus(AsyncPublisher[None, None], AsyncSubscriber[None]):
         are dispatched via ``asyncio.gather`` so all run concurrently.
 
         Args:
-            channel: The channel the event arrived on.
             payload: The constructed ``EventSchema`` instance to dispatch.
-            meta:    Unused; present to satisfy the ``AsyncSubscriber`` interface.
+            config:    Unused; present to satisfy the ``AsyncSubscriber`` interface.
 
         """
 
-        async def _call(handler: Handler[Any, None, Any]) -> None:
+        async def _call(handler: Handler[Any, BoundEvent[Any, Any, Any], Any]) -> None:
             if handler.is_async:
                 await handler(payload)
             else:
                 handler(payload)
 
         results = await asyncio.gather(
-            *(_call(h) for h in self.get_handlers(channel)), return_exceptions=True
+            *(_call(h) for h in self.get_handlers(config)), return_exceptions=True
         )
         exceptions = [r for r in results if isinstance(r, Exception)]
         if exceptions:

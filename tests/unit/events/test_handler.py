@@ -18,7 +18,7 @@ from typing import Any, Callable
 
 import pytest
 
-from stratae.events.event import EventMeta, EventSchema
+from stratae.events.event import EventSchema
 from stratae.events.handler import Handler
 
 
@@ -74,7 +74,7 @@ def test_meta_defaults_to_none():
     """
     handler = Handler(_sync_handler)
 
-    assert handler.meta is None
+    assert handler.config is None
 
 
 def test_meta_stores_supplied_value():
@@ -85,10 +85,10 @@ def test_meta_stores_supplied_value():
     When: A Handler is constructed with both
     Then: meta should reference the supplied EventMeta
     """
-    meta = EventMeta()
+    meta = {"test": 1}
     handler = Handler(_sync_handler, meta)
 
-    assert handler.meta is meta
+    assert handler.config is meta
 
 
 def test_calling_handler_invokes_sync_callable():

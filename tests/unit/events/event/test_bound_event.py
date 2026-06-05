@@ -2,24 +2,19 @@
 Unit tests for the BoundEvent class.
 
 This test suite verifies the following behaviors:
-- The schema, emitter, and meta are stored on initialization.
+- The schema, emitter, and config are stored on initialization.
 - Calling the bound event constructs the event with positional arguments.
 - Calling the bound event constructs the event with keyword arguments.
+- Calling the bound event with mixed positional and keyword arguments forwards them correctly.
 - The return value from the emitter is returned to the caller.
 """
 
 from typing import Any
-from unittest.mock import create_autospec
+from unittest.mock import Mock
 
-import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events import EventMeta
-from stratae.events.channel import Channel
 from stratae.events.event import BoundEvent, EventSchema
-
-
-def _emitter_spec(channel: Channel, payload: EventSchema, *, meta: EventMeta | None) -> Any: ...
 
 
 class _OrderCreated(EventSchema):
@@ -33,104 +28,82 @@ class _OrderCreated(EventSchema):
         return self.order_id == value.order_id and self.status == value.status
 
 
-@pytest.fixture
-def meta() -> EventMeta:
-    """Return an EventMeta instance for use in BoundEvent construction."""
-    return EventMeta()
-
-
-def test_init_stores_schema_emitter_and_meta(meta: EventMeta):
+def test_init_stores_schema_emitter_and_config():
     """
-    Test that the schema, emitter, and meta are stored during initialization.
+    Test that the schema, emitter, and config are stored during initialization.
 
-    Given: A schema, an emitter callable, and an EventMeta
+    Given: A schema, an emitter callable, and a config object
     When: A BoundEvent is created
-    Then: The schema, emitter, and meta attributes should reference the supplied objects
+    Then: The schema, emitter, and config attributes should reference the supplied objects
     """
-    # Arrange
-    emitter = create_autospec(_emitter_spec)
-    channel = Channel("test")
+    emitter = Mock()
+    config = object()
 
-    # Act
-    bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(
-        channel, _OrderCreated, emitter, meta=meta
-    )
+    bound: BoundEvent[[int, str], Any, Any] = BoundEvent(_OrderCreated, emitter, config=config)
 
-    # Assert
     assert bound.schema is _OrderCreated
     assert bound.emitter is emitter
-    assert bound.meta is meta
+    assert bound.config is config
 
 
-def test_call_passes_positional_args_to_schema(meta: EventMeta, mocker: MockerFixture):
+def test_call_passes_positional_args_to_schema(mocker: MockerFixture):
     """
     Test that positional arguments are forwarded to the schema constructor.
 
     Given: A BoundEvent wrapping a schema that accepts positional arguments
     When: The BoundEvent is called with positional arguments
-    Then: The schema constructor should be called with those values as positional args
+    Then: The schema constructor should be called with those values and the emitter
+          should receive the constructed payload and the BoundEvent itself
     """
-    # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = create_autospec(_emitter_spec)
-    channel = Channel("test")
-    bound: BoundEvent[[int, str], EventMeta, Any] = BoundEvent(
-        channel, _OrderCreated, emitter, meta=meta
-    )
+    emitter = Mock()
+    bound: BoundEvent[[int, str], Any, Any] = BoundEvent(_OrderCreated, emitter)
 
-    # Act
     bound(1, "pending")
 
-    # Assert
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(channel, _OrderCreated(1, "pending"), meta=meta)
+    emitter.assert_called_once_with(_OrderCreated(1, "pending"), bound)
 
 
-def test_call_passes_keyword_args_to_schema(meta: EventMeta, mocker: MockerFixture):
+def test_call_passes_keyword_args_to_schema(mocker: MockerFixture):
     """
     Test that keyword arguments are forwarded to the schema constructor.
 
     Given: A BoundEvent wrapping a schema that accepts keyword arguments
     When: The BoundEvent is called with keyword arguments
-    Then: The schema constructor should be called with those values as keyword args
+    Then: The schema constructor should be called with those values and the emitter
+          should receive the constructed payload and the BoundEvent itself
     """
-    # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = create_autospec(_emitter_spec)
-    channel = Channel("test")
-    bound = BoundEvent(channel, _OrderCreated, emitter, meta=meta)
+    emitter = Mock()
+    bound = BoundEvent(_OrderCreated, emitter)
 
-    # Act
     bound(order_id=2, status="complete")
 
-    # Assert
     spy.assert_called_once_with(mocker.ANY, order_id=2, status="complete")
-    emitter.assert_called_once_with(channel, _OrderCreated(2, "complete"), meta=meta)
+    emitter.assert_called_once_with(_OrderCreated(2, "complete"), bound)
 
 
-def test_call_passes_mixed_args_to_schema(meta: EventMeta, mocker: MockerFixture):
+def test_call_passes_mixed_args_to_schema(mocker: MockerFixture):
     """
     Test that a mix of positional and keyword arguments are forwarded to the schema constructor.
 
     Given: A BoundEvent wrapping a schema that accepts positional and keyword arguments
     When: The BoundEvent is called with one positional and one keyword argument
-    Then: The schema constructor should be called with args in the same positional and keyword form
+    Then: The schema constructor should be called with args in the same form and the emitter
+          should receive the constructed payload and the BoundEvent itself
     """
-    # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = create_autospec(_emitter_spec)
-    channel = Channel("test")
-    bound = BoundEvent(channel, _OrderCreated, emitter, meta=meta)
+    emitter = Mock()
+    bound = BoundEvent(_OrderCreated, emitter)
 
-    # Act
     bound(1, status="pending")
 
-    # Assert
     spy.assert_called_once_with(mocker.ANY, 1, status="pending")
-    emitter.assert_called_once_with(channel, _OrderCreated(1, "pending"), meta=meta)
+    emitter.assert_called_once_with(_OrderCreated(1, "pending"), bound)
 
 
-def test_call_returns_emitter_result(meta: EventMeta):
+def test_call_returns_emitter_result():
     """
     Test that the return value from the emitter is returned to the caller.
 
@@ -138,15 +111,9 @@ def test_call_returns_emitter_result(meta: EventMeta):
     When: The BoundEvent is called
     Then: The return value should match the emitter's return value
     """
-    # Arrange
-    emitter = create_autospec(_emitter_spec, return_value="dispatched")
-    channel = Channel("test")
-    bound: BoundEvent[[int, str], EventMeta, str] = BoundEvent(
-        channel, _OrderCreated, emitter, meta=meta
-    )
+    emitter = Mock(return_value="dispatched")
+    bound: BoundEvent[[int, str], Any, str] = BoundEvent(_OrderCreated, emitter)
 
-    # Act
     result = bound(1, "pending")
 
-    # Assert
     assert result == "dispatched"
