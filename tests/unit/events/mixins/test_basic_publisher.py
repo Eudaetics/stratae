@@ -39,7 +39,7 @@ def publisher() -> BasicPublisher[None]:
     from unittest.mock import patch
 
     with patch.object(BasicPublisher, "__abstractmethods__", frozenset[str]()):
-        return BasicPublisher[None]()  # pyright: ignore[reportAbstractUsage]
+        return BasicPublisher()  # pyright: ignore[reportAbstractUsage]
 
 
 def test_basic_publish_bus_is_abstract():
