@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
 from stratae.events.event import AsyncBoundEvent, BoundEvent, EventSchema
 
@@ -142,7 +142,7 @@ class AsyncBasicPublisher[Resp](ABC):
 
     @abstractmethod
     async def emit_publish[**P](
-        self, payload: EventSchema, event: BoundEvent[P, None, Awaitable[Resp]]
+        self, payload: EventSchema, event: AsyncBoundEvent[P, None, Resp]
     ) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
@@ -191,7 +191,7 @@ class AsyncPublisher[EventConfig: Any, Resp](ABC):
 
     @abstractmethod
     async def emit_publish[**P](
-        self, payload: EventSchema, event: BoundEvent[P, EventConfig, Awaitable[Resp]]
+        self, payload: EventSchema, event: AsyncBoundEvent[P, EventConfig, Resp]
     ) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
