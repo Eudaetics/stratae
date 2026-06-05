@@ -39,7 +39,7 @@ def async_publisher() -> AsyncBasicPublisher[None]:
     from unittest.mock import patch
 
     with patch.object(AsyncBasicPublisher, "__abstractmethods__", frozenset[str]()):
-        return AsyncBasicPublisher[None]()  # pyright: ignore[reportAbstractUsage]
+        return AsyncBasicPublisher()  # pyright: ignore[reportAbstractUsage]
 
 
 def test_async_basic_publish_bus_is_abstract():
