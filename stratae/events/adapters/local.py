@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from stratae.events.envelope import scoped_envelope
+from stratae.events.envelope import EventEnvelope
 from stratae.events.event import BoundEvent, EventSchema
 from stratae.events.mixins.publish import BasicPublisher
 from stratae.events.mixins.subscribe import Subscriber
@@ -51,7 +51,7 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
 
         """
         if self._use_envelope:
-            with scoped_envelope():
+            with EventEnvelope.scope():
                 self.handle_subscribe(payload, config=event)
         else:
             self.handle_subscribe(payload, config=event)

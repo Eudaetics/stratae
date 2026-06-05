@@ -3,7 +3,7 @@
 import asyncio
 from typing import Any
 
-from stratae.events.envelope import scoped_envelope
+from stratae.events.envelope import EventEnvelope
 from stratae.events.event import AsyncBoundEvent, EventSchema
 from stratae.events.handler import Handler
 from stratae.events.mixins.publish import AsyncBasicPublisher
@@ -60,7 +60,7 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
 
         """
         if self._use_envelope:
-            with scoped_envelope():
+            with EventEnvelope.scope():
                 await self.handle_subscribe(payload, config=event)
         else:
             await self.handle_subscribe(payload, config=event)
