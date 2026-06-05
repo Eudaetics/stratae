@@ -6,20 +6,20 @@ This test suite verifies the following behaviors:
 AsyncSubscriber:
 - AsyncSubscriber cannot be instantiated directly (abstract).
 - AsyncSubscriber inherits storage behaviour from SubscriberBase.
-- subscribe adds a handler to the mapping for a channel.
+- subscribe adds a handler to the mapping for a config.
 - unsubscribe removes a previously registered handler.
 """
 
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 
-from stratae.events.channel import Channel
 from stratae.events.mixins.subscribe import AsyncSubscriber, SubscriberBase
 
 
 @pytest.fixture
-def async_subscriber() -> AsyncSubscriber[None]:
+def async_subscriber() -> AsyncSubscriber[Any]:
     """Return an AsyncSubscriber instance with abstract methods cleared for testing."""
     with patch.object(AsyncSubscriber, "__abstractmethods__", frozenset[str]()):
         return AsyncSubscriber()  # pyright: ignore[reportAbstractUsage]
@@ -37,7 +37,7 @@ def test_async_subscriber_is_abstract():
         AsyncSubscriber()  # pyright: ignore[reportAbstractUsage]
 
 
-def test_async_subscriber_inherits_from_subscriber_base(async_subscriber: AsyncSubscriber[None]):
+def test_async_subscriber_inherits_from_subscriber_base(async_subscriber: AsyncSubscriber[Any]):
     """
     AsyncSubscriber should be an instance of SubscriberBase.
 
@@ -48,40 +48,34 @@ def test_async_subscriber_inherits_from_subscriber_base(async_subscriber: AsyncS
     assert isinstance(async_subscriber, SubscriberBase)
 
 
-def test_async_subscriber_subscribe_adds_handler(async_subscriber: AsyncSubscriber[None]):
+def test_async_subscriber_subscribe_adds_handler(async_subscriber: AsyncSubscriber[Any]):
     """
-    Subscribe should add the handler to the mapping for the given channel.
+    Subscribe should add the handler to the mapping for the given config.
 
-    Given: An AsyncSubscriber instance, a channel, and a handler callable
-    When: subscribe is called with the channel and handler
-    Then: The returned Handler should appear in get_handlers for that channel
+    Given: An AsyncSubscriber instance, a config, and a handler callable
+    When: subscribe is called with the handler and config
+    Then: The returned Handler should appear in get_handlers for that config
     """
-    # Arrange
-    channel = Channel("test")
+    config = object()
     fn = Mock()
 
-    # Act
-    handle = async_subscriber.subscribe(channel, fn)
+    handle = async_subscriber.subscribe(config, fn)
 
-    # Assert
-    assert handle in async_subscriber.get_handlers(channel)
+    assert handle in async_subscriber.get_handlers(config)
 
 
-def test_async_subscriber_unsubscribe_removes_handler(async_subscriber: AsyncSubscriber[None]):
+def test_async_subscriber_unsubscribe_removes_handler(async_subscriber: AsyncSubscriber[Any]):
     """
     Unsubscribe should remove a previously registered handler.
 
     Given: An AsyncSubscriber instance with a registered handler
     When: unsubscribe is called with the Handler returned by subscribe
-    Then: The handler should no longer appear in get_handlers for that channel
+    Then: The handler should no longer appear in get_handlers for that config
     """
-    # Arrange
-    channel = Channel("test")
+    config = object()
     fn = Mock()
-    handle = async_subscriber.subscribe(channel, fn)
+    handle = async_subscriber.subscribe(config, fn)
 
-    # Act
-    async_subscriber.unsubscribe(channel, handle)
+    async_subscriber.unsubscribe(handle)
 
-    # Assert
-    assert handle not in async_subscriber.get_handlers(channel)
+    assert handle not in async_subscriber.get_handlers(config)

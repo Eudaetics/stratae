@@ -7,8 +7,7 @@ Handler:
 - is_async is False for a synchronous callable.
 - is_async is True for an asynchronous callable.
 - call stores the wrapped callable.
-- meta defaults to None when not supplied.
-- meta stores the supplied value.
+- config stores the supplied value.
 - Calling a Handler invokes the wrapped sync callable.
 - Calling a Handler wrapping an async callable returns an awaitable.
 """
@@ -18,7 +17,7 @@ from typing import Any, Callable
 
 import pytest
 
-from stratae.events.event import EventMeta, EventSchema
+from stratae.events.event import EventSchema
 from stratae.events.handler import Handler
 
 
@@ -48,7 +47,7 @@ def test_is_async_reflects_callable_type(call: Callable[[EventSchema], Any], exp
     When: A Handler is constructed with it
     Then: is_async should match whether the callable is a coroutine function
     """
-    assert Handler(call).is_async is expected
+    assert Handler(call, object()).is_async is expected
 
 
 def test_call_stores_wrapped_callable():
@@ -59,36 +58,23 @@ def test_call_stores_wrapped_callable():
     When: A Handler is constructed with it
     Then: call should be that callable
     """
-    handler = Handler(_sync_handler)
+    handler = Handler(_sync_handler, object())
 
     assert handler.call is _sync_handler
 
 
-def test_meta_defaults_to_none():
+def test_config_stores_supplied_value():
     """
-    Meta should be None when not supplied at construction.
+    Config should store the value passed at construction.
 
-    Given: A callable with no meta argument
-    When: A Handler is constructed with it
-    Then: meta should be None
-    """
-    handler = Handler(_sync_handler)
-
-    assert handler.meta is None
-
-
-def test_meta_stores_supplied_value():
-    """
-    Meta should store the value passed at construction.
-
-    Given: A callable and an EventMeta instance
+    Given: A callable and a config value
     When: A Handler is constructed with both
-    Then: meta should reference the supplied EventMeta
+    Then: config should reference the supplied value
     """
-    meta = EventMeta()
-    handler = Handler(_sync_handler, meta)
+    config = {"test": 1}
+    handler = Handler(_sync_handler, config)
 
-    assert handler.meta is meta
+    assert handler.config is config
 
 
 def test_calling_handler_invokes_sync_callable():
@@ -100,7 +86,7 @@ def test_calling_handler_invokes_sync_callable():
     Then: The result should be the callable's return value
     """
     payload = EventSchema()
-    handler = Handler(_sync_handler)
+    handler = Handler(_sync_handler, object())
 
     assert handler(payload) == 1
 
@@ -114,7 +100,7 @@ async def test_calling_handler_wrapping_async_callable_returns_awaitable():
     Then: The result should be awaitable and resolve to the callable's return value
     """
     payload = EventSchema()
-    handler = Handler(_async_handler)
+    handler = Handler(_async_handler, object())
 
     result = await handler(payload)
 
