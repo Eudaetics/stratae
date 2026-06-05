@@ -31,23 +31,23 @@ class EventEnvelope:
         """Retrieve the current envelope, or ``None`` if no envelope is active."""
         return _current.get(None)
 
+    @classmethod
+    @contextmanager
+    def scope(cls, envelope: EventEnvelope | None = None) -> Generator[EventEnvelope, None, None]:
+        """
+        Set the active envelope for the duration of the block, then restore the previous one.
+
+        If no envelope is provided, inherits from the current context (creating a child) or
+        creates a new root envelope if there is no current context.
+        """
+        if envelope is None:
+            parent = _current.get(None)
+            envelope = parent.child() if parent else cls()
+        token = _current.set(envelope)
+        try:
+            yield envelope
+        finally:
+            _current.reset(token)
+
 
 _current: ContextVar[EventEnvelope] = ContextVar("_current_envelope")
-
-
-@contextmanager
-def scoped_envelope(envelope: EventEnvelope | None = None) -> Generator[EventEnvelope, None, None]:
-    """
-    Set the active envelope for the duration of the block, then restore the previous one.
-
-    If no envelope is provided, inherits from the current context (creating a child) or
-    creates a new root envelope if there is no current context.
-    """
-    if envelope is None:
-        parent = _current.get(None)
-        envelope = parent.child() if parent else EventEnvelope()
-    token = _current.set(envelope)
-    try:
-        yield envelope
-    finally:
-        _current.reset(token)
