@@ -138,7 +138,7 @@ def test_publish_bound_event_returns_emit_publish_result(
     publisher: Publisher[str, None], mocker: MockerFixture
 ):
     """
-    Return value from emit_publish should be returned to the caller.
+    The return value from emit_publish should propagate out of the BoundEvent call.
 
     Given: A BoundEvent created via the decorator factory
     When: The BoundEvent is called

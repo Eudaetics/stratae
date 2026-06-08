@@ -140,9 +140,9 @@ async def test_async_publish_bound_event_returns_emit_publish_result(
     async_publisher: AsyncPublisher[str, None], mocker: MockerFixture
 ):
     """
-    Resolved return value from emit_publish should be returned to the caller.
+    The return value from emit_publish should propagate out of the AsyncBoundEvent call.
 
-    Given: An AsyncBoundEvent using the decorator factory
+    Given: An AsyncBoundEvent created via the decorator factory
     When: The AsyncBoundEvent is called and awaited
     Then: The return value should match what emit_publish resolved to
     """
