@@ -10,6 +10,7 @@ AsyncPublisher:
 - Awaiting the AsyncBoundEvent calls emit_publish with the payload and itself.
 - Awaiting the AsyncBoundEvent with keyword args calls emit_publish with the payload and itself.
 - The resolved return value from emit_publish is returned to the caller.
+- Each call to publish returns a distinct AsyncBoundEvent instance.
 """
 
 from unittest.mock import AsyncMock
@@ -19,17 +20,6 @@ from pytest_mock import MockerFixture
 
 from stratae.events.event import AsyncBoundEvent, EventSchema
 from stratae.events.mixins.publish import AsyncPublisher
-
-
-class _ItemShipped(EventSchema):
-    def __init__(self, item_id: int, quantity: int) -> None:
-        self.item_id = item_id
-        self.quantity = quantity
-
-    def __eq__(self, value: object) -> bool:
-        if not isinstance(value, _ItemShipped):
-            return False
-        return self.item_id == value.item_id and self.quantity == value.quantity
 
 
 @pytest.fixture
@@ -58,10 +48,14 @@ def test_async_publish_returns_async_bound_event(async_publisher: AsyncPublisher
     Publish should return an AsyncBoundEvent instance.
 
     Given: An AsyncPublisher instance with abstract methods cleared
-    When: publish is called with a schema and config
+    When: publish is used as a decorator factory with a config
     Then: An AsyncBoundEvent instance should be returned
     """
-    assert isinstance(async_publisher.publish(_ItemShipped, config="orders"), AsyncBoundEvent)
+
+    @async_publisher.publish(config="orders")
+    class _ItemShipped(EventSchema): ...
+
+    assert isinstance(_ItemShipped, AsyncBoundEvent)
 
 
 def test_async_publish_stores_schema_emitter_and_config(
@@ -71,14 +65,19 @@ def test_async_publish_stores_schema_emitter_and_config(
     AsyncBoundEvent returned by publish should store the schema, emit_publish, and config.
 
     Given: An AsyncPublisher instance with abstract methods cleared
-    When: publish is called with a schema and config
-    Then: The AsyncBoundEvent should store that schema, emit_publish, and config
+    When: publish is used as a decorator factory with a config
+    Then: The AsyncBoundEvent should store an EventSchema subclass, emit_publish, and config
     """
-    bound = async_publisher.publish(_ItemShipped, config="orders")
 
-    assert bound.schema is _ItemShipped
-    assert bound.emitter == async_publisher.emit_publish
-    assert bound.config == "orders"
+    @async_publisher.publish(config="orders")
+    class _ItemShipped(EventSchema):
+        def __init__(self, item_id: int, quantity: int) -> None:
+            self.item_id = item_id
+            self.quantity = quantity
+
+    assert isinstance(_ItemShipped.schema, type)
+    assert _ItemShipped.emitter == async_publisher.emit_publish
+    assert _ItemShipped.config == "orders"
 
 
 async def test_async_publish_bound_event_calls_emit_publish_with_positional_args(
@@ -92,11 +91,21 @@ async def test_async_publish_bound_event_calls_emit_publish_with_positional_args
     Then: emit_publish should be called with the constructed payload and the AsyncBoundEvent itself
     """
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
-    bound = async_publisher.publish(_ItemShipped, config="orders")
 
-    await bound(1, 10)
+    @async_publisher.publish(config="orders")
+    class _ItemShipped(EventSchema):
+        def __init__(self, item_id: int, quantity: int) -> None:
+            self.item_id = item_id
+            self.quantity = quantity
 
-    mock_emit.assert_called_once_with(_ItemShipped(1, 10), bound)
+        def __eq__(self, value: object) -> bool:
+            if not isinstance(value, type(self)):
+                return False
+            return self.item_id == value.item_id and self.quantity == value.quantity
+
+    await _ItemShipped(1, 10)
+
+    mock_emit.assert_called_once_with(_ItemShipped.schema(1, 10), _ItemShipped)
 
 
 async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
@@ -110,27 +119,63 @@ async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
     Then: emit_publish should be called with the constructed payload and the AsyncBoundEvent itself
     """
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
-    bound = async_publisher.publish(_ItemShipped, config="orders")
 
-    await bound(item_id=2, quantity=5)
+    @async_publisher.publish(config="orders")
+    class _ItemShipped(EventSchema):
+        def __init__(self, item_id: int, quantity: int) -> None:
+            self.item_id = item_id
+            self.quantity = quantity
 
-    mock_emit.assert_called_once_with(_ItemShipped(2, 5), bound)
+        def __eq__(self, value: object) -> bool:
+            if not isinstance(value, type(self)):
+                return False
+            return self.item_id == value.item_id and self.quantity == value.quantity
+
+    await _ItemShipped(item_id=2, quantity=5)
+
+    mock_emit.assert_called_once_with(_ItemShipped.schema(item_id=2, quantity=5), _ItemShipped)
 
 
 async def test_async_publish_bound_event_returns_emit_publish_result(
-    async_publisher: AsyncPublisher[str, None],
+    async_publisher: AsyncPublisher[str, None], mocker: MockerFixture
 ):
     """
     Resolved return value from emit_publish should be returned to the caller.
 
-    Given: An AsyncBoundEvent returned by publish whose emit_publish resolves to a known value
+    Given: An AsyncBoundEvent using the decorator factory
     When: The AsyncBoundEvent is called and awaited
     Then: The return value should match what emit_publish resolved to
     """
-    mock_emit = AsyncMock(return_value="dispatched")
-    async_publisher.emit_publish = mock_emit  # pyright: ignore[reportAttributeAccessIssue]
-    bound = async_publisher.publish(_ItemShipped, config="orders")
+    mock_emit = mocker.patch.object(
+        async_publisher, "emit_publish", new=AsyncMock(return_value="dispatched")
+    )
 
-    result = await bound(1, 10)
+    @async_publisher.publish(config="orders")
+    class _ItemShipped(EventSchema):
+        def __init__(self, item_id: int, quantity: int) -> None:
+            self.item_id = item_id
+            self.quantity = quantity
 
-    assert result == "dispatched"
+    result = await _ItemShipped(1, 10)
+
+    assert result == mock_emit.return_value
+
+
+def test_async_publish_returns_distinct_bound_events(async_publisher: AsyncPublisher[str, None]):
+    """
+    Each call to publish should return a distinct AsyncBoundEvent instance.
+
+    Given: An AsyncPublisher instance with abstract methods cleared
+    When: publish is called twice with the same schema
+    Then: The two AsyncBoundEvents should be different objects
+    """
+
+    class _ItemShipped(EventSchema):
+        def __init__(self, item_id: int, quantity: int) -> None:
+            self.item_id = item_id
+            self.quantity = quantity
+
+    first = async_publisher.publish(_ItemShipped, config="orders")
+    second = async_publisher.publish(_ItemShipped, config="orders")
+
+    assert first is not second

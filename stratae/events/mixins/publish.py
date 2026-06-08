@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import Any, Callable, overload
 
 from stratae.events.event import AsyncBoundEvent, BoundEvent, EventSchema
 
@@ -71,23 +71,54 @@ class Publisher[EventConfig: Any, Resp](ABC):
 
         emit_order = publisher.publish(OrderPlaced, config=KafkaMeta("orders"))
         emit_order(order_id=42)
+
+        @publisher.publish(config=KafkaMeta("orders"))
+        class order_placed(EventSchema):
+            def __init__(self, order_id: int) -> None: ...
     """
 
+    @overload
     def publish[**P](
         self, schema: Callable[P, EventSchema], *, config: EventConfig
-    ) -> BoundEvent[P, EventConfig, Resp]:
+    ) -> BoundEvent[P, EventConfig, Resp]: ...
+
+    @overload
+    def publish[**P](
+        self, *, config: EventConfig
+    ) -> Callable[[Callable[P, EventSchema]], BoundEvent[P, EventConfig, Resp]]: ...
+
+    def publish[**P](
+        self, schema: Callable[P, EventSchema] | None = None, *, config: EventConfig
+    ) -> (
+        BoundEvent[P, EventConfig, Resp]
+        | Callable[[Callable[P, EventSchema]], BoundEvent[P, EventConfig, Resp]]
+    ):
         """
         Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
 
+        Can be called directly or used as a decorator factory::
+
+            emit_order = publisher.publish(OrderPlaced, config=KafkaMeta("orders"))
+
+            @publisher.publish(config=KafkaMeta("orders"))
+            class order_placed(EventSchema): ...
+
         Args:
             schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
+                    Omit to use as a decorator factory.
             config: The adapter-specific routing config for this binding.
 
         Returns:
-            A ``BoundEvent`` that, when called with ``P`` arguments, constructs
-            an instance of ``schema`` and forwards it to ``emit_publish``.
+            A ``BoundEvent`` when ``schema`` is provided, otherwise a decorator
+            that accepts a schema and returns a ``BoundEvent``.
 
         """
+        if schema is None:
+
+            def decorator(s: Callable[P, EventSchema]) -> BoundEvent[P, EventConfig, Resp]:
+                return BoundEvent(s, self.emit_publish, config=config)
+
+            return decorator
         return BoundEvent(schema, self.emit_publish, config=config)
 
     @abstractmethod
@@ -166,27 +197,64 @@ class AsyncPublisher[EventConfig: Any, Resp](ABC):
     event payload and the bound event (carrying the config), and returns an awaitable resolving
     to ``Resp``.  Routing config is passed by callers via the ``config`` keyword argument on
     ``publish``.
+
+    Example::
+
+        @publisher.publish(config=RabbitMQConfig("", "order.placed"))
+        class order_placed(EventSchema):
+            def __init__(self, order_id: int) -> None: ...
     """
 
+    @overload
     def publish[**P](
         self,
         schema: Callable[P, EventSchema],
         *,
         config: EventConfig,
-    ) -> AsyncBoundEvent[P, EventConfig, Resp]:
+    ) -> AsyncBoundEvent[P, EventConfig, Resp]: ...
+
+    @overload
+    def publish[**P](
+        self,
+        *,
+        config: EventConfig,
+    ) -> Callable[[Callable[P, EventSchema]], AsyncBoundEvent[P, EventConfig, Resp]]: ...
+
+    def publish[**P](
+        self,
+        schema: Callable[P, EventSchema] | None = None,
+        *,
+        config: EventConfig,
+    ) -> (
+        AsyncBoundEvent[P, EventConfig, Resp]
+        | Callable[[Callable[P, EventSchema]], AsyncBoundEvent[P, EventConfig, Resp]]
+    ):
         """
         Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
 
+        Can be called directly or used as a decorator factory::
+
+            emit_order = publisher.publish(OrderPlaced, config=RabbitMQConfig("", "orders"))
+
+            @publisher.publish(config=RabbitMQConfig("", "orders"))
+            class order_placed(EventSchema): ...
+
         Args:
             schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
+                    Omit to use as a decorator factory.
             config: The adapter-specific routing config for this binding.
 
         Returns:
-            An ``AsyncBoundEvent`` that, when called and awaited with ``P``
-            arguments, constructs an instance of ``schema`` and forwards it
-            to ``emit_publish``.
+            An ``AsyncBoundEvent`` when ``schema`` is provided, otherwise a decorator
+            that accepts a schema and returns an ``AsyncBoundEvent``.
 
         """
+        if schema is None:
+
+            def decorator(s: Callable[P, EventSchema]) -> AsyncBoundEvent[P, EventConfig, Resp]:
+                return AsyncBoundEvent(s, self.emit_publish, config=config)
+
+            return decorator
         return AsyncBoundEvent(schema, self.emit_publish, config=config)
 
     @abstractmethod
