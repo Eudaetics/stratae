@@ -29,8 +29,9 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.events.adapters.local import LocalBus
+from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import BoundEvent, EventSchema
+from stratae.events.event import EventSchema
 
 
 class _TaskCreated(EventSchema):

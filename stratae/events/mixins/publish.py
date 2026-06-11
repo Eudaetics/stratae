@@ -5,7 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Callable, overload
 
-from stratae.events.event import AsyncBoundEvent, BoundEvent, EventSchema
+from stratae.events.bound import AsyncBoundEvent, BoundEvent
+from stratae.events.event import EventSchema
 
 
 class BasicPublisher[Resp](ABC):

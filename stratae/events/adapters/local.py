@@ -2,8 +2,9 @@
 
 from typing import Any
 
+from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import BoundEvent, EventSchema
+from stratae.events.event import EventSchema
 from stratae.events.mixins.publish import BasicPublisher
 from stratae.events.mixins.subscribe import Subscriber
 

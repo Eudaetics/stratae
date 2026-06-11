@@ -3,8 +3,9 @@
 import asyncio
 from typing import Any
 
+from stratae.events.bound import AsyncBoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import AsyncBoundEvent, EventSchema
+from stratae.events.event import EventSchema
 from stratae.events.handler import Handler
 from stratae.events.mixins.publish import AsyncBasicPublisher
 from stratae.events.mixins.subscribe import AsyncSubscriber
