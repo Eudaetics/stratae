@@ -1,8 +1,16 @@
-"""Base event schema and bound-event abstractions for the stratae event system."""
+"""Base event and schemas for the stratae event system."""
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Callable
+
+
+class EventType:
+    """Marker base class for event type discriminants."""
+
+
+class PubSub(EventType):
+    """Pub/sub pattern discriminant — fire and forget, no return value."""
 
 
 class EventSchema:
@@ -24,93 +32,61 @@ class EventSchema:
     """
 
 
-class BoundEvent[**P, EventConfig: Any, Resp]:
+class Event[E: EventSchema, T: EventType]:
     """
-    Binds an ``EventSchema`` subclass to a synchronous emitter with routing config.
+    Bus-agnostic event definition binding a schema type to a dispatch pattern.
 
-    A ``BoundEvent`` acts as a callable façade: invoking it constructs an
-    instance of ``schema`` from the supplied arguments and forwards the
-    payload and itself to ``emitter``, returning whatever the emitter produces.
+    An ``Event`` captures what an event IS — the payload schema and the
+    dispatch pattern — independently of any bus or routing config.  It is
+    the shareable definition that one or more bus bindings can reference.
 
     Type parameters:
-        P:           The parameter specification of the bound event's ``__call__`` signature.
-        EventConfig: The adapter-specific routing config type.
-        Resp:        The return type produced by the emitter.
+        E: The ``EventSchema`` subclass carried by this event.
+        T: The ``EventType`` discriminant describing the dispatch pattern.
+
+    Example::
+
+        @event(PubSub)
+        class OrderPlaced(EventSchema):
+            def __init__(self, order_id: int) -> None:
+                self.order_id = order_id
+
     """
 
-    def __init__(
-        self,
-        schema: Callable[P, EventSchema],
-        emitter: Callable[[EventSchema, BoundEvent[P, EventConfig, Resp]], Resp],
-        *,
-        config: EventConfig,
-    ) -> None:
+    def __init__(self, schema: type[E], event_type: type[T]) -> None:
         """
-        Bind an event schema to its emitter with routing config.
+        Define an event with a schema type and dispatch pattern.
 
         Args:
-            schema:  The ``EventSchema`` subclass used to construct the event payload.
-            emitter: A callable that receives the constructed payload and this
-                     ``BoundEvent``, and returns ``Resp``.
-            config:  The adapter-specific routing config for this binding.
+            schema:     The ``EventSchema`` subclass carried by this event.
+            event_type: The dispatch pattern discriminant class.
 
         """
         self.schema = schema
-        self.emitter = emitter
-        self.config = config
-
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
-        """
-        Construct the schema instance and forward it to the emitter.
-
-        Returns:
-            Whatever ``self.emitter`` returns.
-
-        """
-        return self.emitter(self.schema(*args, **kwargs), self)
+        self.event_type = event_type
 
 
-class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
+def event[E: EventSchema, T: EventType](event_type: type[T]) -> Callable[[type[E]], Event[E, T]]:
     """
-    Binds an ``EventSchema`` subclass to an asynchronous emitter with routing config.
+    Wrap an ``EventSchema`` subclass as an ``Event``.
 
-    An ``AsyncBoundEvent`` acts as a callable façade: invoking it constructs an
-    instance of ``schema`` from the supplied arguments, forwards the payload and
-    itself to ``emitter``, and awaits the resulting coroutine.
+    Args:
+        event_type: The dispatch pattern discriminant class.
 
-    Type parameters:
-        P:           The parameter specification of the bound event's ``__call__`` signature.
-        EventConfig: The adapter-specific routing config type.
-        Resp:        The type that the emitter's coroutine resolves to.
+    Returns:
+        A decorator that accepts an ``EventSchema`` subclass and returns an
+        ``Event`` binding it to ``event_type``.
+
+    Example::
+
+        @event(PubSub)
+        class OrderPlaced(EventSchema):
+            def __init__(self, order_id: int) -> None:
+                self.order_id = order_id
+
     """
 
-    def __init__(
-        self,
-        schema: Callable[P, EventSchema],
-        emitter: Callable[[EventSchema, AsyncBoundEvent[P, EventConfig, Resp]], Awaitable[Resp]],
-        *,
-        config: EventConfig,
-    ) -> None:
-        """
-        Bind an event schema to its async emitter with routing config.
+    def decorator(schema: type[E]) -> Event[E, T]:
+        return Event(schema, event_type)
 
-        Args:
-            schema:  The ``EventSchema`` subclass used to construct the event payload.
-            emitter: A coroutine callable that receives the constructed payload and this
-                     ``AsyncBoundEvent``, and returns an awaitable resolving to ``Resp``.
-            config:  The adapter-specific routing config for this binding.
-
-        """
-        self.schema = schema
-        self.emitter = emitter
-        self.config = config
-
-    async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
-        """
-        Construct the schema instance, forward it to the emitter, and await the result.
-
-        Returns:
-            The resolved value of ``self.emitter``'s coroutine.
-
-        """
-        return await self.emitter(self.schema(*args, **kwargs), self)
+    return decorator

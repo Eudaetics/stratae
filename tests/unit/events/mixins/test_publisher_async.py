@@ -18,7 +18,8 @@ from unittest.mock import AsyncMock
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.event import AsyncBoundEvent, EventSchema
+from stratae.events.bound import AsyncBoundEvent
+from stratae.events.event import EventSchema
 from stratae.events.mixins.publish import AsyncPublisher
 
 

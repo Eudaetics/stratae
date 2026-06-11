@@ -13,7 +13,8 @@ from unittest.mock import AsyncMock
 
 from pytest_mock import MockerFixture
 
-from stratae.events.event import AsyncBoundEvent, EventSchema
+from stratae.events.bound import AsyncBoundEvent
+from stratae.events.event import EventSchema
 
 
 class _PaymentReceived(EventSchema):

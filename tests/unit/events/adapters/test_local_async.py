@@ -31,8 +31,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from stratae.events.adapters.local_async import AsyncLocalBus
+from stratae.events.bound import AsyncBoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import AsyncBoundEvent, EventSchema
+from stratae.events.event import EventSchema
 
 
 class _TaskCreated(EventSchema):
