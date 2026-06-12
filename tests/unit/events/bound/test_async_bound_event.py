@@ -39,9 +39,9 @@ def test_init_stores_schema_emitter_and_config():
     emitter = AsyncMock()
     config = object()
 
-    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=config)
+    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=config)
 
-    assert bound.schema is _PaymentReceived
+    assert bound.factory is _PaymentReceived
     assert bound.emitter is emitter
     assert bound.config is config
 
@@ -57,7 +57,7 @@ async def test_call_passes_positional_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=None)
+    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=None)
 
     await bound(42, 100)
 
@@ -76,7 +76,7 @@ async def test_call_passes_keyword_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=None)
+    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=None)
 
     await bound(payment_id=7, amount=50)
 
@@ -95,7 +95,7 @@ async def test_call_passes_mixed_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=None)
+    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=None)
 
     await bound(42, amount=100)
 
@@ -112,7 +112,7 @@ async def test_call_returns_emitter_result():
     Then: The return value should match the emitter's resolved value
     """
     emitter = AsyncMock(return_value="dispatched")
-    bound = AsyncBoundEvent(_PaymentReceived, emitter, config=None)
+    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=None)
 
     result = await bound(42, 100)
 

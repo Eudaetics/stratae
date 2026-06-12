@@ -76,7 +76,7 @@ def test_async_publish_stores_schema_emitter_and_config(
             self.item_id = item_id
             self.quantity = quantity
 
-    assert isinstance(_ItemShipped.schema, type)
+    assert isinstance(_ItemShipped.factory, type)
     assert _ItemShipped.emitter == async_publisher.emit_publish
     assert _ItemShipped.config == "orders"
 
@@ -106,7 +106,7 @@ async def test_async_publish_bound_event_calls_emit_publish_with_positional_args
 
     await _ItemShipped(1, 10)
 
-    mock_emit.assert_called_once_with(_ItemShipped.schema(1, 10), _ItemShipped)
+    mock_emit.assert_called_once_with(_ItemShipped.factory(1, 10), _ItemShipped)
 
 
 async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
@@ -134,7 +134,7 @@ async def test_async_publish_bound_event_calls_emit_publish_with_keyword_args(
 
     await _ItemShipped(item_id=2, quantity=5)
 
-    mock_emit.assert_called_once_with(_ItemShipped.schema(item_id=2, quantity=5), _ItemShipped)
+    mock_emit.assert_called_once_with(_ItemShipped.factory(item_id=2, quantity=5), _ItemShipped)
 
 
 async def test_async_publish_bound_event_returns_emit_publish_result(

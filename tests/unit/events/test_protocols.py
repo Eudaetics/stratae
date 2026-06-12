@@ -18,14 +18,14 @@ from stratae.events.protocols import Consumer, Producer
 
 
 class _SyncProducer:
-    def emit[E: EventSchema, T: EventType](
-        self, payload: E, event: Event[E, T], config: Any
+    def emit[**P, E: EventSchema, T: EventType](
+        self, payload: E, event: Event[P, E, T], config: Any
     ) -> None: ...
 
 
 class _AsyncProducer:
-    async def emit[E: EventSchema, T: EventType](
-        self, payload: E, event: Event[E, T], config: Any
+    async def emit[**P, E: EventSchema, T: EventType](
+        self, payload: E, event: Event[P, E, T], config: Any
     ) -> None: ...
 
 

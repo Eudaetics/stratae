@@ -39,7 +39,7 @@ def test_init_stores_schema_emitter_and_config():
     emitter = Mock()
     config = object()
 
-    bound = BoundEvent(_OrderCreated, emitter, config=config)
+    bound = BoundEvent(emitter, _OrderCreated, config=config)
 
     assert bound.factory is _OrderCreated
     assert bound.emitter is emitter
@@ -57,7 +57,7 @@ def test_call_passes_positional_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(_OrderCreated, emitter, config=None)
+    bound = BoundEvent(emitter, _OrderCreated, config=None)
 
     bound(1, "pending")
 
@@ -76,7 +76,7 @@ def test_call_passes_keyword_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(_OrderCreated, emitter, config=None)
+    bound = BoundEvent(emitter, _OrderCreated, config=None)
 
     bound(order_id=2, status="complete")
 
@@ -95,7 +95,7 @@ def test_call_passes_mixed_args_to_schema(mocker: MockerFixture):
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(_OrderCreated, emitter, config=None)
+    bound = BoundEvent(emitter, _OrderCreated, config=None)
 
     bound(1, status="pending")
 
@@ -112,7 +112,7 @@ def test_call_returns_emitter_result():
     Then: The return value should match the emitter's return value
     """
     emitter = Mock(return_value="dispatched")
-    bound = BoundEvent(_OrderCreated, emitter, config=None)
+    bound = BoundEvent(emitter, _OrderCreated, config=None)
 
     result = bound(1, "pending")
 

@@ -15,8 +15,8 @@ class Producer(Protocol):
     adapters implement it to perform the actual dispatch.
     """
 
-    def emit[E: EventSchema, T: EventType](
-        self, payload: E, event: Event[E, T], config: Any
+    def emit[**P, E: EventSchema, T: EventType](
+        self, payload: E, event: Event[P, E, T], config: Any
     ) -> Any:
         """
         Dispatch a constructed event payload.

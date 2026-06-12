@@ -38,7 +38,7 @@ class BasicPublisher[Resp](ABC):
             an instance of ``schema`` and forwards it to ``emit_publish``.
 
         """
-        return BoundEvent(schema, self.emit_publish, config=None)
+        return BoundEvent(self.emit_publish, schema, config=None)
 
     @abstractmethod
     def emit_publish[**P](self, payload: EventSchema, event: BoundEvent[P, None, Resp]) -> Resp:
@@ -117,10 +117,10 @@ class Publisher[EventConfig: Any, Resp](ABC):
         if schema is None:
 
             def decorator(s: Callable[P, EventSchema]) -> BoundEvent[P, EventConfig, Resp]:
-                return BoundEvent(s, self.emit_publish, config=config)
+                return BoundEvent(self.emit_publish, s, config=config)
 
             return decorator
-        return BoundEvent(schema, self.emit_publish, config=config)
+        return BoundEvent(self.emit_publish, schema, config=config)
 
     @abstractmethod
     def emit_publish[**P](
@@ -170,7 +170,7 @@ class AsyncBasicPublisher[Resp](ABC):
             to ``emit_publish``.
 
         """
-        return AsyncBoundEvent(schema, self.emit_publish, config=None)
+        return AsyncBoundEvent(self.emit_publish, schema, config=None)
 
     @abstractmethod
     async def emit_publish[**P](
@@ -253,10 +253,10 @@ class AsyncPublisher[EventConfig: Any, Resp](ABC):
         if schema is None:
 
             def decorator(s: Callable[P, EventSchema]) -> AsyncBoundEvent[P, EventConfig, Resp]:
-                return AsyncBoundEvent(s, self.emit_publish, config=config)
+                return AsyncBoundEvent(self.emit_publish, s, config=config)
 
             return decorator
-        return AsyncBoundEvent(schema, self.emit_publish, config=config)
+        return AsyncBoundEvent(self.emit_publish, schema, config=config)
 
     @abstractmethod
     async def emit_publish[**P](
