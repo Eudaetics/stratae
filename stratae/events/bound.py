@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Protocol, overload
 
-from stratae.events.event import EventSchema
+from stratae.events.event import Event, EventSchema, EventType, PubSub, event
 
 
 class BoundEvent[**P, EventConfig: Any, Resp]:
@@ -23,8 +23,8 @@ class BoundEvent[**P, EventConfig: Any, Resp]:
 
     def __init__(
         self,
-        schema: Callable[P, EventSchema],
         emitter: Callable[[EventSchema, BoundEvent[P, EventConfig, Resp]], Resp],
+        factory: Callable[P, EventSchema],
         *,
         config: EventConfig,
     ) -> None:
@@ -38,8 +38,8 @@ class BoundEvent[**P, EventConfig: Any, Resp]:
             config:  The adapter-specific routing config for this binding.
 
         """
-        self.schema = schema
         self.emitter = emitter
+        self.factory = factory
         self.config = config
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
@@ -50,7 +50,7 @@ class BoundEvent[**P, EventConfig: Any, Resp]:
             Whatever ``self.emitter`` returns.
 
         """
-        return self.emitter(self.schema(*args, **kwargs), self)
+        return self.emitter(self.factory(*args, **kwargs), self)
 
 
 class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
@@ -97,3 +97,66 @@ class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
 
         """
         return await self.emitter(self.schema(*args, **kwargs), self)
+
+
+class _BindDecorator[C, R](Protocol):
+    def __call__[**P, S: EventSchema, T: EventType](
+        self, event: Event[P, S, T]
+    ) -> BoundEvent[P, C, R]: ...
+
+
+@overload
+def bind[**P, S: EventSchema, T: EventType, C, R](
+    emitter: Callable[[EventSchema, BoundEvent[P, C, R]], R],
+    event: Event[P, S, T],
+    *,
+    config: C,
+) -> BoundEvent[P, C, R]: ...
+
+
+@overload
+def bind[C, R](
+    emitter: Callable[[EventSchema, BoundEvent[..., C, R]], R],
+    *,
+    config: C,
+) -> _BindDecorator[C, R]: ...
+
+
+def bind[**P, S: EventSchema, T: EventType, C, R](
+    emitter: Callable[[EventSchema, BoundEvent[P, C, R]], R],
+    event: Event[P, S, T] | None = None,
+    *,
+    config: C,
+) -> BoundEvent[P, C, R] | Callable[[Event[P, S, T]], BoundEvent[P, C, R]]:
+    if event is None:
+
+        def decorator(evt: Event[P, S, T]) -> BoundEvent[P, C, R]:
+            return BoundEvent(emitter, evt.schema, config=config)
+
+        return decorator
+    return BoundEvent(emitter, event.schema, config=config)
+
+
+class Example(EventSchema):
+    def __init__(self, name: str):
+        self.name = name
+
+
+def x[R](payload: EventSchema, y: BoundEvent[Any, Any, R]) -> None:
+    print("testing")
+
+
+@bind(x, config=None)
+@event(PubSub)
+class new_example(EventSchema):
+    """Some docstring"""
+
+    def __init__(self, name: str):
+        self.name = name
+
+
+e = Event(Example, PubSub)
+
+thing = bind(x, e, config=None)
+thing("x")
+new_example("asdf")

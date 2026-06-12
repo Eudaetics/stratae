@@ -41,7 +41,7 @@ def test_init_stores_schema_emitter_and_config():
 
     bound = BoundEvent(_OrderCreated, emitter, config=config)
 
-    assert bound.schema is _OrderCreated
+    assert bound.factory is _OrderCreated
     assert bound.emitter is emitter
     assert bound.config is config
 

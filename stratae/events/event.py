@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, cast
 
 
 class EventType:
@@ -32,7 +32,7 @@ class EventSchema:
     """
 
 
-class Event[E: EventSchema, T: EventType]:
+class Event[**P, E: EventSchema, T: EventType]:
     """
     Bus-agnostic event definition binding a schema type to a dispatch pattern.
 
@@ -53,7 +53,7 @@ class Event[E: EventSchema, T: EventType]:
 
     """
 
-    def __init__(self, schema: type[E], event_type: type[T]) -> None:
+    def __init__(self, schema: Callable[P, E], event_type: type[T]) -> None:
         """
         Define an event with a schema type and dispatch pattern.
 
@@ -62,11 +62,15 @@ class Event[E: EventSchema, T: EventType]:
             event_type: The dispatch pattern discriminant class.
 
         """
-        self.schema = schema
+        if not isinstance(schema, type) or not issubclass(schema, EventSchema):
+            raise TypeError(f"{schema!r} is not an EventSchema subclass")
+        self.schema: Callable[P, E] = cast(Callable[P, E], schema)
         self.event_type = event_type
 
 
-def event[E: EventSchema, T: EventType](event_type: type[T]) -> Callable[[type[E]], Event[E, T]]:
+def event[**P, E: EventSchema, T: EventType](
+    event_type: type[T],
+) -> Callable[[Callable[P, E]], Event[P, E, T]]:
     """
     Wrap an ``EventSchema`` subclass as an ``Event``.
 
@@ -86,7 +90,7 @@ def event[E: EventSchema, T: EventType](event_type: type[T]) -> Callable[[type[E
 
     """
 
-    def decorator(schema: type[E]) -> Event[E, T]:
+    def decorator(schema: Callable[P, E]) -> Event[P, E, T]:
         return Event(schema, event_type)
 
     return decorator
