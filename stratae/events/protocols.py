@@ -2,7 +2,7 @@
 
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from stratae.events.event import Event, EventSchema, EventType
+from stratae.events.event import Event, EventType, Payload
 
 
 @runtime_checkable
@@ -15,14 +15,14 @@ class Producer(Protocol):
     adapters implement it to perform the actual dispatch.
     """
 
-    def emit[**P, E: EventSchema, T: EventType](
+    def emit[**P, E: Payload, T: EventType](
         self, payload: E, event: Event[P, E, T], config: Any
     ) -> Any:
         """
         Dispatch a constructed event payload.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             event:   The ``Event`` definition being emitted.
             config:  Adapter-specific routing configuration.
 
@@ -49,7 +49,7 @@ class Consumer(Protocol):
     detail of each adapter and is not part of this protocol.
     """
 
-    def handle(self, config: Any, fn: Callable[[EventSchema], Any] | None = None) -> Any:
+    def handle(self, config: Any, fn: Callable[[Payload], Any] | None = None) -> Any:
         """
         Register a handler for the given config.
 

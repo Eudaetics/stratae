@@ -5,7 +5,7 @@ from typing import Any
 
 from stratae.events.bound import AsyncBoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 from stratae.events.handler import Handler
 from stratae.events.mixins.publish import AsyncBasicPublisher
 from stratae.events.mixins.subscribe import AsyncSubscriber
@@ -47,7 +47,7 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
         self._use_envelope = use_envelope
 
     async def emit_publish[**P](
-        self, payload: EventSchema, event: AsyncBoundEvent[P, None, None]
+        self, payload: Payload, event: AsyncBoundEvent[P, None, None]
     ) -> None:
         """
         Open a scoped envelope and dispatch the payload to all registered handlers.
@@ -56,7 +56,7 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
         currently active one, enabling correlation across nested emissions.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             event:   The ``AsyncBoundEvent`` used as the handler lookup key.
 
         """
@@ -67,7 +67,7 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
             await self.handle_subscribe(payload, config=event)
 
     async def handle_subscribe[**P](
-        self, payload: EventSchema, *, config: AsyncBoundEvent[P, None, None]
+        self, payload: Payload, *, config: AsyncBoundEvent[P, None, None]
     ) -> None:
         """
         Invoke every handler registered for the given bound event concurrently.
@@ -76,13 +76,13 @@ class AsyncLocalBus(AsyncBasicPublisher[None], AsyncSubscriber[AsyncBoundEvent[A
         are dispatched via ``asyncio.gather``.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             config:  The ``AsyncBoundEvent`` used as the handler lookup key.
 
         """
 
         async def _call(
-            handler: Handler[[EventSchema], AsyncBoundEvent[P, None, None], Any],
+            handler: Handler[[Payload], AsyncBoundEvent[P, None, None], Any],
         ) -> None:
             if handler.is_async:
                 await handler(payload)

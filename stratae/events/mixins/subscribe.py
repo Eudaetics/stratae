@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any, Callable, overload
 
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 from stratae.events.handler import Handler
 
 
@@ -111,12 +111,12 @@ class Subscriber[HandlerConfig: Any](SubscriberBase[HandlerConfig], ABC):
     """
 
     @abstractmethod
-    def handle_subscribe(self, payload: EventSchema, *, config: HandlerConfig) -> None:
+    def handle_subscribe(self, payload: Payload, *, config: HandlerConfig) -> None:
         """
         Dispatch a payload to all handlers registered for a config.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             config:    The adapter-specific handler configuration.
 
         """
@@ -133,12 +133,12 @@ class AsyncSubscriber[HandlerConfig: Any](SubscriberBase[HandlerConfig], ABC):
     """
 
     @abstractmethod
-    async def handle_subscribe(self, payload: EventSchema, *, config: HandlerConfig) -> None:
+    async def handle_subscribe(self, payload: Payload, *, config: HandlerConfig) -> None:
         """
         Dispatch a payload to all handlers registered for a config.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             config:    The adapter-specific handler configuration.
 
         """

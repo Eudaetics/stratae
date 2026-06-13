@@ -21,7 +21,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 from stratae.events.handler import Handler
 from stratae.events.mixins.subscribe import SubscriberBase
 
@@ -148,7 +148,7 @@ def test_subscribe_decorator_stores_config(subscriber_base: SubscriberBase[Any])
     config = object()
 
     @subscriber_base.subscribe(config)
-    def fn(_: EventSchema) -> None: ...
+    def fn(_: Payload) -> None: ...
 
     assert fn.config is config
 
