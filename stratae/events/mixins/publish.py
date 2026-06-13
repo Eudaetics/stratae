@@ -6,12 +6,12 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, overload
 
 from stratae.events.bound import AsyncBoundEvent, BoundEvent
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 
 
 class BasicPublisher[Resp](ABC):
     """
-    Mixin that binds ``EventSchema`` subclasses to a synchronous emitter with no routing config.
+    Mixin that binds ``Payload`` subclasses to a synchronous emitter with no routing config.
 
     Subclasses must implement ``emit_publish``, which receives the constructed event payload
     and the bound event, and returns ``Resp``.
@@ -26,12 +26,12 @@ class BasicPublisher[Resp](ABC):
         emit_order(order_id=42)
     """
 
-    def publish[**P](self, schema: Callable[P, EventSchema]) -> BoundEvent[P, None, Resp]:
+    def publish[**P](self, schema: Callable[P, Payload]) -> BoundEvent[P, None, Resp]:
         """
-        Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
+        Bind a ``Payload`` subclass to this publisher's ``emit_publish``.
 
         Args:
-            schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
+            schema: A ``Payload`` subclass whose constructor accepts ``P``.
 
         Returns:
             A ``BoundEvent`` that, when called with ``P`` arguments, constructs
@@ -41,12 +41,12 @@ class BasicPublisher[Resp](ABC):
         return BoundEvent(self.emit_publish, schema, config=None)
 
     @abstractmethod
-    def emit_publish[**P](self, payload: EventSchema, event: BoundEvent[P, None, Resp]) -> Resp:
+    def emit_publish[**P](self, payload: Payload, event: BoundEvent[P, None, Resp]) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             event:   The bound event being emitted.
 
         Returns:
@@ -58,7 +58,7 @@ class BasicPublisher[Resp](ABC):
 
 class Publisher[EventConfig: Any, Resp](ABC):
     """
-    Mixin that binds ``EventSchema`` subclasses to a synchronous emitter with routing config.
+    Mixin that binds ``Payload`` subclasses to a synchronous emitter with routing config.
 
     Subclasses must implement ``emit_publish``, which receives the constructed event payload
     and the bound event (carrying the config), and returns ``Resp``.  Routing config is
@@ -74,38 +74,38 @@ class Publisher[EventConfig: Any, Resp](ABC):
         emit_order(order_id=42)
 
         @publisher.publish(config=KafkaMeta("orders"))
-        class order_placed(EventSchema):
+        class order_placed(Payload):
             def __init__(self, order_id: int) -> None: ...
     """
 
     @overload
     def publish[**P](
-        self, schema: Callable[P, EventSchema], *, config: EventConfig
+        self, schema: Callable[P, Payload], *, config: EventConfig
     ) -> BoundEvent[P, EventConfig, Resp]: ...
 
     @overload
     def publish[**P](
         self, *, config: EventConfig
-    ) -> Callable[[Callable[P, EventSchema]], BoundEvent[P, EventConfig, Resp]]: ...
+    ) -> Callable[[Callable[P, Payload]], BoundEvent[P, EventConfig, Resp]]: ...
 
     def publish[**P](
-        self, schema: Callable[P, EventSchema] | None = None, *, config: EventConfig
+        self, schema: Callable[P, Payload] | None = None, *, config: EventConfig
     ) -> (
         BoundEvent[P, EventConfig, Resp]
-        | Callable[[Callable[P, EventSchema]], BoundEvent[P, EventConfig, Resp]]
+        | Callable[[Callable[P, Payload]], BoundEvent[P, EventConfig, Resp]]
     ):
         """
-        Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
+        Bind a ``Payload`` subclass to this publisher's ``emit_publish``.
 
         Can be called directly or used as a decorator factory::
 
             emit_order = publisher.publish(OrderPlaced, config=KafkaMeta("orders"))
 
             @publisher.publish(config=KafkaMeta("orders"))
-            class order_placed(EventSchema): ...
+            class order_placed(Payload): ...
 
         Args:
-            schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
+            schema: A ``Payload`` subclass whose constructor accepts ``P``.
                     Omit to use as a decorator factory.
             config: The adapter-specific routing config for this binding.
 
@@ -116,21 +116,19 @@ class Publisher[EventConfig: Any, Resp](ABC):
         """
         if schema is None:
 
-            def decorator(s: Callable[P, EventSchema]) -> BoundEvent[P, EventConfig, Resp]:
+            def decorator(s: Callable[P, Payload]) -> BoundEvent[P, EventConfig, Resp]:
                 return BoundEvent(self.emit_publish, s, config=config)
 
             return decorator
         return BoundEvent(self.emit_publish, schema, config=config)
 
     @abstractmethod
-    def emit_publish[**P](
-        self, payload: EventSchema, event: BoundEvent[P, EventConfig, Resp]
-    ) -> Resp:
+    def emit_publish[**P](self, payload: Payload, event: BoundEvent[P, EventConfig, Resp]) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             event:   The bound event being emitted.
 
         Returns:
@@ -142,7 +140,7 @@ class Publisher[EventConfig: Any, Resp](ABC):
 
 class AsyncBasicPublisher[Resp](ABC):
     """
-    Mixin that binds ``EventSchema`` subclasses to an asynchronous emitter with no routing config.
+    Mixin that binds ``Payload`` subclasses to an asynchronous emitter with no routing config.
 
     Subclasses must implement ``emit_publish`` as a coroutine, which receives the constructed
     event payload and the bound event, and returns an awaitable resolving to ``Resp``.
@@ -157,12 +155,12 @@ class AsyncBasicPublisher[Resp](ABC):
         await emit_order(order_id=42)
     """
 
-    def publish[**P](self, schema: Callable[P, EventSchema]) -> AsyncBoundEvent[P, None, Resp]:
+    def publish[**P](self, schema: Callable[P, Payload]) -> AsyncBoundEvent[P, None, Resp]:
         """
-        Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
+        Bind a ``Payload`` subclass to this publisher's ``emit_publish``.
 
         Args:
-            schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
+            schema: A ``Payload`` subclass whose constructor accepts ``P``.
 
         Returns:
             An ``AsyncBoundEvent`` that, when called and awaited with ``P``
@@ -174,13 +172,13 @@ class AsyncBasicPublisher[Resp](ABC):
 
     @abstractmethod
     async def emit_publish[**P](
-        self, payload: EventSchema, event: AsyncBoundEvent[P, None, Resp]
+        self, payload: Payload, event: AsyncBoundEvent[P, None, Resp]
     ) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             event:   The bound event being emitted.
 
         Returns:
@@ -192,7 +190,7 @@ class AsyncBasicPublisher[Resp](ABC):
 
 class AsyncPublisher[EventConfig: Any, Resp](ABC):
     """
-    Mixin that binds ``EventSchema`` subclasses to an asynchronous emitter with routing config.
+    Mixin that binds ``Payload`` subclasses to an asynchronous emitter with routing config.
 
     Subclasses must implement ``emit_publish`` as a coroutine, which receives the constructed
     event payload and the bound event (carrying the config), and returns an awaitable resolving
@@ -202,14 +200,14 @@ class AsyncPublisher[EventConfig: Any, Resp](ABC):
     Example::
 
         @publisher.publish(config=RabbitMQConfig("", "order.placed"))
-        class order_placed(EventSchema):
+        class order_placed(Payload):
             def __init__(self, order_id: int) -> None: ...
     """
 
     @overload
     def publish[**P](
         self,
-        schema: Callable[P, EventSchema],
+        schema: Callable[P, Payload],
         *,
         config: EventConfig,
     ) -> AsyncBoundEvent[P, EventConfig, Resp]: ...
@@ -219,29 +217,29 @@ class AsyncPublisher[EventConfig: Any, Resp](ABC):
         self,
         *,
         config: EventConfig,
-    ) -> Callable[[Callable[P, EventSchema]], AsyncBoundEvent[P, EventConfig, Resp]]: ...
+    ) -> Callable[[Callable[P, Payload]], AsyncBoundEvent[P, EventConfig, Resp]]: ...
 
     def publish[**P](
         self,
-        schema: Callable[P, EventSchema] | None = None,
+        schema: Callable[P, Payload] | None = None,
         *,
         config: EventConfig,
     ) -> (
         AsyncBoundEvent[P, EventConfig, Resp]
-        | Callable[[Callable[P, EventSchema]], AsyncBoundEvent[P, EventConfig, Resp]]
+        | Callable[[Callable[P, Payload]], AsyncBoundEvent[P, EventConfig, Resp]]
     ):
         """
-        Bind an ``EventSchema`` subclass to this publisher's ``emit_publish``.
+        Bind a ``Payload`` subclass to this publisher's ``emit_publish``.
 
         Can be called directly or used as a decorator factory::
 
             emit_order = publisher.publish(OrderPlaced, config=RabbitMQConfig("", "orders"))
 
             @publisher.publish(config=RabbitMQConfig("", "orders"))
-            class order_placed(EventSchema): ...
+            class order_placed(Payload): ...
 
         Args:
-            schema: An ``EventSchema`` subclass whose constructor accepts ``P``.
+            schema: A ``Payload`` subclass whose constructor accepts ``P``.
                     Omit to use as a decorator factory.
             config: The adapter-specific routing config for this binding.
 
@@ -252,7 +250,7 @@ class AsyncPublisher[EventConfig: Any, Resp](ABC):
         """
         if schema is None:
 
-            def decorator(s: Callable[P, EventSchema]) -> AsyncBoundEvent[P, EventConfig, Resp]:
+            def decorator(s: Callable[P, Payload]) -> AsyncBoundEvent[P, EventConfig, Resp]:
                 return AsyncBoundEvent(self.emit_publish, s, config=config)
 
             return decorator
@@ -260,13 +258,13 @@ class AsyncPublisher[EventConfig: Any, Resp](ABC):
 
     @abstractmethod
     async def emit_publish[**P](
-        self, payload: EventSchema, event: AsyncBoundEvent[P, EventConfig, Resp]
+        self, payload: Payload, event: AsyncBoundEvent[P, EventConfig, Resp]
     ) -> Resp:
         """
         Dispatch a constructed event to all registered subscribers.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             event:   The bound event being emitted.
 
         Returns:

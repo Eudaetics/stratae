@@ -4,7 +4,7 @@ from typing import Any
 
 from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 from stratae.events.mixins.publish import BasicPublisher
 from stratae.events.mixins.subscribe import Subscriber
 
@@ -42,12 +42,12 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
         super().__init__()
         self._use_envelope = use_envelope
 
-    def emit_publish[**P](self, payload: EventSchema, event: BoundEvent[P, None, None]) -> None:
+    def emit_publish[**P](self, payload: Payload, event: BoundEvent[P, None, None]) -> None:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             event:   The ``BoundEvent`` used as the handler lookup key.
 
         """
@@ -57,14 +57,12 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
         else:
             self.handle_subscribe(payload, config=event)
 
-    def handle_subscribe[**P](
-        self, payload: EventSchema, *, config: BoundEvent[P, None, None]
-    ) -> None:
+    def handle_subscribe[**P](self, payload: Payload, *, config: BoundEvent[P, None, None]) -> None:
         """
         Invoke every handler registered for the given bound event with the payload.
 
         Args:
-            payload: The constructed ``EventSchema`` instance to dispatch.
+            payload: The constructed ``Payload`` instance to dispatch.
             config:  The ``BoundEvent`` used as the handler lookup key.
 
         """

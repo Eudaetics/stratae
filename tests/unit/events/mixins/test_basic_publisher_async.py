@@ -20,7 +20,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import AsyncBoundEvent
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 from stratae.events.mixins.publish import AsyncBasicPublisher
 
 
@@ -57,7 +57,7 @@ def test_async_basic_publish_returns_async_bound_event(
     """
 
     @async_publisher.publish
-    class _ItemShipped(EventSchema): ...
+    class _ItemShipped(Payload): ...
 
     assert isinstance(_ItemShipped, AsyncBoundEvent)
 
@@ -70,11 +70,11 @@ def test_async_basic_publish_stores_schema_emitter_and_none_config(
 
     Given: An AsyncBasicPublisher instance with abstract methods cleared
     When: publish is used as a decorator
-    Then: The AsyncBoundEvent should store an EventSchema subclass, emit_publish, and None as config
+    Then: The AsyncBoundEvent should store a Payload subclass, emit_publish, and None as config
     """
 
     @async_publisher.publish
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
@@ -97,7 +97,7 @@ async def test_async_basic_publish_bound_event_calls_emit_publish_with_positiona
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
 
     @async_publisher.publish
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
@@ -125,7 +125,7 @@ async def test_async_basic_publish_bound_event_calls_emit_publish_with_keyword_a
     mock_emit = mocker.patch.object(async_publisher, "emit_publish", new=AsyncMock())
 
     @async_publisher.publish
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
@@ -155,7 +155,7 @@ async def test_async_basic_publish_bound_event_returns_emit_publish_result(
     )
 
     @async_publisher.publish
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
@@ -176,7 +176,7 @@ def test_async_basic_publish_returns_distinct_bound_events(
     Then: The two AsyncBoundEvents should be different objects
     """
 
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity

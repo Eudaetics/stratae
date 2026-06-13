@@ -31,10 +31,10 @@ import pytest
 from stratae.events.adapters.local import LocalBus
 from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 
 
-class _TaskCreated(EventSchema):
+class _TaskCreated(Payload):
     def __init__(self, task_id: int) -> None:
         self.task_id = task_id
 
@@ -294,7 +294,7 @@ def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: LocalBus
     emit = bus_with_envelope.publish(_TaskCreated)
     captured: list[Envelope] = []
 
-    def handler(_: EventSchema) -> None:
+    def handler(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
@@ -321,7 +321,7 @@ def test_each_emission_creates_independent_envelope(bus_with_envelope: LocalBus)
     emit = bus_with_envelope.publish(_TaskCreated)
     captured: list[Envelope] = []
 
-    def handler(_: EventSchema) -> None:
+    def handler(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
@@ -352,14 +352,14 @@ def test_nested_emission_produces_child_envelope(bus_with_envelope: LocalBus):
     inner_envelopes: list[Envelope] = []
 
     @bus_with_envelope.subscribe(emit_outer)
-    def _(_: EventSchema) -> None:
+    def _(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         outer_envelopes.append(envelope)
         emit_inner(task_id=99)
 
     @bus_with_envelope.subscribe(emit_inner)
-    def _(_: EventSchema) -> None:
+    def _(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         inner_envelopes.append(envelope)

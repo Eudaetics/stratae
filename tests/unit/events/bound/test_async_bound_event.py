@@ -14,10 +14,10 @@ from unittest.mock import AsyncMock
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import AsyncBoundEvent
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 
 
-class _PaymentReceived(EventSchema):
+class _PaymentReceived(Payload):
     def __init__(self, payment_id: int, amount: int) -> None:
         self.payment_id = payment_id
         self.amount = amount

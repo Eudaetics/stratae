@@ -19,7 +19,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent
-from stratae.events.event import EventSchema
+from stratae.events.event import Payload
 from stratae.events.mixins.publish import Publisher
 
 
@@ -54,7 +54,7 @@ def test_publish_returns_bound_event(publisher: Publisher[str, None]):
     """
 
     @publisher.publish(config="orders")
-    class _ItemShipped(EventSchema): ...
+    class _ItemShipped(Payload): ...
 
     assert isinstance(_ItemShipped, BoundEvent)
 
@@ -65,11 +65,11 @@ def test_publish_stores_schema_emitter_and_config(publisher: Publisher[str, None
 
     Given: A Publisher instance with abstract methods cleared
     When: publish is used as a decorator factory with a config
-    Then: The BoundEvent should store an EventSchema subclass, emit_publish, and config
+    Then: The BoundEvent should store a Payload subclass, emit_publish, and config
     """
 
     @publisher.publish(config="orders")
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
@@ -92,7 +92,7 @@ def test_publish_bound_event_calls_emit_publish_with_positional_args(
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
 
     @publisher.publish(config="orders")
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
@@ -120,7 +120,7 @@ def test_publish_bound_event_calls_emit_publish_with_keyword_args(
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
 
     @publisher.publish(config="orders")
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
@@ -148,7 +148,7 @@ def test_publish_bound_event_returns_emit_publish_result(
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock(return_value="dispatched"))
 
     @publisher.publish(config="orders")
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
@@ -167,7 +167,7 @@ def test_publish_returns_distinct_bound_events(publisher: Publisher[str, None]):
     Then: The two BoundEvents should be different objects
     """
 
-    class _ItemShipped(EventSchema):
+    class _ItemShipped(Payload):
         def __init__(self, item_id: int, quantity: int) -> None:
             self.item_id = item_id
             self.quantity = quantity
