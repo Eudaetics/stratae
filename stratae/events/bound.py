@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from inspect import iscoroutinefunction
-from typing import Any, Awaitable, Callable, Protocol, cast, overload
+from typing import Any, Awaitable, Callable, Protocol, overload
 
 from stratae.events.event import Event, EventSchema, EventType
 
@@ -91,7 +90,6 @@ class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
         self.factory = factory
         self.emitter = emitter
         self.config = config
-        self._factory_is_async = iscoroutinefunction(factory)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
@@ -101,10 +99,9 @@ class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
             The resolved value of ``self.emitter``'s coroutine.
 
         """
-        if self._factory_is_async:
-            payload = await cast(Awaitable[EventSchema], self.factory(*args, **kwargs))
-        else:
-            payload = cast(EventSchema, self.factory(*args, **kwargs))
+        payload = self.factory(*args, **kwargs)
+        if isinstance(payload, Awaitable):
+            payload = await payload
         return await self.emitter(payload, self)
 
 
