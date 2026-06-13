@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable, Protocol, overload
 from stratae.events.event import Event, EventType, Payload
 
 
-class BoundEvent[**P, EventConfig: Any, Resp]:
+class BoundEvent[**P, RoutingConfig: Any, Resp]:
     """
     Binds a ``Payload`` subclass to a synchronous emitter with routing config.
 
@@ -16,17 +16,17 @@ class BoundEvent[**P, EventConfig: Any, Resp]:
     payload and itself to ``emitter``, returning whatever the emitter produces.
 
     Type parameters:
-        P:           The parameter specification of the bound event's ``__call__`` signature.
-        EventConfig: The adapter-specific routing config type.
-        Resp:        The return type produced by the emitter.
+        P:             The parameter specification of the bound event's ``__call__`` signature.
+        RoutingConfig: The adapter-specific routing config type.
+        Resp:          The return type produced by the emitter.
     """
 
     def __init__(
         self,
-        emitter: Callable[[Payload, BoundEvent[P, EventConfig, Resp]], Resp],
+        emitter: Callable[[Payload, BoundEvent[P, RoutingConfig, Resp]], Resp],
         factory: Callable[P, Payload],
         *,
-        config: EventConfig,
+        config: RoutingConfig,
     ) -> None:
         """
         Bind a factory and emitter with routing config.
@@ -54,7 +54,7 @@ class BoundEvent[**P, EventConfig: Any, Resp]:
         return self.emitter(self.factory(*args, **kwargs), self)
 
 
-class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
+class AsyncBoundEvent[**P, RoutingConfig: Any, Resp]:
     """
     Binds a ``Payload`` subclass to an asynchronous emitter with routing config.
 
@@ -63,17 +63,17 @@ class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
     to ``emitter``, and awaits the resulting coroutine.
 
     Type parameters:
-        P:           The parameter specification of the bound event's ``__call__`` signature.
-        EventConfig: The adapter-specific routing config type.
-        Resp:        The type that the emitter's coroutine resolves to.
+        P:             The parameter specification of the bound event's ``__call__`` signature.
+        RoutingConfig: The adapter-specific routing config type.
+        Resp:          The type that the emitter's coroutine resolves to.
     """
 
     def __init__(
         self,
-        emitter: Callable[[Payload, AsyncBoundEvent[P, EventConfig, Resp]], Awaitable[Resp]],
+        emitter: Callable[[Payload, AsyncBoundEvent[P, RoutingConfig, Resp]], Awaitable[Resp]],
         factory: Callable[P, Payload] | Callable[P, Awaitable[Payload]],
         *,
-        config: EventConfig,
+        config: RoutingConfig,
     ) -> None:
         """
         Bind a factory and async emitter with routing config.
