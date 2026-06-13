@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, cast
+from typing import Callable
 
 
 class EventType:
@@ -32,7 +32,7 @@ class Payload:
     """
 
 
-class Event[**P, E: Payload, T: EventType]:
+class EventConfig[**P, E: Payload, T: EventType]:
     """
     Bus-agnostic event definition binding a payload type to a dispatch pattern.
 
@@ -53,24 +53,27 @@ class Event[**P, E: Payload, T: EventType]:
 
     """
 
-    def __init__(self, schema: Callable[P, E], event_type: type[T]) -> None:
+    def __init__(self, factory: Callable[P, E], event_type: type[T]) -> None:
         """
         Define an event with a schema type and dispatch pattern.
 
         Args:
-            schema:     The ``Payload`` subclass carried by this event.
+            factory:    A factory used to create a Payload.
             event_type: The dispatch pattern discriminant class.
 
         """
-        if not isinstance(schema, type) or not issubclass(schema, Payload):
-            raise TypeError(f"{schema!r} is not a Payload subclass")
-        self.schema: Callable[P, E] = cast(Callable[P, E], schema)
+        self._factory = factory
         self.event_type = event_type
+
+    @property
+    def factory(self) -> Callable[P, E]:
+        """Access the factory for use in generating payloads for events."""
+        return self._factory
 
 
 def event[**P, E: Payload, T: EventType](
     event_type: type[T],
-) -> Callable[[Callable[P, E]], Event[P, E, T]]:
+) -> Callable[[Callable[P, E]], EventConfig[P, E, T]]:
     """
     Wrap a ``Payload`` subclass as an ``Event``.
 
@@ -90,7 +93,7 @@ def event[**P, E: Payload, T: EventType](
 
     """
 
-    def decorator(schema: Callable[P, E]) -> Event[P, E, T]:
-        return Event(schema, event_type)
+    def decorator(schema: Callable[P, E]) -> EventConfig[P, E, T]:
+        return EventConfig(schema, event_type)
 
     return decorator

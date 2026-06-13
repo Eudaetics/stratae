@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Protocol, overload
 
-from stratae.events.event import Event, EventType, Payload
+from stratae.events.event import EventConfig, EventType, Payload
 
 
 class BoundEvent[**P, RoutingConfig: Any, Resp]:
@@ -34,8 +34,8 @@ class BoundEvent[**P, RoutingConfig: Any, Resp]:
         Args:
             emitter: A callable that receives the constructed payload and this
                      ``BoundEvent``, and returns ``Resp``.
-            factory: A callable that constructs the ``EventSchema`` payload from
-                     the arguments passed to ``__call__``.
+            factory: A callable that constructs the ``Payload`` from the arguments
+                     passed to ``__call__``.
             config:  The adapter-specific routing config for this binding.
 
         """
@@ -106,9 +106,11 @@ class AsyncBoundEvent[**P, RoutingConfig: Any, Resp]:
 
 
 class _BindDecorator[C, R](Protocol):
-    """Return type of the decorator form of ``bind``: an emitter+config awaiting an ``Event``."""
+    """Decorator form of ``bind``: takes an ``EventConfig``, returns a ``BoundEvent``."""
 
-    def __call__[**P, S: Payload, T: EventType](self, event: Event[P, S, T]) -> BoundEvent[P, C, R]:
+    def __call__[**P, S: Payload, T: EventType](
+        self, event: EventConfig[P, S, T]
+    ) -> BoundEvent[P, C, R]:
         """Bind the emitter and config to ``event``, returning a ``BoundEvent``."""
         ...
 
@@ -116,7 +118,7 @@ class _BindDecorator[C, R](Protocol):
 @overload
 def bind[**P, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, BoundEvent[P, C, R]], R],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     *,
     config: C,
 ) -> BoundEvent[P, C, R]: ...
@@ -132,25 +134,25 @@ def bind[**P, C, R](
 
 def bind[**P, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, BoundEvent[P, C, R]], R],
-    event: Event[P, S, T] | None = None,
+    event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
-) -> BoundEvent[P, C, R] | Callable[[Event[P, S, T]], BoundEvent[P, C, R]]:
-    """Bind an emitter to an event schema, returning a ``BoundEvent`` or a decorator."""
+) -> BoundEvent[P, C, R] | Callable[[EventConfig[P, S, T]], BoundEvent[P, C, R]]:
+    """Bind an emitter to an ``EventConfig``, returning a ``BoundEvent`` or a decorator."""
     if event is None:
 
-        def decorator(evt: Event[P, S, T]) -> BoundEvent[P, C, R]:
-            return BoundEvent(emitter, evt.schema, config=config)
+        def decorator(evt: EventConfig[P, S, T]) -> BoundEvent[P, C, R]:
+            return BoundEvent(emitter, evt.factory, config=config)
 
         return decorator
-    return BoundEvent(emitter, event.schema, config=config)
+    return BoundEvent(emitter, event.factory, config=config)
 
 
 class _ABindDecorator[C, R](Protocol):
     """Return type of the decorator form of ``abind``: async emitter+config awaiting an Event."""
 
     def __call__[**P, S: Payload, T: EventType](
-        self, event: Event[P, S, T]
+        self, event: EventConfig[P, S, T]
     ) -> AsyncBoundEvent[P, C, R]:
         """Bind the async emitter and config to ``event``, returning an ``AsyncBoundEvent``."""
         ...
@@ -159,7 +161,7 @@ class _ABindDecorator[C, R](Protocol):
 @overload
 def abind[**P, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, AsyncBoundEvent[P, C, R]], Awaitable[R]],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     *,
     config: C,
 ) -> AsyncBoundEvent[P, C, R]: ...
@@ -175,18 +177,18 @@ def abind[**P, C, R](
 
 def abind[**P, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, AsyncBoundEvent[P, C, R]], Awaitable[R]],
-    event: Event[P, S, T] | None = None,
+    event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
-) -> AsyncBoundEvent[P, C, R] | Callable[[Event[P, S, T]], AsyncBoundEvent[P, C, R]]:
+) -> AsyncBoundEvent[P, C, R] | Callable[[EventConfig[P, S, T]], AsyncBoundEvent[P, C, R]]:
     """Bind an async emitter to an event, returning an ``AsyncBoundEvent`` or a decorator."""
     if event is None:
 
-        def decorator(evt: Event[P, S, T]) -> AsyncBoundEvent[P, C, R]:
-            return AsyncBoundEvent(emitter, evt.schema, config=config)
+        def decorator(evt: EventConfig[P, S, T]) -> AsyncBoundEvent[P, C, R]:
+            return AsyncBoundEvent(emitter, evt.factory, config=config)
 
         return decorator
-    return AsyncBoundEvent(emitter, event.schema, config=config)
+    return AsyncBoundEvent(emitter, event.factory, config=config)
 
 
 class _BindFactoryDecorator[**Q, S: Payload, C, R](Protocol):
@@ -200,7 +202,7 @@ class _BindFactoryDecorator[**Q, S: Payload, C, R](Protocol):
 @overload
 def bind_factory[**P, **Q, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, BoundEvent[Q, C, R]], R],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     factory: Callable[Q, S],
     *,
     config: C,
@@ -210,7 +212,7 @@ def bind_factory[**P, **Q, S: Payload, T: EventType, C, R](
 @overload
 def bind_factory[**P, **Q, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, BoundEvent[Q, C, R]], R],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     *,
     config: C,
 ) -> _BindFactoryDecorator[Q, S, C, R]: ...
@@ -218,7 +220,7 @@ def bind_factory[**P, **Q, S: Payload, T: EventType, C, R](
 
 def bind_factory[**P, **Q, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, BoundEvent[Q, C, R]], R],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     factory: Callable[Q, S] | None = None,
     *,
     config: C,
@@ -246,7 +248,7 @@ class _ABindFactoryDecorator[**Q, S: Payload, C, R](Protocol):
 @overload
 def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     factory: Callable[Q, S],
     *,
     config: C,
@@ -256,7 +258,7 @@ def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
 @overload
 def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     factory: Callable[Q, Awaitable[S]],
     *,
     config: C,
@@ -266,7 +268,7 @@ def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
 @overload
 def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     *,
     config: C,
 ) -> _ABindFactoryDecorator[Q, S, C, R]: ...
@@ -274,7 +276,7 @@ def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
 
 def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
     emitter: Callable[[Payload, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
-    event: Event[P, S, T],
+    event: EventConfig[P, S, T],
     factory: Callable[Q, S] | Callable[Q, Awaitable[S]] | None = None,
     *,
     config: C,

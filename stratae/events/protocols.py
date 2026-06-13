@@ -2,7 +2,7 @@
 
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from stratae.events.event import Event, EventType, Payload
+from stratae.events.event import EventConfig, EventType, Payload
 
 
 @runtime_checkable
@@ -16,7 +16,7 @@ class Producer(Protocol):
     """
 
     def emit[**P, E: Payload, T: EventType](
-        self, payload: E, event: Event[P, E, T], config: Any
+        self, payload: E, event: EventConfig[P, E, T], config: Any
     ) -> Any:
         """
         Dispatch a constructed event payload.

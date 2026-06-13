@@ -35,7 +35,7 @@ from unittest.mock import Mock
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent, bind, bind_factory
-from stratae.events.event import Event, Payload, PubSub
+from stratae.events.event import EventConfig, Payload, PubSub
 
 
 class _OrderCreated(Payload):
@@ -62,7 +62,7 @@ def test_bind_direct_returns_bound_event() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = bind(emitter, ev, config=None)
@@ -81,7 +81,7 @@ def test_bind_direct_uses_event_schema_as_factory() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = bind(emitter, ev, config=None)
@@ -100,7 +100,7 @@ def test_bind_direct_stores_config() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
     # Act
@@ -122,7 +122,7 @@ def test_bind_direct_calling_constructs_schema_and_invokes_emitter(mocker: Mocke
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = bind(emitter, ev, config=None)
 
     # Act
@@ -143,7 +143,7 @@ def test_bind_direct_returns_emitter_result() -> None:
     """
     # Arrange
     emitter = Mock(return_value="dispatched")
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = bind(emitter, ev, config=None)
 
     # Act
@@ -186,7 +186,7 @@ def test_bind_decorator_form_applied_to_event_returns_bound_event() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = bind(emitter, config=None)(ev)
@@ -205,7 +205,7 @@ def test_bind_decorator_form_uses_event_schema_as_factory() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = bind(emitter, config=None)(ev)
@@ -224,7 +224,7 @@ def test_bind_decorator_form_stores_config() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
     # Act
@@ -249,7 +249,7 @@ def test_bind_factory_direct_returns_bound_event() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = Mock(return_value=_OrderCreated(1, "pending"))
 
     # Act
@@ -269,7 +269,7 @@ def test_bind_factory_direct_uses_factory_not_schema() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = Mock(return_value=_OrderCreated(1, "pending"))
 
     # Act
@@ -290,7 +290,7 @@ def test_bind_factory_direct_stores_config() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = Mock(return_value=_OrderCreated(1, "pending"))
     config = object()
 
@@ -314,7 +314,7 @@ def test_bind_factory_direct_calling_invokes_factory_then_emitter() -> None:
     payload = _OrderCreated(1, "pending")
     factory = Mock(return_value=payload)
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = bind_factory(emitter, ev, factory, config=None)
 
     # Act
@@ -336,7 +336,7 @@ def test_bind_factory_direct_returns_emitter_result() -> None:
     # Arrange
     factory = Mock(return_value=_OrderCreated(1, "pending"))
     emitter = Mock(return_value="dispatched")
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = bind_factory(emitter, ev, factory, config=None)
 
     # Act
@@ -361,7 +361,7 @@ def test_bind_factory_decorator_form_returns_callable() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = bind_factory(emitter, ev, config=None)
@@ -380,7 +380,7 @@ def test_bind_factory_decorator_form_applied_to_factory_returns_bound_event() ->
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     def _factory(order_id: int, status: str) -> _OrderCreated:
         return _OrderCreated(order_id, status.strip())
@@ -402,7 +402,7 @@ def test_bind_factory_decorator_form_uses_decorated_function_as_factory() -> Non
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     def _factory(order_id: int, status: str) -> _OrderCreated:
         return _OrderCreated(order_id, status.strip())
@@ -424,7 +424,7 @@ def test_bind_factory_decorator_form_stores_config() -> None:
     """
     # Arrange
     emitter = Mock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
     def _factory(order_id: int, status: str) -> _OrderCreated:
