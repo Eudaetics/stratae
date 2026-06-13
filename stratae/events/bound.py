@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol, overload
+from inspect import iscoroutinefunction
+from typing import Any, Awaitable, Callable, Protocol, cast, overload
 
 from stratae.events.event import Event, EventSchema, EventType
 
@@ -71,7 +72,7 @@ class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
     def __init__(
         self,
         emitter: Callable[[EventSchema, AsyncBoundEvent[P, EventConfig, Resp]], Awaitable[Resp]],
-        factory: Callable[P, EventSchema],
+        factory: Callable[P, EventSchema] | Callable[P, Awaitable[EventSchema]],
         *,
         config: EventConfig,
     ) -> None:
@@ -82,13 +83,15 @@ class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
             emitter: A coroutine callable that receives the constructed payload and this
                      ``AsyncBoundEvent``, and returns an awaitable resolving to ``Resp``.
             factory: A callable that constructs the ``EventSchema`` payload from
-                     the arguments passed to ``__call__``.
+                     the arguments passed to ``__call__``. May be a coroutine function,
+                     in which case it is awaited before the payload is forwarded.
             config:  The adapter-specific routing config for this binding.
 
         """
         self.factory = factory
         self.emitter = emitter
         self.config = config
+        self._factory_is_async = iscoroutinefunction(factory)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
@@ -98,7 +101,11 @@ class AsyncBoundEvent[**P, EventConfig: Any, Resp]:
             The resolved value of ``self.emitter``'s coroutine.
 
         """
-        return await self.emitter(self.factory(*args, **kwargs), self)
+        if self._factory_is_async:
+            payload = await cast(Awaitable[EventSchema], self.factory(*args, **kwargs))
+        else:
+            payload = cast(EventSchema, self.factory(*args, **kwargs))
+        return await self.emitter(payload, self)
 
 
 class _BindDecorator[C, R](Protocol):
@@ -234,7 +241,9 @@ def bind_factory[**P, **Q, S: EventSchema, T: EventType, C, R](
 class _ABindFactoryDecorator[**Q, S: EventSchema, C, R](Protocol):
     """Returned by ``abind_factory`` when no factory is given; decorates a factory callable."""
 
-    def __call__(self, factory: Callable[Q, S]) -> AsyncBoundEvent[Q, C, R]:
+    def __call__(
+        self, factory: Callable[Q, S] | Callable[Q, Awaitable[S]]
+    ) -> AsyncBoundEvent[Q, C, R]:
         """Bind the async emitter and config to ``factory``, returning an ``AsyncBoundEvent``."""
         ...
 
@@ -253,6 +262,16 @@ def abind_factory[**P, **Q, S: EventSchema, T: EventType, C, R](
 def abind_factory[**P, **Q, S: EventSchema, T: EventType, C, R](
     emitter: Callable[[EventSchema, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
     event: Event[P, S, T],
+    factory: Callable[Q, Awaitable[S]],
+    *,
+    config: C,
+) -> AsyncBoundEvent[Q, C, R]: ...
+
+
+@overload
+def abind_factory[**P, **Q, S: EventSchema, T: EventType, C, R](
+    emitter: Callable[[EventSchema, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
+    event: Event[P, S, T],
     *,
     config: C,
 ) -> _ABindFactoryDecorator[Q, S, C, R]: ...
@@ -261,14 +280,19 @@ def abind_factory[**P, **Q, S: EventSchema, T: EventType, C, R](
 def abind_factory[**P, **Q, S: EventSchema, T: EventType, C, R](
     emitter: Callable[[EventSchema, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
     event: Event[P, S, T],
-    factory: Callable[Q, S] | None = None,
+    factory: Callable[Q, S] | Callable[Q, Awaitable[S]] | None = None,
     *,
     config: C,
-) -> AsyncBoundEvent[Q, C, R] | Callable[[Callable[Q, S]], AsyncBoundEvent[Q, C, R]]:
+) -> (
+    AsyncBoundEvent[Q, C, R]
+    | Callable[[Callable[Q, S] | Callable[Q, Awaitable[S]]], AsyncBoundEvent[Q, C, R]]
+):
     """Bind a custom factory to an async emitter, returning an ``AsyncBoundEvent`` or decorator."""
     if factory is None:
 
-        def decorator(f: Callable[Q, S]) -> AsyncBoundEvent[Q, C, R]:
+        def decorator(
+            f: Callable[Q, S] | Callable[Q, Awaitable[S]],
+        ) -> AsyncBoundEvent[Q, C, R]:
             return AsyncBoundEvent(emitter, f, config=config)
 
         return decorator
