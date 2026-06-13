@@ -128,8 +128,8 @@ def bind[**P, S: EventSchema, T: EventType, C, R](
 
 
 @overload
-def bind[C, R](
-    emitter: Callable[[EventSchema, BoundEvent[..., C, R]], R],
+def bind[**P, C, R](
+    emitter: Callable[[EventSchema, BoundEvent[P, C, R]], R],
     *,
     config: C,
 ) -> _BindDecorator[C, R]: ...
@@ -171,8 +171,8 @@ def abind[**P, S: EventSchema, T: EventType, C, R](
 
 
 @overload
-def abind[C, R](
-    emitter: Callable[[EventSchema, AsyncBoundEvent[..., C, R]], Awaitable[R]],
+def abind[**P, C, R](
+    emitter: Callable[[EventSchema, AsyncBoundEvent[P, C, R]], Awaitable[R]],
     *,
     config: C,
 ) -> _ABindDecorator[C, R]: ...
