@@ -5,6 +5,8 @@ This test suite verifies the following behaviors:
 
 Event:
 - The schema and event_type are stored on initialization.
+- Raises TypeError when the schema is not an EventSchema subclass.
+- Raises TypeError when the schema is a callable returning EventSchema but is not a class.
 
 PubSub:
 - Is a subclass of EventType.
@@ -14,6 +16,8 @@ event decorator:
 - The returned Event stores the decorated class as its schema.
 - The returned Event stores the supplied event_type.
 """
+
+import pytest
 
 from stratae.events.event import Event, EventSchema, EventType, PubSub, event
 
@@ -38,6 +42,46 @@ def test_event_stores_schema_and_event_type() -> None:
     # Assert
     assert ev.schema is _OrderPlaced
     assert ev.event_type is PubSub
+
+
+def test_event_raises_type_error_for_non_event_schema() -> None:
+    """
+    Test that Event raises TypeError when the schema is not an EventSchema subclass.
+
+    Given: A class that does not subclass EventSchema
+    When: An Event is created with it as the schema
+    Then: A TypeError should be raised
+    """
+
+    # Arrange
+    class _NotASchema:
+        pass
+
+    # Act & Assert
+    with pytest.raises(TypeError, match="_NotASchema.*is not an EventSchema subclass"):
+        Event(_NotASchema, PubSub)  # pyright: ignore[reportArgumentType]
+
+
+def test_event_raises_type_error_for_factory_callable() -> None:
+    """
+    Test that Event raises TypeError when passed a callable returning EventSchema but not a class.
+
+    Given: A function typed to return an EventSchema instance
+    When: An Event is created with it as the schema
+    Then: A TypeError should be raised
+    """
+
+    # Arrange
+    class _OrderPlaced(EventSchema):
+        def __init__(self, order_id: int) -> None:
+            self.order_id = order_id
+
+    def _factory(order_id: int) -> _OrderPlaced:
+        return _OrderPlaced(order_id)
+
+    # Act & Assert
+    with pytest.raises(TypeError, match="is not an EventSchema subclass"):
+        Event(_factory, PubSub)
 
 
 def test_pubsub_is_subclass_of_event_type() -> None:
