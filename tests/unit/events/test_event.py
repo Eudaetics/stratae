@@ -17,9 +17,7 @@ event decorator:
 - The returned Event stores the supplied event_type.
 """
 
-import pytest
-
-from stratae.events.event import Event, EventType, Payload, PubSub, event
+from stratae.events.event import EventConfig, EventType, Payload, PubSub, event
 
 
 def test_event_stores_schema_and_event_type() -> None:
@@ -37,51 +35,11 @@ def test_event_stores_schema_and_event_type() -> None:
             self.order_id = order_id
 
     # Act
-    ev = Event(_OrderPlaced, PubSub)
+    ev = EventConfig(_OrderPlaced, PubSub)
 
     # Assert
-    assert ev.schema is _OrderPlaced
+    assert ev.factory is _OrderPlaced
     assert ev.event_type is PubSub
-
-
-def test_event_raises_type_error_for_non_event_schema() -> None:
-    """
-    Test that Event raises TypeError when the schema is not a Payload subclass.
-
-    Given: A class that does not subclass Payload
-    When: An Event is created with it as the schema
-    Then: A TypeError should be raised
-    """
-
-    # Arrange
-    class _NotAPayload:
-        pass
-
-    # Act & Assert
-    with pytest.raises(TypeError, match="_NotAPayload.*is not a Payload subclass"):
-        Event(_NotAPayload, PubSub)  # pyright: ignore[reportArgumentType]
-
-
-def test_event_raises_type_error_for_factory_callable() -> None:
-    """
-    Test that Event raises TypeError when passed a callable returning Payload but not a class.
-
-    Given: A function typed to return a Payload instance
-    When: An Event is created with it as the schema
-    Then: A TypeError should be raised
-    """
-
-    # Arrange
-    class _OrderPlaced(Payload):
-        def __init__(self, order_id: int) -> None:
-            self.order_id = order_id
-
-    def _factory(order_id: int) -> _OrderPlaced:
-        return _OrderPlaced(order_id)
-
-    # Act & Assert
-    with pytest.raises(TypeError, match="is not a Payload subclass"):
-        Event(_factory, PubSub)
 
 
 def test_pubsub_is_subclass_of_event_type() -> None:
@@ -111,7 +69,7 @@ def test_event_decorator_returns_event_instance() -> None:
             self.value = value
 
     # Assert
-    assert isinstance(_Schema, Event)
+    assert isinstance(_Schema, EventConfig)
 
 
 def test_event_decorator_stores_schema() -> None:
@@ -132,7 +90,7 @@ def test_event_decorator_stores_schema() -> None:
     decorated = event(PubSub)(_Schema)
 
     # Assert
-    assert decorated.schema is _Schema
+    assert decorated.factory is _Schema
 
 
 def test_event_decorator_stores_event_type() -> None:

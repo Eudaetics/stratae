@@ -47,7 +47,7 @@ from unittest.mock import AsyncMock
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import AsyncBoundEvent, abind, abind_factory
-from stratae.events.event import Event, Payload, PubSub
+from stratae.events.event import EventConfig, Payload, PubSub
 
 
 class _OrderCreated(Payload):
@@ -74,7 +74,7 @@ def test_abind_direct_returns_async_bound_event() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = abind(emitter, ev, config=None)
@@ -93,7 +93,7 @@ def test_abind_direct_uses_event_schema_as_factory() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = abind(emitter, ev, config=None)
@@ -112,7 +112,7 @@ def test_abind_direct_stores_config() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
     # Act
@@ -136,7 +136,7 @@ async def test_abind_direct_calling_constructs_schema_and_awaits_emitter(
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = abind(emitter, ev, config=None)
 
     # Act
@@ -157,7 +157,7 @@ async def test_abind_direct_returns_emitter_result() -> None:
     """
     # Arrange
     emitter = AsyncMock(return_value="dispatched")
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = abind(emitter, ev, config=None)
 
     # Act
@@ -200,7 +200,7 @@ def test_abind_decorator_form_applied_to_event_returns_async_bound_event() -> No
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = abind(emitter, config=None)(ev)
@@ -219,7 +219,7 @@ def test_abind_decorator_form_uses_event_schema_as_factory() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = abind(emitter, config=None)(ev)
@@ -238,7 +238,7 @@ def test_abind_decorator_form_stores_config() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
     # Act
@@ -263,7 +263,7 @@ def test_abind_factory_direct_returns_async_bound_event() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
 
     # Act
@@ -283,7 +283,7 @@ def test_abind_factory_direct_uses_factory_not_schema() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
 
     # Act
@@ -304,7 +304,7 @@ def test_abind_factory_direct_stores_config() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
     config = object()
 
@@ -331,7 +331,7 @@ async def test_abind_factory_direct_calling_invokes_factory_then_awaits_emitter(
         return payload
 
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = abind_factory(emitter, ev, _factory, config=None)
 
     # Act
@@ -355,7 +355,7 @@ async def test_abind_factory_direct_returns_emitter_result() -> None:
         return _OrderCreated(order_id, status)
 
     emitter = AsyncMock(return_value="dispatched")
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = abind_factory(emitter, ev, _factory, config=None)
 
     # Act
@@ -380,7 +380,7 @@ def test_abind_factory_decorator_form_returns_callable() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
     result = abind_factory(emitter, ev, config=None)
@@ -399,7 +399,7 @@ def test_abind_factory_decorator_form_applied_to_factory_returns_async_bound_eve
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     def _factory(order_id: int, status: str) -> _OrderCreated:
         return _OrderCreated(order_id, status.strip())
@@ -421,7 +421,7 @@ def test_abind_factory_decorator_form_uses_decorated_function_as_factory() -> No
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
 
     def _factory(order_id: int, status: str) -> _OrderCreated:
         return _OrderCreated(order_id, status.strip())
@@ -443,7 +443,7 @@ def test_abind_factory_decorator_form_stores_config() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
     def _factory(order_id: int, status: str) -> _OrderCreated:
@@ -471,7 +471,7 @@ def test_abind_factory_async_factory_direct_returns_async_bound_event() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
 
     # Act
@@ -491,7 +491,7 @@ def test_abind_factory_async_factory_direct_uses_factory_not_schema() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
 
     # Act
@@ -512,7 +512,7 @@ def test_abind_factory_async_factory_direct_stores_config() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
     config = object()
 
@@ -536,7 +536,7 @@ async def test_abind_factory_async_factory_direct_awaits_factory_then_awaits_emi
     payload = _OrderCreated(1, "pending")
     factory = AsyncMock(return_value=payload)
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = abind_factory(emitter, ev, factory, config=None)
 
     # Act
@@ -558,7 +558,7 @@ async def test_abind_factory_async_factory_direct_returns_emitter_result() -> No
     # Arrange
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
     emitter = AsyncMock(return_value="dispatched")
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     bound = abind_factory(emitter, ev, factory, config=None)
 
     # Act
@@ -583,7 +583,7 @@ def test_abind_factory_async_factory_decorator_form_returns_async_bound_event() 
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
 
     # Act
@@ -605,7 +605,7 @@ def test_abind_factory_async_factory_decorator_form_uses_decorated_async_functio
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
 
     # Act
@@ -625,7 +625,7 @@ def test_abind_factory_async_factory_decorator_form_stores_config() -> None:
     """
     # Arrange
     emitter = AsyncMock()
-    ev = Event(_OrderCreated, PubSub)
+    ev = EventConfig(_OrderCreated, PubSub)
     config = object()
     factory = AsyncMock(return_value=_OrderCreated(1, "pending"))
 
