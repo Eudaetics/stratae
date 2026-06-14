@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol, overload
+import inspect
+from typing import Any, Awaitable, Callable, Protocol, TypeGuard, overload
 
 from stratae.events.event import EventConfig, EventType, Payload
 
@@ -105,6 +106,12 @@ class AsyncBoundEvent[**P, RoutingConfig: Any, Resp]:
         return await self.emitter(payload, self)
 
 
+def _is_sync_factory[**P, E: Payload](
+    factory: Callable[P, E] | Callable[P, Awaitable[E]],
+) -> TypeGuard[Callable[P, E]]:
+    return not inspect.iscoroutinefunction(factory)
+
+
 class _BindDecorator[C, R](Protocol):
     """Decorator form of ``bind``: takes an ``EventConfig``, returns a ``BoundEvent``."""
 
@@ -142,9 +149,15 @@ def bind[**P, S: Payload, T: EventType, C, R](
     if event is None:
 
         def decorator(evt: EventConfig[P, S, T]) -> BoundEvent[P, C, R]:
+            if not _is_sync_factory(evt.factory):
+                raise TypeError(
+                    "bind requires a sync factory; resolve async work outside the factory"
+                )
             return BoundEvent(emitter, evt.factory, config=config)
 
         return decorator
+    if not _is_sync_factory(event.factory):
+        raise TypeError("bind requires a sync factory; resolve async work outside the factory")
     return BoundEvent(emitter, event.factory, config=config)
 
 

@@ -7,8 +7,10 @@ This test suite verifies the following behaviors:
 - Awaiting the bound event constructs the event with keyword arguments.
 - Awaiting the bound event with mixed positional and keyword arguments forwards them correctly.
 - The resolved value from the async emitter is returned to the caller.
+- An async factory is awaited before its result is forwarded to the emitter.
 """
 
+import asyncio
 from unittest.mock import AsyncMock
 
 from pytest_mock import MockerFixture
@@ -117,3 +119,27 @@ async def test_call_returns_emitter_result():
     result = await bound(42, 100)
 
     assert result == "dispatched"
+
+
+async def test_call_awaits_async_factory_before_passing_to_emitter() -> None:
+    """
+    Test that an async factory is awaited and its resolved value forwarded to the emitter.
+
+    Given: An AsyncBoundEvent whose factory is a coroutine function
+    When: The AsyncBoundEvent is called and awaited
+    Then: The emitter should receive the resolved payload, not the coroutine
+    """
+
+    # Arrange
+    async def _async_factory(payment_id: int, amount: int) -> _PaymentReceived:
+        await asyncio.sleep(0)
+        return _PaymentReceived(payment_id, amount)
+
+    emitter = AsyncMock()
+    bound = AsyncBoundEvent(emitter, _async_factory, config=None)
+
+    # Act
+    await bound(42, 100)
+
+    # Assert
+    emitter.assert_awaited_once_with(_PaymentReceived(42, 100), bound)
