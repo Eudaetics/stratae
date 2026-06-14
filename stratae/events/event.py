@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, TypeGuard, overload
+from typing import Awaitable, Callable, TypeGuard, overload
 
 
 class EventType:
@@ -32,7 +32,9 @@ class Payload:
     """
 
 
-def _is_payload_class[**P, E: Payload](factory: Callable[P, E]) -> TypeGuard[type[E]]:
+def _is_payload_class[**P, E: Payload](
+    factory: Callable[P, E] | Callable[P, Awaitable[E]],
+) -> TypeGuard[type[E]]:
     return isinstance(factory, type) and issubclass(factory, Payload)
 
 
@@ -59,7 +61,7 @@ class EventConfig[**P, E: Payload, T: EventType]:
 
     def __init__(
         self,
-        factory: Callable[P, E],
+        factory: Callable[P, E] | Callable[P, Awaitable[E]],
         event_type: type[T],
         *,
         name: str | None = None,
@@ -92,7 +94,7 @@ class EventConfig[**P, E: Payload, T: EventType]:
         self.payload_type = payload_type
 
     @property
-    def factory(self) -> Callable[P, E]:
+    def factory(self) -> Callable[P, E] | Callable[P, Awaitable[E]]:
         """Access the factory for use in generating payloads for events."""
         return self._factory
 
