@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, TypeGuard, overload
 
 
 class EventType:
@@ -32,6 +32,10 @@ class Payload:
     """
 
 
+def _is_payload_class[**P, E: Payload](factory: Callable[P, E]) -> TypeGuard[type[E]]:
+    return isinstance(factory, type) and issubclass(factory, Payload)
+
+
 class EventConfig[**P, E: Payload, T: EventType]:
     """
     Bus-agnostic event definition binding a payload type to a dispatch pattern.
@@ -53,17 +57,39 @@ class EventConfig[**P, E: Payload, T: EventType]:
 
     """
 
-    def __init__(self, factory: Callable[P, E], event_type: type[T]) -> None:
+    def __init__(
+        self,
+        factory: Callable[P, E],
+        event_type: type[T],
+        *,
+        name: str | None = None,
+        payload_type: type[E] | None = None,
+    ) -> None:
         """
         Define an event with a schema type and dispatch pattern.
 
         Args:
-            factory:    A factory used to create a Payload.
-            event_type: The dispatch pattern discriminant class.
+            factory:      A factory used to create a Payload.
+            event_type:   The dispatch pattern discriminant class.
+            payload_type: The concrete ``Payload`` subclass this event carries.
+                          Derived from ``factory`` when ``factory`` is itself a
+                          ``Payload`` subclass; must be provided explicitly otherwise.
+            name:         Human-readable identifier for this event.
+                          Defaults to ``factory.__name__``.
 
         """
         self._factory = factory
         self.event_type = event_type
+
+        self.name = name if name is not None else factory.__name__
+
+        if payload_type is None:
+            if not _is_payload_class(factory):
+                raise TypeError(
+                    "payload_type must be provided when factory is not a Payload subclass"
+                )
+            payload_type = factory
+        self.payload_type = payload_type
 
     @property
     def factory(self) -> Callable[P, E]:
@@ -71,14 +97,39 @@ class EventConfig[**P, E: Payload, T: EventType]:
         return self._factory
 
 
+@overload
 def event[**P, E: Payload, T: EventType](
     event_type: type[T],
+    *,
+    name: str | None = None,
+) -> Callable[[Callable[P, E]], EventConfig[P, E, T]]: ...
+
+
+@overload
+def event[**P, E: Payload, T: EventType](
+    event_type: type[T],
+    *,
+    name: str | None = None,
+    payload_type: type[E],
+) -> Callable[[Callable[P, E]], EventConfig[P, E, T]]: ...
+
+
+def event[**P, E: Payload, T: EventType](
+    event_type: type[T],
+    *,
+    name: str | None = None,
+    payload_type: type[E] | None = None,
 ) -> Callable[[Callable[P, E]], EventConfig[P, E, T]]:
     """
     Wrap a ``Payload`` subclass as an ``Event``.
 
     Args:
-        event_type: The dispatch pattern discriminant class.
+        event_type:   The dispatch pattern discriminant class.
+        name:         Human-readable identifier for this event.
+                      Defaults to the decorated callable's ``__name__``.
+        payload_type: The concrete ``Payload`` subclass this event carries.
+                      Derived from the decorated callable when it is itself a
+                      ``Payload`` subclass; must be provided explicitly otherwise.
 
     Returns:
         A decorator that accepts a ``Payload`` subclass and returns an
@@ -94,6 +145,6 @@ def event[**P, E: Payload, T: EventType](
     """
 
     def decorator(schema: Callable[P, E]) -> EventConfig[P, E, T]:
-        return EventConfig(schema, event_type)
+        return EventConfig(schema, event_type, name=name, payload_type=payload_type)
 
     return decorator
