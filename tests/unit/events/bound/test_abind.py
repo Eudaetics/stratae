@@ -9,14 +9,17 @@ abind — direct form:
 - The AsyncBoundEvent stores the provided config.
 - Calling the AsyncBoundEvent constructs the schema and awaits the emitter.
 - Calling the AsyncBoundEvent returns the emitter's result.
+- An async factory is awaited before its result is forwarded to the emitter.
 
 abind — decorator form:
 - Returns a callable when no event is provided.
 - Applying the callable to an Event returns an AsyncBoundEvent.
 - The returned AsyncBoundEvent uses the event's schema as its factory.
 - The returned AsyncBoundEvent stores the provided config.
+- An async factory is awaited before its result is forwarded to the emitter.
 """
 
+import asyncio
 from unittest.mock import AsyncMock
 
 from pytest_mock import MockerFixture
@@ -142,6 +145,31 @@ async def test_abind_direct_returns_emitter_result() -> None:
     assert result == "dispatched"
 
 
+async def test_abind_direct_awaits_async_factory_then_awaits_emitter() -> None:
+    """
+    Abind with an async factory awaits the factory before forwarding to the emitter.
+
+    Given: An EventConfig whose factory is a coroutine function
+    When: The AsyncBoundEvent produced by abind is called
+    Then: The emitter should receive the resolved payload, not the coroutine
+    """
+
+    # Arrange
+    async def _async_factory(order_id: int, status: str) -> _OrderCreated:
+        await asyncio.sleep(0)
+        return _OrderCreated(order_id, status)
+
+    emitter = AsyncMock()
+    ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
+    bound = abind(emitter, ev, config=None)
+
+    # Act
+    await bound(1, "pending")
+
+    # Assert
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), bound)
+
+
 # endregion
 
 # region: Abind Decorator
@@ -221,6 +249,31 @@ def test_abind_decorator_form_stores_config() -> None:
 
     # Assert
     assert result.config is config
+
+
+async def test_abind_decorator_awaits_async_factory_then_awaits_emitter() -> None:
+    """
+    The decorator form of abind with an async factory awaits the factory before the emitter.
+
+    Given: An EventConfig whose factory is a coroutine function
+    When: The decorator returned by abind is applied and the result is called
+    Then: The emitter should receive the resolved payload, not the coroutine
+    """
+
+    # Arrange
+    async def _async_factory(order_id: int, status: str) -> _OrderCreated:
+        await asyncio.sleep(0)
+        return _OrderCreated(order_id, status)
+
+    emitter = AsyncMock()
+    ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
+    bound = abind(emitter, config=None)(ev)
+
+    # Act
+    await bound(1, "pending")
+
+    # Assert
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), bound)
 
 
 # endregion

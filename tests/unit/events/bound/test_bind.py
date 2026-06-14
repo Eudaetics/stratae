@@ -9,16 +9,20 @@ bind — direct form:
 - The BoundEvent stores the provided config.
 - Calling the BoundEvent constructs the schema and invokes the emitter.
 - Calling the BoundEvent returns the emitter's result.
+- Raises TypeError when the event's factory is async.
 
 bind — decorator form:
 - Returns a callable when no event is provided.
 - Applying the callable to an Event returns a BoundEvent.
 - The returned BoundEvent uses the event's schema as its factory.
 - The returned BoundEvent stores the provided config.
+- Raises TypeError when the event's factory is async.
 """
 
+import asyncio
 from unittest.mock import Mock
 
+import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent, bind
@@ -140,6 +144,28 @@ def test_bind_direct_returns_emitter_result() -> None:
     assert result == "dispatched"
 
 
+def test_bind_direct_raises_for_async_factory() -> None:
+    """
+    Bind raises TypeError when the event's factory is async.
+
+    Given: An EventConfig whose factory is a coroutine function
+    When: bind is called in direct form
+    Then: A TypeError should be raised
+    """
+
+    # Arrange
+    async def _async_factory(order_id: int, status: str) -> _OrderCreated:
+        await asyncio.sleep(0)
+        return _OrderCreated(order_id, status)
+
+    emitter = Mock()
+    ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        bind(emitter, ev, config=None)
+
+
 # endregion
 
 # region: Bind Decorator
@@ -219,6 +245,28 @@ def test_bind_decorator_form_stores_config() -> None:
 
     # Assert
     assert result.config is config
+
+
+def test_bind_decorator_raises_for_async_factory() -> None:
+    """
+    The decorator returned by bind raises TypeError when the event's factory is async.
+
+    Given: An EventConfig whose factory is a coroutine function
+    When: The decorator returned by bind is applied to that event
+    Then: A TypeError should be raised
+    """
+
+    # Arrange
+    async def _async_factory(order_id: int, status: str) -> _OrderCreated:
+        await asyncio.sleep(0)
+        return _OrderCreated(order_id, status)
+
+    emitter = Mock()
+    ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        bind(emitter, config=None)(ev)
 
 
 # endregion
