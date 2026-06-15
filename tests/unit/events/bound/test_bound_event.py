@@ -9,8 +9,10 @@ This test suite verifies the following behaviors:
 - The return value from the emitter is returned to the caller.
 """
 
+import asyncio
 from unittest.mock import Mock
 
+import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent
@@ -120,3 +122,23 @@ def test_call_returns_emitter_result():
     result = bound(1, "pending")
 
     assert result == "dispatched"
+
+
+def test_call_raises_for_async_factory():
+    """
+    Test that BoundEvent raises TypeError when its factory is a coroutine function.
+
+    Given: A BoundEvent constructed directly with an EventConfig whose factory is async
+    When: The BoundEvent is called
+    Then: A TypeError should be raised
+    """
+
+    async def _async_order_created(order_id: int, status: str) -> _OrderCreated:
+        await asyncio.sleep(0)
+        return _OrderCreated(order_id, status)
+
+    ev = EventConfig(_async_order_created, PubSub, payload_type=_OrderCreated)
+    bound = BoundEvent(Mock(), ev, config=None)
+
+    with pytest.raises(TypeError):
+        bound(1, "pending")

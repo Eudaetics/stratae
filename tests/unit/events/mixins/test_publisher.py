@@ -153,6 +153,28 @@ def test_publish_bound_event_returns_emit_publish_result(
     assert result == mock_emit.return_value
 
 
+def test_publish_decorator_form_returns_bound_event_with_config(publisher: Publisher[str, None]):
+    """
+    Publisher.publish decorator form accepts an EventConfig and returns a BoundEvent.
+
+    Given: A Publisher instance with abstract methods cleared
+    When: publish is called with only a config and the result is applied to an EventConfig
+    Then: The result should be a BoundEvent storing the EventConfig and config
+    """
+
+    @dataclass
+    class _ItemShipped(Payload):
+        item_id: int
+        quantity: int
+
+    _item_shipped = event(PubSub)(_ItemShipped)
+    bound = publisher.publish(config="orders")(_item_shipped)
+
+    assert isinstance(bound, BoundEvent)
+    assert bound.event is _item_shipped
+    assert bound.config == "orders"
+
+
 def test_publish_returns_distinct_bound_events(publisher: Publisher[str, None]):
     """
     Each call to publish should return a distinct BoundEvent instance.
