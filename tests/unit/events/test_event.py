@@ -156,6 +156,7 @@ def test_event_decorator_with_factory_stores_explicit_payload_type() -> None:
 
     # Assert
     assert create_order.payload_type is _OrderPlaced
+    assert not isinstance(create_order, AsyncEventConfig)
 
 
 def test_eventconfig_derives_payload_type_from_class_factory() -> None:
