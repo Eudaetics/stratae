@@ -62,13 +62,13 @@ def test_bind_direct_returns_bound_event() -> None:
     assert isinstance(result, BoundEvent)
 
 
-def test_bind_direct_uses_event_schema_as_factory() -> None:
+def test_bind_direct_stores_event() -> None:
     """
-    Bind stores the event's schema class as the BoundEvent's factory.
+    Bind stores the EventConfig on the returned BoundEvent.
 
-    Given: An Event whose schema is _OrderCreated
+    Given: An EventConfig
     When: bind is called in direct form
-    Then: The BoundEvent's factory should be _OrderCreated
+    Then: The BoundEvent's event should be the supplied EventConfig
     """
     # Arrange
     emitter = Mock()
@@ -78,7 +78,7 @@ def test_bind_direct_uses_event_schema_as_factory() -> None:
     result = bind(emitter, ev, config=None)
 
     # Assert
-    assert result.factory is _OrderCreated
+    assert result.event is ev
 
 
 def test_bind_direct_stores_config() -> None:
@@ -208,13 +208,13 @@ def test_bind_decorator_form_applied_to_event_returns_bound_event() -> None:
     assert isinstance(result, BoundEvent)
 
 
-def test_bind_decorator_form_uses_event_schema_as_factory() -> None:
+def test_bind_decorator_form_stores_event() -> None:
     """
-    The BoundEvent produced by the bind decorator uses the event's schema as its factory.
+    The BoundEvent produced by the bind decorator stores the supplied EventConfig.
 
-    Given: A decorator returned by bind applied to an Event
+    Given: A decorator returned by bind applied to an EventConfig
     When: The BoundEvent is produced
-    Then: Its factory should be the event's schema class
+    Then: Its event should be the supplied EventConfig
     """
     # Arrange
     emitter = Mock()
@@ -224,7 +224,7 @@ def test_bind_decorator_form_uses_event_schema_as_factory() -> None:
     result = bind(emitter, config=None)(ev)
 
     # Assert
-    assert result.factory is _OrderCreated
+    assert result.event is ev
 
 
 def test_bind_decorator_form_stores_config() -> None:
