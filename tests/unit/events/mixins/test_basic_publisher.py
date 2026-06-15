@@ -6,21 +6,22 @@ This test suite verifies the following behaviors:
 BasicPublisher:
 - BasicPublisher cannot be instantiated directly (abstract).
 - publish returns a BoundEvent bound to emit_publish.
-- The BoundEvent stores the correct schema, emitter, and None config.
-- Calling the BoundEvent constructs the event and calls emit_publish with the payload and itself.
+- The BoundEvent stores the correct EventConfig, emitter, and None config.
+- Calling the BoundEvent constructs the payload and calls emit_publish with it and itself.
 - Calling the BoundEvent with keyword args calls emit_publish with the payload and itself.
 - The return value from emit_publish is returned to the caller.
 - publish stores None on the BoundEvent config.
 - Each call to publish returns a distinct BoundEvent instance.
 """
 
+from dataclasses import dataclass
 from unittest.mock import Mock
 
 import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent
-from stratae.events.event import Payload
+from stratae.events.event import EventConfig, Payload, PubSub
 from stratae.events.mixins.publish import BasicPublisher
 
 
@@ -50,41 +51,45 @@ def test_basic_publish_returns_bound_event(publisher: BasicPublisher[None]):
     Publish should return a BoundEvent instance.
 
     Given: A BasicPublisher instance with abstract methods cleared
-    When: publish is used as a decorator
+    When: publish is called with an EventConfig
     Then: A BoundEvent instance should be returned
     """
 
-    @publisher.publish
+    @dataclass
     class _ItemShipped(Payload): ...
 
-    assert isinstance(_ItemShipped, BoundEvent)
+    bound = publisher.publish(EventConfig(_ItemShipped, PubSub))
+
+    assert isinstance(bound, BoundEvent)
 
 
-def test_basic_publish_stores_schema_emitter_and_none_config(publisher: BasicPublisher[None]):
+def test_basic_publish_stores_event_emitter_and_none_config(publisher: BasicPublisher[None]):
     """
-    BoundEvent returned by publish should store the schema, emit_publish, and None config.
+    BoundEvent returned by publish should store the EventConfig, emit_publish, and None config.
 
     Given: A BasicPublisher instance with abstract methods cleared
-    When: publish is used as a decorator
-    Then: The BoundEvent should store a Payload subclass, emit_publish, and None as config
+    When: publish is called with an EventConfig
+    Then: The BoundEvent should store the EventConfig, emit_publish, and None as config
     """
 
-    @publisher.publish
+    @dataclass
     class _ItemShipped(Payload):
-        def __init__(self, item_id: int, quantity: int) -> None:
-            self.item_id = item_id
-            self.quantity = quantity
+        item_id: int
+        quantity: int
 
-    assert isinstance(_ItemShipped.factory, type)
-    assert _ItemShipped.emitter == publisher.emit_publish
-    assert _ItemShipped.config is None
+    _item_shipped = EventConfig(_ItemShipped, PubSub)
+    bound = publisher.publish(_item_shipped)
+
+    assert bound.event is _item_shipped
+    assert bound.emitter == publisher.emit_publish
+    assert bound.config is None
 
 
 def test_basic_publish_bound_event_calls_emit_publish_with_positional_args(
     publisher: BasicPublisher[None], mocker: MockerFixture
 ):
     """
-    BoundEvent called with positional args should construct the event and call emit_publish.
+    BoundEvent called with positional args should construct the payload and call emit_publish.
 
     Given: A BoundEvent returned by publish
     When: The BoundEvent is called with positional arguments
@@ -92,27 +97,22 @@ def test_basic_publish_bound_event_calls_emit_publish_with_positional_args(
     """
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
 
-    @publisher.publish
+    @dataclass
     class _ItemShipped(Payload):
-        def __init__(self, item_id: int, quantity: int) -> None:
-            self.item_id = item_id
-            self.quantity = quantity
+        item_id: int
+        quantity: int
 
-        def __eq__(self, value: object) -> bool:
-            if not isinstance(value, type(self)):
-                return False
-            return self.item_id == value.item_id and self.quantity == value.quantity
+    bound = publisher.publish(EventConfig(_ItemShipped, PubSub))
+    bound(1, 10)
 
-    _ItemShipped(1, 10)
-
-    mock_emit.assert_called_once_with(_ItemShipped.factory(1, 10), _ItemShipped)
+    mock_emit.assert_called_once_with(_ItemShipped(1, 10), bound)
 
 
 def test_basic_publish_bound_event_calls_emit_publish_with_keyword_args(
     publisher: BasicPublisher[None], mocker: MockerFixture
 ):
     """
-    BoundEvent called with keyword args should construct the event and call emit_publish.
+    BoundEvent called with keyword args should construct the payload and call emit_publish.
 
     Given: A BoundEvent returned by publish
     When: The BoundEvent is called with keyword arguments
@@ -120,20 +120,15 @@ def test_basic_publish_bound_event_calls_emit_publish_with_keyword_args(
     """
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
 
-    @publisher.publish
+    @dataclass
     class _ItemShipped(Payload):
-        def __init__(self, item_id: int, quantity: int) -> None:
-            self.item_id = item_id
-            self.quantity = quantity
+        item_id: int
+        quantity: int
 
-        def __eq__(self, value: object) -> bool:
-            if not isinstance(value, type(self)):
-                return False
-            return self.item_id == value.item_id and self.quantity == value.quantity
+    bound = publisher.publish(EventConfig(_ItemShipped, PubSub))
+    bound(item_id=2, quantity=5)
 
-    _ItemShipped(item_id=2, quantity=5)
-
-    mock_emit.assert_called_once_with(_ItemShipped.factory(item_id=2, quantity=5), _ItemShipped)
+    mock_emit.assert_called_once_with(_ItemShipped(item_id=2, quantity=5), bound)
 
 
 def test_basic_publish_bound_event_returns_emit_publish_result(
@@ -142,19 +137,19 @@ def test_basic_publish_bound_event_returns_emit_publish_result(
     """
     The return value from emit_publish should propagate out of the BoundEvent call.
 
-    Given: A BoundEvent created via the decorator
+    Given: A BoundEvent created via publish
     When: The BoundEvent is called
     Then: The return value should match what emit_publish returned
     """
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock(return_value="dispatched"))
 
-    @publisher.publish
+    @dataclass
     class _ItemShipped(Payload):
-        def __init__(self, item_id: int, quantity: int) -> None:
-            self.item_id = item_id
-            self.quantity = quantity
+        item_id: int
+        quantity: int
 
-    result = _ItemShipped(1, 10)
+    bound = publisher.publish(EventConfig(_ItemShipped, PubSub))
+    result = bound(1, 10)
 
     assert result == mock_emit.return_value
 
@@ -164,17 +159,18 @@ def test_basic_publish_returns_distinct_bound_events(publisher: BasicPublisher[N
     Each call to publish should return a distinct BoundEvent instance.
 
     Given: A BasicPublisher instance with abstract methods cleared
-    When: publish is called twice with the same schema
-    Then: The two BoundEvents should be different objects
+    When: publish is called twice with the same EventConfig
+    Then: The two BoundEvents should be different objects wrapping the same EventConfig
     """
 
+    @dataclass
     class _ItemShipped(Payload):
-        def __init__(self, item_id: int, quantity: int) -> None:
-            self.item_id = item_id
-            self.quantity = quantity
+        item_id: int
+        quantity: int
 
-    first = publisher.publish(_ItemShipped)
-    second = publisher.publish(_ItemShipped)
+    _item_shipped = EventConfig(_ItemShipped, PubSub)
+    first = publisher.publish(_item_shipped)
+    second = publisher.publish(_item_shipped)
 
     assert first is not second
-    assert first.factory is second.factory
+    assert first.event is second.event

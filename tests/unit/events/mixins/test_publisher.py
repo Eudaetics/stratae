@@ -54,12 +54,12 @@ def test_publish_returns_bound_event(publisher: Publisher[str, None]):
     Then: A BoundEvent instance should be returned
     """
 
-    @publisher.publish(config="orders")
-    @event(PubSub)
     @dataclass
     class _ItemShipped(Payload): ...
 
-    assert isinstance(_ItemShipped, BoundEvent)
+    bound = publisher.publish(event(PubSub)(_ItemShipped), config="orders")
+
+    assert isinstance(bound, BoundEvent)
 
 
 def test_publish_stores_event_emitter_and_config(publisher: Publisher[str, None]):
@@ -71,15 +71,15 @@ def test_publish_stores_event_emitter_and_config(publisher: Publisher[str, None]
     Then: The BoundEvent should store an EventConfig, emit_publish, and config
     """
 
-    @event(PubSub)
     @dataclass
     class _ItemShipped(Payload):
         item_id: int
         quantity: int
 
-    bound = publisher.publish(_ItemShipped, config="orders")
+    _item_shipped = event(PubSub)(_ItemShipped)
+    bound = publisher.publish(_item_shipped, config="orders")
 
-    assert bound.event is _ItemShipped
+    assert bound.event is _item_shipped
     assert bound.emitter == publisher.emit_publish
     assert bound.config == "orders"
 
@@ -101,13 +101,10 @@ def test_publish_bound_event_calls_emit_publish_with_positional_args(
         item_id: int
         quantity: int
 
-    _ItemShipped(1, 10)
-
-    foo = event(PubSub)(_ItemShipped)
-    bound = publisher.publish(foo, config="orders")
+    bound = publisher.publish(event(PubSub)(_ItemShipped), config="orders")
     bound(1, 10)
 
-    mock_emit.assert_called_once_with(_ItemShipped.event.factory(1, 10), _ItemShipped)
+    mock_emit.assert_called_once_with(_ItemShipped(1, 10), bound)
 
 
 def test_publish_bound_event_calls_emit_publish_with_keyword_args(
@@ -122,18 +119,15 @@ def test_publish_bound_event_calls_emit_publish_with_keyword_args(
     """
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
 
-    @publisher.publish(config="orders")
-    @event(PubSub)
     @dataclass
     class _ItemShipped(Payload):
         item_id: int
         quantity: int
 
-    _ItemShipped(item_id=2, quantity=5)
+    bound = publisher.publish(event(PubSub)(_ItemShipped), config="orders")
+    bound(item_id=2, quantity=5)
 
-    mock_emit.assert_called_once_with(
-        _ItemShipped.event.factory(item_id=2, quantity=5), _ItemShipped
-    )
+    mock_emit.assert_called_once_with(_ItemShipped(item_id=2, quantity=5), bound)
 
 
 def test_publish_bound_event_returns_emit_publish_result(
@@ -148,14 +142,13 @@ def test_publish_bound_event_returns_emit_publish_result(
     """
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock(return_value="dispatched"))
 
-    @publisher.publish(config="orders")
-    @event(PubSub)
     @dataclass
     class _ItemShipped(Payload):
         item_id: int
         quantity: int
 
-    result = _ItemShipped(1, 10)
+    bound = publisher.publish(event(PubSub)(_ItemShipped), config="orders")
+    result = bound(1, 10)
 
     assert result == mock_emit.return_value
 

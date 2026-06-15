@@ -31,7 +31,7 @@ import pytest
 from stratae.events.adapters.local import LocalBus
 from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import Payload
+from stratae.events.event import EventConfig, Payload, PubSub
 
 
 class _TaskCreated(Payload):
@@ -42,6 +42,9 @@ class _TaskCreated(Payload):
         if not isinstance(other, _TaskCreated):
             return NotImplemented
         return self.task_id == other.task_id
+
+
+_task_created = EventConfig(_TaskCreated, PubSub)
 
 
 @pytest.fixture
@@ -64,7 +67,7 @@ def test_publish_returns_bound_event(bus: LocalBus):
     When: publish is called with a schema
     Then: A BoundEvent should be returned
     """
-    assert isinstance(bus.publish(_TaskCreated), BoundEvent)
+    assert isinstance(bus.publish(_task_created), BoundEvent)
 
 
 def test_calling_bound_event_dispatches_to_handler(bus: LocalBus):
@@ -77,7 +80,7 @@ def test_calling_bound_event_dispatches_to_handler(bus: LocalBus):
     """
     # Arrange
     handler = Mock()
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     bus.subscribe(emit, handler)
 
     # Act
@@ -98,7 +101,7 @@ def test_dispatches_to_all_handlers_on_channel(bus: LocalBus):
     # Arrange
     handler_a = Mock()
     handler_b = Mock()
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     bus.subscribe(emit, handler_a)
     bus.subscribe(emit, handler_b)
 
@@ -119,8 +122,8 @@ def test_channel_isolation(bus: LocalBus):
     Then: Only the handler for that BoundEvent should be called
     """
     # Arrange
-    emit_task = bus.publish(_TaskCreated)
-    emit_order = bus.publish(_TaskCreated)
+    emit_task = bus.publish(_task_created)
+    emit_order = bus.publish(_task_created)
     task_handler = Mock()
     order_handler = Mock()
     bus.subscribe(emit_task, task_handler)
@@ -143,7 +146,7 @@ def test_subscribe_returns_handler(bus: LocalBus):
     Then: The returned Handler should wrap that callable
     """
     fn = Mock()
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     handle = bus.subscribe(emit, fn)
 
     assert handle.call is fn
@@ -159,7 +162,7 @@ def test_unsubscribe_prevents_further_dispatch(bus: LocalBus):
     """
     # Arrange
     handler = Mock()
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     handle = bus.subscribe(emit, handler)
     bus.unsubscribe(handle)
 
@@ -180,7 +183,7 @@ def test_same_callable_registered_twice_called_twice(bus: LocalBus):
     """
     # Arrange
     handler = Mock()
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     bus.subscribe(emit, handler)
     bus.subscribe(emit, handler)
 
@@ -201,7 +204,7 @@ def test_emit_publish_dispatches_directly(bus: LocalBus):
     """
     # Arrange
     handler = Mock()
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     bus.subscribe(emit, handler)
     payload = _TaskCreated(6)
 
@@ -223,7 +226,7 @@ def test_handle_subscribe_invokes_all_handlers(bus: LocalBus):
     # Arrange
     handler_a = Mock()
     handler_b = Mock()
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     bus.subscribe(emit, handler_a)
     bus.subscribe(emit, handler_b)
     payload = _TaskCreated(7)
@@ -246,7 +249,7 @@ def test_raising_handler_does_not_prevent_other_handlers(bus: LocalBus):
     """
     # Arrange
     second_handler = Mock()
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     bus.subscribe(emit, Mock(side_effect=ValueError("boom")))
     bus.subscribe(emit, second_handler)
     payload = _TaskCreated(10)
@@ -270,7 +273,7 @@ def test_handler_exceptions_collected_into_exception_group(bus: LocalBus):
     # Arrange
     error_a = ValueError("first")
     error_b = RuntimeError("second")
-    emit = bus.publish(_TaskCreated)
+    emit = bus.publish(_task_created)
     bus.subscribe(emit, Mock(side_effect=error_a))
     bus.subscribe(emit, Mock(side_effect=error_b))
     payload = _TaskCreated(11)
@@ -291,7 +294,7 @@ def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: LocalBus
     Then: The captured value should be an Envelope instance
     """
     # Arrange
-    emit = bus_with_envelope.publish(_TaskCreated)
+    emit = bus_with_envelope.publish(_task_created)
     captured: list[Envelope] = []
 
     def handler(_: Payload) -> None:
@@ -318,7 +321,7 @@ def test_each_emission_creates_independent_envelope(bus_with_envelope: LocalBus)
     Then: Each emission should have a distinct correlation id
     """
     # Arrange
-    emit = bus_with_envelope.publish(_TaskCreated)
+    emit = bus_with_envelope.publish(_task_created)
     captured: list[Envelope] = []
 
     def handler(_: Payload) -> None:
@@ -346,8 +349,8 @@ def test_nested_emission_produces_child_envelope(bus_with_envelope: LocalBus):
           have the outer message id as its causation id
     """
     # Arrange
-    emit_outer = bus_with_envelope.publish(_TaskCreated)
-    emit_inner = bus_with_envelope.publish(_TaskCreated)
+    emit_outer = bus_with_envelope.publish(_task_created)
+    emit_inner = bus_with_envelope.publish(_task_created)
     outer_envelopes: list[Envelope] = []
     inner_envelopes: list[Envelope] = []
 
@@ -382,7 +385,7 @@ def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: LocalBus):
     Then: Accessing the current envelope should return None
     """
     # Arrange
-    emit = bus_with_envelope.publish(_TaskCreated)
+    emit = bus_with_envelope.publish(_task_created)
 
     @bus_with_envelope.subscribe(emit)
     def _(_: _TaskCreated) -> None: ...
