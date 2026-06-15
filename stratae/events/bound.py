@@ -7,9 +7,7 @@ from typing import Any, Awaitable, Callable, Protocol, TypeGuard, overload
 
 from stratae.events.event import EventConfig, EventType, Payload
 
-_SYNC_FACTORY_REQUIRED = (
-    "bind requires a sync factory; resolve async work outside the factory"
-)
+_SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
 
 class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
@@ -59,9 +57,7 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
         """
         factory = self.event.factory
         if not _is_sync_factory(factory):
-            raise TypeError(
-                _SYNC_FACTORY_REQUIRED
-            )
+            raise TypeError(_SYNC_FACTORY_REQUIRED)
         return self.emitter(factory(*args, **kwargs), self)
 
 

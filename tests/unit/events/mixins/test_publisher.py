@@ -20,7 +20,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent
-from stratae.events.event import EventConfig, Payload, PubSub, event
+from stratae.events.event import Payload, PubSub, event
 from stratae.events.mixins.publish import Publisher
 
 
@@ -95,7 +95,6 @@ def test_publish_bound_event_calls_emit_publish_with_positional_args(
     Then: emit_publish should be called with the constructed payload and the BoundEvent itself
     """
     mock_emit = mocker.patch.object(publisher, "emit_publish", new=Mock())
-
 
     @dataclass
     class _ItemShipped(Payload):
