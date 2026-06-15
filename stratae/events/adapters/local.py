@@ -9,7 +9,7 @@ from stratae.events.mixins.publish import BasicPublisher
 from stratae.events.mixins.subscribe import Subscriber
 
 
-class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
+class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, Any, Any, None, None]]):
     """
     In-process, synchronous event bus with no routing config.
 
@@ -42,7 +42,7 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
         super().__init__()
         self._use_envelope = use_envelope
 
-    def emit_publish[**P](self, payload: Payload, event: BoundEvent[P, None, None]) -> None:
+    def emit_publish(self, payload: Payload, event: BoundEvent[Any, Any, Any, None, None]) -> None:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
 
@@ -57,7 +57,9 @@ class LocalBus(BasicPublisher[None], Subscriber[BoundEvent[Any, None, None]]):
         else:
             self.handle_subscribe(payload, config=event)
 
-    def handle_subscribe[**P](self, payload: Payload, *, config: BoundEvent[P, None, None]) -> None:
+    def handle_subscribe(
+        self, payload: Payload, *, config: BoundEvent[Any, Any, Any, None, None]
+    ) -> None:
         """
         Invoke every handler registered for the given bound event with the payload.
 

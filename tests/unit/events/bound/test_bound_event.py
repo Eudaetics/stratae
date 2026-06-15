@@ -2,19 +2,21 @@
 Unit tests for the BoundEvent class.
 
 This test suite verifies the following behaviors:
-- The schema, emitter, and config are stored on initialization.
-- Calling the bound event constructs the event with positional arguments.
-- Calling the bound event constructs the event with keyword arguments.
+- The EventConfig, emitter, and config are stored on initialization.
+- Calling the bound event constructs the payload with positional arguments.
+- Calling the bound event constructs the payload with keyword arguments.
 - Calling the bound event with mixed positional and keyword arguments forwards them correctly.
 - The return value from the emitter is returned to the caller.
 """
 
+import asyncio
 from unittest.mock import Mock
 
+import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent
-from stratae.events.event import Payload
+from stratae.events.event import EventConfig, Payload, PubSub
 
 
 class _OrderCreated(Payload):
@@ -28,36 +30,39 @@ class _OrderCreated(Payload):
         return self.order_id == value.order_id and self.status == value.status
 
 
-def test_init_stores_schema_emitter_and_config():
-    """
-    Test that the schema, emitter, and config are stored during initialization.
+_order_created = EventConfig(_OrderCreated, PubSub)
 
-    Given: A schema, an emitter callable, and a config object
+
+def test_init_stores_event_emitter_and_config():
+    """
+    Test that the EventConfig, emitter, and config are stored during initialization.
+
+    Given: An EventConfig, an emitter callable, and a config object
     When: A BoundEvent is created
-    Then: The schema, emitter, and config attributes should reference the supplied objects
+    Then: The event, emitter, and config attributes should reference the supplied objects
     """
     emitter = Mock()
     config = object()
 
-    bound = BoundEvent(emitter, _OrderCreated, config=config)
+    bound = BoundEvent(emitter, _order_created, config=config)
 
-    assert bound.factory is _OrderCreated
+    assert bound.event is _order_created
     assert bound.emitter is emitter
     assert bound.config is config
 
 
-def test_call_passes_positional_args_to_schema(mocker: MockerFixture):
+def test_call_passes_positional_args_to_factory(mocker: MockerFixture):
     """
-    Test that positional arguments are forwarded to the schema constructor.
+    Test that positional arguments are forwarded to the factory.
 
-    Given: A BoundEvent wrapping a schema that accepts positional arguments
+    Given: A BoundEvent wrapping an EventConfig whose factory accepts positional arguments
     When: The BoundEvent is called with positional arguments
-    Then: The schema constructor should be called with those values and the emitter
+    Then: The factory should be called with those values and the emitter
           should receive the constructed payload and the BoundEvent itself
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(emitter, _OrderCreated, config=None)
+    bound = BoundEvent(emitter, _order_created, config=None)
 
     bound(1, "pending")
 
@@ -65,18 +70,18 @@ def test_call_passes_positional_args_to_schema(mocker: MockerFixture):
     emitter.assert_called_once_with(_OrderCreated(1, "pending"), bound)
 
 
-def test_call_passes_keyword_args_to_schema(mocker: MockerFixture):
+def test_call_passes_keyword_args_to_factory(mocker: MockerFixture):
     """
-    Test that keyword arguments are forwarded to the schema constructor.
+    Test that keyword arguments are forwarded to the factory.
 
-    Given: A BoundEvent wrapping a schema that accepts keyword arguments
+    Given: A BoundEvent wrapping an EventConfig whose factory accepts keyword arguments
     When: The BoundEvent is called with keyword arguments
-    Then: The schema constructor should be called with those values and the emitter
+    Then: The factory should be called with those values and the emitter
           should receive the constructed payload and the BoundEvent itself
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(emitter, _OrderCreated, config=None)
+    bound = BoundEvent(emitter, _order_created, config=None)
 
     bound(order_id=2, status="complete")
 
@@ -84,18 +89,18 @@ def test_call_passes_keyword_args_to_schema(mocker: MockerFixture):
     emitter.assert_called_once_with(_OrderCreated(2, "complete"), bound)
 
 
-def test_call_passes_mixed_args_to_schema(mocker: MockerFixture):
+def test_call_passes_mixed_args_to_factory(mocker: MockerFixture):
     """
-    Test that a mix of positional and keyword arguments are forwarded to the schema constructor.
+    Test that a mix of positional and keyword arguments are forwarded to the factory.
 
-    Given: A BoundEvent wrapping a schema that accepts positional and keyword arguments
+    Given: A BoundEvent wrapping an EventConfig whose factory accepts positional and keyword args
     When: The BoundEvent is called with one positional and one keyword argument
-    Then: The schema constructor should be called with args in the same form and the emitter
+    Then: The factory should be called with args in the same form and the emitter
           should receive the constructed payload and the BoundEvent itself
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
-    bound = BoundEvent(emitter, _OrderCreated, config=None)
+    bound = BoundEvent(emitter, _order_created, config=None)
 
     bound(1, status="pending")
 
@@ -112,8 +117,28 @@ def test_call_returns_emitter_result():
     Then: The return value should match the emitter's return value
     """
     emitter = Mock(return_value="dispatched")
-    bound = BoundEvent(emitter, _OrderCreated, config=None)
+    bound = BoundEvent(emitter, _order_created, config=None)
 
     result = bound(1, "pending")
 
     assert result == "dispatched"
+
+
+def test_call_raises_for_async_factory():
+    """
+    Test that BoundEvent raises TypeError when its factory is a coroutine function.
+
+    Given: A BoundEvent constructed directly with an EventConfig whose factory is async
+    When: The BoundEvent is called
+    Then: A TypeError should be raised
+    """
+
+    async def _async_order_created(order_id: int, status: str) -> _OrderCreated:
+        await asyncio.sleep(0)
+        return _OrderCreated(order_id, status)
+
+    ev = EventConfig(_async_order_created, PubSub, payload_type=_OrderCreated)
+    bound = BoundEvent(Mock(), ev, config=None)
+
+    with pytest.raises(TypeError):
+        bound(1, "pending")

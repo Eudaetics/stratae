@@ -7,52 +7,58 @@ from typing import Any, Awaitable, Callable, Protocol, TypeGuard, overload
 
 from stratae.events.event import EventConfig, EventType, Payload
 
+_SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
-class BoundEvent[**P, RoutingConfig: Any, Resp]:
+
+class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
     """
-    Binds a ``Payload`` subclass to a synchronous emitter with routing config.
+    Binds an ``EventConfig`` to a synchronous emitter with routing config.
 
-    A ``BoundEvent`` acts as a callable façade: invoking it constructs an
-    instance of ``schema`` from the supplied arguments and forwards the
-    payload and itself to ``emitter``, returning whatever the emitter produces.
+    A ``BoundEvent`` acts as a callable façade: invoking it constructs a
+    payload via the event's factory and forwards the payload and itself to
+    ``emitter``, returning whatever the emitter produces.
 
     Type parameters:
         P:             The parameter specification of the bound event's ``__call__`` signature.
+        S:             The ``Payload`` subclass produced by the event's factory.
+        T:             The ``EventType`` discriminant of the bound event.
         RoutingConfig: The adapter-specific routing config type.
         Resp:          The return type produced by the emitter.
     """
 
     def __init__(
         self,
-        emitter: Callable[[Payload, BoundEvent[P, RoutingConfig, Resp]], Resp],
-        factory: Callable[P, Payload],
+        emitter: Callable[[Payload, BoundEvent[P, S, T, RoutingConfig, Resp]], Resp],
+        event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
     ) -> None:
         """
-        Bind a factory and emitter with routing config.
+        Bind an event and emitter with routing config.
 
         Args:
             emitter: A callable that receives the constructed payload and this
                      ``BoundEvent``, and returns ``Resp``.
-            factory: A callable that constructs the ``Payload`` from the arguments
-                     passed to ``__call__``.
+            event:   The ``EventConfig`` whose factory constructs the payload.
             config:  The adapter-specific routing config for this binding.
 
         """
         self.emitter = emitter
-        self.factory = factory
+        self.event = event
         self.config = config
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
-        Construct the schema instance and forward it to the emitter.
+        Construct the payload and forward it to the emitter.
 
         Returns:
             Whatever ``self.emitter`` returns.
 
         """
-        return self.emitter(self.factory(*args, **kwargs), self)
+        factory = self.event.factory
+        if not _is_sync_factory(factory):
+            raise TypeError(_SYNC_FACTORY_REQUIRED)
+        return self.emitter(factory(*args, **kwargs), self)
 
 
 class AsyncBoundEvent[**P, RoutingConfig: Any, Resp]:
@@ -117,48 +123,46 @@ class _BindDecorator[C, R](Protocol):
 
     def __call__[**P, S: Payload, T: EventType](
         self, event: EventConfig[P, S, T]
-    ) -> BoundEvent[P, C, R]:
+    ) -> BoundEvent[P, S, T, C, R]:
         """Bind the emitter and config to ``event``, returning a ``BoundEvent``."""
         ...
 
 
 @overload
 def bind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, BoundEvent[P, C, R]], R],
+    emitter: Callable[[Payload, BoundEvent[P, S, T, C, R]], R],
     event: EventConfig[P, S, T],
     *,
     config: C,
-) -> BoundEvent[P, C, R]: ...
+) -> BoundEvent[P, S, T, C, R]: ...
 
 
 @overload
-def bind[**P, C, R](
-    emitter: Callable[[Payload, BoundEvent[P, C, R]], R],
+def bind[**P, S: Payload, T: EventType, C, R](
+    emitter: Callable[[Payload, BoundEvent[P, S, T, C, R]], R],
     *,
     config: C,
 ) -> _BindDecorator[C, R]: ...
 
 
 def bind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, BoundEvent[P, C, R]], R],
+    emitter: Callable[[Payload, BoundEvent[P, S, T, C, R]], R],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
-) -> BoundEvent[P, C, R] | Callable[[EventConfig[P, S, T]], BoundEvent[P, C, R]]:
+) -> BoundEvent[P, S, T, C, R] | Callable[[EventConfig[P, S, T]], BoundEvent[P, S, T, C, R]]:
     """Bind an emitter to an ``EventConfig``, returning a ``BoundEvent`` or a decorator."""
     if event is None:
 
-        def decorator(evt: EventConfig[P, S, T]) -> BoundEvent[P, C, R]:
+        def decorator(evt: EventConfig[P, S, T]) -> BoundEvent[P, S, T, C, R]:
             if not _is_sync_factory(evt.factory):
-                raise TypeError(
-                    "bind requires a sync factory; resolve async work outside the factory"
-                )
-            return BoundEvent(emitter, evt.factory, config=config)
+                raise TypeError(_SYNC_FACTORY_REQUIRED)
+            return BoundEvent(emitter, evt, config=config)
 
         return decorator
     if not _is_sync_factory(event.factory):
-        raise TypeError("bind requires a sync factory; resolve async work outside the factory")
-    return BoundEvent(emitter, event.factory, config=config)
+        raise TypeError(_SYNC_FACTORY_REQUIRED)
+    return BoundEvent(emitter, event, config=config)
 
 
 class _ABindDecorator[C, R](Protocol):
@@ -202,108 +206,3 @@ def abind[**P, S: Payload, T: EventType, C, R](
 
         return decorator
     return AsyncBoundEvent(emitter, event.factory, config=config)
-
-
-class _BindFactoryDecorator[**Q, S: Payload, C, R](Protocol):
-    """Returned by ``bind_factory`` when no factory is given; decorates a factory callable."""
-
-    def __call__(self, factory: Callable[Q, S]) -> BoundEvent[Q, C, R]:
-        """Bind the emitter and config to ``factory``, returning a ``BoundEvent``."""
-        ...
-
-
-@overload
-def bind_factory[**P, **Q, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, BoundEvent[Q, C, R]], R],
-    event: EventConfig[P, S, T],
-    factory: Callable[Q, S],
-    *,
-    config: C,
-) -> BoundEvent[Q, C, R]: ...
-
-
-@overload
-def bind_factory[**P, **Q, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, BoundEvent[Q, C, R]], R],
-    event: EventConfig[P, S, T],
-    *,
-    config: C,
-) -> _BindFactoryDecorator[Q, S, C, R]: ...
-
-
-def bind_factory[**P, **Q, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, BoundEvent[Q, C, R]], R],
-    event: EventConfig[P, S, T],
-    factory: Callable[Q, S] | None = None,
-    *,
-    config: C,
-) -> BoundEvent[Q, C, R] | Callable[[Callable[Q, S]], BoundEvent[Q, C, R]]:
-    """Bind a custom factory to an event emitter, returning a ``BoundEvent`` or a decorator."""
-    if factory is None:
-
-        def decorator(f: Callable[Q, S]) -> BoundEvent[Q, C, R]:
-            return BoundEvent(emitter, f, config=config)
-
-        return decorator
-    return BoundEvent(emitter, factory, config=config)
-
-
-class _ABindFactoryDecorator[**Q, S: Payload, C, R](Protocol):
-    """Returned by ``abind_factory`` when no factory is given; decorates a factory callable."""
-
-    def __call__(
-        self, factory: Callable[Q, S] | Callable[Q, Awaitable[S]]
-    ) -> AsyncBoundEvent[Q, C, R]:
-        """Bind the async emitter and config to ``factory``, returning an ``AsyncBoundEvent``."""
-        ...
-
-
-@overload
-def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
-    event: EventConfig[P, S, T],
-    factory: Callable[Q, S],
-    *,
-    config: C,
-) -> AsyncBoundEvent[Q, C, R]: ...
-
-
-@overload
-def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
-    event: EventConfig[P, S, T],
-    factory: Callable[Q, Awaitable[S]],
-    *,
-    config: C,
-) -> AsyncBoundEvent[Q, C, R]: ...
-
-
-@overload
-def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
-    event: EventConfig[P, S, T],
-    *,
-    config: C,
-) -> _ABindFactoryDecorator[Q, S, C, R]: ...
-
-
-def abind_factory[**P, **Q, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, AsyncBoundEvent[Q, C, R]], Awaitable[R]],
-    event: EventConfig[P, S, T],
-    factory: Callable[Q, S] | Callable[Q, Awaitable[S]] | None = None,
-    *,
-    config: C,
-) -> (
-    AsyncBoundEvent[Q, C, R]
-    | Callable[[Callable[Q, S] | Callable[Q, Awaitable[S]]], AsyncBoundEvent[Q, C, R]]
-):
-    """Bind a custom factory to an async emitter, returning an ``AsyncBoundEvent`` or decorator."""
-    if factory is None:
-
-        def decorator(
-            f: Callable[Q, S] | Callable[Q, Awaitable[S]],
-        ) -> AsyncBoundEvent[Q, C, R]:
-            return AsyncBoundEvent(emitter, f, config=config)
-
-        return decorator
-    return AsyncBoundEvent(emitter, factory, config=config)

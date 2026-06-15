@@ -17,19 +17,6 @@ bind — decorator form:
 - The returned BoundEvent uses the event's schema as its factory.
 - The returned BoundEvent stores the provided config.
 - Raises TypeError when the event's factory is async.
-
-bind_factory — direct form:
-- Returns a BoundEvent.
-- The BoundEvent uses the provided factory, not the event's schema.
-- The BoundEvent stores the provided config.
-- Calling the BoundEvent invokes the factory and passes its result to the emitter.
-- Calling the BoundEvent returns the emitter's result.
-
-bind_factory — decorator form:
-- Returns a callable when no factory is provided.
-- Applying the callable to a factory function returns a BoundEvent.
-- The returned BoundEvent uses the decorated function as its factory.
-- The returned BoundEvent stores the provided config.
 """
 
 import asyncio
@@ -38,7 +25,7 @@ from unittest.mock import Mock
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.bound import BoundEvent, bind, bind_factory
+from stratae.events.bound import BoundEvent, bind
 from stratae.events.event import EventConfig, Payload, PubSub
 
 
@@ -75,13 +62,13 @@ def test_bind_direct_returns_bound_event() -> None:
     assert isinstance(result, BoundEvent)
 
 
-def test_bind_direct_uses_event_schema_as_factory() -> None:
+def test_bind_direct_stores_event() -> None:
     """
-    Bind stores the event's schema class as the BoundEvent's factory.
+    Bind stores the EventConfig on the returned BoundEvent.
 
-    Given: An Event whose schema is _OrderCreated
+    Given: An EventConfig
     When: bind is called in direct form
-    Then: The BoundEvent's factory should be _OrderCreated
+    Then: The BoundEvent's event should be the supplied EventConfig
     """
     # Arrange
     emitter = Mock()
@@ -91,7 +78,7 @@ def test_bind_direct_uses_event_schema_as_factory() -> None:
     result = bind(emitter, ev, config=None)
 
     # Assert
-    assert result.factory is _OrderCreated
+    assert result.event is ev
 
 
 def test_bind_direct_stores_config() -> None:
@@ -221,13 +208,13 @@ def test_bind_decorator_form_applied_to_event_returns_bound_event() -> None:
     assert isinstance(result, BoundEvent)
 
 
-def test_bind_decorator_form_uses_event_schema_as_factory() -> None:
+def test_bind_decorator_form_stores_event() -> None:
     """
-    The BoundEvent produced by the bind decorator uses the event's schema as its factory.
+    The BoundEvent produced by the bind decorator stores the supplied EventConfig.
 
-    Given: A decorator returned by bind applied to an Event
+    Given: A decorator returned by bind applied to an EventConfig
     When: The BoundEvent is produced
-    Then: Its factory should be the event's schema class
+    Then: Its event should be the supplied EventConfig
     """
     # Arrange
     emitter = Mock()
@@ -237,7 +224,7 @@ def test_bind_decorator_form_uses_event_schema_as_factory() -> None:
     result = bind(emitter, config=None)(ev)
 
     # Assert
-    assert result.factory is _OrderCreated
+    assert result.event is ev
 
 
 def test_bind_decorator_form_stores_config() -> None:
@@ -280,209 +267,6 @@ def test_bind_decorator_raises_for_async_factory() -> None:
     # Act / Assert
     with pytest.raises(TypeError):
         bind(emitter, config=None)(ev)
-
-
-# endregion
-
-# region: Bind Factory Direct
-
-
-def test_bind_factory_direct_returns_bound_event() -> None:
-    """
-    bind_factory with an event and factory returns a BoundEvent.
-
-    Given: An emitter, an Event, a factory callable, and a config
-    When: bind_factory is called with all four
-    Then: The result should be a BoundEvent instance
-    """
-    # Arrange
-    emitter = Mock()
-    ev = EventConfig(_OrderCreated, PubSub)
-    factory = Mock(return_value=_OrderCreated(1, "pending"))
-
-    # Act
-    result = bind_factory(emitter, ev, factory, config=None)
-
-    # Assert
-    assert isinstance(result, BoundEvent)
-
-
-def test_bind_factory_direct_uses_factory_not_schema() -> None:
-    """
-    bind_factory stores the provided factory, not the event's schema class.
-
-    Given: A factory callable distinct from the event's schema
-    When: bind_factory is called in direct form
-    Then: The BoundEvent's factory should be the provided callable, not the schema
-    """
-    # Arrange
-    emitter = Mock()
-    ev = EventConfig(_OrderCreated, PubSub)
-    factory = Mock(return_value=_OrderCreated(1, "pending"))
-
-    # Act
-    result = bind_factory(emitter, ev, factory, config=None)
-
-    # Assert
-    assert result.factory is factory
-    assert result.factory is not _OrderCreated
-
-
-def test_bind_factory_direct_stores_config() -> None:
-    """
-    bind_factory stores the provided config on the returned BoundEvent.
-
-    Given: A distinct config object
-    When: bind_factory is called in direct form with that config
-    Then: The BoundEvent's config should reference the same object
-    """
-    # Arrange
-    emitter = Mock()
-    ev = EventConfig(_OrderCreated, PubSub)
-    factory = Mock(return_value=_OrderCreated(1, "pending"))
-    config = object()
-
-    # Act
-    result = bind_factory(emitter, ev, factory, config=config)
-
-    # Assert
-    assert result.config is config
-
-
-def test_bind_factory_direct_calling_invokes_factory_then_emitter() -> None:
-    """
-    Calling a BoundEvent from bind_factory calls the factory then passes its result to the emitter.
-
-    Given: A BoundEvent produced by bind_factory in direct form
-    When: The BoundEvent is called with arguments
-    Then: The factory should be called with those arguments and the emitter should
-          receive the factory's return value and the BoundEvent itself
-    """
-    # Arrange
-    payload = _OrderCreated(1, "pending")
-    factory = Mock(return_value=payload)
-    emitter = Mock()
-    ev = EventConfig(_OrderCreated, PubSub)
-    bound = bind_factory(emitter, ev, factory, config=None)
-
-    # Act
-    bound(1, "pending")
-
-    # Assert
-    factory.assert_called_once_with(1, "pending")
-    emitter.assert_called_once_with(payload, bound)
-
-
-def test_bind_factory_direct_returns_emitter_result() -> None:
-    """
-    Calling a BoundEvent from bind_factory returns the emitter's result.
-
-    Given: A BoundEvent whose emitter returns a known value
-    When: The BoundEvent is called
-    Then: The return value should match the emitter's return value
-    """
-    # Arrange
-    factory = Mock(return_value=_OrderCreated(1, "pending"))
-    emitter = Mock(return_value="dispatched")
-    ev = EventConfig(_OrderCreated, PubSub)
-    bound = bind_factory(emitter, ev, factory, config=None)
-
-    # Act
-    result = bound(1, "pending")
-
-    # Assert
-    assert result == "dispatched"
-
-
-# endregion
-
-# region: Bind Factory Decorator
-
-
-def test_bind_factory_decorator_form_returns_callable() -> None:
-    """
-    bind_factory without a factory returns a callable decorator.
-
-    Given: An emitter, an Event, and a config, but no factory
-    When: bind_factory is called
-    Then: The result should be callable
-    """
-    # Arrange
-    emitter = Mock()
-    ev = EventConfig(_OrderCreated, PubSub)
-
-    # Act
-    result = bind_factory(emitter, ev, config=None)
-
-    # Assert
-    assert callable(result)
-
-
-def test_bind_factory_decorator_form_applied_to_factory_returns_bound_event() -> None:
-    """
-    The decorator returned by bind_factory produces a BoundEvent when applied to a factory.
-
-    Given: A decorator returned by bind_factory and a factory function
-    When: The decorator is applied to the factory
-    Then: The result should be a BoundEvent instance
-    """
-    # Arrange
-    emitter = Mock()
-    ev = EventConfig(_OrderCreated, PubSub)
-
-    def _factory(order_id: int, status: str) -> _OrderCreated:
-        return _OrderCreated(order_id, status.strip())
-
-    # Act
-    result = bind_factory(emitter, ev, config=None)(_factory)
-
-    # Assert
-    assert isinstance(result, BoundEvent)
-
-
-def test_bind_factory_decorator_form_uses_decorated_function_as_factory() -> None:
-    """
-    The BoundEvent from bind_factory's decorator form uses the decorated function as its factory.
-
-    Given: A decorator returned by bind_factory applied to a factory function
-    When: The BoundEvent is produced
-    Then: Its factory should be the decorated function
-    """
-    # Arrange
-    emitter = Mock()
-    ev = EventConfig(_OrderCreated, PubSub)
-
-    def _factory(order_id: int, status: str) -> _OrderCreated:
-        return _OrderCreated(order_id, status.strip())
-
-    # Act
-    result = bind_factory(emitter, ev, config=None)(_factory)
-
-    # Assert
-    assert result.factory is _factory
-
-
-def test_bind_factory_decorator_form_stores_config() -> None:
-    """
-    The BoundEvent from bind_factory's decorator form stores the provided config.
-
-    Given: A distinct config object passed to bind_factory
-    When: The decorator is applied to a factory
-    Then: The BoundEvent's config should reference the same object
-    """
-    # Arrange
-    emitter = Mock()
-    ev = EventConfig(_OrderCreated, PubSub)
-    config = object()
-
-    def _factory(order_id: int, status: str) -> _OrderCreated:
-        return _OrderCreated(order_id, status.strip())
-
-    # Act
-    result = bind_factory(emitter, ev, config=config)(_factory)
-
-    # Assert
-    assert result.config is config
 
 
 # endregion
