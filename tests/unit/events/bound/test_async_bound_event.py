@@ -2,9 +2,9 @@
 Unit tests for the AsyncBoundEvent class.
 
 This test suite verifies the following behaviors:
-- The schema, emitter, and config are stored on initialization.
-- Awaiting the bound event constructs the event with positional arguments.
-- Awaiting the bound event constructs the event with keyword arguments.
+- The EventConfig, emitter, and config are stored on initialization.
+- Awaiting the bound event constructs the payload with positional arguments.
+- Awaiting the bound event constructs the payload with keyword arguments.
 - Awaiting the bound event with mixed positional and keyword arguments forwards them correctly.
 - The resolved value from the async emitter is returned to the caller.
 - An async factory is awaited before its result is forwarded to the emitter.
@@ -13,10 +13,11 @@ This test suite verifies the following behaviors:
 import asyncio
 from unittest.mock import AsyncMock
 
+import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import AsyncBoundEvent
-from stratae.events.event import Payload
+from stratae.events.event import EventConfig, Payload, PubSub
 
 
 class _PaymentReceived(Payload):
@@ -30,82 +31,101 @@ class _PaymentReceived(Payload):
         return self.payment_id == value.payment_id and self.amount == value.amount
 
 
-def test_init_stores_schema_emitter_and_config():
-    """
-    Test that the schema, emitter, and config are stored during initialization.
+@pytest.fixture
+def payment_received() -> EventConfig[..., _PaymentReceived, PubSub]:
+    """Return a fresh EventConfig for ``_PaymentReceived``."""
+    return EventConfig(_PaymentReceived, PubSub)
 
-    Given: A schema, an async emitter callable, and a config object
+
+def test_init_stores_event_emitter_and_config(
+    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+):
+    """
+    Test that the EventConfig, emitter, and config are stored during initialization.
+
+    Given: An EventConfig, an async emitter callable, and a config object
     When: An AsyncBoundEvent is created
-    Then: The schema, emitter, and config attributes should reference the supplied objects
+    Then: The event, emitter, and config attributes should reference the supplied objects
     """
     emitter = AsyncMock()
     config = object()
 
-    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=config)
+    bound = AsyncBoundEvent(emitter, payment_received, config=config)
 
-    assert bound.factory is _PaymentReceived
+    assert bound.event is payment_received
     assert bound.emitter is emitter
     assert bound.config is config
 
 
-async def test_call_passes_positional_args_to_schema(mocker: MockerFixture):
+async def test_call_passes_positional_args_to_factory(
+    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+    mocker: MockerFixture,
+):
     """
-    Test that positional arguments are forwarded to the schema constructor.
+    Test that positional arguments are forwarded to the factory.
 
-    Given: An AsyncBoundEvent wrapping a schema that accepts positional arguments
+    Given: An AsyncBoundEvent wrapping an EventConfig whose factory accepts positional arguments
     When: The AsyncBoundEvent is called and awaited with positional arguments
-    Then: The schema constructor should be called with those values and the emitter
-          should receive the constructed payload and the AsyncBoundEvent itself
+    Then: The factory should be called with those values and the emitter
+          should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=None)
+    bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
     await bound(42, 100)
 
     spy.assert_called_once_with(mocker.ANY, 42, 100)
-    emitter.assert_called_once_with(_PaymentReceived(42, 100), bound)
+    emitter.assert_called_once_with(_PaymentReceived(42, 100), payment_received, None)
 
 
-async def test_call_passes_keyword_args_to_schema(mocker: MockerFixture):
+async def test_call_passes_keyword_args_to_factory(
+    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+    mocker: MockerFixture,
+):
     """
-    Test that keyword arguments are forwarded to the schema constructor.
+    Test that keyword arguments are forwarded to the factory.
 
-    Given: An AsyncBoundEvent wrapping a schema that accepts keyword arguments
+    Given: An AsyncBoundEvent wrapping an EventConfig whose factory accepts keyword arguments
     When: The AsyncBoundEvent is called and awaited with keyword arguments
-    Then: The schema constructor should be called with those values and the emitter
-          should receive the constructed payload and the AsyncBoundEvent itself
+    Then: The factory should be called with those values and the emitter
+          should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=None)
+    bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
     await bound(payment_id=7, amount=50)
 
     spy.assert_called_once_with(mocker.ANY, payment_id=7, amount=50)
-    emitter.assert_called_once_with(_PaymentReceived(7, 50), bound)
+    emitter.assert_called_once_with(_PaymentReceived(7, 50), payment_received, None)
 
 
-async def test_call_passes_mixed_args_to_schema(mocker: MockerFixture):
+async def test_call_passes_mixed_args_to_factory(
+    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+    mocker: MockerFixture,
+):
     """
-    Test that a mix of positional and keyword arguments are forwarded to the schema constructor.
+    Test that a mix of positional and keyword arguments are forwarded to the factory.
 
-    Given: An AsyncBoundEvent wrapping a schema that accepts positional and keyword arguments
+    Given: An AsyncBoundEvent wrapping an EventConfig that accepts positional and keyword args
     When: The AsyncBoundEvent is called and awaited with one positional and one keyword argument
-    Then: The schema constructor should be called with args in the same form and the emitter
-          should receive the constructed payload and the AsyncBoundEvent itself
+    Then: The factory should be called with args in the same form and the emitter
+          should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=None)
+    bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
     await bound(42, amount=100)
 
     spy.assert_called_once_with(mocker.ANY, 42, amount=100)
-    emitter.assert_called_once_with(_PaymentReceived(42, 100), bound)
+    emitter.assert_called_once_with(_PaymentReceived(42, 100), payment_received, None)
 
 
-async def test_call_returns_emitter_result():
+async def test_call_returns_emitter_result(
+    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+):
     """
     Test that the resolved value from the async emitter is returned to the caller.
 
@@ -114,7 +134,7 @@ async def test_call_returns_emitter_result():
     Then: The return value should match the emitter's resolved value
     """
     emitter = AsyncMock(return_value="dispatched")
-    bound = AsyncBoundEvent(emitter, _PaymentReceived, config=None)
+    bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
     result = await bound(42, 100)
 
@@ -135,11 +155,12 @@ async def test_call_awaits_async_factory_before_passing_to_emitter() -> None:
         await asyncio.sleep(0)
         return _PaymentReceived(payment_id, amount)
 
+    event = EventConfig(_async_factory, PubSub, payload_type=_PaymentReceived)
     emitter = AsyncMock()
-    bound = AsyncBoundEvent(emitter, _async_factory, config=None)
+    bound = AsyncBoundEvent(emitter, event, config=None)
 
     # Act
     await bound(42, 100)
 
     # Assert
-    emitter.assert_awaited_once_with(_PaymentReceived(42, 100), bound)
+    emitter.assert_awaited_once_with(_PaymentReceived(42, 100), event, None)

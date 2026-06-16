@@ -28,7 +28,7 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
 
     def __init__(
         self,
-        emitter: Callable[[Payload, BoundEvent[P, S, T, RoutingConfig, Resp]], Resp],
+        emitter: Callable[[Payload, EventConfig[P, S, T], RoutingConfig], Resp],
         event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
@@ -55,13 +55,12 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
             Whatever ``self.emitter`` returns.
 
         """
-        factory = self.event.factory
-        if not _is_sync_factory(factory):
+        if not _is_sync_factory(self.event.factory):
             raise TypeError(_SYNC_FACTORY_REQUIRED)
-        return self.emitter(factory(*args, **kwargs), self)
+        return self.emitter(self.event.factory(*args, **kwargs), self.event, self.config)
 
 
-class AsyncBoundEvent[**P, RoutingConfig: Any, Resp]:
+class AsyncBoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
     """
     Binds a ``Payload`` subclass to an asynchronous emitter with routing config.
 
@@ -77,8 +76,8 @@ class AsyncBoundEvent[**P, RoutingConfig: Any, Resp]:
 
     def __init__(
         self,
-        emitter: Callable[[Payload, AsyncBoundEvent[P, RoutingConfig, Resp]], Awaitable[Resp]],
-        factory: Callable[P, Payload] | Callable[P, Awaitable[Payload]],
+        emitter: Callable[[Payload, EventConfig[P, S, T], RoutingConfig], Awaitable[Resp]],
+        event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
     ) -> None:
@@ -88,13 +87,11 @@ class AsyncBoundEvent[**P, RoutingConfig: Any, Resp]:
         Args:
             emitter: A coroutine callable that receives the constructed payload and this
                      ``AsyncBoundEvent``, and returns an awaitable resolving to ``Resp``.
-            factory: A callable that constructs the ``Payload`` payload from
-                     the arguments passed to ``__call__``. May be a coroutine function,
-                     in which case it is awaited before the payload is forwarded.
+            event:   The ``EventConfig`` whose factory constructs the payload.
             config:  The adapter-specific routing config for this binding.
 
         """
-        self.factory = factory
+        self.event = event
         self.emitter = emitter
         self.config = config
 
@@ -106,10 +103,10 @@ class AsyncBoundEvent[**P, RoutingConfig: Any, Resp]:
             The resolved value of ``self.emitter``'s coroutine.
 
         """
-        payload = self.factory(*args, **kwargs)
+        payload = self.event.factory(*args, **kwargs)
         if isinstance(payload, Awaitable):
             payload = await payload
-        return await self.emitter(payload, self)
+        return await self.emitter(payload, self.event, self.config)
 
 
 def _is_sync_factory[**P, E: Payload](
@@ -130,7 +127,7 @@ class _BindDecorator[C, R](Protocol):
 
 @overload
 def bind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, BoundEvent[P, S, T, C, R]], R],
+    emitter: Callable[[Payload, EventConfig[P, S, T], C], R],
     event: EventConfig[P, S, T],
     *,
     config: C,
@@ -139,14 +136,14 @@ def bind[**P, S: Payload, T: EventType, C, R](
 
 @overload
 def bind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, BoundEvent[P, S, T, C, R]], R],
+    emitter: Callable[[Payload, EventConfig[P, S, T], C], R],
     *,
     config: C,
 ) -> _BindDecorator[C, R]: ...
 
 
 def bind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, BoundEvent[P, S, T, C, R]], R],
+    emitter: Callable[[Payload, EventConfig[P, S, T], C], R],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
@@ -170,39 +167,42 @@ class _ABindDecorator[C, R](Protocol):
 
     def __call__[**P, S: Payload, T: EventType](
         self, event: EventConfig[P, S, T]
-    ) -> AsyncBoundEvent[P, C, R]:
+    ) -> AsyncBoundEvent[P, S, T, C, R]:
         """Bind the async emitter and config to ``event``, returning an ``AsyncBoundEvent``."""
         ...
 
 
 @overload
 def abind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, AsyncBoundEvent[P, C, R]], Awaitable[R]],
+    emitter: Callable[[Payload, EventConfig[P, S, T], C], Awaitable[R]],
     event: EventConfig[P, S, T],
     *,
     config: C,
-) -> AsyncBoundEvent[P, C, R]: ...
+) -> AsyncBoundEvent[P, S, T, C, R]: ...
 
 
 @overload
-def abind[**P, C, R](
-    emitter: Callable[[Payload, AsyncBoundEvent[P, C, R]], Awaitable[R]],
+def abind[**P, S: Payload, T: EventType, C, R](
+    emitter: Callable[[Payload, EventConfig[P, S, T], C], Awaitable[R]],
     *,
     config: C,
 ) -> _ABindDecorator[C, R]: ...
 
 
 def abind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, AsyncBoundEvent[P, C, R]], Awaitable[R]],
+    emitter: Callable[[Payload, EventConfig[P, S, T], C], Awaitable[R]],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
-) -> AsyncBoundEvent[P, C, R] | Callable[[EventConfig[P, S, T]], AsyncBoundEvent[P, C, R]]:
+) -> (
+    AsyncBoundEvent[P, S, T, C, R]
+    | Callable[[EventConfig[P, S, T]], AsyncBoundEvent[P, S, T, C, R]]
+):
     """Bind an async emitter to an event, returning an ``AsyncBoundEvent`` or a decorator."""
     if event is None:
 
-        def decorator(evt: EventConfig[P, S, T]) -> AsyncBoundEvent[P, C, R]:
-            return AsyncBoundEvent(emitter, evt.factory, config=config)
+        def decorator(evt: EventConfig[P, S, T]) -> AsyncBoundEvent[P, S, T, C, R]:
+            return AsyncBoundEvent(emitter, evt, config=config)
 
         return decorator
-    return AsyncBoundEvent(emitter, event.factory, config=config)
+    return AsyncBoundEvent(emitter, event, config=config)

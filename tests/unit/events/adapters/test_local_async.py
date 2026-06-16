@@ -4,17 +4,17 @@ Unit tests for the AsyncLocalBus adapter.
 This test suite verifies the following behaviors:
 
 AsyncLocalBus:
-- publish returns an AsyncBoundEvent.
+- bind returns an AsyncBoundEvent.
 - Awaiting the AsyncBoundEvent dispatches the payload to a registered sync handler.
 - Awaiting the AsyncBoundEvent dispatches the payload to a registered async handler.
 - Mixed sync and async handlers on the same channel both receive the payload.
 - All handlers on a channel receive the payload.
 - Handlers on different channels are isolated from each other.
-- subscribe returns a Handler.
-- unsubscribe removes a handler; subsequent emits do not invoke it.
+- handle returns a Handler.
+- remove removes a handler; subsequent emits do not invoke it.
 - The same callable may be registered multiple times independently.
-- emit_publish directly dispatches to handle_subscribe.
-- handle_subscribe invokes all handlers registered on the channel.
+- emit directly dispatches to dispatch.
+- dispatch invokes all handlers registered on the channel.
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
 
@@ -33,7 +33,7 @@ import pytest
 from stratae.events.adapters.local_async import AsyncLocalBus
 from stratae.events.bound import AsyncBoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import Payload
+from stratae.events.event import EventConfig, Payload, PubSub
 
 
 class _TaskCreated(Payload):
@@ -58,29 +58,31 @@ def bus_with_envelope() -> AsyncLocalBus:
     return AsyncLocalBus(use_envelope=True)
 
 
-def test_publish_returns_async_bound_event(bus: AsyncLocalBus):
+def test_bind_returns_async_bound_event(bus: AsyncLocalBus):
     """
-    Publish should return an AsyncBoundEvent bound to emit_publish.
+    ``bind`` should return an AsyncBoundEvent bound to bus.emit.
 
     Given: An AsyncLocalBus
-    When: publish is called with a schema
+    When: bind is called with an EventConfig
     Then: An AsyncBoundEvent should be returned
     """
-    assert isinstance(bus.publish(_TaskCreated), AsyncBoundEvent)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+
+    assert isinstance(emit, AsyncBoundEvent)
 
 
 async def test_dispatches_to_sync_handler(bus: AsyncLocalBus):
     """
-    Awaiting a BoundEvent should dispatch the payload to a registered sync handler.
+    Awaiting an AsyncBoundEvent should dispatch the payload to a registered sync handler.
 
-    Given: A sync handler subscribed via a BoundEvent config
+    Given: A sync handler registered via bus.handle
     When: The AsyncBoundEvent is awaited
     Then: The handler should be called with the constructed payload
     """
     # Arrange
     handler = Mock()
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, handler)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, handler)
 
     # Act
     await emit(task_id=1)
@@ -91,16 +93,16 @@ async def test_dispatches_to_sync_handler(bus: AsyncLocalBus):
 
 async def test_dispatches_to_async_handler(bus: AsyncLocalBus):
     """
-    Awaiting a BoundEvent should dispatch the payload to a registered async handler.
+    Awaiting an AsyncBoundEvent should dispatch the payload to a registered async handler.
 
-    Given: An async handler subscribed via a BoundEvent config
+    Given: An async handler registered via bus.handle
     When: The AsyncBoundEvent is awaited
     Then: The handler should be called with the constructed payload
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, handler)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, handler)
 
     # Act
     await emit(task_id=2)
@@ -111,18 +113,18 @@ async def test_dispatches_to_async_handler(bus: AsyncLocalBus):
 
 async def test_dispatches_to_mixed_handlers(bus: AsyncLocalBus):
     """
-    Both sync and async handlers subscribed to the same BoundEvent should receive the payload.
+    Both sync and async handlers registered to the same EventConfig should receive the payload.
 
-    Given: A sync handler and an async handler subscribed to the same BoundEvent
+    Given: A sync and an async handler registered to the same EventConfig
     When: An event is emitted
     Then: Both handlers should be called with the payload
     """
     # Arrange
     sync_handler = Mock()
     async_handler = AsyncMock()
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, sync_handler)
-    bus.subscribe(emit, async_handler)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, sync_handler)
+    bus.handle(emit.event, async_handler)
 
     # Act
     await emit(task_id=3)
@@ -134,18 +136,18 @@ async def test_dispatches_to_mixed_handlers(bus: AsyncLocalBus):
 
 async def test_dispatches_to_all_handlers_on_channel(bus: AsyncLocalBus):
     """
-    All handlers registered on the same BoundEvent should receive the payload.
+    All handlers registered on the same EventConfig should receive the payload.
 
-    Given: Two async handlers subscribed to the same BoundEvent
+    Given: Two async handlers registered to the same EventConfig
     When: An event is emitted
     Then: Both handlers should be called with the payload
     """
     # Arrange
     handler_a = AsyncMock()
     handler_b = AsyncMock()
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, handler_a)
-    bus.subscribe(emit, handler_b)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, handler_a)
+    bus.handle(emit.event, handler_b)
 
     # Act
     await emit(task_id=4)
@@ -157,19 +159,20 @@ async def test_dispatches_to_all_handlers_on_channel(bus: AsyncLocalBus):
 
 async def test_channel_isolation(bus: AsyncLocalBus):
     """
-    Handlers subscribed to one BoundEvent should not receive events emitted on another.
+    Handlers registered to one EventConfig should not receive events emitted on another.
 
-    Given: Two handlers each subscribed to a different BoundEvent
-    When: An event is emitted on one BoundEvent
-    Then: Only the handler for that BoundEvent should be called
+    Given: Two handlers each registered to a different EventConfig
+    When: An event is emitted on one EventConfig
+    Then: Only the handler for that EventConfig should be called
     """
     # Arrange
-    emit_task = bus.publish(_TaskCreated)
-    emit_order = bus.publish(_TaskCreated)
+    task_event = EventConfig(_TaskCreated, PubSub)
+    order_event = EventConfig(_TaskCreated, PubSub)
+    emit_task = bus.bind(task_event)
     task_handler = AsyncMock()
     order_handler = AsyncMock()
-    bus.subscribe(emit_task, task_handler)
-    bus.subscribe(emit_order, order_handler)
+    bus.handle(task_event, task_handler)
+    bus.handle(order_event, order_handler)
 
     # Act
     await emit_task(task_id=5)
@@ -179,34 +182,34 @@ async def test_channel_isolation(bus: AsyncLocalBus):
     order_handler.assert_not_called()
 
 
-def test_subscribe_returns_handler(bus: AsyncLocalBus):
+def test_handle_returns_handler(bus: AsyncLocalBus):
     """
-    Subscribe should return the Handler wrapping the registered callable.
+    ``handle`` should return the Handler wrapping the registered callable.
 
     Given: An AsyncLocalBus
-    When: subscribe is called with a callable
+    When: handle is called with a callable
     Then: The returned Handler should wrap that callable
     """
     fn = Mock()
-    emit = bus.publish(_TaskCreated)
-    handle = bus.subscribe(emit, fn)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    handler = bus.handle(emit.event, fn)
 
-    assert handle.call is fn
+    assert handler.call is fn
 
 
-async def test_unsubscribe_prevents_further_dispatch(bus: AsyncLocalBus):
+async def test_remove_prevents_further_dispatch(bus: AsyncLocalBus):
     """
-    Unsubscribed handlers should not receive subsequent emissions.
+    Removed handlers should not receive subsequent emissions.
 
-    Given: A handler subscribed and then unsubscribed
+    Given: A handler registered and then removed
     When: An event is emitted
     Then: The handler should not be called
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.publish(_TaskCreated)
-    handle = bus.subscribe(emit, handler)
-    bus.unsubscribe(handle)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    handle = bus.handle(emit.event, handler)
+    bus.remove(handle)
 
     # Act
     await emit(task_id=6)
@@ -217,17 +220,17 @@ async def test_unsubscribe_prevents_further_dispatch(bus: AsyncLocalBus):
 
 async def test_same_callable_registered_twice_called_twice(bus: AsyncLocalBus):
     """
-    Registering the same callable twice should produce two independent subscriptions.
+    Registering the same callable twice should produce two independent registrations.
 
-    Given: The same callable subscribed to a BoundEvent twice
+    Given: The same callable registered to an EventConfig twice
     When: An event is emitted
     Then: The callable should be invoked twice
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, handler)
-    bus.subscribe(emit, handler)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, handler)
+    bus.handle(emit.event, handler)
 
     # Act
     await emit(task_id=7)
@@ -236,45 +239,45 @@ async def test_same_callable_registered_twice_called_twice(bus: AsyncLocalBus):
     assert handler.call_count == 2
 
 
-async def test_emit_publish_dispatches_directly(bus: AsyncLocalBus):
+async def test_emit_dispatches_directly(bus: AsyncLocalBus):
     """
-    emit_publish should dispatch the payload directly to all registered handlers.
+    ``emit`` should dispatch the payload directly to all registered handlers.
 
-    Given: A handler subscribed to a BoundEvent
-    When: emit_publish is called directly with that BoundEvent
+    Given: A handler registered to an EventConfig
+    When: emit is called directly with that EventConfig
     Then: The handler should receive the payload
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, handler)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, handler)
     payload = _TaskCreated(8)
 
     # Act
-    await bus.emit_publish(payload, emit)
+    await bus.emit(payload, emit.event, None)
 
     # Assert
     handler.assert_called_once_with(payload)
 
 
-async def test_handle_subscribe_invokes_all_handlers(bus: AsyncLocalBus):
+async def test_dispatch_invokes_all_handlers(bus: AsyncLocalBus):
     """
-    handle_subscribe should invoke every handler registered for the given BoundEvent.
+    ``dispatch`` should invoke every handler registered for the given EventConfig.
 
-    Given: Two handlers subscribed to a BoundEvent
-    When: handle_subscribe is called directly
+    Given: Two handlers registered to an EventConfig
+    When: dispatch is called directly
     Then: Both handlers should receive the payload
     """
     # Arrange
     handler_a = AsyncMock()
     handler_b = AsyncMock()
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, handler_a)
-    bus.subscribe(emit, handler_b)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, handler_a)
+    bus.handle(emit.event, handler_b)
     payload = _TaskCreated(9)
 
     # Act
-    await bus.handle_subscribe(payload, config=emit)
+    await bus.dispatch(payload, config=emit.event)
 
     # Assert
     handler_a.assert_called_once_with(payload)
@@ -285,20 +288,20 @@ async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncLocalBu
     """
     A handler that raises should not prevent subsequent handlers from running.
 
-    Given: Two handlers subscribed to a BoundEvent, the first of which raises
-    When: An event is emitted
+    Given: Two handlers registered to an EventConfig, the first of which raises
+    When: an event is emitted
     Then: The second handler should still be called
     """
     # Arrange
     second_handler = AsyncMock()
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, AsyncMock(side_effect=ValueError("boom")))
-    bus.subscribe(emit, second_handler)
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, AsyncMock(side_effect=ValueError("boom")))
+    bus.handle(emit.event, second_handler)
     payload = _TaskCreated(10)
 
     # Act
     with pytest.raises(ExceptionGroup):
-        await bus.handle_subscribe(payload, config=emit)
+        await bus.dispatch(payload, config=emit.event)
 
     # Assert
     second_handler.assert_called_once_with(payload)
@@ -308,21 +311,21 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncLocal
     """
     All handler exceptions should be collected and raised together as an ExceptionGroup.
 
-    Given: Two handlers subscribed to a BoundEvent, both of which raise
+    Given: Two handlers registered to an EventConfig, both of which raise
     When: an event is emitted
     Then: An ExceptionGroup containing both exceptions should be raised
     """
     # Arrange
     error_a = ValueError("first")
     error_b = RuntimeError("second")
-    emit = bus.publish(_TaskCreated)
-    bus.subscribe(emit, AsyncMock(side_effect=error_a))
-    bus.subscribe(emit, AsyncMock(side_effect=error_b))
+    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    bus.handle(emit.event, AsyncMock(side_effect=error_a))
+    bus.handle(emit.event, AsyncMock(side_effect=error_b))
     payload = _TaskCreated(11)
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exc_info:
-        await bus.handle_subscribe(payload, config=emit)
+        await bus.dispatch(payload, config=emit.event)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
 
@@ -336,10 +339,10 @@ async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: As
     Then: The captured value should be an Envelope instance
     """
     # Arrange
-    emit = bus_with_envelope.publish(_TaskCreated)
+    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
     captured: list[Envelope] = []
 
-    @bus_with_envelope.subscribe(emit)
+    @bus_with_envelope.handle(emit.event)
     async def _(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
@@ -362,10 +365,10 @@ async def test_each_emission_creates_independent_envelope(bus_with_envelope: Asy
     Then: Each emission should have a distinct correlation id
     """
     # Arrange
-    emit = bus_with_envelope.publish(_TaskCreated)
+    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
     captured: list[Envelope] = []
 
-    @bus_with_envelope.subscribe(emit)
+    @bus_with_envelope.handle(emit.event)
     async def _(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
@@ -383,25 +386,27 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncL
     """
     A handler that emits an event should receive a child envelope linked to the outer one.
 
-    Given: An outer handler that emits on a second BoundEvent, and an inner handler on that event
+    Given: An outer handler that emits on a second EventConfig, and an inner handler on that event
     When: The outer event is emitted
     Then: The inner envelope should share the outer correlation id and
           have the outer message id as its causation id
     """
     # Arrange
-    emit_outer = bus_with_envelope.publish(_TaskCreated)
-    emit_inner = bus_with_envelope.publish(_TaskCreated)
+    outer_event = EventConfig(_TaskCreated, PubSub)
+    inner_event = EventConfig(_TaskCreated, PubSub)
+    emit_outer = bus_with_envelope.bind(outer_event)
+    emit_inner = bus_with_envelope.bind(inner_event)
     outer_envelopes: list[Envelope] = []
     inner_envelopes: list[Envelope] = []
 
-    @bus_with_envelope.subscribe(emit_outer)
+    @bus_with_envelope.handle(outer_event)
     async def _(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         outer_envelopes.append(envelope)
         await emit_inner(task_id=99)
 
-    @bus_with_envelope.subscribe(emit_inner)
+    @bus_with_envelope.handle(inner_event)
     async def _(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
@@ -420,13 +425,13 @@ async def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: AsyncLocalB
     """
     The Envelope should not be accessible after dispatch completes.
 
-    Given: An AsyncLocalBus with a subscribed handler
+    Given: An AsyncLocalBus with a registered handler
     When: An event is emitted and dispatch completes
     Then: Accessing the current envelope should return None
     """
     # Arrange
-    emit = bus_with_envelope.publish(_TaskCreated)
-    bus_with_envelope.subscribe(emit, AsyncMock())
+    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
+    bus_with_envelope.handle(emit.event, AsyncMock())
 
     # Act
     await emit(task_id=1)
