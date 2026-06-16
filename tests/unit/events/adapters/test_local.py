@@ -11,8 +11,7 @@ LocalBus:
 - handle returns a Handler.
 - remove removes a handler; subsequent emits do not invoke it.
 - The same callable may be registered multiple times independently.
-- emit directly dispatches to dispatch.
-- dispatch invokes all handlers registered on the channel.
+- emit dispatches the payload to all registered handlers.
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
 
@@ -195,12 +194,12 @@ def test_same_callable_registered_twice_called_twice(bus: LocalBus):
     assert handler.call_count == 2
 
 
-def test_emit_dispatches_directly(bus: LocalBus):
+def test_emit_dispatches_payload(bus: LocalBus):
     """
-    ``emit`` should dispatch the payload directly to all registered handlers.
+    ``emit`` should dispatch the payload to registered handlers.
 
     Given: A handler registered to an EventConfig
-    When: emit is called directly with that EventConfig
+    When: emit is called with that EventConfig
     Then: The handler should receive the payload
     """
     # Arrange
@@ -216,12 +215,12 @@ def test_emit_dispatches_directly(bus: LocalBus):
     handler.assert_called_once_with(payload)
 
 
-def test_dispatch_invokes_all_handlers(bus: LocalBus):
+def test_emit_invokes_all_handlers(bus: LocalBus):
     """
-    ``dispatch`` should invoke every handler registered for the given EventConfig.
+    ``emit`` should invoke every handler registered for the given EventConfig.
 
     Given: Two handlers registered to an EventConfig
-    When: dispatch is called directly
+    When: emit is called directly
     Then: Both handlers should receive the payload
     """
     # Arrange
@@ -233,7 +232,7 @@ def test_dispatch_invokes_all_handlers(bus: LocalBus):
     payload = _TaskCreated(7)
 
     # Act
-    bus.dispatch(payload, config=emit.event)
+    bus.emit(payload, emit.event)
 
     # Assert
     handler_a.assert_called_once_with(payload)
@@ -257,7 +256,7 @@ def test_raising_handler_does_not_prevent_other_handlers(bus: LocalBus):
 
     # Act
     with pytest.raises(ExceptionGroup):
-        bus.dispatch(payload, config=emit.event)
+        bus.emit(payload, emit.event)
 
     # Assert
     second_handler.assert_called_once_with(payload)
@@ -281,7 +280,7 @@ def test_handler_exceptions_collected_into_exception_group(bus: LocalBus):
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exc_info:
-        bus.dispatch(payload, config=emit.event)
+        bus.emit(payload, emit.event)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
 

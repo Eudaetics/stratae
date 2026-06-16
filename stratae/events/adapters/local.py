@@ -43,9 +43,11 @@ class LocalBus:
 
     def __init__(self, *, use_envelope: bool = False) -> None:
         """Initialise the bus with optional envelope tracking."""
-        self._use_envelope = use_envelope
         self._handlers: dict[_AnyEventConfig, set[Handler[Any, _AnyEventConfig, Any]]] = (
             defaultdict(set)
+        )
+        self._dispatch: Callable[[Payload, _AnyEventConfig, None], None] = (
+            self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
 
     def bind[**P, S: Payload, T: EventType](
@@ -54,9 +56,9 @@ class LocalBus:
         """Return a ``BoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return bind(self.emit, event, config=None)
 
-    def emit(self, payload: Payload, event: _AnyEventConfig, _config: None) -> None:
+    def emit(self, payload: Payload, event: _AnyEventConfig, _config: None = None) -> None:
         """
-        Open a scoped envelope and dispatch the payload to registered handlers.
+        Dispatch the payload to registered handlers, opening an envelope scope if configured.
 
         Args:
             payload:  The constructed ``Payload`` instance to dispatch.
@@ -64,11 +66,7 @@ class LocalBus:
             _config:  Unused; ``LocalBus`` requires no routing config.
 
         """
-        if self._use_envelope:
-            with Envelope.scope():
-                self.dispatch(payload, config=event)
-        else:
-            self.dispatch(payload, config=event)
+        self._dispatch(payload, event, _config)
 
     @overload
     def handle[**P, R](
@@ -124,20 +122,18 @@ class LocalBus:
         """
         self._handlers[handler.config].discard(handler)
 
-    def dispatch(self, payload: Payload, *, config: _AnyEventConfig) -> None:
-        """
-        Invoke every handler registered for the given ``EventConfig`` with the payload.
-
-        Args:
-            payload: The constructed ``Payload`` instance to dispatch.
-            config:  The ``EventConfig`` used as the handler lookup key.
-
-        """
+    def _dispatch_plain(self, payload: Payload, event: _AnyEventConfig, _config: None) -> None:
         exceptions: list[Exception] = []
-        for handler in self._handlers.get(config, []):
+        for handler in self._handlers.get(event, ()):
             try:
                 handler(payload)
             except Exception as exc:
                 exceptions.append(exc)
         if exceptions:
             raise ExceptionGroup("Handler Errors", exceptions)
+
+    def _dispatch_in_envelope(
+        self, payload: Payload, event: _AnyEventConfig, _config: None
+    ) -> None:
+        with Envelope.scope():
+            self._dispatch_plain(payload, event, None)
