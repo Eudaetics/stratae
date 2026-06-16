@@ -43,9 +43,12 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
             config:  The adapter-specific routing config for this binding.
 
         """
+        if not _is_sync_factory(event.factory):
+            raise TypeError(_SYNC_FACTORY_REQUIRED)
         self.emitter = emitter
         self.event = event
         self.config = config
+        self._factory = event.factory
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
@@ -55,9 +58,7 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
             Whatever ``self.emitter`` returns.
 
         """
-        if not _is_sync_factory(self.event.factory):
-            raise TypeError(_SYNC_FACTORY_REQUIRED)
-        return self.emitter(self.event.factory(*args, **kwargs), self.event, self.config)
+        return self.emitter(self._factory(*args, **kwargs), self.event, self.config)
 
 
 class AsyncBoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:

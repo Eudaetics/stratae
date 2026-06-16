@@ -124,12 +124,12 @@ def test_call_returns_emitter_result():
     assert result == "dispatched"
 
 
-def test_call_raises_for_async_factory():
+def test_init_raises_for_async_factory():
     """
     Test that BoundEvent raises TypeError when its factory is a coroutine function.
 
-    Given: A BoundEvent constructed directly with an EventConfig whose factory is async
-    When: The BoundEvent is called
+    Given: An EventConfig whose factory is async
+    When: A BoundEvent is constructed with that EventConfig
     Then: A TypeError should be raised
     """
 
@@ -138,7 +138,6 @@ def test_call_raises_for_async_factory():
         return _OrderCreated(order_id, status)
 
     ev = EventConfig(_async_order_created, PubSub, payload_type=_OrderCreated)
-    bound = BoundEvent(Mock(), ev, config=None)
 
     with pytest.raises(TypeError):
-        bound(1, "pending")
+        BoundEvent(Mock(), ev, config=None)
