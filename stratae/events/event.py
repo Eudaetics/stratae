@@ -66,6 +66,8 @@ class EventConfig[**P, E: Payload, T: EventType]:
 
     """
 
+    __slots__ = ("_factory", "event_type", "name", "payload_type")
+
     def __init__(
         self,
         factory: Callable[P, E] | Callable[P, Awaitable[E]],
@@ -108,6 +110,8 @@ class EventConfig[**P, E: Payload, T: EventType]:
 
 class AsyncEventConfig[**P, E: Payload, T: EventType](EventConfig[P, E, T]):
     """EventConfig for async factories; ``factory`` is typed as returning ``Awaitable[E]``."""
+
+    __slots__ = ("_async_factory",)
 
     def __init__(
         self,

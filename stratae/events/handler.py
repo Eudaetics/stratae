@@ -28,6 +28,8 @@ class Handler[**P, HandlerConfig: Any, R]:
     from ``subscribe``.
     """
 
+    __slots__ = ("call", "config", "is_async")
+
     def __init__(self, call: Callable[P, R], config: HandlerConfig) -> None:
         """
         Wrap a callable as an event handler.

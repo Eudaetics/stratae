@@ -108,7 +108,7 @@ def test_bind_direct_calling_constructs_schema_and_invokes_emitter(mocker: Mocke
     Given: A BoundEvent produced by bind in direct form
     When: The BoundEvent is called with arguments
     Then: The schema constructor should be called with those arguments and the emitter
-          should receive the constructed payload and the BoundEvent itself
+          should receive the constructed payload, the EventConfig, and the config
     """
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
@@ -121,7 +121,7 @@ def test_bind_direct_calling_constructs_schema_and_invokes_emitter(mocker: Mocke
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), bound)
+    emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None)
 
 
 def test_bind_direct_returns_emitter_result() -> None:

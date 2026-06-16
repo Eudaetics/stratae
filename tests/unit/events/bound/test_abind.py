@@ -77,7 +77,7 @@ def test_abind_direct_uses_event_schema_as_factory() -> None:
     result = abind(emitter, ev, config=None)
 
     # Assert
-    assert result.factory is _OrderCreated
+    assert result.event.factory is _OrderCreated
 
 
 def test_abind_direct_stores_config() -> None:
@@ -109,7 +109,7 @@ async def test_abind_direct_calling_constructs_schema_and_awaits_emitter(
     Given: An AsyncBoundEvent produced by abind in direct form
     When: The AsyncBoundEvent is called with arguments
     Then: The schema constructor should be called with those arguments and the emitter
-          should receive the constructed payload and the AsyncBoundEvent itself
+          should receive the constructed payload, the EventConfig, and the config
     """
     # Arrange
     spy = mocker.spy(_OrderCreated, "__init__")
@@ -122,7 +122,7 @@ async def test_abind_direct_calling_constructs_schema_and_awaits_emitter(
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), bound)
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None)
 
 
 async def test_abind_direct_returns_emitter_result() -> None:
@@ -167,7 +167,7 @@ async def test_abind_direct_awaits_async_factory_then_awaits_emitter() -> None:
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), bound)
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None)
 
 
 # endregion
@@ -228,7 +228,7 @@ def test_abind_decorator_form_uses_event_schema_as_factory() -> None:
     result = abind(emitter, config=None)(ev)
 
     # Assert
-    assert result.factory is _OrderCreated
+    assert result.event.factory is _OrderCreated
 
 
 def test_abind_decorator_form_stores_config() -> None:
@@ -273,7 +273,7 @@ async def test_abind_decorator_awaits_async_factory_then_awaits_emitter() -> Non
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), bound)
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None)
 
 
 # endregion

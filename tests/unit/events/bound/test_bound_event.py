@@ -58,7 +58,7 @@ def test_call_passes_positional_args_to_factory(mocker: MockerFixture):
     Given: A BoundEvent wrapping an EventConfig whose factory accepts positional arguments
     When: The BoundEvent is called with positional arguments
     Then: The factory should be called with those values and the emitter
-          should receive the constructed payload and the BoundEvent itself
+          should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
@@ -67,7 +67,7 @@ def test_call_passes_positional_args_to_factory(mocker: MockerFixture):
     bound(1, "pending")
 
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), bound)
+    emitter.assert_called_once_with(_OrderCreated(1, "pending"), _order_created, None)
 
 
 def test_call_passes_keyword_args_to_factory(mocker: MockerFixture):
@@ -77,7 +77,7 @@ def test_call_passes_keyword_args_to_factory(mocker: MockerFixture):
     Given: A BoundEvent wrapping an EventConfig whose factory accepts keyword arguments
     When: The BoundEvent is called with keyword arguments
     Then: The factory should be called with those values and the emitter
-          should receive the constructed payload and the BoundEvent itself
+          should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
@@ -86,7 +86,7 @@ def test_call_passes_keyword_args_to_factory(mocker: MockerFixture):
     bound(order_id=2, status="complete")
 
     spy.assert_called_once_with(mocker.ANY, order_id=2, status="complete")
-    emitter.assert_called_once_with(_OrderCreated(2, "complete"), bound)
+    emitter.assert_called_once_with(_OrderCreated(2, "complete"), _order_created, None)
 
 
 def test_call_passes_mixed_args_to_factory(mocker: MockerFixture):
@@ -96,7 +96,7 @@ def test_call_passes_mixed_args_to_factory(mocker: MockerFixture):
     Given: A BoundEvent wrapping an EventConfig whose factory accepts positional and keyword args
     When: The BoundEvent is called with one positional and one keyword argument
     Then: The factory should be called with args in the same form and the emitter
-          should receive the constructed payload and the BoundEvent itself
+          should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_OrderCreated, "__init__")
     emitter = Mock()
@@ -105,7 +105,7 @@ def test_call_passes_mixed_args_to_factory(mocker: MockerFixture):
     bound(1, status="pending")
 
     spy.assert_called_once_with(mocker.ANY, 1, status="pending")
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), bound)
+    emitter.assert_called_once_with(_OrderCreated(1, "pending"), _order_created, None)
 
 
 def test_call_returns_emitter_result():
@@ -124,12 +124,12 @@ def test_call_returns_emitter_result():
     assert result == "dispatched"
 
 
-def test_call_raises_for_async_factory():
+def test_init_raises_for_async_factory():
     """
     Test that BoundEvent raises TypeError when its factory is a coroutine function.
 
-    Given: A BoundEvent constructed directly with an EventConfig whose factory is async
-    When: The BoundEvent is called
+    Given: An EventConfig whose factory is async
+    When: A BoundEvent is constructed with that EventConfig
     Then: A TypeError should be raised
     """
 
@@ -138,7 +138,6 @@ def test_call_raises_for_async_factory():
         return _OrderCreated(order_id, status)
 
     ev = EventConfig(_async_order_created, PubSub, payload_type=_OrderCreated)
-    bound = BoundEvent(Mock(), ev, config=None)
 
     with pytest.raises(TypeError):
-        bound(1, "pending")
+        BoundEvent(Mock(), ev, config=None)
