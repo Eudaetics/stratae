@@ -26,6 +26,8 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
         Resp:          The return type produced by the emitter.
     """
 
+    __slots__ = ("emitter", "event", "config", "_factory")
+
     def __init__(
         self,
         emitter: Callable[[Payload, EventConfig[P, S, T], RoutingConfig], Resp],
@@ -74,6 +76,8 @@ class AsyncBoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
         RoutingConfig: The adapter-specific routing config type.
         Resp:          The type that the emitter's coroutine resolves to.
     """
+
+    __slots__ = ("event", "emitter", "config")
 
     def __init__(
         self,
