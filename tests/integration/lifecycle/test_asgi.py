@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from stratae.depends import inject
-from stratae.integrations.asgi import RequestLifecycleMiddleware
+from stratae.integrations.lifecycle.asgi import RequestLifecycleMiddleware
 from stratae.lifecycle import AsyncLifecycle
 
 
