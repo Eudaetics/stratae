@@ -1,0 +1,70 @@
+"""
+Unit tests for the Producer and Consumer protocols.
+
+This test suite verifies the following behaviors:
+
+Producer:
+- A sync implementation satisfies the Producer protocol.
+- An async implementation satisfies the Producer protocol.
+
+Consumer:
+- An implementation satisfies the Consumer protocol.
+"""
+
+from typing import Any, Callable
+
+from stratae.events.event import EventConfig, EventType, Payload
+from stratae.events.protocols import Consumer, Producer
+
+
+class _SyncProducer:
+    def emit[**P, E: Payload, T: EventType](
+        self, payload: E, event: EventConfig[P, E, T], config: Any
+    ) -> None: ...
+
+
+class _AsyncProducer:
+    async def emit[**P, E: Payload, T: EventType](
+        self, payload: E, event: EventConfig[P, E, T], config: Any
+    ) -> None: ...
+
+
+class _Consumer:
+    def handle(
+        self,
+        config: Any,
+        fn: Callable[[Payload], Any] | None = None,
+    ) -> Any: ...
+
+
+def test_sync_producer_satisfies_protocol():
+    """
+    A sync Producer implementation should satisfy the Producer protocol.
+
+    Given: A class with a sync emit method
+    When: checked against the Producer protocol
+    Then: isinstance should return True
+    """
+    assert isinstance(_SyncProducer(), Producer)
+
+
+def test_async_producer_satisfies_protocol():
+    """
+    An async Producer implementation should satisfy the Producer protocol.
+
+    Given: A class with an async emit method
+    When: checked against the Producer protocol
+    Then: isinstance should return True
+    """
+    assert isinstance(_AsyncProducer(), Producer)
+
+
+def test_consumer_satisfies_protocol():
+    """
+    A Consumer implementation should satisfy the Consumer protocol.
+
+    Given: A class with a handle method
+    When: checked against the Consumer protocol
+    Then: isinstance should return True
+    """
+    assert isinstance(_Consumer(), Consumer)
