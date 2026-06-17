@@ -15,12 +15,12 @@ def strict_datetime_encoding():
     """Temporarily register a stricter datetime encoder that rejects naive datetimes."""
     original = encode.dispatch(datetime)
 
-    def encoder(obj: datetime) -> str:
+    @encode.register
+    def _(obj: datetime) -> str:
         if obj.tzinfo is None:
             raise ValueError(f"naive datetime {obj!r} is not encodable; attach a timezone")
         return obj.isoformat()
 
-    encode.register(datetime, encoder)
     try:
         yield
     finally:
