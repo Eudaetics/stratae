@@ -11,7 +11,7 @@ from stratae.events.handler import Handler
 _AnyEventConfig = EventConfig[Any, Any, Any]
 
 
-class LocalBus:
+class DirectBus:
     """
     In-process, synchronous event bus with no routing config.
 

@@ -12,7 +12,7 @@ from stratae.events.handler import Handler
 _AnyEventConfig = EventConfig[Any, Any, Any]
 
 
-class AsyncLocalBus:
+class AsyncDirectBus:
     """
     In-process, asynchronous event bus with no routing config.
 

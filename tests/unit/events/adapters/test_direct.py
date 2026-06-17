@@ -1,24 +1,21 @@
 """
-Unit tests for the AsyncLocalBus adapter.
+Unit tests for the LocalBus adapter.
 
 This test suite verifies the following behaviors:
 
-AsyncLocalBus:
-- bind returns an AsyncBoundEvent.
-- Awaiting the AsyncBoundEvent dispatches the payload to a registered sync handler.
-- Awaiting the AsyncBoundEvent dispatches the payload to a registered async handler.
-- Mixed sync and async handlers on the same channel both receive the payload.
-- All handlers on a channel receive the payload.
+LocalBus:
+- bind returns a BoundEvent.
+- Calling the BoundEvent dispatches the payload to a registered handler.
+- All handlers registered on a channel receive the payload.
 - Handlers on different channels are isolated from each other.
 - handle returns a Handler.
 - remove removes a handler; subsequent emits do not invoke it.
 - The same callable may be registered multiple times independently.
-- emit directly dispatches to dispatch.
-- dispatch invokes all handlers registered on the channel.
+- emit dispatches the payload to all registered handlers.
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
 
-AsyncLocalBus (with envelope):
+LocalBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
 - A handler that emits an event receives a child envelope.
@@ -26,12 +23,12 @@ AsyncLocalBus (with envelope):
 """
 
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 
-from stratae.events.adapters.local_async import AsyncLocalBus
-from stratae.events.bound import AsyncBoundEvent
+from stratae.events.adapters.direct import DirectBus
+from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
 from stratae.events.event import EventConfig, Payload, PubSub
 
@@ -46,118 +43,76 @@ class _TaskCreated(Payload):
         return self.task_id == other.task_id
 
 
-@pytest.fixture
-def bus() -> AsyncLocalBus:
-    """Return a fresh AsyncLocalBus instance with no envelope."""
-    return AsyncLocalBus()
+_task_created = EventConfig(_TaskCreated, PubSub)
 
 
 @pytest.fixture
-def bus_with_envelope() -> AsyncLocalBus:
-    """Return a fresh AsyncLocalBus instance with envelope tracking enabled."""
-    return AsyncLocalBus(use_envelope=True)
+def bus() -> DirectBus:
+    """Return a fresh LocalBus instance with no envelope."""
+    return DirectBus()
 
 
-def test_bind_returns_async_bound_event(bus: AsyncLocalBus):
+@pytest.fixture
+def bus_with_envelope() -> DirectBus:
+    """Return a fresh LocalBus instance with envelope tracking enabled."""
+    return DirectBus(use_envelope=True)
+
+
+def test_bind_returns_bound_event(bus: DirectBus):
     """
-    ``bind`` should return an AsyncBoundEvent bound to bus.emit.
+    ``bind`` should return a BoundEvent bound to bus.emit.
 
-    Given: An AsyncLocalBus
+    Given: A LocalBus
     When: bind is called with an EventConfig
-    Then: An AsyncBoundEvent should be returned
+    Then: A BoundEvent should be returned
     """
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
-
-    assert isinstance(emit, AsyncBoundEvent)
+    assert isinstance(bus.bind(_task_created), BoundEvent)
 
 
-async def test_dispatches_to_sync_handler(bus: AsyncLocalBus):
+def test_calling_bound_event_dispatches_to_handler(bus: DirectBus):
     """
-    Awaiting an AsyncBoundEvent should dispatch the payload to a registered sync handler.
+    Calling a BoundEvent should dispatch the constructed payload to registered handlers.
 
-    Given: A sync handler registered via bus.handle
-    When: The AsyncBoundEvent is awaited
+    Given: A handler registered via bus.handle
+    When: The BoundEvent is called
     Then: The handler should be called with the constructed payload
     """
     # Arrange
     handler = Mock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(_task_created)
     bus.handle(emit.event, handler)
 
     # Act
-    await emit(task_id=1)
+    emit(task_id=1)
 
     # Assert
     handler.assert_called_once_with(_TaskCreated(1))
 
 
-async def test_dispatches_to_async_handler(bus: AsyncLocalBus):
-    """
-    Awaiting an AsyncBoundEvent should dispatch the payload to a registered async handler.
-
-    Given: An async handler registered via bus.handle
-    When: The AsyncBoundEvent is awaited
-    Then: The handler should be called with the constructed payload
-    """
-    # Arrange
-    handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
-    bus.handle(emit.event, handler)
-
-    # Act
-    await emit(task_id=2)
-
-    # Assert
-    handler.assert_called_once_with(_TaskCreated(2))
-
-
-async def test_dispatches_to_mixed_handlers(bus: AsyncLocalBus):
-    """
-    Both sync and async handlers registered to the same EventConfig should receive the payload.
-
-    Given: A sync and an async handler registered to the same EventConfig
-    When: An event is emitted
-    Then: Both handlers should be called with the payload
-    """
-    # Arrange
-    sync_handler = Mock()
-    async_handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
-    bus.handle(emit.event, sync_handler)
-    bus.handle(emit.event, async_handler)
-
-    # Act
-    await emit(task_id=3)
-
-    # Assert
-    sync_handler.assert_called_once_with(_TaskCreated(3))
-    async_handler.assert_called_once_with(_TaskCreated(3))
-
-
-async def test_dispatches_to_all_handlers_on_channel(bus: AsyncLocalBus):
+def test_dispatches_to_all_handlers_on_channel(bus: DirectBus):
     """
     All handlers registered on the same EventConfig should receive the payload.
 
-    Given: Two async handlers registered to the same EventConfig
+    Given: Two handlers registered to the same EventConfig
     When: An event is emitted
     Then: Both handlers should be called with the payload
     """
     # Arrange
-    handler_a = AsyncMock()
-    handler_b = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    handler_a = Mock()
+    handler_b = Mock()
+    emit = bus.bind(_task_created)
     bus.handle(emit.event, handler_a)
     bus.handle(emit.event, handler_b)
 
     # Act
-    await emit(task_id=4)
+    emit(task_id=2)
 
     # Assert
-    handler_a.assert_called_once_with(_TaskCreated(4))
-    handler_b.assert_called_once_with(_TaskCreated(4))
+    handler_a.assert_called_once_with(_TaskCreated(2))
+    handler_b.assert_called_once_with(_TaskCreated(2))
 
 
-async def test_channel_isolation(bus: AsyncLocalBus):
+def test_channel_isolation(bus: DirectBus):
     """
     Handlers registered to one EventConfig should not receive events emitted on another.
 
@@ -169,35 +124,35 @@ async def test_channel_isolation(bus: AsyncLocalBus):
     task_event = EventConfig(_TaskCreated, PubSub)
     order_event = EventConfig(_TaskCreated, PubSub)
     emit_task = bus.bind(task_event)
-    task_handler = AsyncMock()
-    order_handler = AsyncMock()
+    task_handler = Mock()
+    order_handler = Mock()
     bus.handle(task_event, task_handler)
     bus.handle(order_event, order_handler)
 
     # Act
-    await emit_task(task_id=5)
+    emit_task(task_id=3)
 
     # Assert
-    task_handler.assert_called_once_with(_TaskCreated(5))
+    task_handler.assert_called_once_with(_TaskCreated(3))
     order_handler.assert_not_called()
 
 
-def test_handle_returns_handler(bus: AsyncLocalBus):
+def test_handle_returns_handler(bus: DirectBus):
     """
     ``handle`` should return the Handler wrapping the registered callable.
 
-    Given: An AsyncLocalBus
+    Given: A LocalBus
     When: handle is called with a callable
     Then: The returned Handler should wrap that callable
     """
     fn = Mock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
-    handler = bus.handle(emit.event, fn)
+    emit = bus.bind(_task_created)
+    handle = bus.handle(emit.event, fn)
 
-    assert handler.call is fn
+    assert handle.call is fn
 
 
-async def test_remove_prevents_further_dispatch(bus: AsyncLocalBus):
+def test_remove_prevents_further_dispatch(bus: DirectBus):
     """
     Removed handlers should not receive subsequent emissions.
 
@@ -206,19 +161,19 @@ async def test_remove_prevents_further_dispatch(bus: AsyncLocalBus):
     Then: The handler should not be called
     """
     # Arrange
-    handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    handler = Mock()
+    emit = bus.bind(_task_created)
     handle = bus.handle(emit.event, handler)
     bus.remove(handle)
 
     # Act
-    await emit(task_id=6)
+    emit(task_id=4)
 
     # Assert
     handler.assert_not_called()
 
 
-async def test_same_callable_registered_twice_called_twice(bus: AsyncLocalBus):
+def test_same_callable_registered_twice_called_twice(bus: DirectBus):
     """
     Registering the same callable twice should produce two independent registrations.
 
@@ -227,64 +182,64 @@ async def test_same_callable_registered_twice_called_twice(bus: AsyncLocalBus):
     Then: The callable should be invoked twice
     """
     # Arrange
-    handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    handler = Mock()
+    emit = bus.bind(_task_created)
     bus.handle(emit.event, handler)
     bus.handle(emit.event, handler)
 
     # Act
-    await emit(task_id=7)
+    emit(task_id=5)
 
     # Assert
     assert handler.call_count == 2
 
 
-async def test_emit_dispatches_directly(bus: AsyncLocalBus):
+def test_emit_dispatches_payload(bus: DirectBus):
     """
-    ``emit`` should dispatch the payload directly to all registered handlers.
+    ``emit`` should dispatch the payload to registered handlers.
 
     Given: A handler registered to an EventConfig
-    When: emit is called directly with that EventConfig
+    When: emit is called with that EventConfig
     Then: The handler should receive the payload
     """
     # Arrange
-    handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    handler = Mock()
+    emit = bus.bind(_task_created)
     bus.handle(emit.event, handler)
-    payload = _TaskCreated(8)
+    payload = _TaskCreated(6)
 
     # Act
-    await bus.emit(payload, emit.event, None)
+    bus.emit(payload, emit.event, None)
 
     # Assert
     handler.assert_called_once_with(payload)
 
 
-async def test_dispatch_invokes_all_handlers(bus: AsyncLocalBus):
+def test_emit_invokes_all_handlers(bus: DirectBus):
     """
-    ``dispatch`` should invoke every handler registered for the given EventConfig.
+    ``emit`` should invoke every handler registered for the given EventConfig.
 
     Given: Two handlers registered to an EventConfig
-    When: dispatch is called directly
+    When: emit is called directly
     Then: Both handlers should receive the payload
     """
     # Arrange
-    handler_a = AsyncMock()
-    handler_b = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    handler_a = Mock()
+    handler_b = Mock()
+    emit = bus.bind(_task_created)
     bus.handle(emit.event, handler_a)
     bus.handle(emit.event, handler_b)
-    payload = _TaskCreated(9)
+    payload = _TaskCreated(7)
 
     # Act
-    await bus.dispatch(payload, config=emit.event)
+    bus.emit(payload, emit.event)
 
     # Assert
     handler_a.assert_called_once_with(payload)
     handler_b.assert_called_once_with(payload)
 
 
-async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncLocalBus):
+def test_raising_handler_does_not_prevent_other_handlers(bus: DirectBus):
     """
     A handler that raises should not prevent subsequent handlers from running.
 
@@ -293,21 +248,21 @@ async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncLocalBu
     Then: The second handler should still be called
     """
     # Arrange
-    second_handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
-    bus.handle(emit.event, AsyncMock(side_effect=ValueError("boom")))
+    second_handler = Mock()
+    emit = bus.bind(_task_created)
+    bus.handle(emit.event, Mock(side_effect=ValueError("boom")))
     bus.handle(emit.event, second_handler)
     payload = _TaskCreated(10)
 
     # Act
     with pytest.raises(ExceptionGroup):
-        await bus.dispatch(payload, config=emit.event)
+        bus.emit(payload, emit.event)
 
     # Assert
     second_handler.assert_called_once_with(payload)
 
 
-async def test_handler_exceptions_collected_into_exception_group(bus: AsyncLocalBus):
+def test_handler_exceptions_collected_into_exception_group(bus: DirectBus):
     """
     All handler exceptions should be collected and raised together as an ExceptionGroup.
 
@@ -318,19 +273,19 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncLocal
     # Arrange
     error_a = ValueError("first")
     error_b = RuntimeError("second")
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
-    bus.handle(emit.event, AsyncMock(side_effect=error_a))
-    bus.handle(emit.event, AsyncMock(side_effect=error_b))
+    emit = bus.bind(_task_created)
+    bus.handle(emit.event, Mock(side_effect=error_a))
+    bus.handle(emit.event, Mock(side_effect=error_b))
     payload = _TaskCreated(11)
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exc_info:
-        await bus.dispatch(payload, config=emit.event)
+        bus.emit(payload, emit.event)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
 
 
-async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: AsyncLocalBus):
+def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: DirectBus):
     """
     Handlers should be able to access a valid Envelope during dispatch.
 
@@ -339,24 +294,25 @@ async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: As
     Then: The captured value should be an Envelope instance
     """
     # Arrange
-    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus_with_envelope.bind(_task_created)
     captured: list[Envelope] = []
 
-    @bus_with_envelope.handle(emit.event)
-    async def _(_: Payload) -> None:
+    def handler(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
 
+    bus_with_envelope.handle(emit.event, handler)
+
     # Act
-    await emit(task_id=1)
+    emit(task_id=1)
 
     # Assert
     assert len(captured) == 1
     assert isinstance(captured[0], Envelope)
 
 
-async def test_each_emission_creates_independent_envelope(bus_with_envelope: AsyncLocalBus):
+def test_each_emission_creates_independent_envelope(bus_with_envelope: DirectBus):
     """
     Each top-level emission should produce an envelope with a unique correlation id.
 
@@ -365,24 +321,25 @@ async def test_each_emission_creates_independent_envelope(bus_with_envelope: Asy
     Then: Each emission should have a distinct correlation id
     """
     # Arrange
-    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus_with_envelope.bind(_task_created)
     captured: list[Envelope] = []
 
-    @bus_with_envelope.handle(emit.event)
-    async def _(_: Payload) -> None:
+    def handler(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
 
+    bus_with_envelope.handle(emit.event, handler)
+
     # Act
-    await emit(task_id=1)
-    await emit(task_id=2)
+    emit(task_id=1)
+    emit(task_id=2)
 
     # Assert
     assert captured[0].correlation_id != captured[1].correlation_id
 
 
-async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncLocalBus):
+def test_nested_emission_produces_child_envelope(bus_with_envelope: DirectBus):
     """
     A handler that emits an event should receive a child envelope linked to the outer one.
 
@@ -400,20 +357,20 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncL
     inner_envelopes: list[Envelope] = []
 
     @bus_with_envelope.handle(outer_event)
-    async def _(_: Payload) -> None:
+    def _(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         outer_envelopes.append(envelope)
-        await emit_inner(task_id=99)
+        emit_inner(task_id=99)
 
     @bus_with_envelope.handle(inner_event)
-    async def _(_: Payload) -> None:
+    def _(_: Payload) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         inner_envelopes.append(envelope)
 
     # Act
-    await emit_outer(task_id=1)
+    emit_outer(task_id=1)
 
     # Assert
     assert inner_envelopes[0].correlation_id == outer_envelopes[0].correlation_id
@@ -421,20 +378,22 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncL
     assert inner_envelopes[0].message_id != outer_envelopes[0].message_id
 
 
-async def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: AsyncLocalBus):
+def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: DirectBus):
     """
     The Envelope should not be accessible after dispatch completes.
 
-    Given: An AsyncLocalBus with a registered handler
+    Given: A LocalBus with a registered handler
     When: An event is emitted and dispatch completes
     Then: Accessing the current envelope should return None
     """
     # Arrange
-    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
-    bus_with_envelope.handle(emit.event, AsyncMock())
+    emit = bus_with_envelope.bind(_task_created)
+
+    @bus_with_envelope.handle(emit.event)
+    def _(_: _TaskCreated) -> None: ...
 
     # Act
-    await emit(task_id=1)
+    emit(task_id=1)
 
     # Assert
     assert Envelope.current() is None
