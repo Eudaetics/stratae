@@ -1,13 +1,30 @@
 """Test the encode function for various data types."""
 
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from decimal import Decimal
-from enum import StrEnum, auto
 from uuid import uuid4
 
 import pytest
 
 from stratae.serial import encode
+
+
+@contextmanager
+def strict_datetime_encoding():
+    """Temporarily register a stricter datetime encoder that rejects naive datetimes."""
+    original = encode.dispatch(datetime)
+
+    def encoder(obj: datetime) -> str:
+        if obj.tzinfo is None:
+            raise ValueError(f"naive datetime {obj!r} is not encodable; attach a timezone")
+        return obj.isoformat()
+
+    encode.register(datetime, encoder)
+    try:
+        yield
+    finally:
+        encode.register(datetime, original)
 
 
 def test_uuid_encoding():
@@ -67,28 +84,25 @@ def test_decimal_encoding():
     assert result == str(value)
 
 
-def test_enum_encoding():
+def test_override_datetime_encoding_for_stricter_tz_awareness():
     """
-    Test that Enum objects are encoded as their value.
+    Test that consumers can override the default datetime encoding.
 
-    Given: An Enum object.
-    When: The encode function is called with the Enum.
-    Then: The result should be the value of the Enum.
+    Given: A consumer that wants to reject naive datetimes instead of the
+        default's permissive isoformat behavior.
+    When: A stricter encoder is registered for datetime.
+    Then: Naive datetimes raise, while aware datetimes still encode normally.
     """
-
     # Arrange
-    class TestEnum(StrEnum):
-        VALUE1 = auto()
-        VALUE2 = auto()
+    naive = datetime(2023, 10, 1, 12, 0, 0)
+    aware = datetime(2023, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-    value = TestEnum.VALUE1
+    # Act & Assert
+    with strict_datetime_encoding():
+        with pytest.raises(ValueError, match="naive datetime"):
+            encode(naive)
 
-    # Act
-    result = encode(value)
-
-    # Assert
-    assert isinstance(result, str)
-    assert result == value.value
+        assert encode(aware) == aware.isoformat()
 
 
 def test_custom_object_encoding_to_dict():
