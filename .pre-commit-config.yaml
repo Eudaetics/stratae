@@ -28,9 +28,5 @@ repos:
       - id: pyright
         additional_dependencies:
           - fastapi
-          - msgpack
-          - msgpack-types
-          - pydantic
-          - pydantic-settings
-          - pyzmq
+          - msgspec
         exclude: ^tests/
