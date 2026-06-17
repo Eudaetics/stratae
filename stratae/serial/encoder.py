@@ -2,7 +2,6 @@
 
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
 from functools import singledispatch
 from typing import Any
 from uuid import UUID
@@ -36,8 +35,3 @@ def _(obj: datetime) -> str:
 @encode.register
 def _(obj: Decimal) -> str:
     return str(obj)
-
-
-@encode.register
-def _(obj: Enum) -> Any:
-    return obj.value
