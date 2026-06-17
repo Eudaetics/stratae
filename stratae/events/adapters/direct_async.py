@@ -12,11 +12,11 @@ from stratae.events.handler import Handler
 _AnyEventConfig = EventConfig[Any, Any, Any]
 
 
-class AsyncLocalBus:
+class AsyncDirectBus:
     """
     In-process, asynchronous event bus with no routing config.
 
-    Bind ``AsyncLocalBus.emit`` to an ``EventConfig`` via ``abind`` to create a
+    Bind ``AsyncDirectBus.emit`` to an ``EventConfig`` via ``abind`` to create a
     callable that constructs payloads and dispatches them to registered handlers.
     Register handlers with ``handle``, using the same ``EventConfig`` as the
     routing key.  Sync and async handlers are both supported; all are dispatched
@@ -31,7 +31,7 @@ class AsyncLocalBus:
 
     Example::
 
-        bus = AsyncLocalBus()
+        bus = AsyncDirectBus()
 
         order_placed = abind(bus.emit, event(PubSub)(OrderPlaced), config=None)
 
@@ -65,7 +65,7 @@ class AsyncLocalBus:
         Args:
             payload:  The constructed ``Payload`` instance to dispatch.
             event:    The ``EventConfig`` used as the handler lookup key.
-            _config:  Unused; ``AsyncLocalBus`` requires no routing config.
+            _config:  Unused; ``AsyncDirectBus`` requires no routing config.
 
         """
         if self._use_envelope:
