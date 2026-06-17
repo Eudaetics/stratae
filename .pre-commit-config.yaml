@@ -29,4 +29,5 @@ repos:
         additional_dependencies:
           - aiormq
           - fastapi
+          - msgspec
         exclude: ^tests/
