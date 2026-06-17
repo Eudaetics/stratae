@@ -1,9 +1,9 @@
 """
-Unit tests for the LocalBus adapter.
+Unit tests for the DirectBus adapter.
 
 This test suite verifies the following behaviors:
 
-LocalBus:
+DirectBus:
 - bind returns a BoundEvent.
 - Calling the BoundEvent dispatches the payload to a registered handler.
 - All handlers registered on a channel receive the payload.
@@ -15,7 +15,7 @@ LocalBus:
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
 
-LocalBus (with envelope):
+DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
 - A handler that emits an event receives a child envelope.
@@ -48,13 +48,13 @@ _task_created = EventConfig(_TaskCreated, PubSub)
 
 @pytest.fixture
 def bus() -> DirectBus:
-    """Return a fresh LocalBus instance with no envelope."""
+    """Return a fresh DirectBus instance with no envelope."""
     return DirectBus()
 
 
 @pytest.fixture
 def bus_with_envelope() -> DirectBus:
-    """Return a fresh LocalBus instance with envelope tracking enabled."""
+    """Return a fresh DirectBus instance with envelope tracking enabled."""
     return DirectBus(use_envelope=True)
 
 
@@ -62,7 +62,7 @@ def test_bind_returns_bound_event(bus: DirectBus):
     """
     ``bind`` should return a BoundEvent bound to bus.emit.
 
-    Given: A LocalBus
+    Given: A DirectBus
     When: bind is called with an EventConfig
     Then: A BoundEvent should be returned
     """
@@ -141,7 +141,7 @@ def test_handle_returns_handler(bus: DirectBus):
     """
     ``handle`` should return the Handler wrapping the registered callable.
 
-    Given: A LocalBus
+    Given: A DirectBus
     When: handle is called with a callable
     Then: The returned Handler should wrap that callable
     """
@@ -382,7 +382,7 @@ def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: DirectBus):
     """
     The Envelope should not be accessible after dispatch completes.
 
-    Given: A LocalBus with a registered handler
+    Given: A DirectBus with a registered handler
     When: An event is emitted and dispatch completes
     Then: Accessing the current envelope should return None
     """

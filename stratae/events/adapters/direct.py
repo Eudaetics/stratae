@@ -15,7 +15,7 @@ class DirectBus:
     """
     In-process, synchronous event bus with no routing config.
 
-    Bind ``LocalBus.emit`` to an ``EventConfig`` via ``bind`` to create a
+    Bind ``DirectBus.emit`` to an ``EventConfig`` via ``bind`` to create a
     callable that constructs payloads and dispatches them to registered
     handlers.  Register handlers with ``handle``, using the same
     ``EventConfig`` as the routing key.  Each ``handle`` call is an
@@ -30,7 +30,7 @@ class DirectBus:
 
     Example::
 
-        bus = LocalBus()
+        bus = DirectBus()
 
         create_book = bind(bus.emit, event(PubSub)(Book), config=None)
 
@@ -63,7 +63,7 @@ class DirectBus:
         Args:
             payload:  The constructed ``Payload`` instance to dispatch.
             event:    The ``EventConfig`` used as the handler lookup key.
-            _config:  Unused; ``LocalBus`` requires no routing config.
+            _config:  Unused; ``DirectBus`` requires no routing config.
 
         """
         self._dispatch(payload, event, _config)

@@ -1,9 +1,9 @@
 """
-Unit tests for the AsyncLocalBus adapter.
+Unit tests for the AsyncDirectBus adapter.
 
 This test suite verifies the following behaviors:
 
-AsyncLocalBus:
+AsyncDirectBus:
 - bind returns an AsyncBoundEvent.
 - Awaiting the AsyncBoundEvent dispatches the payload to a registered sync handler.
 - Awaiting the AsyncBoundEvent dispatches the payload to a registered async handler.
@@ -18,7 +18,7 @@ AsyncLocalBus:
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
 
-AsyncLocalBus (with envelope):
+AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
 - A handler that emits an event receives a child envelope.
@@ -48,13 +48,13 @@ class _TaskCreated(Payload):
 
 @pytest.fixture
 def bus() -> AsyncDirectBus:
-    """Return a fresh AsyncLocalBus instance with no envelope."""
+    """Return a fresh AsyncDirectBus instance with no envelope."""
     return AsyncDirectBus()
 
 
 @pytest.fixture
 def bus_with_envelope() -> AsyncDirectBus:
-    """Return a fresh AsyncLocalBus instance with envelope tracking enabled."""
+    """Return a fresh AsyncDirectBus instance with envelope tracking enabled."""
     return AsyncDirectBus(use_envelope=True)
 
 
@@ -62,7 +62,7 @@ def test_bind_returns_async_bound_event(bus: AsyncDirectBus):
     """
     ``bind`` should return an AsyncBoundEvent bound to bus.emit.
 
-    Given: An AsyncLocalBus
+    Given: An AsyncDirectBus
     When: bind is called with an EventConfig
     Then: An AsyncBoundEvent should be returned
     """
@@ -186,7 +186,7 @@ def test_handle_returns_handler(bus: AsyncDirectBus):
     """
     ``handle`` should return the Handler wrapping the registered callable.
 
-    Given: An AsyncLocalBus
+    Given: An AsyncDirectBus
     When: handle is called with a callable
     Then: The returned Handler should wrap that callable
     """
@@ -425,7 +425,7 @@ async def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: AsyncDirect
     """
     The Envelope should not be accessible after dispatch completes.
 
-    Given: An AsyncLocalBus with a registered handler
+    Given: An AsyncDirectBus with a registered handler
     When: An event is emitted and dispatch completes
     Then: Accessing the current envelope should return None
     """
