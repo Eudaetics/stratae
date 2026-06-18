@@ -132,7 +132,7 @@ class _BindDecorator[C, R](Protocol):
 
 @overload
 def bind[**P, S: Any, T: EventType, C, R](
-    emitter: Callable[[Any, EventConfig[P, S, T], C], R],
+    emitter: Callable[[S, EventConfig[P, S, T], C], R],
     event: EventConfig[P, S, T],
     *,
     config: C,

@@ -27,6 +27,20 @@ class EventConfig[**P, E: Any, T: EventType]:
         E: The payload type carried by this event.
         T: The ``EventType`` discriminant describing the dispatch pattern.
 
+    Note:
+        Using a generic class directly as ``factory`` (e.g.
+        ``class Wrapped[T]: ...``) is discouraged. ``payload_type`` only
+        declares the resulting payload type; it cannot retroactively
+        constrain the factory's own constructor signature, so a bare generic
+        factory's argument types may end up unchecked even when
+        ``payload_type`` looks precise. A generic payload is also harder to
+        deserialize on the far side of a real bus without already knowing
+        ``T`` from elsewhere. It's still possible to use one this way and
+        have it work. The type checker just won't catch as much for you.
+        Where practical, prefer a concrete intermediary factory function
+        instead (e.g. ``def make_order_page(items: list[OrderPlaced]) ->
+        Page[OrderPlaced]: ...``) and pass that as ``factory``.
+
     Example::
 
         @event(PubSub)
@@ -77,7 +91,24 @@ class EventConfig[**P, E: Any, T: EventType]:
 
 
 class AsyncEventConfig[**P, E: Any, T: EventType](EventConfig[P, E, T]):
-    """EventConfig for async factories; ``factory`` is typed as returning ``Awaitable[E]``."""
+    """
+    EventConfig for async factories; ``factory`` is typed as returning ``Awaitable[E]``.
+
+    Note:
+        Using a generic async factory function (e.g.
+        ``async def make_wrapped[T](item: T) -> Wrapped[T]: ...``) directly is
+        discouraged for the same reason as a generic class factory:
+        ``payload_type`` only declares the resulting payload type, it cannot
+        retroactively constrain the factory's own parameter types, so a
+        generic factory's argument types may end up unchecked even when
+        ``payload_type`` looks precise. A generic payload is also harder to
+        deserialize on the far side of a real bus without already knowing
+        ``T`` from elsewhere. It's still possible to use one this way and have
+        it work. The type checker just won't catch as much for you. Where
+        practical, prefer a concrete factory function whose parameters and
+        return type are already fully resolved.
+
+    """
 
     __slots__ = ("_async_factory",)
 
@@ -164,6 +195,20 @@ def event[E: Any, T: EventType](
     Returns:
         A decorator that accepts a class and returns an
         ``Event`` binding it to ``event_type``.
+
+    Note:
+        Using a generic class directly as the decorated factory (e.g.
+        ``class Wrapped[T]: ...``) is discouraged. ``payload_type`` only
+        declares the resulting payload type; it cannot retroactively
+        constrain the factory's own constructor signature, so a bare generic
+        factory's argument types may end up unchecked even when
+        ``payload_type`` looks precise. A generic payload is also harder to
+        deserialize on the far side of a real bus without already knowing
+        ``T`` from elsewhere. It's still possible to use one this way and
+        have it work. The type checker just won't catch as much for you.
+        Where practical, prefer a concrete intermediary factory function
+        instead (e.g. ``def make_order_page(items: list[OrderPlaced]) ->
+        Page[OrderPlaced]: ...``) and decorate or register that.
 
     Example::
 
