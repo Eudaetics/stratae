@@ -49,13 +49,13 @@ class AsyncDirectBus:
             defaultdict(set)
         )
 
-    def bind[**P, S: object, T: EventType](
+    def bind[**P, S: Any, T: EventType](
         self, event: EventConfig[P, S, T]
     ) -> AsyncBoundEvent[P, S, T, None, None]:
         """Return an ``AsyncBoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return abind(self.emit, event, config=None)
 
-    async def emit(self, payload: object, event: _AnyEventConfig, _config: None) -> None:
+    async def emit(self, payload: Any, event: _AnyEventConfig, _config: None) -> None:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
 
@@ -128,7 +128,7 @@ class AsyncDirectBus:
         """
         self._handlers[handler.config].discard(handler)
 
-    async def dispatch(self, payload: object, *, config: _AnyEventConfig) -> None:
+    async def dispatch(self, payload: Any, *, config: _AnyEventConfig) -> None:
         """
         Invoke every handler registered for the given ``EventConfig`` concurrently.
 

@@ -10,7 +10,7 @@ from stratae.events.event import EventConfig, EventType
 _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
 
-class BoundEvent[**P, S: object, T: EventType, RoutingConfig: Any, Resp]:
+class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     """
     Binds an ``EventConfig`` to a synchronous emitter with routing config.
 
@@ -123,7 +123,7 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
 class _BindDecorator[C, R](Protocol):
     """Decorator form of ``bind``: takes an ``EventConfig``, returns a ``BoundEvent``."""
 
-    def __call__[**P, S: object, T: EventType](
+    def __call__[**P, S: Any, T: EventType](
         self, event: EventConfig[P, S, T]
     ) -> BoundEvent[P, S, T, C, R]:
         """Bind the emitter and config to ``event``, returning a ``BoundEvent``."""
@@ -131,8 +131,8 @@ class _BindDecorator[C, R](Protocol):
 
 
 @overload
-def bind[**P, S: object, T: EventType, C, R](
-    emitter: Callable[[object, EventConfig[P, S, T], C], R],
+def bind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[Any, EventConfig[P, S, T], C], R],
     event: EventConfig[P, S, T],
     *,
     config: C,
@@ -140,15 +140,15 @@ def bind[**P, S: object, T: EventType, C, R](
 
 
 @overload
-def bind[**P, S: object, T: EventType, C, R](
-    emitter: Callable[[object, EventConfig[P, S, T], C], R],
+def bind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], R],
     *,
     config: C,
 ) -> _BindDecorator[C, R]: ...
 
 
-def bind[**P, S: object, T: EventType, C, R](
-    emitter: Callable[[object, EventConfig[P, S, T], C], R],
+def bind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], R],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
@@ -170,7 +170,7 @@ def bind[**P, S: object, T: EventType, C, R](
 class _ABindDecorator[C, R](Protocol):
     """Return type of the decorator form of ``abind``: async emitter+config awaiting an Event."""
 
-    def __call__[**P, S: object, T: EventType](
+    def __call__[**P, S: Any, T: EventType](
         self, event: EventConfig[P, S, T]
     ) -> AsyncBoundEvent[P, S, T, C, R]:
         """Bind the async emitter and config to ``event``, returning an ``AsyncBoundEvent``."""
@@ -178,8 +178,8 @@ class _ABindDecorator[C, R](Protocol):
 
 
 @overload
-def abind[**P, S: object, T: EventType, C, R](
-    emitter: Callable[[object, EventConfig[P, S, T], C], Awaitable[R]],
+def abind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
     event: EventConfig[P, S, T],
     *,
     config: C,
@@ -187,15 +187,15 @@ def abind[**P, S: object, T: EventType, C, R](
 
 
 @overload
-def abind[**P, S: object, T: EventType, C, R](
-    emitter: Callable[[object, EventConfig[P, S, T], C], Awaitable[R]],
+def abind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
     *,
     config: C,
 ) -> _ABindDecorator[C, R]: ...
 
 
-def abind[**P, S: object, T: EventType, C, R](
-    emitter: Callable[[object, EventConfig[P, S, T], C], Awaitable[R]],
+def abind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,

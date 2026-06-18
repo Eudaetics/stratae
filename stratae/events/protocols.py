@@ -15,7 +15,7 @@ class Producer(Protocol):
     adapters implement it to perform the actual dispatch.
     """
 
-    def emit[**P, E: object, T: EventType](
+    def emit[**P, E: Any, T: EventType](
         self, payload: E, event: EventConfig[P, E, T], config: Any
     ) -> Any:
         """
@@ -49,7 +49,7 @@ class Consumer(Protocol):
     detail of each adapter and is not part of this protocol.
     """
 
-    def handle(self, config: Any, fn: Callable[[object], Any] | None = None) -> Any:
+    def handle(self, config: Any, fn: Callable[[Any], Any] | None = None) -> Any:
         """
         Register a handler for the given config.
 

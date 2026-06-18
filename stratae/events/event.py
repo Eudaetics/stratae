@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Protocol, overload
+from typing import Any, Awaitable, Callable, Protocol, overload
 
 from stratae.events._typeguards import is_async_factory, is_class_factory
 
@@ -15,7 +15,7 @@ class PubSub(EventType):
     """Pub/sub pattern discriminant — fire and forget, no return value."""
 
 
-class EventConfig[**P, E: object, T: EventType]:
+class EventConfig[**P, E: Any, T: EventType]:
     """
     Bus-agnostic event definition binding a payload type to a dispatch pattern.
 
@@ -76,7 +76,7 @@ class EventConfig[**P, E: object, T: EventType]:
         return self._factory
 
 
-class AsyncEventConfig[**P, E: object, T: EventType](EventConfig[P, E, T]):
+class AsyncEventConfig[**P, E: Any, T: EventType](EventConfig[P, E, T]):
     """EventConfig for async factories; ``factory`` is typed as returning ``Awaitable[E]``."""
 
     __slots__ = ("_async_factory",)
@@ -115,10 +115,10 @@ class AsyncEventConfig[**P, E: object, T: EventType](EventConfig[P, E, T]):
 class _EventDecorator[T: EventType](Protocol):
     """Return type of ``event()`` when ``payload_type`` is not given."""
 
-    def __call__[**P, E: object](self, schema: Callable[P, E]) -> EventConfig[P, E, T]: ...
+    def __call__[**P, E: Any](self, schema: Callable[P, E]) -> EventConfig[P, E, T]: ...
 
 
-class _EventDecoratorWithPayload[E: object, T: EventType](Protocol):
+class _EventDecoratorWithPayload[E: Any, T: EventType](Protocol):
     """Return type of ``event()`` when ``payload_type`` is given."""
 
     @overload
@@ -136,7 +136,7 @@ def event[T: EventType](
 
 
 @overload
-def event[E: object, T: EventType](
+def event[E: Any, T: EventType](
     event_type: type[T],
     *,
     name: str | None = None,
@@ -144,7 +144,7 @@ def event[E: object, T: EventType](
 ) -> _EventDecoratorWithPayload[E, T]: ...
 
 
-def event[E: object, T: EventType](
+def event[E: Any, T: EventType](
     event_type: type[T],
     *,
     name: str | None = None,
@@ -190,7 +190,7 @@ def event[E: object, T: EventType](
 
         return decorator_with_payload
 
-    def decorator[**P, S: object](schema: Callable[P, S]) -> EventConfig[P, S, T]:
+    def decorator[**P, S: Any](schema: Callable[P, S]) -> EventConfig[P, S, T]:
         return EventConfig(schema, event_type, name=name, payload_type=None)
 
     return decorator
