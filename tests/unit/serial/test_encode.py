@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from stratae.serial import encode
+from stratae.serde import encode
 
 
 @contextmanager
