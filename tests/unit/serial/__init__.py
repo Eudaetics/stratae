@@ -1,1 +1,1 @@
-"""Test suite for the serial module handling encoding and decoding."""
+"""Test suite for the serde module handling encoding and decoding."""

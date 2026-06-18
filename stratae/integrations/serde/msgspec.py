@@ -1,8 +1,8 @@
-"""Msgspec integration to let Stratae use pack and encode automatically."""
+"""Msgspec integration for serialization and deserialization."""
 
 import msgspec
 
-from stratae.serial import encode, pack
+from stratae.serde import encode, pack
 
 
 @pack.register
