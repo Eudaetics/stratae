@@ -36,7 +36,7 @@ class Handler[**P, HandlerConfig: Any, R]:
 
         Args:
             call:   The sync or async callable to wrap.  Must accept a
-                    single ``Payload`` instance as its argument.
+                    single payload instance as its argument.
             config: The adapter-specific routing config for this handler.
 
         """
