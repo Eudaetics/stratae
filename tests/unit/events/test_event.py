@@ -5,9 +5,9 @@ This test suite verifies the following behaviors:
 
 EventConfig:
 - The factory and event_type are stored on initialization.
-- payload_type is derived from factory when factory is a Payload subclass.
+- payload_type is derived from factory when factory is a class.
 - payload_type accepts an explicit override.
-- Raises TypeError when factory is not a Payload subclass and payload_type is not provided.
+- Raises TypeError when factory is not a class and payload_type is not provided.
 - name defaults to factory.__name__ when not provided.
 - name accepts an explicit override.
 
@@ -38,20 +38,20 @@ import asyncio
 
 import pytest
 
-from stratae.events.event import AsyncEventConfig, EventConfig, EventType, Payload, PubSub, event
+from stratae.events.event import AsyncEventConfig, EventConfig, EventType, PubSub, event
 
 
 def test_event_stores_schema_and_event_type() -> None:
     """
     Test that schema and event_type are stored during initialization.
 
-    Given: A Payload subclass and an event_type
+    Given: A class and an event_type
     When: An Event is created
     Then: The schema and event_type attributes should reference the supplied objects
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -78,14 +78,14 @@ def test_event_decorator_returns_event_instance() -> None:
     """
     Test that the event decorator returns an Event instance.
 
-    Given: A Payload subclass decorated with @event
+    Given: A class decorated with @event
     When: The decorator is applied
     Then: The result should be an Event instance
     """
 
     # Arrange / Act
     @event(PubSub)
-    class _Schema(Payload):
+    class _Schema:
         def __init__(self, value: int) -> None:
             self.value = value
 
@@ -97,13 +97,13 @@ def test_event_decorator_stores_schema() -> None:
     """
     Test that the event decorator stores the decorated class as the schema.
 
-    Given: A Payload subclass decorated with @event
+    Given: A class decorated with @event
     When: The decorator is applied
     Then: The Event's schema should be the decorated class
     """
 
     # Arrange
-    class _Schema(Payload):
+    class _Schema:
         def __init__(self, value: int) -> None:
             self.value = value
 
@@ -118,13 +118,13 @@ def test_event_decorator_stores_event_type() -> None:
     """
     Test that the event decorator stores the supplied event_type.
 
-    Given: A Payload subclass decorated with @event(PubSub)
+    Given: A class decorated with @event(PubSub)
     When: The decorator is applied
     Then: The Event's event_type should be PubSub
     """
 
     # Arrange
-    class _Schema(Payload):
+    class _Schema:
         def __init__(self, value: int) -> None:
             self.value = value
 
@@ -139,13 +139,13 @@ def test_event_decorator_with_factory_stores_explicit_payload_type() -> None:
     """
     Test that a factory function decorated with @event stores the explicit payload_type.
 
-    Given: A Payload subclass and a factory function returning it
+    Given: A class and a factory function returning it
     When: The factory is decorated with @event specifying payload_type explicitly
-    Then: The EventConfig's payload_type should reference the supplied Payload subclass
+    Then: The EventConfig's payload_type should reference the supplied class
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -161,15 +161,15 @@ def test_event_decorator_with_factory_stores_explicit_payload_type() -> None:
 
 def test_eventconfig_derives_payload_type_from_class_factory() -> None:
     """
-    Test that payload_type is derived from factory when factory is a Payload subclass.
+    Test that payload_type is derived from factory when factory is a class.
 
-    Given: A Payload subclass used directly as the factory
+    Given: A class used directly as the factory
     When: An EventConfig is created without an explicit payload_type
     Then: payload_type should reference the factory class
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -184,13 +184,13 @@ def test_eventconfig_accepts_explicit_payload_type() -> None:
     """
     Test that payload_type accepts an explicit override.
 
-    Given: A Payload subclass and a factory function returning it
+    Given: A class and a factory function returning it
     When: An EventConfig is created with an explicit payload_type
     Then: payload_type should reference the supplied class
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -206,15 +206,15 @@ def test_eventconfig_accepts_explicit_payload_type() -> None:
 
 def test_eventconfig_raises_for_factory_without_payload_type() -> None:
     """
-    Test that EventConfig raises TypeError when factory is not a Payload subclass.
+    Test that EventConfig raises TypeError when factory is not a class.
 
-    Given: A factory function returning a Payload without explicit payload_type
+    Given: A factory function returning a payload without explicit payload_type
     When: An EventConfig is created
     Then: A TypeError should be raised
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -230,13 +230,13 @@ def test_eventconfig_derives_name_from_factory() -> None:
     """
     Test that name defaults to factory.__name__ when not provided.
 
-    Given: A Payload subclass
+    Given: A class
     When: An EventConfig is created without an explicit name
     Then: name should equal the factory's __name__
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -251,13 +251,13 @@ def test_eventconfig_accepts_explicit_name() -> None:
     """
     Test that name accepts an explicit override.
 
-    Given: A Payload subclass and an explicit name
+    Given: A class and an explicit name
     When: An EventConfig is created with name provided
     Then: name should equal the supplied string
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -272,13 +272,13 @@ def test_event_decorator_derives_payload_type_from_class() -> None:
     """
     Test that the event decorator derives payload_type from the decorated class.
 
-    Given: A Payload subclass decorated with @event
+    Given: A class decorated with @event
     When: The decorator is applied without explicit payload_type
     Then: The EventConfig's payload_type should reference the decorated class
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -293,13 +293,13 @@ def test_event_decorator_derives_name_from_class() -> None:
     """
     Test that the event decorator derives name from the decorated class's __name__.
 
-    Given: A Payload subclass decorated with @event
+    Given: A class decorated with @event
     When: The decorator is applied without explicit name
     Then: The EventConfig's name should equal the class's __name__
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -314,13 +314,13 @@ def test_event_decorator_accepts_explicit_name() -> None:
     """
     Test that the event decorator passes an explicit name through to EventConfig.
 
-    Given: A Payload subclass and an explicit name
+    Given: A class and an explicit name
     When: The decorator is applied with name provided
     Then: The EventConfig's name should equal the supplied string
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -352,7 +352,7 @@ def test_asynceventconfig_stores_factory_and_event_type() -> None:
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -378,7 +378,7 @@ def test_asynceventconfig_stores_payload_type() -> None:
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -403,7 +403,7 @@ def test_asynceventconfig_raises_without_payload_type() -> None:
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -426,7 +426,7 @@ def test_asynceventconfig_derives_name_from_factory() -> None:
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -451,7 +451,7 @@ def test_asynceventconfig_accepts_explicit_name() -> None:
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -472,11 +472,11 @@ async def test_asynceventconfig_factory_is_awaitable() -> None:
 
     Given: An AsyncEventConfig wrapping an async factory
     When: factory is called and awaited
-    Then: The result should be the expected Payload instance
+    Then: The result should be the expected payload instance
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -503,7 +503,7 @@ def test_event_decorator_returns_asynceventconfig_for_async_factory() -> None:
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
@@ -524,11 +524,11 @@ async def test_event_decorator_async_factory_is_awaitable() -> None:
 
     Given: An async factory decorated with @event and an explicit payload_type
     When: factory is called and awaited
-    Then: The result should be the expected Payload instance
+    Then: The result should be the expected payload instance
     """
 
     # Arrange
-    class _OrderPlaced(Payload):
+    class _OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 

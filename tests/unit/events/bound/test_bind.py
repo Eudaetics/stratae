@@ -26,10 +26,10 @@ import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent, bind
-from stratae.events.event import EventConfig, Payload, PubSub
+from stratae.events.event import EventConfig, PubSub
 
 
-class _OrderCreated(Payload):
+class _OrderCreated:
     def __init__(self, order_id: int, status: str) -> None:
         self.order_id = order_id
         self.status = status

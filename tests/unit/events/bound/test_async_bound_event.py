@@ -17,10 +17,10 @@ import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import AsyncBoundEvent
-from stratae.events.event import EventConfig, Payload, PubSub
+from stratae.events.event import EventConfig, PubSub
 
 
-class _PaymentReceived(Payload):
+class _PaymentReceived:
     def __init__(self, payment_id: int, amount: int) -> None:
         self.payment_id = payment_id
         self.amount = amount

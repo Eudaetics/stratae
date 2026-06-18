@@ -32,10 +32,10 @@ import pytest
 from stratae.events.adapters.direct import DirectBus
 from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, Payload, PubSub
+from stratae.events.event import EventConfig, PubSub
 
 
-class _TaskCreated(Payload):
+class _TaskCreated:
     def __init__(self, task_id: int) -> None:
         self.task_id = task_id
 
@@ -305,7 +305,7 @@ def test_handler_removing_registration_during_dispatch_does_not_break_other_hand
     other_handlers = [Mock() for _ in range(20)]
     emit = bus.bind(_task_created)
 
-    def self_removing(_: Payload) -> None:
+    def self_removing(_: object) -> None:
         bus.remove(first_handle)
 
     first_handle = bus.handle(emit.event, self_removing)
@@ -333,7 +333,7 @@ def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: DirectBu
     emit = bus_with_envelope.bind(_task_created)
     captured: list[Envelope] = []
 
-    def handler(_: Payload) -> None:
+    def handler(_: object) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
@@ -360,7 +360,7 @@ def test_each_emission_creates_independent_envelope(bus_with_envelope: DirectBus
     emit = bus_with_envelope.bind(_task_created)
     captured: list[Envelope] = []
 
-    def handler(_: Payload) -> None:
+    def handler(_: object) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
@@ -393,14 +393,14 @@ def test_nested_emission_produces_child_envelope(bus_with_envelope: DirectBus):
     inner_envelopes: list[Envelope] = []
 
     @bus_with_envelope.handle(outer_event)
-    def _(_: Payload) -> None:
+    def _(_: object) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         outer_envelopes.append(envelope)
         emit_inner(task_id=99)
 
     @bus_with_envelope.handle(inner_event)
-    def _(_: Payload) -> None:
+    def _(_: object) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         inner_envelopes.append(envelope)

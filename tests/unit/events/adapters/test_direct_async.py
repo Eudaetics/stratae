@@ -33,10 +33,10 @@ import pytest
 from stratae.events.adapters.direct_async import AsyncDirectBus
 from stratae.events.bound import AsyncBoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, Payload, PubSub
+from stratae.events.event import EventConfig, PubSub
 
 
-class _TaskCreated(Payload):
+class _TaskCreated:
     def __init__(self, task_id: int) -> None:
         self.task_id = task_id
 
@@ -343,7 +343,7 @@ async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: As
     captured: list[Envelope] = []
 
     @bus_with_envelope.handle(emit.event)
-    async def _(_: Payload) -> None:
+    async def _(_) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
@@ -369,7 +369,7 @@ async def test_each_emission_creates_independent_envelope(bus_with_envelope: Asy
     captured: list[Envelope] = []
 
     @bus_with_envelope.handle(emit.event)
-    async def _(_: Payload) -> None:
+    async def _(_) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
@@ -400,14 +400,14 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncD
     inner_envelopes: list[Envelope] = []
 
     @bus_with_envelope.handle(outer_event)
-    async def _(_: Payload) -> None:
+    async def _(_) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         outer_envelopes.append(envelope)
         await emit_inner(task_id=99)
 
     @bus_with_envelope.handle(inner_event)
-    async def _(_: Payload) -> None:
+    async def _(_) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         inner_envelopes.append(envelope)
