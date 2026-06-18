@@ -124,7 +124,8 @@ class DirectBus:
 
     def _dispatch_plain(self, payload: Payload, event: _AnyEventConfig, _config: None) -> None:
         exceptions: list[Exception] = []
-        for handler in self._handlers.get(event, ()):
+        handlers = list(self._handlers.get(event, ()))
+        for handler in handlers:
             try:
                 handler(payload)
             except Exception as exc:
