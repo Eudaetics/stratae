@@ -4,7 +4,7 @@ import json
 from functools import singledispatch
 from typing import Any
 
-from stratae.serial import encode
+from stratae.serde import encode
 
 
 @singledispatch
