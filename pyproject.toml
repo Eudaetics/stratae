@@ -29,8 +29,10 @@ Issues = "https://github.com/Eudaetics/stratae/issues"
 
 [project.optional-dependencies]
 dev = [
+    "poethepoet>=0.35.0",
     "pre-commit>=4.2.0",
     "pyright>=1.1.403",
+    "radon>=6.0.1",
     "ruff>=0.12.2",
 ]
 test = [
@@ -98,6 +100,17 @@ exclude_lines = [
     "^\\s*\\.\\.\\.$",
     "if TYPE_CHECKING:"
 ]
+
+[tool.poe.tasks]
+format = "ruff format ."
+lint = "ruff check --fix ."
+typecheck = "pyright"
+test = "pytest"
+radon-cc = "radon cc stratae -n B"
+radon-mi = "radon mi stratae -n B"
+
+[tool.poe.tasks.check]
+sequence = ["format", "lint", "typecheck", "test", "radon-cc", "radon-mi"]
 
 [tool.pyright]
 include = ["stratae", "tests"]

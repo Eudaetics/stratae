@@ -6,7 +6,7 @@ from typing import Any, Callable, overload
 
 from stratae.events.bound import AsyncBoundEvent, abind
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, EventType, Payload
+from stratae.events.event import EventConfig, EventType
 from stratae.events.handler import Handler
 
 _AnyEventConfig = EventConfig[Any, Any, Any]
@@ -49,13 +49,13 @@ class AsyncDirectBus:
             defaultdict(set)
         )
 
-    def bind[**P, S: Payload, T: EventType](
+    def bind[**P, S: Any, T: EventType](
         self, event: EventConfig[P, S, T]
     ) -> AsyncBoundEvent[P, S, T, None, None]:
         """Return an ``AsyncBoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return abind(self.emit, event, config=None)
 
-    async def emit(self, payload: Payload, event: _AnyEventConfig, _config: None) -> None:
+    async def emit(self, payload: Any, event: _AnyEventConfig, _config: None) -> None:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
 
@@ -63,7 +63,7 @@ class AsyncDirectBus:
         currently active one, enabling correlation across nested emissions.
 
         Args:
-            payload:  The constructed ``Payload`` instance to dispatch.
+            payload:  The constructed payload instance to dispatch.
             event:    The ``EventConfig`` used as the handler lookup key.
             _config:  Unused; ``AsyncDirectBus`` requires no routing config.
 
@@ -128,7 +128,7 @@ class AsyncDirectBus:
         """
         self._handlers[handler.config].discard(handler)
 
-    async def dispatch(self, payload: Payload, *, config: _AnyEventConfig) -> None:
+    async def dispatch(self, payload: Any, *, config: _AnyEventConfig) -> None:
         """
         Invoke every handler registered for the given ``EventConfig`` concurrently.
 
@@ -136,7 +136,7 @@ class AsyncDirectBus:
         are dispatched via ``asyncio.gather``.
 
         Args:
-            payload: The constructed ``Payload`` instance to dispatch.
+            payload: The constructed payload instance to dispatch.
             config:  The ``EventConfig`` used as the handler lookup key.
 
         """

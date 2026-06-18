@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import inspect
-from typing import Any, Awaitable, Callable, Protocol, TypeGuard, overload
+from typing import Any, Awaitable, Callable, Protocol, cast, overload
 
-from stratae.events.event import EventConfig, EventType, Payload
+from stratae.events._typeguards import is_async_factory, is_sync_factory
+from stratae.events.event import EventConfig, EventType
 
 _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
 
-class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
+class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     """
     Binds an ``EventConfig`` to a synchronous emitter with routing config.
 
@@ -20,7 +20,7 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
 
     Type parameters:
         P:             The parameter specification of the bound event's ``__call__`` signature.
-        S:             The ``Payload`` subclass produced by the event's factory.
+        S:             The payload type produced by the event's factory.
         T:             The ``EventType`` discriminant of the bound event.
         RoutingConfig: The adapter-specific routing config type.
         Resp:          The return type produced by the emitter.
@@ -30,7 +30,7 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
 
     def __init__(
         self,
-        emitter: Callable[[Payload, EventConfig[P, S, T], RoutingConfig], Resp],
+        emitter: Callable[[S, EventConfig[P, S, T], RoutingConfig], Resp],
         event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
@@ -45,7 +45,7 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
             config:  The adapter-specific routing config for this binding.
 
         """
-        if not _is_sync_factory(event.factory):
+        if not is_sync_factory(event.factory):
             raise TypeError(_SYNC_FACTORY_REQUIRED)
         self.emitter = emitter
         self.event = event
@@ -63,9 +63,9 @@ class BoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
         return self.emitter(self._factory(*args, **kwargs), self.event, self.config)
 
 
-class AsyncBoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
+class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     """
-    Binds a ``Payload`` subclass to an asynchronous emitter with routing config.
+    Binds an ``EventConfig`` to an asynchronous emitter with routing config.
 
     An ``AsyncBoundEvent`` acts as a callable façade: invoking it calls ``factory``
     with the supplied arguments to construct the payload, forwards it and itself
@@ -77,11 +77,11 @@ class AsyncBoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
         Resp:          The type that the emitter's coroutine resolves to.
     """
 
-    __slots__ = ("event", "emitter", "config")
+    __slots__ = ("event", "emitter", "config", "_sync_factory", "_async_factory")
 
     def __init__(
         self,
-        emitter: Callable[[Payload, EventConfig[P, S, T], RoutingConfig], Awaitable[Resp]],
+        emitter: Callable[[S, EventConfig[P, S, T], RoutingConfig], Awaitable[Resp]],
         event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
@@ -99,6 +99,11 @@ class AsyncBoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
         self.event = event
         self.emitter = emitter
         self.config = config
+        factory = event.factory
+        self._sync_factory: Callable[P, S] = cast(Callable[P, S], factory)
+        self._async_factory: Callable[P, Awaitable[S]] | None = (
+            factory if is_async_factory(factory) else None
+        )
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
@@ -108,22 +113,17 @@ class AsyncBoundEvent[**P, S: Payload, T: EventType, RoutingConfig: Any, Resp]:
             The resolved value of ``self.emitter``'s coroutine.
 
         """
-        payload = self.event.factory(*args, **kwargs)
-        if isinstance(payload, Awaitable):
-            payload = await payload
+        if self._async_factory is not None:
+            payload = await self._async_factory(*args, **kwargs)
+        else:
+            payload = self._sync_factory(*args, **kwargs)
         return await self.emitter(payload, self.event, self.config)
-
-
-def _is_sync_factory[**P, E: Payload](
-    factory: Callable[P, E] | Callable[P, Awaitable[E]],
-) -> TypeGuard[Callable[P, E]]:
-    return not inspect.iscoroutinefunction(factory)
 
 
 class _BindDecorator[C, R](Protocol):
     """Decorator form of ``bind``: takes an ``EventConfig``, returns a ``BoundEvent``."""
 
-    def __call__[**P, S: Payload, T: EventType](
+    def __call__[**P, S: Any, T: EventType](
         self, event: EventConfig[P, S, T]
     ) -> BoundEvent[P, S, T, C, R]:
         """Bind the emitter and config to ``event``, returning a ``BoundEvent``."""
@@ -131,8 +131,8 @@ class _BindDecorator[C, R](Protocol):
 
 
 @overload
-def bind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, EventConfig[P, S, T], C], R],
+def bind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], R],
     event: EventConfig[P, S, T],
     *,
     config: C,
@@ -140,15 +140,15 @@ def bind[**P, S: Payload, T: EventType, C, R](
 
 
 @overload
-def bind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, EventConfig[P, S, T], C], R],
+def bind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], R],
     *,
     config: C,
 ) -> _BindDecorator[C, R]: ...
 
 
-def bind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, EventConfig[P, S, T], C], R],
+def bind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], R],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
@@ -157,12 +157,12 @@ def bind[**P, S: Payload, T: EventType, C, R](
     if event is None:
 
         def decorator(evt: EventConfig[P, S, T]) -> BoundEvent[P, S, T, C, R]:
-            if not _is_sync_factory(evt.factory):
+            if not is_sync_factory(evt.factory):
                 raise TypeError(_SYNC_FACTORY_REQUIRED)
             return BoundEvent(emitter, evt, config=config)
 
         return decorator
-    if not _is_sync_factory(event.factory):
+    if not is_sync_factory(event.factory):
         raise TypeError(_SYNC_FACTORY_REQUIRED)
     return BoundEvent(emitter, event, config=config)
 
@@ -170,7 +170,7 @@ def bind[**P, S: Payload, T: EventType, C, R](
 class _ABindDecorator[C, R](Protocol):
     """Return type of the decorator form of ``abind``: async emitter+config awaiting an Event."""
 
-    def __call__[**P, S: Payload, T: EventType](
+    def __call__[**P, S: Any, T: EventType](
         self, event: EventConfig[P, S, T]
     ) -> AsyncBoundEvent[P, S, T, C, R]:
         """Bind the async emitter and config to ``event``, returning an ``AsyncBoundEvent``."""
@@ -178,8 +178,8 @@ class _ABindDecorator[C, R](Protocol):
 
 
 @overload
-def abind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, EventConfig[P, S, T], C], Awaitable[R]],
+def abind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
     event: EventConfig[P, S, T],
     *,
     config: C,
@@ -187,15 +187,15 @@ def abind[**P, S: Payload, T: EventType, C, R](
 
 
 @overload
-def abind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, EventConfig[P, S, T], C], Awaitable[R]],
+def abind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
     *,
     config: C,
 ) -> _ABindDecorator[C, R]: ...
 
 
-def abind[**P, S: Payload, T: EventType, C, R](
-    emitter: Callable[[Payload, EventConfig[P, S, T], C], Awaitable[R]],
+def abind[**P, S: Any, T: EventType, C, R](
+    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,

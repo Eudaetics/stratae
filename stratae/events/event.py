@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import inspect
-from typing import Awaitable, Callable, Protocol, TypeGuard, overload
+from typing import Any, Awaitable, Callable, Protocol, overload
+
+from stratae.events._typeguards import is_async_factory, is_class_factory
 
 
 class EventType:
@@ -14,38 +15,7 @@ class PubSub(EventType):
     """Pub/sub pattern discriminant — fire and forget, no return value."""
 
 
-class Payload:
-    """
-    Marker base class for event payload schemas.
-
-    Subclass ``Payload`` to define the data shape carried by an event.
-    The contract is that subclasses must be serializable and deserializable —
-    the library does not enforce how, so any approach works: plain classes,
-    ``dataclasses``, ``msgspec.Struct``, ``pydantic.BaseModel``, etc.
-
-    Payloads carry no routing config and are reusable across adapters.
-
-    Example::
-
-        class OrderPlaced(Payload):
-            def __init__(self, order_id: int) -> None:
-                self.order_id = order_id
-    """
-
-
-def _is_payload_class[**P, E: Payload](
-    factory: Callable[P, E] | Callable[P, Awaitable[E]],
-) -> TypeGuard[type[E]]:
-    return isinstance(factory, type) and issubclass(factory, Payload)
-
-
-def _is_async_factory[**P, E: Payload](
-    factory: Callable[P, E] | Callable[P, Awaitable[E]],
-) -> TypeGuard[Callable[P, Awaitable[E]]]:
-    return inspect.iscoroutinefunction(factory)
-
-
-class EventConfig[**P, E: Payload, T: EventType]:
+class EventConfig[**P, E: Any, T: EventType]:
     """
     Bus-agnostic event definition binding a payload type to a dispatch pattern.
 
@@ -54,13 +24,27 @@ class EventConfig[**P, E: Payload, T: EventType]:
     the shareable definition that one or more bus bindings can reference.
 
     Type parameters:
-        E: The ``Payload`` subclass carried by this event.
+        E: The payload type carried by this event.
         T: The ``EventType`` discriminant describing the dispatch pattern.
+
+    Note:
+        Using a generic class directly as ``factory`` (e.g.
+        ``class Wrapped[T]: ...``) is discouraged. ``payload_type`` only
+        declares the resulting payload type; it cannot retroactively
+        constrain the factory's own constructor signature, so a bare generic
+        factory's argument types may end up unchecked even when
+        ``payload_type`` looks precise. A generic payload is also harder to
+        deserialize on the far side of a real bus without already knowing
+        ``T`` from elsewhere. It's still possible to use one this way and
+        have it work. The type checker just won't catch as much for you.
+        Where practical, prefer a concrete intermediary factory function
+        instead (e.g. ``def make_order_page(items: list[OrderPlaced]) ->
+        Page[OrderPlaced]: ...``) and pass that as ``factory``.
 
     Example::
 
         @event(PubSub)
-        class OrderPlaced(Payload):
+        class OrderPlaced:
             def __init__(self, order_id: int) -> None:
                 self.order_id = order_id
 
@@ -80,11 +64,11 @@ class EventConfig[**P, E: Payload, T: EventType]:
         Define an event with a schema type and dispatch pattern.
 
         Args:
-            factory:      A factory used to create a Payload.
+            factory:      A factory used to construct the payload.
             event_type:   The dispatch pattern discriminant class.
-            payload_type: The concrete ``Payload`` subclass this event carries.
+            payload_type: The concrete payload type this event carries.
                           Derived from ``factory`` when ``factory`` is itself a
-                          ``Payload`` subclass; must be provided explicitly otherwise.
+                          class; must be provided explicitly otherwise.
             name:         Human-readable identifier for this event.
                           Defaults to ``factory.__name__``.
 
@@ -95,10 +79,8 @@ class EventConfig[**P, E: Payload, T: EventType]:
         self.name = name if name is not None else factory.__name__
 
         if payload_type is None:
-            if not _is_payload_class(factory):
-                raise TypeError(
-                    "payload_type must be provided when factory is not a Payload subclass"
-                )
+            if not is_class_factory(factory):
+                raise TypeError("payload_type must be provided when factory is not a class")
             payload_type = factory
         self.payload_type = payload_type
 
@@ -108,8 +90,25 @@ class EventConfig[**P, E: Payload, T: EventType]:
         return self._factory
 
 
-class AsyncEventConfig[**P, E: Payload, T: EventType](EventConfig[P, E, T]):
-    """EventConfig for async factories; ``factory`` is typed as returning ``Awaitable[E]``."""
+class AsyncEventConfig[**P, E: Any, T: EventType](EventConfig[P, E, T]):
+    """
+    EventConfig for async factories; ``factory`` is typed as returning ``Awaitable[E]``.
+
+    Note:
+        Using a generic async factory function (e.g.
+        ``async def make_wrapped[T](item: T) -> Wrapped[T]: ...``) directly is
+        discouraged for the same reason as a generic class factory:
+        ``payload_type`` only declares the resulting payload type, it cannot
+        retroactively constrain the factory's own parameter types, so a
+        generic factory's argument types may end up unchecked even when
+        ``payload_type`` looks precise. A generic payload is also harder to
+        deserialize on the far side of a real bus without already knowing
+        ``T`` from elsewhere. It's still possible to use one this way and have
+        it work. The type checker just won't catch as much for you. Where
+        practical, prefer a concrete factory function whose parameters and
+        return type are already fully resolved.
+
+    """
 
     __slots__ = ("_async_factory",)
 
@@ -125,9 +124,9 @@ class AsyncEventConfig[**P, E: Payload, T: EventType](EventConfig[P, E, T]):
         Define an event with an async factory.
 
         Args:
-            factory:      An async factory used to create a Payload.
+            factory:      An async factory used to construct the payload.
             event_type:   The dispatch pattern discriminant class.
-            payload_type: The concrete ``Payload`` subclass this event carries.
+            payload_type: The concrete payload type this event carries.
                           Required — async factories cannot self-derive it.
             name:         Human-readable identifier for this event.
                           Defaults to ``factory.__name__``.
@@ -147,10 +146,10 @@ class AsyncEventConfig[**P, E: Payload, T: EventType](EventConfig[P, E, T]):
 class _EventDecorator[T: EventType](Protocol):
     """Return type of ``event()`` when ``payload_type`` is not given."""
 
-    def __call__[**P, E: Payload](self, schema: Callable[P, E]) -> EventConfig[P, E, T]: ...
+    def __call__[**P, E: Any](self, schema: Callable[P, E]) -> EventConfig[P, E, T]: ...
 
 
-class _EventDecoratorWithPayload[E: Payload, T: EventType](Protocol):
+class _EventDecoratorWithPayload[E: Any, T: EventType](Protocol):
     """Return type of ``event()`` when ``payload_type`` is given."""
 
     @overload
@@ -168,7 +167,7 @@ def event[T: EventType](
 
 
 @overload
-def event[E: Payload, T: EventType](
+def event[E: Any, T: EventType](
     event_type: type[T],
     *,
     name: str | None = None,
@@ -176,31 +175,45 @@ def event[E: Payload, T: EventType](
 ) -> _EventDecoratorWithPayload[E, T]: ...
 
 
-def event[E: Payload, T: EventType](
+def event[E: Any, T: EventType](
     event_type: type[T],
     *,
     name: str | None = None,
     payload_type: type[E] | None = None,
 ) -> _EventDecorator[T] | _EventDecoratorWithPayload[E, T]:
     """
-    Wrap a ``Payload`` subclass as an ``Event``.
+    Wrap a class as an ``Event``.
 
     Args:
         event_type:   The dispatch pattern discriminant class.
         name:         Human-readable identifier for this event.
                       Defaults to the decorated callable's ``__name__``.
-        payload_type: The concrete ``Payload`` subclass this event carries.
+        payload_type: The concrete payload type this event carries.
                       Derived from the decorated callable when it is itself a
-                      ``Payload`` subclass; must be provided explicitly otherwise.
+                      class; must be provided explicitly otherwise.
 
     Returns:
-        A decorator that accepts a ``Payload`` subclass and returns an
+        A decorator that accepts a class and returns an
         ``Event`` binding it to ``event_type``.
+
+    Note:
+        Using a generic class directly as the decorated factory (e.g.
+        ``class Wrapped[T]: ...``) is discouraged. ``payload_type`` only
+        declares the resulting payload type; it cannot retroactively
+        constrain the factory's own constructor signature, so a bare generic
+        factory's argument types may end up unchecked even when
+        ``payload_type`` looks precise. A generic payload is also harder to
+        deserialize on the far side of a real bus without already knowing
+        ``T`` from elsewhere. It's still possible to use one this way and
+        have it work. The type checker just won't catch as much for you.
+        Where practical, prefer a concrete intermediary factory function
+        instead (e.g. ``def make_order_page(items: list[OrderPlaced]) ->
+        Page[OrderPlaced]: ...``) and decorate or register that.
 
     Example::
 
         @event(PubSub)
-        class OrderPlaced(Payload):
+        class OrderPlaced:
             def __init__(self, order_id: int) -> None:
                 self.order_id = order_id
 
@@ -216,13 +229,13 @@ def event[E: Payload, T: EventType](
         def decorator_with_payload[**P](
             schema: Callable[P, E] | Callable[P, Awaitable[E]],
         ) -> EventConfig[P, E, T]:
-            if _is_async_factory(schema):
+            if is_async_factory(schema):
                 return AsyncEventConfig(schema, event_type, name=name, payload_type=payload_type)
             return EventConfig(schema, event_type, name=name, payload_type=payload_type)
 
         return decorator_with_payload
 
-    def decorator[**P, S: Payload](schema: Callable[P, S]) -> EventConfig[P, S, T]:
+    def decorator[**P, S: Any](schema: Callable[P, S]) -> EventConfig[P, S, T]:
         return EventConfig(schema, event_type, name=name, payload_type=None)
 
     return decorator
