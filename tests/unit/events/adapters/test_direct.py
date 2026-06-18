@@ -14,6 +14,8 @@ DirectBus:
 - emit dispatches the payload to all registered handlers.
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
+- A handler that removes a registration during dispatch does not prevent
+  other handlers on the same emission from running.
 
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -283,6 +285,40 @@ def test_handler_exceptions_collected_into_exception_group(bus: DirectBus):
         bus.emit(payload, emit.event)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
+
+
+def test_handler_removing_registration_during_dispatch_does_not_break_other_handlers(
+    bus: DirectBus,
+):
+    """
+    A removed handler mid-dispatch should not prevent other handlers from running.
+
+    Handlers are stored in a set, so iteration order is not guaranteed; several other
+    handlers are registered alongside the self-removing to reduce the chances of degenerate
+    ordering causing the test to fail.
+
+    Given: A self-removing handler and several other handlers registered to an EventConfig
+    When: an event is emitted
+    Then: Every other handler should still be called, and no error should be raised
+    """
+    # Arrange
+    other_handlers = [Mock() for _ in range(20)]
+    emit = bus.bind(_task_created)
+
+    def self_removing(_: Payload) -> None:
+        bus.remove(first_handle)
+
+    first_handle = bus.handle(emit.event, self_removing)
+    for handler in other_handlers:
+        bus.handle(emit.event, handler)
+    payload = _TaskCreated(12)
+
+    # Act
+    bus.emit(payload, emit.event)
+
+    # Assert
+    for handler in other_handlers:
+        handler.assert_called_once_with(payload)
 
 
 def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: DirectBus):
