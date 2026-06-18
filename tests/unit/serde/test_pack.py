@@ -6,8 +6,8 @@ from uuid import uuid4
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.serial import pack
-from stratae.serial import packer as pack_module
+from stratae.serde import pack
+from stratae.serde import packer as pack_module
 
 
 def test_pack_returns_bytes():

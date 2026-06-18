@@ -7,8 +7,8 @@ import msgspec
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.integrations.serial import msgspec as msgspec_integration
-from stratae.serial import pack
+from stratae.integrations.serde import msgspec as msgspec_integration
+from stratae.serde import pack
 
 
 class Point(msgspec.Struct):
