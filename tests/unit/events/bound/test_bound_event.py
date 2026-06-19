@@ -10,13 +10,14 @@ This test suite verifies the following behaviors:
 """
 
 import asyncio
-from unittest.mock import Mock
+from unittest.mock import create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent
 from stratae.events.event import EventConfig, PubSub
+from stratae.events.protocols import EmitCallable
 
 
 class _OrderCreated:
@@ -41,7 +42,7 @@ def test_init_stores_event_emitter_and_config():
     When: A BoundEvent is created
     Then: The event, emitter, and config attributes should reference the supplied objects
     """
-    emitter = Mock()
+    emitter = create_autospec(EmitCallable)
     config = object()
 
     bound = BoundEvent(emitter, _order_created, config=config)
@@ -51,7 +52,9 @@ def test_init_stores_event_emitter_and_config():
     assert bound.config is config
 
 
-def test_call_passes_positional_args_to_factory(mocker: MockerFixture):
+def test_call_passes_positional_args_to_factory(
+    mocker: MockerFixture,
+):
     """
     Test that positional arguments are forwarded to the factory.
 
@@ -60,8 +63,8 @@ def test_call_passes_positional_args_to_factory(mocker: MockerFixture):
     Then: The factory should be called with those values and the emitter
           should receive the constructed payload, the EventConfig, and the config
     """
+    emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = Mock()
     bound = BoundEvent(emitter, _order_created, config=None)
 
     bound(1, "pending")
@@ -70,7 +73,9 @@ def test_call_passes_positional_args_to_factory(mocker: MockerFixture):
     emitter.assert_called_once_with(_OrderCreated(1, "pending"), _order_created, None)
 
 
-def test_call_passes_keyword_args_to_factory(mocker: MockerFixture):
+def test_call_passes_keyword_args_to_factory(
+    mocker: MockerFixture,
+):
     """
     Test that keyword arguments are forwarded to the factory.
 
@@ -79,8 +84,8 @@ def test_call_passes_keyword_args_to_factory(mocker: MockerFixture):
     Then: The factory should be called with those values and the emitter
           should receive the constructed payload, the EventConfig, and the config
     """
+    emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = Mock()
     bound = BoundEvent(emitter, _order_created, config=None)
 
     bound(order_id=2, status="complete")
@@ -89,7 +94,9 @@ def test_call_passes_keyword_args_to_factory(mocker: MockerFixture):
     emitter.assert_called_once_with(_OrderCreated(2, "complete"), _order_created, None)
 
 
-def test_call_passes_mixed_args_to_factory(mocker: MockerFixture):
+def test_call_passes_mixed_args_to_factory(
+    mocker: MockerFixture,
+):
     """
     Test that a mix of positional and keyword arguments are forwarded to the factory.
 
@@ -98,8 +105,8 @@ def test_call_passes_mixed_args_to_factory(mocker: MockerFixture):
     Then: The factory should be called with args in the same form and the emitter
           should receive the constructed payload, the EventConfig, and the config
     """
+    emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = Mock()
     bound = BoundEvent(emitter, _order_created, config=None)
 
     bound(1, status="pending")
@@ -112,16 +119,21 @@ def test_call_returns_emitter_result():
     """
     Test that the return value from the emitter is returned to the caller.
 
-    Given: A BoundEvent whose emitter returns a known value
+    Given: A BoundEvent whose emitter returns the constructed payload
     When: The BoundEvent is called
-    Then: The return value should match the emitter's return value
+    Then: The return value should match the constructed payload
     """
-    emitter = Mock(return_value="dispatched")
+    emitter = create_autospec(EmitCallable)
+
+    def _return(payload: object, event: object, config: object) -> object:
+        return payload
+
+    emitter.side_effect = _return
     bound = BoundEvent(emitter, _order_created, config=None)
 
     result = bound(1, "pending")
 
-    assert result == "dispatched"
+    assert result == _OrderCreated(1, "pending")
 
 
 def test_init_raises_for_async_factory():
@@ -132,6 +144,7 @@ def test_init_raises_for_async_factory():
     When: A BoundEvent is constructed with that EventConfig
     Then: A TypeError should be raised
     """
+    emitter = create_autospec(EmitCallable)
 
     async def _async_order_created(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
@@ -140,4 +153,4 @@ def test_init_raises_for_async_factory():
     ev = EventConfig(_async_order_created, PubSub, payload_type=_OrderCreated)
 
     with pytest.raises(TypeError):
-        BoundEvent(Mock(), ev, config=None)
+        BoundEvent(emitter, ev, config=None)

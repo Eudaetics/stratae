@@ -6,6 +6,33 @@ from stratae.events.event import EventConfig, EventType
 
 
 @runtime_checkable
+class EmitCallable[**P, S: Any, T: EventType, C: Any, R: Any](Protocol):
+    """
+    Structural protocol for a single bound emit call.
+
+    Captures the call shape of ``Producer.emit`` — payload, event, and
+    config in, some adapter-defined result out — but parameterized over a
+    concrete ``R`` instead of ``Any``, so a specific binding (e.g. a
+    ``BoundEvent``'s ``emitter``) can be checked against its own return type.
+    """
+
+    def __call__(self, payload: S, event: EventConfig[P, S, T], config: C) -> R:
+        """
+        Dispatch a constructed event payload.
+
+        Args:
+            payload: The constructed payload instance to dispatch.
+            event:   The ``Event`` definition being emitted.
+            config:  Adapter-specific routing configuration.
+
+        Returns:
+            Adapter-defined result of dispatching the payload.
+
+        """
+        ...
+
+
+@runtime_checkable
 class Producer(Protocol):
     """
     Structural protocol for the emit side of the event system.
@@ -15,8 +42,8 @@ class Producer(Protocol):
     adapters implement it to perform the actual dispatch.
     """
 
-    def emit[**P, E: Any, T: EventType](
-        self, payload: E, event: EventConfig[P, E, T], config: Any
+    def emit[**P, S: Any, T: EventType](
+        self, payload: S, event: EventConfig[P, S, T], config: Any
     ) -> Any:
         """
         Dispatch a constructed event payload.

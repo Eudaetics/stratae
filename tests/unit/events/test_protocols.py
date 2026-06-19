@@ -14,7 +14,7 @@ Consumer:
 from typing import Any, Callable
 
 from stratae.events.event import EventConfig, EventType
-from stratae.events.protocols import Consumer, Producer
+from stratae.events.protocols import Consumer, EmitCallable, Producer
 
 
 class _SyncProducer:
@@ -57,6 +57,17 @@ def test_async_producer_satisfies_protocol():
     Then: isinstance should return True
     """
     assert isinstance(_AsyncProducer(), Producer)
+
+
+def test_producer_emit_satisfies_emit_callable_protocol():
+    """
+    Producer.emit should satisfy the EmitCallable protocol.
+
+    Given: a Producer implementation's bound emit method
+    When: checked against the EmitCallable protocol
+    Then: isinstance should return True
+    """
+    assert isinstance(_SyncProducer().emit, EmitCallable)
 
 
 def test_consumer_satisfies_protocol():

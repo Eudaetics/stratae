@@ -55,7 +55,7 @@ class AsyncDirectBus:
         """Return an ``AsyncBoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return abind(self.emit, event, config=None)
 
-    async def emit(self, payload: Any, event: _AnyEventConfig, _config: None) -> None:
+    async def emit(self, payload: Any, event: _AnyEventConfig, config: None = None) -> None:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
 
@@ -65,7 +65,7 @@ class AsyncDirectBus:
         Args:
             payload:  The constructed payload instance to dispatch.
             event:    The ``EventConfig`` used as the handler lookup key.
-            _config:  Unused; ``AsyncDirectBus`` requires no routing config.
+            config:  Unused; ``AsyncDirectBus`` requires no routing config.
 
         """
         if self._use_envelope:
