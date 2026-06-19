@@ -55,7 +55,9 @@ class AsyncDirectBus:
         """Return an ``AsyncBoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return abind(self.emit, event, config=None)
 
-    async def emit(self, payload: Any, event: _AnyEventConfig, _config: None) -> None:
+    async def emit(
+        self, payload: Any, event: _AnyEventConfig, _config: None = None, _serializer: None = None
+    ) -> None:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
 

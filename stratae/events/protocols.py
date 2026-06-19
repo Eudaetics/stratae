@@ -16,15 +16,23 @@ class Producer(Protocol):
     """
 
     def emit[**P, E: Any, T: EventType](
-        self, payload: E, event: EventConfig[P, E, T], config: Any
+        self,
+        payload: E,
+        event: EventConfig[P, E, T],
+        config: Any,
+        serializer: Callable[[E], Any] | None = None,
     ) -> Any:
         """
         Dispatch a constructed event payload.
 
         Args:
-            payload: The constructed payload instance to dispatch.
-            event:   The ``Event`` definition being emitted.
-            config:  Adapter-specific routing configuration.
+            payload:    The constructed payload instance to dispatch.
+            event:      The ``Event`` definition being emitted.
+            config:     Adapter-specific routing configuration.
+            serializer: Encodes ``payload`` before dispatch. Format is
+                        adapter-defined (bytes, a JSON string, etc.) — when
+                        omitted, the adapter falls back to its own default
+                        serializer, if any.
 
         Returns:
             Adapter-defined; sync implementations return directly, async

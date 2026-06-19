@@ -254,7 +254,7 @@ async def test_emit_dispatches_directly(bus: AsyncDirectBus):
     payload = _TaskCreated(8)
 
     # Act
-    await bus.emit(payload, emit.event, None)
+    await bus.emit(payload, emit.event)
 
     # Assert
     handler.assert_called_once_with(payload)
