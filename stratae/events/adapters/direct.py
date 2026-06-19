@@ -46,7 +46,7 @@ class DirectBus:
         self._handlers: dict[_AnyEventConfig, set[Handler[Any, _AnyEventConfig, Any]]] = (
             defaultdict(set)
         )
-        self._dispatch: Callable[[Any, _AnyEventConfig, None], None] = (
+        self._dispatch: Callable[[Any, _AnyEventConfig], None] = (
             self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
 
@@ -54,19 +54,27 @@ class DirectBus:
         self, event: EventConfig[P, S, T]
     ) -> BoundEvent[P, S, T, None, None]:
         """Return a ``BoundEvent`` pre-populated with this bus's emit and ``config=None``."""
-        return bind(self.emit, event, config=None)
+        return bind(self.emit, event, config=None, serializer=None)
 
-    def emit(self, payload: Any, event: _AnyEventConfig, _config: None = None) -> None:
+    def emit(
+        self,
+        payload: Any,
+        event: _AnyEventConfig,
+        config: None = None,
+        *,
+        serializer: Callable[..., Any] | None = None,
+    ) -> None:
         """
         Dispatch the payload to registered handlers, opening an envelope scope if configured.
 
         Args:
-            payload:  The constructed payload instance to dispatch.
-            event:    The ``EventConfig`` used as the handler lookup key.
-            _config:  Unused; ``DirectBus`` requires no routing config.
+            payload:    The constructed payload instance to dispatch.
+            event:      The ``EventConfig`` used as the handler lookup key.
+            config:     Unused; ``DirectBus`` requires no routing config.
+            serializer: Unused; ``DirectBus`` requires no serializer.
 
         """
-        self._dispatch(payload, event, _config)
+        self._dispatch(payload, event)
 
     @overload
     def handle[**P, R](
@@ -122,7 +130,7 @@ class DirectBus:
         """
         self._handlers[handler.config].discard(handler)
 
-    def _dispatch_plain(self, payload: Any, event: _AnyEventConfig, _config: None) -> None:
+    def _dispatch_plain(self, payload: Any, event: _AnyEventConfig) -> None:
         exceptions: list[Exception] = []
         handlers = list(self._handlers.get(event, ()))
         for handler in handlers:
@@ -133,6 +141,6 @@ class DirectBus:
         if exceptions:
             raise ExceptionGroup("Handler Errors", exceptions)
 
-    def _dispatch_in_envelope(self, payload: Any, event: _AnyEventConfig, _config: None) -> None:
+    def _dispatch_in_envelope(self, payload: Any, event: _AnyEventConfig) -> None:
         with Envelope.scope():
-            self._dispatch_plain(payload, event, None)
+            self._dispatch_plain(payload, event)

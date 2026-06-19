@@ -20,12 +20,16 @@ abind — decorator form:
 """
 
 import asyncio
-from unittest.mock import AsyncMock
-
-from pytest_mock import MockerFixture
+from typing import Any
+from unittest.mock import Mock, create_autospec
 
 from stratae.events.bound import AsyncBoundEvent, abind
 from stratae.events.event import EventConfig, PubSub
+
+
+async def _async_emit(
+    payload: Any, event: EventConfig[..., Any, Any], config: Any, serializer: Any = None
+): ...
 
 
 class _OrderCreated:
@@ -51,7 +55,7 @@ def test_abind_direct_returns_async_bound_event() -> None:
     Then: The result should be an AsyncBoundEvent instance
     """
     # Arrange
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
@@ -70,7 +74,7 @@ def test_abind_direct_uses_event_schema_as_factory() -> None:
     Then: The AsyncBoundEvent's factory should be _OrderCreated
     """
     # Arrange
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
@@ -89,7 +93,7 @@ def test_abind_direct_stores_config() -> None:
     Then: The AsyncBoundEvent's config should reference the same object
     """
     # Arrange
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
@@ -100,20 +104,16 @@ def test_abind_direct_stores_config() -> None:
     assert result.config is config
 
 
-async def test_abind_direct_calling_constructs_schema_and_awaits_emitter(
-    mocker: MockerFixture,
-) -> None:
+async def test_abind_direct_calling_constructs_schema_and_awaits_emitter() -> None:
     """
     Calling an AsyncBoundEvent produced by abind constructs the schema and awaits the emitter.
 
     Given: An AsyncBoundEvent produced by abind in direct form
     When: The AsyncBoundEvent is called with arguments
-    Then: The schema constructor should be called with those arguments and the emitter
-          should receive the constructed payload, the EventConfig, and the config
+    Then: The emitter should receive the constructed payload, the EventConfig, and the config
     """
     # Arrange
-    spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     ev = EventConfig(_OrderCreated, PubSub)
     bound = abind(emitter, ev, config=None)
 
@@ -121,20 +121,26 @@ async def test_abind_direct_calling_constructs_schema_and_awaits_emitter(
     await bound(1, "pending")
 
     # Assert
-    spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None)
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
 
 
 async def test_abind_direct_returns_emitter_result() -> None:
     """
     Calling an AsyncBoundEvent produced by abind returns the emitter's result.
 
-    Given: An AsyncBoundEvent whose emitter resolves to a known value
+    Given: An AsyncBoundEvent whose emitter returns the constructed payload
     When: The AsyncBoundEvent is called
-    Then: The return value should match the emitter's resolved value
+    Then: The return value should match the constructed payload
     """
     # Arrange
-    emitter = AsyncMock(return_value="dispatched")
+    emitter = create_autospec(_async_emit)
+
+    def _return(
+        payload: object, event: object, config: object, serializer: object = None
+    ) -> object:
+        return payload
+
+    emitter.side_effect = _return
     ev = EventConfig(_OrderCreated, PubSub)
     bound = abind(emitter, ev, config=None)
 
@@ -142,7 +148,48 @@ async def test_abind_direct_returns_emitter_result() -> None:
     result = await bound(1, "pending")
 
     # Assert
-    assert result == "dispatched"
+    assert result == _OrderCreated(1, "pending")
+
+
+def test_abind_direct_stores_serializer() -> None:
+    """
+    Abind stores the provided serializer on the returned AsyncBoundEvent.
+
+    Given: A serializer callable
+    When: abind is called in direct form with that serializer
+    Then: The AsyncBoundEvent's serializer should reference the same callable
+    """
+    # Arrange
+    emitter = create_autospec(_async_emit)
+    ev = EventConfig(_OrderCreated, PubSub)
+    serializer = Mock()
+
+    # Act
+    result = abind(emitter, ev, config=None, serializer=serializer)
+
+    # Assert
+    assert result.serializer is serializer
+
+
+async def test_abind_direct_forwards_serializer_to_emitter() -> None:
+    """
+    Calling an AsyncBoundEvent produced by abind forwards the serializer to the emitter.
+
+    Given: An AsyncBoundEvent produced by abind in direct form with a serializer
+    When: The AsyncBoundEvent is called
+    Then: The emitter should receive that same serializer
+    """
+    # Arrange
+    emitter = create_autospec(_async_emit)
+    ev = EventConfig(_OrderCreated, PubSub)
+    serializer = Mock()
+    bound = abind(emitter, ev, config=None, serializer=serializer)
+
+    # Act
+    await bound(1, "pending")
+
+    # Assert
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
 
 
 async def test_abind_direct_awaits_async_factory_then_awaits_emitter() -> None:
@@ -153,13 +200,13 @@ async def test_abind_direct_awaits_async_factory_then_awaits_emitter() -> None:
     When: The AsyncBoundEvent produced by abind is called
     Then: The emitter should receive the resolved payload, not the coroutine
     """
-
     # Arrange
+    emitter = create_autospec(_async_emit)
+
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
         return _OrderCreated(order_id, status)
 
-    emitter = AsyncMock()
     ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
     bound = abind(emitter, ev, config=None)
 
@@ -167,7 +214,7 @@ async def test_abind_direct_awaits_async_factory_then_awaits_emitter() -> None:
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None)
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
 
 
 # endregion
@@ -183,10 +230,8 @@ def test_abind_decorator_form_returns_callable() -> None:
     When: abind is called
     Then: The result should be callable
     """
-    # Arrange
-    emitter = AsyncMock()
-
     # Act
+    emitter = create_autospec(_async_emit)
     result = abind(emitter, config=None)
 
     # Assert
@@ -202,7 +247,7 @@ def test_abind_decorator_form_applied_to_event_returns_async_bound_event() -> No
     Then: The result should be an AsyncBoundEvent instance
     """
     # Arrange
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
@@ -221,7 +266,7 @@ def test_abind_decorator_form_uses_event_schema_as_factory() -> None:
     Then: Its factory should be the event's schema class
     """
     # Arrange
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
@@ -240,7 +285,7 @@ def test_abind_decorator_form_stores_config() -> None:
     Then: The AsyncBoundEvent's config should reference the same object
     """
     # Arrange
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
@@ -251,6 +296,47 @@ def test_abind_decorator_form_stores_config() -> None:
     assert result.config is config
 
 
+def test_abind_decorator_form_stores_serializer() -> None:
+    """
+    The AsyncBoundEvent produced by the abind decorator stores the provided serializer.
+
+    Given: A serializer callable passed to abind
+    When: The decorator is applied to an Event
+    Then: The AsyncBoundEvent's serializer should reference the same callable
+    """
+    # Arrange
+    emitter = create_autospec(_async_emit)
+    ev = EventConfig(_OrderCreated, PubSub)
+    serializer = Mock()
+
+    # Act
+    result = abind(emitter, config=None, serializer=serializer)(ev)
+
+    # Assert
+    assert result.serializer is serializer
+
+
+async def test_abind_decorator_form_forwards_serializer_to_emitter() -> None:
+    """
+    Calling an AsyncBoundEvent produced by the abind decorator forwards the serializer.
+
+    Given: An AsyncBoundEvent produced by the abind decorator with a serializer
+    When: The AsyncBoundEvent is called
+    Then: The emitter should receive that same serializer
+    """
+    # Arrange
+    emitter = create_autospec(_async_emit)
+    ev = EventConfig(_OrderCreated, PubSub)
+    serializer = Mock()
+    bound = abind(emitter, config=None, serializer=serializer)(ev)
+
+    # Act
+    await bound(1, "pending")
+
+    # Assert
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
+
+
 async def test_abind_decorator_awaits_async_factory_then_awaits_emitter() -> None:
     """
     The decorator form of abind with an async factory awaits the factory before the emitter.
@@ -259,13 +345,13 @@ async def test_abind_decorator_awaits_async_factory_then_awaits_emitter() -> Non
     When: The decorator returned by abind is applied and the result is called
     Then: The emitter should receive the resolved payload, not the coroutine
     """
-
     # Arrange
+    emitter = create_autospec(_async_emit)
+
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
         return _OrderCreated(order_id, status)
 
-    emitter = AsyncMock()
     ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
     bound = abind(emitter, config=None)(ev)
 
@@ -273,7 +359,7 @@ async def test_abind_decorator_awaits_async_factory_then_awaits_emitter() -> Non
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None)
+    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
 
 
 # endregion
