@@ -20,13 +20,14 @@ bind — decorator form:
 """
 
 import asyncio
-from unittest.mock import Mock
+from unittest.mock import create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import BoundEvent, bind
 from stratae.events.event import EventConfig, PubSub
+from stratae.events.protocols import EmitCallable
 
 
 class _OrderCreated:
@@ -52,7 +53,7 @@ def test_bind_direct_returns_bound_event() -> None:
     Then: The result should be a BoundEvent instance
     """
     # Arrange
-    emitter = Mock()
+    emitter = create_autospec(EmitCallable)
     ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
@@ -71,7 +72,7 @@ def test_bind_direct_stores_event() -> None:
     Then: The BoundEvent's event should be the supplied EventConfig
     """
     # Arrange
-    emitter = Mock()
+    emitter = create_autospec(EmitCallable)
     ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
@@ -90,7 +91,7 @@ def test_bind_direct_stores_config() -> None:
     Then: The BoundEvent's config should reference the same object
     """
     # Arrange
-    emitter = Mock()
+    emitter = create_autospec(EmitCallable)
     ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
@@ -101,7 +102,9 @@ def test_bind_direct_stores_config() -> None:
     assert result.config is config
 
 
-def test_bind_direct_calling_constructs_schema_and_invokes_emitter(mocker: MockerFixture) -> None:
+def test_bind_direct_calling_constructs_schema_and_invokes_emitter(
+    mocker: MockerFixture,
+) -> None:
     """
     Calling a BoundEvent produced by bind constructs the schema and calls the emitter.
 
@@ -111,8 +114,8 @@ def test_bind_direct_calling_constructs_schema_and_invokes_emitter(mocker: Mocke
           should receive the constructed payload, the EventConfig, and the config
     """
     # Arrange
+    emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
-    emitter = Mock()
     ev = EventConfig(_OrderCreated, PubSub)
     bound = bind(emitter, ev, config=None)
 
@@ -128,12 +131,18 @@ def test_bind_direct_returns_emitter_result() -> None:
     """
     Calling a BoundEvent produced by bind returns the emitter's result.
 
-    Given: A BoundEvent whose emitter returns a known value
+    Given: A BoundEvent whose emitter echoes the constructed payload
     When: The BoundEvent is called
-    Then: The return value should match the emitter's return value
+    Then: The return value should match the constructed payload
     """
     # Arrange
-    emitter = Mock(return_value="dispatched")
+    emitter = create_autospec(EmitCallable)
+
+    def _return(payload: object, event: object, config: object) -> object:
+        return payload
+
+    emitter.side_effect = _return
+
     ev = EventConfig(_OrderCreated, PubSub)
     bound = bind(emitter, ev, config=None)
 
@@ -141,7 +150,7 @@ def test_bind_direct_returns_emitter_result() -> None:
     result = bound(1, "pending")
 
     # Assert
-    assert result == "dispatched"
+    assert result == _OrderCreated(1, "pending")
 
 
 def test_bind_direct_raises_for_async_factory() -> None:
@@ -152,13 +161,13 @@ def test_bind_direct_raises_for_async_factory() -> None:
     When: bind is called in direct form
     Then: A TypeError should be raised
     """
-
     # Arrange
+    emitter = create_autospec(EmitCallable)
+
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
         return _OrderCreated(order_id, status)
 
-    emitter = Mock()
     ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
 
     # Act / Assert
@@ -179,10 +188,8 @@ def test_bind_decorator_form_returns_callable() -> None:
     When: bind is called
     Then: The result should be callable
     """
-    # Arrange
-    emitter = Mock()
-
     # Act
+    emitter = create_autospec(EmitCallable)
     result = bind(emitter, config=None)
 
     # Assert
@@ -198,7 +205,7 @@ def test_bind_decorator_form_applied_to_event_returns_bound_event() -> None:
     Then: The result should be a BoundEvent instance
     """
     # Arrange
-    emitter = Mock()
+    emitter = create_autospec(EmitCallable)
     ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
@@ -217,7 +224,7 @@ def test_bind_decorator_form_stores_event() -> None:
     Then: Its event should be the supplied EventConfig
     """
     # Arrange
-    emitter = Mock()
+    emitter = create_autospec(EmitCallable)
     ev = EventConfig(_OrderCreated, PubSub)
 
     # Act
@@ -236,7 +243,7 @@ def test_bind_decorator_form_stores_config() -> None:
     Then: The BoundEvent's config should reference the same object
     """
     # Arrange
-    emitter = Mock()
+    emitter = create_autospec(EmitCallable)
     ev = EventConfig(_OrderCreated, PubSub)
     config = object()
 
@@ -255,13 +262,13 @@ def test_bind_decorator_raises_for_async_factory() -> None:
     When: The decorator returned by bind is applied to that event
     Then: A TypeError should be raised
     """
-
     # Arrange
+    emitter = create_autospec(EmitCallable)
+
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
         return _OrderCreated(order_id, status)
 
-    emitter = Mock()
     ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
 
     # Act / Assert

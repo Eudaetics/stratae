@@ -56,16 +56,14 @@ class DirectBus:
         """Return a ``BoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return bind(self.emit, event, config=None)
 
-    def emit(
-        self, payload: Any, event: _AnyEventConfig, _config: None = None, _serializer: None = None
-    ) -> None:
+    def emit(self, payload: Any, event: _AnyEventConfig, config: None = None) -> None:
         """
         Dispatch the payload to registered handlers, opening an envelope scope if configured.
 
         Args:
             payload:  The constructed payload instance to dispatch.
             event:    The ``EventConfig`` used as the handler lookup key.
-            _config:  Unused; ``DirectBus`` requires no routing config.
+            config:  Unused; ``DirectBus`` requires no routing config.
 
         """
         self._dispatch(payload, event)
