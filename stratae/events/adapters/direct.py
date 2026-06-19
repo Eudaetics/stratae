@@ -54,16 +54,24 @@ class DirectBus:
         self, event: EventConfig[P, S, T]
     ) -> BoundEvent[P, S, T, None, None]:
         """Return a ``BoundEvent`` pre-populated with this bus's emit and ``config=None``."""
-        return bind(self.emit, event, config=None)
+        return bind(self.emit, event, config=None, serializer=None)
 
-    def emit(self, payload: Any, event: _AnyEventConfig, config: None = None) -> None:
+    def emit(
+        self,
+        payload: Any,
+        event: _AnyEventConfig,
+        config: None = None,
+        *,
+        serializer: Callable[..., Any] | None = None,
+    ) -> None:
         """
         Dispatch the payload to registered handlers, opening an envelope scope if configured.
 
         Args:
-            payload:  The constructed payload instance to dispatch.
-            event:    The ``EventConfig`` used as the handler lookup key.
-            config:  Unused; ``DirectBus`` requires no routing config.
+            payload:    The constructed payload instance to dispatch.
+            event:      The ``EventConfig`` used as the handler lookup key.
+            config:     Unused; ``DirectBus`` requires no routing config.
+            serializer: Unused; ``DirectBus`` requires no serializer.
 
         """
         self._dispatch(payload, event)

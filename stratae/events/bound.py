@@ -35,15 +35,20 @@ class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
         event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
+        serializer: Callable[[S], Any] | None = None,
     ) -> None:
         """
         Bind an event and emitter with routing config.
 
         Args:
-            emitter: A callable that receives the constructed payload and this
-                     ``BoundEvent``, and returns ``Resp``.
-            event:   The ``EventConfig`` whose factory constructs the payload.
-            config:  The adapter-specific routing config for this binding.
+            emitter:    A callable that receives the constructed payload and this
+                        ``BoundEvent``, and returns ``Resp``.
+            event:      The ``EventConfig`` whose factory constructs the payload.
+            config:     The adapter-specific routing config for this binding.
+            serializer: Encodes payload before dispatch. Format is
+                        adapter-defined (bytes, a JSON string, etc.) — when
+                        omitted, the emitter falls back to its own default
+                        serializer, if any.
 
         """
         if not is_sync_factory(event.factory):
@@ -86,15 +91,21 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
         event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
+        serializer: Callable[[S], Any] | None = None,
     ) -> None:
         """
         Bind a factory and async emitter with routing config.
 
         Args:
-            emitter: A coroutine callable that receives the constructed payload and this
-                     ``AsyncBoundEvent``, and returns an awaitable resolving to ``Resp``.
-            event:   The ``EventConfig`` whose factory constructs the payload.
-            config:  The adapter-specific routing config for this binding.
+            emitter:    A coroutine callable that receives the constructed payload
+                        and this ``AsyncBoundEvent``, and returns an awaitable
+                        resolving to ``Resp``.
+            event:      The ``EventConfig`` whose factory constructs the payload.
+            config:     The adapter-specific routing config for this binding.
+            serializer: Encodes payload before dispatch. Format is
+                        adapter-defined (bytes, a JSON string, etc.) — when
+                        omitted, the emitter falls back to its own default
+                        serializer, if any.
 
         """
         self.event = event
@@ -137,14 +148,13 @@ def bind[**P, S: Any, T: EventType, C, R](
     event: EventConfig[P, S, T],
     *,
     config: C,
+    serializer: Callable[[S], Any] | None,
 ) -> BoundEvent[P, S, T, C, R]: ...
 
 
 @overload
 def bind[**P, S: Any, T: EventType, C, R](
-    emitter: EmitCallable[P, S, T, C, R],
-    *,
-    config: C,
+    emitter: EmitCallable[P, S, T, C, R], *, config: C, serializer: Callable[[S], Any] | None
 ) -> _BindDecorator[C, R]: ...
 
 
@@ -153,6 +163,7 @@ def bind[**P, S: Any, T: EventType, C, R](
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
+    serializer: Callable[[S], Any] | None = None,
 ) -> BoundEvent[P, S, T, C, R] | Callable[[EventConfig[P, S, T]], BoundEvent[P, S, T, C, R]]:
     """Bind an emitter to an ``EventConfig``, returning a ``BoundEvent`` or a decorator."""
     if event is None:
@@ -160,12 +171,12 @@ def bind[**P, S: Any, T: EventType, C, R](
         def decorator(evt: EventConfig[P, S, T]) -> BoundEvent[P, S, T, C, R]:
             if not is_sync_factory(evt.factory):
                 raise TypeError(_SYNC_FACTORY_REQUIRED)
-            return BoundEvent(emitter, evt, config=config)
+            return BoundEvent(emitter, evt, config=config, serializer=serializer)
 
         return decorator
     if not is_sync_factory(event.factory):
         raise TypeError(_SYNC_FACTORY_REQUIRED)
-    return BoundEvent(emitter, event, config=config)
+    return BoundEvent(emitter, event, config=config, serializer=serializer)
 
 
 class _ABindDecorator[C, R](Protocol):
@@ -184,6 +195,7 @@ def abind[**P, S: Any, T: EventType, C, R](
     event: EventConfig[P, S, T],
     *,
     config: C,
+    serializer: Callable[[S], Any] | None,
 ) -> AsyncBoundEvent[P, S, T, C, R]: ...
 
 
@@ -192,6 +204,7 @@ def abind[**P, S: Any, T: EventType, C, R](
     emitter: EmitCallable[P, S, T, C, Awaitable[R]],
     *,
     config: C,
+    serializer: Callable[[S], Any] | None,
 ) -> _ABindDecorator[C, R]: ...
 
 
@@ -200,6 +213,7 @@ def abind[**P, S: Any, T: EventType, C, R](
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
+    serializer: Callable[[S], Any] | None = None,
 ) -> (
     AsyncBoundEvent[P, S, T, C, R]
     | Callable[[EventConfig[P, S, T]], AsyncBoundEvent[P, S, T, C, R]]
@@ -208,7 +222,7 @@ def abind[**P, S: Any, T: EventType, C, R](
     if event is None:
 
         def decorator(evt: EventConfig[P, S, T]) -> AsyncBoundEvent[P, S, T, C, R]:
-            return AsyncBoundEvent(emitter, evt, config=config)
+            return AsyncBoundEvent(emitter, evt, config=config, serializer=serializer)
 
         return decorator
-    return AsyncBoundEvent(emitter, event, config=config)
+    return AsyncBoundEvent(emitter, event, config=config, serializer=serializer)

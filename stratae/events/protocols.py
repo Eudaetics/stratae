@@ -16,14 +16,22 @@ class EmitCallable[**P, S: Any, T: EventType, C: Any, R: Any](Protocol):
     ``BoundEvent``'s ``emitter``) can be checked against its own return type.
     """
 
-    def __call__(self, payload: S, event: EventConfig[P, S, T], config: C) -> R:
+    def __call__(
+        self,
+        payload: S,
+        event: EventConfig[P, S, T],
+        config: C,
+        *,
+        serializer: Callable[[S], Any] | None = None,
+    ) -> R:
         """
         Dispatch a constructed event payload.
 
         Args:
-            payload: The constructed payload instance to dispatch.
-            event:   The ``Event`` definition being emitted.
-            config:  Adapter-specific routing configuration.
+            payload:    The constructed payload instance to dispatch.
+            event:      The ``Event`` definition being emitted.
+            config:     Adapter-specific routing configuration.
+            serializer: Serializer the payload will be sent to prior to routing.
 
         Returns:
             Adapter-defined result of dispatching the payload.
@@ -47,6 +55,7 @@ class Producer(Protocol):
         payload: S,
         event: EventConfig[P, S, T],
         config: Any,
+        *,
         serializer: Callable[[S], Any] | None = None,
     ) -> Any:
         """
