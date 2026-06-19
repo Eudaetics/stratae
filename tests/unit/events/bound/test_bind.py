@@ -20,7 +20,7 @@ bind — decorator form:
 """
 
 import asyncio
-from unittest.mock import create_autospec
+from unittest.mock import Mock, create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
@@ -124,7 +124,7 @@ def test_bind_direct_calling_constructs_schema_and_invokes_emitter(
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None)
+    emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
 
 
 def test_bind_direct_returns_emitter_result() -> None:
@@ -138,7 +138,9 @@ def test_bind_direct_returns_emitter_result() -> None:
     # Arrange
     emitter = create_autospec(EmitCallable)
 
-    def _return(payload: object, event: object, config: object) -> object:
+    def _return(
+        payload: object, event: object, config: object, serializer: object = None
+    ) -> object:
         return payload
 
     emitter.side_effect = _return
@@ -151,6 +153,47 @@ def test_bind_direct_returns_emitter_result() -> None:
 
     # Assert
     assert result == _OrderCreated(1, "pending")
+
+
+def test_bind_direct_stores_serializer() -> None:
+    """
+    Bind stores the provided serializer on the returned BoundEvent.
+
+    Given: A serializer callable
+    When: bind is called in direct form with that serializer
+    Then: The BoundEvent's serializer should reference the same callable
+    """
+    # Arrange
+    emitter = create_autospec(EmitCallable)
+    ev = EventConfig(_OrderCreated, PubSub)
+    serializer = Mock()
+
+    # Act
+    result = bind(emitter, ev, config=None, serializer=serializer)
+
+    # Assert
+    assert result.serializer is serializer
+
+
+def test_bind_direct_forwards_serializer_to_emitter() -> None:
+    """
+    Calling a BoundEvent produced by bind forwards the serializer to the emitter.
+
+    Given: A BoundEvent produced by bind in direct form with a serializer
+    When: The BoundEvent is called
+    Then: The emitter should receive that same serializer
+    """
+    # Arrange
+    emitter = create_autospec(EmitCallable)
+    ev = EventConfig(_OrderCreated, PubSub)
+    serializer = Mock()
+    bound = bind(emitter, ev, config=None, serializer=serializer)
+
+    # Act
+    bound(1, "pending")
+
+    # Assert
+    emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
 
 
 def test_bind_direct_raises_for_async_factory() -> None:
@@ -252,6 +295,47 @@ def test_bind_decorator_form_stores_config() -> None:
 
     # Assert
     assert result.config is config
+
+
+def test_bind_decorator_form_stores_serializer() -> None:
+    """
+    The BoundEvent produced by the bind decorator stores the provided serializer.
+
+    Given: A serializer callable passed to bind
+    When: The decorator is applied to an Event
+    Then: The BoundEvent's serializer should reference the same callable
+    """
+    # Arrange
+    emitter = create_autospec(EmitCallable)
+    ev = EventConfig(_OrderCreated, PubSub)
+    serializer = Mock()
+
+    # Act
+    result = bind(emitter, config=None, serializer=serializer)(ev)
+
+    # Assert
+    assert result.serializer is serializer
+
+
+def test_bind_decorator_form_forwards_serializer_to_emitter() -> None:
+    """
+    Calling a BoundEvent produced by the bind decorator forwards the serializer to the emitter.
+
+    Given: A BoundEvent produced by the bind decorator with a serializer
+    When: The BoundEvent is called
+    Then: The emitter should receive that same serializer
+    """
+    # Arrange
+    emitter = create_autospec(EmitCallable)
+    ev = EventConfig(_OrderCreated, PubSub)
+    serializer = Mock()
+    bound = bind(emitter, config=None, serializer=serializer)(ev)
+
+    # Act
+    bound(1, "pending")
+
+    # Assert
+    emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
 
 
 def test_bind_decorator_raises_for_async_factory() -> None:

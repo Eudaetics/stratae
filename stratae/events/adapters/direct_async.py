@@ -53,9 +53,16 @@ class AsyncDirectBus:
         self, event: EventConfig[P, S, T]
     ) -> AsyncBoundEvent[P, S, T, None, None]:
         """Return an ``AsyncBoundEvent`` pre-populated with this bus's emit and ``config=None``."""
-        return abind(self.emit, event, config=None)
+        return abind(self.emit, event, config=None, serializer=None)
 
-    async def emit(self, payload: Any, event: _AnyEventConfig, config: None = None) -> None:
+    async def emit(
+        self,
+        payload: Any,
+        event: _AnyEventConfig,
+        config: None = None,
+        *,
+        serializer: Callable[..., Any] | None = None,
+    ) -> None:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
 
@@ -63,9 +70,10 @@ class AsyncDirectBus:
         currently active one, enabling correlation across nested emissions.
 
         Args:
-            payload:  The constructed payload instance to dispatch.
-            event:    The ``EventConfig`` used as the handler lookup key.
-            config:  Unused; ``AsyncDirectBus`` requires no routing config.
+            payload:    The constructed payload instance to dispatch.
+            event:      The ``EventConfig`` used as the handler lookup key.
+            config:     Unused; ``AsyncDirectBus`` requires no routing config.
+            serializer: Unused; ``DirectBus`` requires no serializer.
 
         """
         if self._use_envelope:
