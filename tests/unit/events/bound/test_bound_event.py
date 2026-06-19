@@ -10,7 +10,7 @@ This test suite verifies the following behaviors:
 """
 
 import asyncio
-from unittest.mock import create_autospec
+from unittest.mock import Mock, create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
@@ -52,6 +52,37 @@ def test_init_stores_event_emitter_and_config():
     assert bound.config is config
 
 
+def test_init_defaults_serializer_to_none():
+    """
+    Test that serializer defaults to None when not supplied.
+
+    Given: No serializer argument
+    When: A BoundEvent is created
+    Then: The serializer attribute should be None
+    """
+    emitter = create_autospec(EmitCallable)
+
+    bound = BoundEvent(emitter, _order_created, config=None)
+
+    assert bound.serializer is None
+
+
+def test_init_stores_serializer():
+    """
+    Test that a supplied serializer is stored during initialization.
+
+    Given: A serializer callable
+    When: A BoundEvent is created with that serializer
+    Then: The serializer attribute should reference the supplied callable
+    """
+    emitter = create_autospec(EmitCallable)
+    serializer = Mock()
+
+    bound = BoundEvent(emitter, _order_created, config=None, serializer=serializer)
+
+    assert bound.serializer is serializer
+
+
 def test_call_passes_positional_args_to_factory(
     mocker: MockerFixture,
 ):
@@ -70,7 +101,9 @@ def test_call_passes_positional_args_to_factory(
     bound(1, "pending")
 
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), _order_created, None)
+    emitter.assert_called_once_with(
+        _OrderCreated(1, "pending"), _order_created, None, serializer=None
+    )
 
 
 def test_call_passes_keyword_args_to_factory(
@@ -91,7 +124,9 @@ def test_call_passes_keyword_args_to_factory(
     bound(order_id=2, status="complete")
 
     spy.assert_called_once_with(mocker.ANY, order_id=2, status="complete")
-    emitter.assert_called_once_with(_OrderCreated(2, "complete"), _order_created, None)
+    emitter.assert_called_once_with(
+        _OrderCreated(2, "complete"), _order_created, None, serializer=None
+    )
 
 
 def test_call_passes_mixed_args_to_factory(
@@ -112,7 +147,9 @@ def test_call_passes_mixed_args_to_factory(
     bound(1, status="pending")
 
     spy.assert_called_once_with(mocker.ANY, 1, status="pending")
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), _order_created, None)
+    emitter.assert_called_once_with(
+        _OrderCreated(1, "pending"), _order_created, None, serializer=None
+    )
 
 
 def test_call_returns_emitter_result():
@@ -125,7 +162,9 @@ def test_call_returns_emitter_result():
     """
     emitter = create_autospec(EmitCallable)
 
-    def _return(payload: object, event: object, config: object) -> object:
+    def _return(
+        payload: object, event: object, config: object, serializer: object = None
+    ) -> object:
         return payload
 
     emitter.side_effect = _return
@@ -134,6 +173,25 @@ def test_call_returns_emitter_result():
     result = bound(1, "pending")
 
     assert result == _OrderCreated(1, "pending")
+
+
+def test_call_forwards_serializer_to_emitter():
+    """
+    Test that the bound serializer is forwarded to the emitter when called.
+
+    Given: A BoundEvent constructed with a serializer
+    When: The BoundEvent is called
+    Then: The emitter should receive that same serializer
+    """
+    emitter = create_autospec(EmitCallable)
+    serializer = Mock()
+    bound = BoundEvent(emitter, _order_created, config=None, serializer=serializer)
+
+    bound(1, "pending")
+
+    emitter.assert_called_once_with(
+        _OrderCreated(1, "pending"), _order_created, None, serializer=serializer
+    )
 
 
 def test_init_raises_for_async_factory():

@@ -12,7 +12,7 @@ This test suite verifies the following behaviors:
 
 import asyncio
 from typing import Any
-from unittest.mock import create_autospec
+from unittest.mock import Mock, create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
@@ -21,7 +21,9 @@ from stratae.events.bound import AsyncBoundEvent
 from stratae.events.event import EventConfig, PubSub
 
 
-async def _async_emit(payload: Any, event: EventConfig[..., Any, Any], config: Any): ...
+async def _async_emit(
+    payload: Any, event: EventConfig[..., Any, Any], config: Any, serializer: Any = None
+): ...
 
 
 class _PaymentReceived:
@@ -61,6 +63,41 @@ def test_init_stores_event_emitter_and_config(
     assert bound.config is config
 
 
+def test_init_defaults_serializer_to_none(
+    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+):
+    """
+    Test that serializer defaults to None when not supplied.
+
+    Given: No serializer argument
+    When: An AsyncBoundEvent is created
+    Then: The serializer attribute should be None
+    """
+    emitter = create_autospec(_async_emit)
+
+    bound = AsyncBoundEvent(emitter, payment_received, config=None)
+
+    assert bound.serializer is None
+
+
+def test_init_stores_serializer(
+    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+):
+    """
+    Test that a supplied serializer is stored during initialization.
+
+    Given: A serializer callable
+    When: An AsyncBoundEvent is created with that serializer
+    Then: The serializer attribute should reference the supplied callable
+    """
+    emitter = create_autospec(_async_emit)
+    serializer = Mock()
+
+    bound = AsyncBoundEvent(emitter, payment_received, config=None, serializer=serializer)
+
+    assert bound.serializer is serializer
+
+
 async def test_call_passes_positional_args_to_factory(
     payment_received: EventConfig[..., _PaymentReceived, PubSub],
     mocker: MockerFixture,
@@ -80,7 +117,9 @@ async def test_call_passes_positional_args_to_factory(
     await bound(42, 100)
 
     spy.assert_called_once_with(mocker.ANY, 42, 100)
-    emitter.assert_called_once_with(_PaymentReceived(42, 100), payment_received, None)
+    emitter.assert_called_once_with(
+        _PaymentReceived(42, 100), payment_received, None, serializer=None
+    )
 
 
 async def test_call_passes_keyword_args_to_factory(
@@ -102,7 +141,9 @@ async def test_call_passes_keyword_args_to_factory(
     await bound(payment_id=7, amount=50)
 
     spy.assert_called_once_with(mocker.ANY, payment_id=7, amount=50)
-    emitter.assert_called_once_with(_PaymentReceived(7, 50), payment_received, None)
+    emitter.assert_called_once_with(
+        _PaymentReceived(7, 50), payment_received, None, serializer=None
+    )
 
 
 async def test_call_passes_mixed_args_to_factory(
@@ -124,7 +165,9 @@ async def test_call_passes_mixed_args_to_factory(
     await bound(42, amount=100)
 
     spy.assert_called_once_with(mocker.ANY, 42, amount=100)
-    emitter.assert_called_once_with(_PaymentReceived(42, 100), payment_received, None)
+    emitter.assert_called_once_with(
+        _PaymentReceived(42, 100), payment_received, None, serializer=None
+    )
 
 
 async def test_call_returns_emitter_result(
@@ -139,7 +182,9 @@ async def test_call_returns_emitter_result(
     """
     emitter = create_autospec(_async_emit)
 
-    def _return(payload: object, event: object, config: object) -> object:
+    def _return(
+        payload: object, event: object, config: object, serializer: object = None
+    ) -> object:
         return "dispatched"
 
     emitter.side_effect = _return
@@ -148,6 +193,27 @@ async def test_call_returns_emitter_result(
     result = await bound(42, 100)
 
     assert result == "dispatched"
+
+
+async def test_call_forwards_serializer_to_emitter(
+    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+) -> None:
+    """
+    Test that the bound serializer is forwarded to the emitter when awaited.
+
+    Given: An AsyncBoundEvent constructed with a serializer
+    When: The AsyncBoundEvent is called and awaited
+    Then: The emitter should receive that same serializer
+    """
+    emitter = create_autospec(_async_emit)
+    serializer = Mock()
+    bound = AsyncBoundEvent(emitter, payment_received, config=None, serializer=serializer)
+
+    await bound(42, 100)
+
+    emitter.assert_awaited_once_with(
+        _PaymentReceived(42, 100), payment_received, None, serializer=serializer
+    )
 
 
 async def test_call_awaits_async_factory_before_passing_to_emitter() -> None:
@@ -172,4 +238,4 @@ async def test_call_awaits_async_factory_before_passing_to_emitter() -> None:
     await bound(42, 100)
 
     # Assert
-    emitter.assert_awaited_once_with(_PaymentReceived(42, 100), event, None)
+    emitter.assert_awaited_once_with(_PaymentReceived(42, 100), event, None, serializer=None)
