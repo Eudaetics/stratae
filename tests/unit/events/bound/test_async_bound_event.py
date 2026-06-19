@@ -11,13 +11,17 @@ This test suite verifies the following behaviors:
 """
 
 import asyncio
-from unittest.mock import AsyncMock
+from typing import Any
+from unittest.mock import create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import AsyncBoundEvent
 from stratae.events.event import EventConfig, PubSub
+
+
+async def _async_emit(payload: Any, event: EventConfig[..., Any, Any], config: Any): ...
 
 
 class _PaymentReceived:
@@ -47,7 +51,7 @@ def test_init_stores_event_emitter_and_config(
     When: An AsyncBoundEvent is created
     Then: The event, emitter, and config attributes should reference the supplied objects
     """
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     config = object()
 
     bound = AsyncBoundEvent(emitter, payment_received, config=config)
@@ -70,7 +74,7 @@ async def test_call_passes_positional_args_to_factory(
           should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
     await bound(42, 100)
@@ -92,7 +96,7 @@ async def test_call_passes_keyword_args_to_factory(
           should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
     await bound(payment_id=7, amount=50)
@@ -114,7 +118,7 @@ async def test_call_passes_mixed_args_to_factory(
           should receive the constructed payload, the EventConfig, and the config
     """
     spy = mocker.spy(_PaymentReceived, "__init__")
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
     await bound(42, amount=100)
@@ -133,7 +137,12 @@ async def test_call_returns_emitter_result(
     When: The AsyncBoundEvent is called and awaited
     Then: The return value should match the emitter's resolved value
     """
-    emitter = AsyncMock(return_value="dispatched")
+    emitter = create_autospec(_async_emit)
+
+    def _return(payload: object, event: object, config: object) -> object:
+        return "dispatched"
+
+    emitter.side_effect = _return
     bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
     result = await bound(42, 100)
@@ -156,7 +165,7 @@ async def test_call_awaits_async_factory_before_passing_to_emitter() -> None:
         return _PaymentReceived(payment_id, amount)
 
     event = EventConfig(_async_factory, PubSub, payload_type=_PaymentReceived)
-    emitter = AsyncMock()
+    emitter = create_autospec(_async_emit)
     bound = AsyncBoundEvent(emitter, event, config=None)
 
     # Act

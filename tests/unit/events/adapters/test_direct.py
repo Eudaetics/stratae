@@ -33,6 +33,7 @@ from stratae.events.adapters.direct import DirectBus
 from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
 from stratae.events.event import EventConfig, PubSub
+from stratae.events.protocols import Consumer, EmitCallable, Producer
 
 
 class _TaskCreated:
@@ -58,6 +59,39 @@ def bus() -> DirectBus:
 def bus_with_envelope() -> DirectBus:
     """Return a fresh DirectBus instance with envelope tracking enabled."""
     return DirectBus(use_envelope=True)
+
+
+def test_bus_satisfies_producer_protocol(bus: DirectBus):
+    """
+    DirectBus should satisfy the Producer protocol.
+
+    Given: A DirectBus
+    When: checked against the Producer protocol
+    Then: isinstance should return True
+    """
+    assert isinstance(bus, Producer)
+
+
+def test_bus_emit_satisfies_emit_callable_protocol(bus: DirectBus):
+    """
+    DirectBus.emit should satisfy the EmitCallable protocol.
+
+    Given: A DirectBus
+    When: its bound emit method is checked against the EmitCallable protocol
+    Then: isinstance should return True
+    """
+    assert isinstance(bus.emit, EmitCallable)
+
+
+def test_bus_satisfies_consumer_protocol(bus: DirectBus):
+    """
+    DirectBus should satisfy the Consumer protocol.
+
+    Given: A DirectBus
+    When: checked against the Consumer protocol
+    Then: isinstance should return True
+    """
+    assert isinstance(bus, Consumer)
 
 
 def test_bind_returns_bound_event(bus: DirectBus):

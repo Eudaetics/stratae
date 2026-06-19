@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, Protocol, cast, overload
 
 from stratae.events._typeguards import is_async_factory, is_sync_factory
 from stratae.events.event import EventConfig, EventType
+from stratae.events.protocols import EmitCallable
 
 _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
@@ -30,7 +31,7 @@ class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
 
     def __init__(
         self,
-        emitter: Callable[[S, EventConfig[P, S, T], RoutingConfig], Resp],
+        emitter: EmitCallable[P, S, T, RoutingConfig, Resp],
         event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
@@ -81,7 +82,7 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
 
     def __init__(
         self,
-        emitter: Callable[[S, EventConfig[P, S, T], RoutingConfig], Awaitable[Resp]],
+        emitter: EmitCallable[P, S, T, RoutingConfig, Awaitable[Resp]],
         event: EventConfig[P, S, T],
         *,
         config: RoutingConfig,
@@ -132,7 +133,7 @@ class _BindDecorator[C, R](Protocol):
 
 @overload
 def bind[**P, S: Any, T: EventType, C, R](
-    emitter: Callable[[S, EventConfig[P, S, T], C], R],
+    emitter: EmitCallable[P, S, T, C, R],
     event: EventConfig[P, S, T],
     *,
     config: C,
@@ -141,14 +142,14 @@ def bind[**P, S: Any, T: EventType, C, R](
 
 @overload
 def bind[**P, S: Any, T: EventType, C, R](
-    emitter: Callable[[S, EventConfig[P, S, T], C], R],
+    emitter: EmitCallable[P, S, T, C, R],
     *,
     config: C,
 ) -> _BindDecorator[C, R]: ...
 
 
 def bind[**P, S: Any, T: EventType, C, R](
-    emitter: Callable[[S, EventConfig[P, S, T], C], R],
+    emitter: EmitCallable[P, S, T, C, R],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
@@ -179,7 +180,7 @@ class _ABindDecorator[C, R](Protocol):
 
 @overload
 def abind[**P, S: Any, T: EventType, C, R](
-    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
+    emitter: EmitCallable[P, S, T, C, Awaitable[R]],
     event: EventConfig[P, S, T],
     *,
     config: C,
@@ -188,14 +189,14 @@ def abind[**P, S: Any, T: EventType, C, R](
 
 @overload
 def abind[**P, S: Any, T: EventType, C, R](
-    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
+    emitter: EmitCallable[P, S, T, C, Awaitable[R]],
     *,
     config: C,
 ) -> _ABindDecorator[C, R]: ...
 
 
 def abind[**P, S: Any, T: EventType, C, R](
-    emitter: Callable[[S, EventConfig[P, S, T], C], Awaitable[R]],
+    emitter: EmitCallable[P, S, T, C, Awaitable[R]],
     event: EventConfig[P, S, T] | None = None,
     *,
     config: C,
