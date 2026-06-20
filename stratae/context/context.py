@@ -1,4 +1,11 @@
-"""Wrapper around contextvars for named context providers."""
+"""
+Callable, injectable values backed by contextvars.
+
+`Context` wraps a `ContextVar` so a value set at one point in the call
+stack (or in a parent async task) can be read elsewhere without threading
+it through every function signature in between. Because instances are
+callable, a `Context[T]` doubles as a `Depends()` provider.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +22,14 @@ IGNORE = _NoDefault()
 
 
 class _ContextScope[T]:
-    """Stateful context manager for a single context value."""
+    """
+    Stateful context manager for a single context value.
+
+    Returned by `Context.use`. Each call to `use` creates a new instance, so
+    nested or concurrent (e.g. across async tasks) scopes on the same
+    `Context` each track their own token rather than overwriting shared
+    state on the `Context` itself.
+    """
 
     def __init__(self, provider: Context[T], value: T):
         """Initialize the context scope with provider and value."""
