@@ -1,5 +1,5 @@
 """Context management utilities."""
 
-from .context import Context
+from .context import IGNORE, Context
 
-__all__ = ["Context"]
+__all__ = ["IGNORE", "Context"]
