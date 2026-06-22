@@ -19,11 +19,11 @@ def _handle_exception_group(exc: Exception) -> None:
         raise
 
 
-class Scope:
+class ActiveScope:
     """Container class for a lifecycle scope's cache and exit stack."""
 
     def __init__(self, cache: Cache, exit_stack: ExitStack):
-        """Initialize the Scope with a cache and exit stack."""
+        """Initialize the ActiveScope with a cache and exit stack."""
         self._cache = cache
         self._exit_stack = exit_stack
 
@@ -46,11 +46,11 @@ class Scope:
         return self._exit_stack
 
 
-class AsyncScope:
+class AsyncActiveScope:
     """Asynchronous container class for a lifecycle scope's cache and exit stack."""
 
     def __init__(self, cache: Cache, exit_stack: AsyncExitStack):
-        """Initialize the AsyncScope with a cache and exit stack."""
+        """Initialize the AsyncActiveScope with a cache and exit stack."""
         self._cache = cache
         self._exit_stack = exit_stack
 

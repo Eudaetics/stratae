@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Callable, Hashable, Sequence
 from stratae.cache import MemoryCache
 from stratae.lifecycle._context import LifecycleContext
 from stratae.lifecycle._decorators import CacheDecorator
-from stratae.lifecycle._scope import Scope
+from stratae.lifecycle._scope import ActiveScope
 from stratae.lifecycle._validation import validate_config
 from stratae.lifecycle.exceptions import (
     ScopeActivationError,
@@ -69,8 +69,8 @@ class Lifecycle:
         validate_config(scopes, caches)
         self._caches = caches or {}
         self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
-        self._stack: dict[str, Scope] = {
-            scope: Scope(cache=self._caches.get(scope, MemoryCache()), exit_stack=ExitStack())
+        self._stack: dict[str, ActiveScope] = {
+            scope: ActiveScope(cache=self._caches.get(scope, MemoryCache()), exit_stack=ExitStack())
             for scope in scopes
         }
         self._active: deque[str] = deque()
