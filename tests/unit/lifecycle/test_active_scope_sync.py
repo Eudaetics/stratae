@@ -1,4 +1,4 @@
-"""Tests for the Scope class in stratae.lifecycle.scope."""
+"""Tests for the ActiveScope class in stratae.lifecycle._scope."""
 
 from contextlib import ExitStack, contextmanager
 from typing import Generator
@@ -7,19 +7,19 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.cache import MemoryCache
-from stratae.lifecycle._scope import Scope
+from stratae.lifecycle._scope import ActiveScope
 
 
 def test_context_behavior():
     """
     Test that the exit stack properly manages context managers.
 
-    Given: a Scope with an exit stack containing a context manager
+    Given: an ActiveScope with an exit stack containing a context manager
     When: the exit stack is closed
     Then: the context manager's cleanup function should be called
     """
     # Arrange
-    scope = Scope(cache=MemoryCache(), exit_stack=ExitStack())
+    scope = ActiveScope(cache=MemoryCache(), exit_stack=ExitStack())
 
     spy_mock = Mock()
     spy_success = Mock()
@@ -47,12 +47,12 @@ def test_context_with_failure():
     """
     Test that the exit stack properly handles exceptions within a context.
 
-    Given: a Scope with an exit stack containing a context manager that raises an exception
+    Given: an ActiveScope with an exit stack containing a context manager that raises an exception
     When: the exit stack is closed
     Then: the exception should be propagated and the cleanup function should be called
     """
     # Arrange
-    scope = Scope(cache=MemoryCache(), exit_stack=ExitStack())
+    scope = ActiveScope(cache=MemoryCache(), exit_stack=ExitStack())
 
     spy_mock = Mock()
     mock_failure = Mock(side_effect=ValueError("Test Failure"))
@@ -86,14 +86,14 @@ def test_clear():
     """
     Test clearing the scope's cache and exit stack.
 
-    Given: a Scope with mock cache and exit stack,
+    Given: an ActiveScope with mock cache and exit stack,
     When: clear is called,
     Then: both the cache and exit stack should be cleared.
     """
     # Arrange
     cleanup = Mock()
 
-    scope = Scope(cache=MemoryCache(), exit_stack=ExitStack())
+    scope = ActiveScope(cache=MemoryCache(), exit_stack=ExitStack())
 
     @contextmanager
     def generator():
@@ -117,13 +117,13 @@ def test_cache_property():
     """
     Test accessing the scope's cache property.
 
-    Given: a Scope with a mock cache,
+    Given: an ActiveScope with a mock cache,
     When: the cache property is accessed,
     Then: it should return the same cache instance.
     """
     # Arrange
     cache = MemoryCache()
-    scope = Scope(cache=cache, exit_stack=ExitStack())
+    scope = ActiveScope(cache=cache, exit_stack=ExitStack())
 
     # Act
     retrieved_cache = scope.cache

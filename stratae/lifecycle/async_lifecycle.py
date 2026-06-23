@@ -50,7 +50,7 @@ from typing import Callable, Hashable, Sequence
 from stratae.cache import Cache, MemoryCache
 from stratae.lifecycle._context import AsyncLifecycleContext
 from stratae.lifecycle._decorators import AsyncCacheDecorator
-from stratae.lifecycle._scope import AsyncScope
+from stratae.lifecycle._scope import AsyncActiveScope
 from stratae.lifecycle._validation import validate_config
 from stratae.lifecycle.exceptions import (
     ScopeActivationError,
@@ -67,10 +67,10 @@ class AsyncLifecycle:
         validate_config(scopes, caches)
         self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
         self._caches = caches or {}
-        self._stack: ContextVar[dict[str, AsyncScope]] = ContextVar("lifecycle_stack")
+        self._stack: ContextVar[dict[str, AsyncActiveScope]] = ContextVar("lifecycle_stack")
         self._stack.set({})
 
-    def push(self, scope: str) -> Token[dict[str, AsyncScope]]:
+    def push(self, scope: str) -> Token[dict[str, AsyncActiveScope]]:
         """Push a new lifecycle scope onto the stack."""
         if scope not in self._scopes:
             raise ScopeNotFoundError(f"Unknown scope: {scope}")
@@ -84,14 +84,14 @@ class AsyncLifecycle:
 
         current_stack.update(
             {
-                scope: AsyncScope(
+                scope: AsyncActiveScope(
                     cache=self._caches.get(scope, MemoryCache()), exit_stack=AsyncExitStack()
                 )
             }
         )
         return self._stack.set(current_stack)
 
-    async def pop(self, token: Token[dict[str, AsyncScope]]) -> None:
+    async def pop(self, token: Token[dict[str, AsyncActiveScope]]) -> None:
         """Asynchronously pop the current lifecycle scope from the stack."""
         current_stack = dict(self._stack.get())
         if not current_stack:

@@ -5,5 +5,6 @@ from __future__ import annotations
 from .async_lifecycle import AsyncLifecycle
 from .lifecycle import Lifecycle
 from .manage import async_managed, managed
+from .scope import Scope
 
-__all__ = ["AsyncLifecycle", "Lifecycle", "async_managed", "managed"]
+__all__ = ["AsyncLifecycle", "Lifecycle", "Scope", "async_managed", "managed"]
