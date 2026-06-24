@@ -68,14 +68,13 @@ class AsyncLifecycle:
         self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
         self._caches = caches or {}
         self._stack: ContextVar[dict[str, AsyncActiveScope]] = ContextVar("lifecycle_stack")
-        self._stack.set({})
 
     def push(self, scope: str) -> Token[dict[str, AsyncActiveScope]]:
         """Push a new lifecycle scope onto the stack."""
         if scope not in self._scopes:
             raise ScopeNotFoundError(f"Unknown scope: {scope}")
 
-        current_stack = dict(self._stack.get())
+        current_stack = dict(self._stack.get({}))
         current = next(reversed(current_stack), None)
         if current and self._scopes[current] >= self._scopes[scope]:
             raise ScopeActivationError(
@@ -93,7 +92,7 @@ class AsyncLifecycle:
 
     async def pop(self, token: Token[dict[str, AsyncActiveScope]]) -> None:
         """Asynchronously pop the current lifecycle scope from the stack."""
-        current_stack = dict(self._stack.get())
+        current_stack = dict(self._stack.get({}))
         if not current_stack:
             return
 
@@ -122,18 +121,18 @@ class AsyncLifecycle:
 
     def is_empty(self) -> bool:
         """Check if there are no active scopes."""
-        return not self._stack.get()
+        return not self._stack.get({})
 
     def active_scopes(self) -> Sequence[str]:
         """Get a list of active scopes."""
-        return list(self._stack.get().keys())
+        return list(self._stack.get({}).keys())
 
     def get_cache(self, scope: str) -> Cache:
         """Get the cache for the specified lifecycle scope."""
         if scope not in self._scopes:
             raise ScopeNotFoundError(f"Unknown scope: {scope}")
 
-        current_scopes = dict(self._stack.get())
+        current_scopes = self._stack.get({})
         if scope not in current_scopes:
             raise ScopeInactiveError(f"Scope '{scope}' is not active.")
         return current_scopes[scope].cache
@@ -143,7 +142,7 @@ class AsyncLifecycle:
         if scope not in self._scopes:
             raise ScopeNotFoundError(f"Unknown scope: {scope}")
 
-        current_scopes = dict(self._stack.get())
+        current_scopes = self._stack.get({})
         if scope not in current_scopes:
             raise ScopeInactiveError(f"Scope '{scope}' is not active.")
         return current_scopes[scope].exit_stack
