@@ -23,26 +23,21 @@ def _handle_exception_group(exc: Exception) -> None:
 class ActiveScope:
     """Container class for a lifecycle scope's cache and exit stack."""
 
-    __slots__ = ("_cache", "_exit_stack")
+    __slots__ = ("cache", "_exit_stack")
 
     def __init__(self, cache_factory: Callable[[], Cache]):
         """Initialize the ActiveScope with a cache and exit stack."""
-        self._cache = cache_factory()
+        self.cache = cache_factory()
         self._exit_stack: ExitStack | None = None
 
     def clear(self) -> None:
         """Clear the scope's cache."""
-        self._cache.clear()
+        self.cache.clear()
         if self._exit_stack:
             try:
                 self._exit_stack.close()
             except Exception as exc:
                 _handle_exception_group(exc)
-
-    @property
-    def cache(self) -> Cache:
-        """Get the scope's cache."""
-        return self._cache
 
     @property
     def exit_stack(self) -> ExitStack:
@@ -55,26 +50,21 @@ class ActiveScope:
 class AsyncActiveScope:
     """Asynchronous container class for a lifecycle scope's cache and exit stack."""
 
-    __slots__ = ("_cache", "_exit_stack")
+    __slots__ = ("cache", "_exit_stack")
 
     def __init__(self, cache_factory: Callable[[], Cache]):
         """Initialize the AsyncActiveScope with a cache and exit stack."""
-        self._cache = cache_factory()
+        self.cache = cache_factory()
         self._exit_stack: AsyncExitStack | None = None
 
     async def clear(self) -> None:
         """Asynchronously clear the scope's cache."""
-        await self._cache.aclear()
+        await self.cache.aclear()
         if self._exit_stack:
             try:
                 await self._exit_stack.aclose()
             except Exception as exc:
                 _handle_exception_group(exc)
-
-    @property
-    def cache(self) -> Cache:
-        """Get the scope's cache."""
-        return self._cache
 
     @property
     def exit_stack(self) -> AsyncExitStack:
