@@ -64,14 +64,13 @@ if TYPE_CHECKING:
 class Lifecycle:
     """Manager for handling lifecycle contexts."""
 
-    def __init__(self, scopes: Sequence[str], caches: dict[str, Cache] | None = None) -> None:
+    def __init__(self, scopes: Sequence[str], caches: dict[str, type[Cache]] | None = None) -> None:
         """Initialize the LifecycleManager."""
         validate_config(scopes, caches)
         self._caches = caches or {}
         self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
         self._stack: dict[str, ActiveScope] = {
-            scope: ActiveScope(cache=self._caches.get(scope, MemoryCache()), exit_stack=ExitStack())
-            for scope in scopes
+            scope: ActiveScope(self._caches.get(scope, MemoryCache)) for scope in scopes
         }
         self._active: deque[str] = deque()
 

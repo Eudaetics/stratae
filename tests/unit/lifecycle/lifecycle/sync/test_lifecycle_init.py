@@ -14,7 +14,7 @@ from typing import Sequence
 
 import pytest
 
-from stratae.cache import MemoryCache
+from stratae.cache.memory import MemoryCache
 from stratae.lifecycle import Lifecycle
 
 
@@ -86,8 +86,11 @@ def test_cache_override_for_scope(scopes: Sequence[str]):
     When: The instance is created
     Then: The custom cache should be used for that scope
     """
+
     # Arrange
-    custom_cache = MemoryCache()
+    class _TestCache(MemoryCache): ...
+
+    custom_cache = _TestCache
 
     # Act
     lifecycle = Lifecycle(
@@ -97,7 +100,7 @@ def test_cache_override_for_scope(scopes: Sequence[str]):
 
     # Assert
     with lifecycle.start("request"):
-        assert lifecycle.get_cache(scopes[2]) is custom_cache
+        assert isinstance(lifecycle.get_cache(scopes[2]), custom_cache)
 
 
 def test_cache_override_for_wrong_scope(scopes: Sequence[str]):
@@ -108,14 +111,11 @@ def test_cache_override_for_wrong_scope(scopes: Sequence[str]):
     When: The instance is created
     Then: A ValueError should be raised
     """
-    # Arrange
-    custom_cache = MemoryCache()
-
     # Act & Assert
     with pytest.raises(ValueError, match="All caches must correspond to defined scopes."):
         Lifecycle(
             scopes,
-            caches={"bad": custom_cache, scopes[0]: custom_cache},
+            caches={"bad": MemoryCache},
         )
 
 
