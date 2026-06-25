@@ -1,6 +1,6 @@
 """Tests for the ActiveScope class in stratae.lifecycle._scope."""
 
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from typing import Generator
 from unittest.mock import Mock
 
@@ -19,7 +19,7 @@ def test_context_behavior():
     Then: the context manager's cleanup function should be called
     """
     # Arrange
-    scope = ActiveScope(cache=MemoryCache(), exit_stack=ExitStack())
+    scope = ActiveScope(MemoryCache)
 
     spy_mock = Mock()
     spy_success = Mock()
@@ -33,12 +33,12 @@ def test_context_behavior():
             spy_mock()
 
     # Act
-    scope._exit_stack.enter_context(generator())  # pyright: ignore[reportPrivateUsage]
+    scope.exit_stack.enter_context(generator())
     spy_mock.assert_not_called()
     spy_success.assert_not_called()
 
     # Assert
-    scope._exit_stack.close()  # pyright: ignore[reportPrivateUsage]
+    scope.exit_stack.close()
     spy_mock.assert_called_once()
     spy_success.assert_called_once()
 
@@ -52,7 +52,7 @@ def test_context_with_failure():
     Then: the exception should be propagated and the cleanup function should be called
     """
     # Arrange
-    scope = ActiveScope(cache=MemoryCache(), exit_stack=ExitStack())
+    scope = ActiveScope(MemoryCache)
 
     spy_mock = Mock()
     mock_failure = Mock(side_effect=ValueError("Test Failure"))
@@ -70,14 +70,14 @@ def test_context_with_failure():
             spy_mock()
 
     # Act
-    scope._exit_stack.enter_context(generator())  # pyright: ignore[reportPrivateUsage]
+    scope.exit_stack.enter_context(generator())
     spy_mock.assert_not_called()
     mock_failure.assert_not_called()
     spy_except.assert_not_called()
 
     # Assert
     with pytest.raises(ValueError, match="Test Failure"):
-        scope._exit_stack.close()  # pyright: ignore[reportPrivateUsage]
+        scope.exit_stack.close()
     spy_except.assert_called_once()
     spy_mock.assert_called_once()
 
@@ -93,7 +93,7 @@ def test_clear():
     # Arrange
     cleanup = Mock()
 
-    scope = ActiveScope(cache=MemoryCache(), exit_stack=ExitStack())
+    scope = ActiveScope(MemoryCache)
 
     @contextmanager
     def generator():
@@ -102,31 +102,12 @@ def test_clear():
         finally:
             cleanup()
 
-    scope._cache.set("key", "value")  # pyright: ignore[reportPrivateUsage]
-    scope._exit_stack.enter_context(generator())  # pyright: ignore[reportPrivateUsage]
+    scope.cache.set("key", "value")
+    scope.exit_stack.enter_context(generator())
 
     # Act
     scope.clear()
 
     # Assert
-    assert scope._cache.is_empty()  # pyright: ignore[reportPrivateUsage]
+    assert scope.cache.is_empty()
     cleanup.assert_called_once()
-
-
-def test_cache_property():
-    """
-    Test accessing the scope's cache property.
-
-    Given: an ActiveScope with a mock cache,
-    When: the cache property is accessed,
-    Then: it should return the same cache instance.
-    """
-    # Arrange
-    cache = MemoryCache()
-    scope = ActiveScope(cache=cache, exit_stack=ExitStack())
-
-    # Act
-    retrieved_cache = scope.cache
-
-    # Assert
-    assert retrieved_cache is cache

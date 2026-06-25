@@ -62,7 +62,7 @@ from stratae.lifecycle.exceptions import (
 class AsyncLifecycle:
     """Manager for handling lifecycle contexts."""
 
-    def __init__(self, scopes: Sequence[str], caches: dict[str, Cache] | None = None) -> None:
+    def __init__(self, scopes: Sequence[str], caches: dict[str, type[Cache]] | None = None) -> None:
         """Initialize the LifecycleManager."""
         validate_config(scopes, caches)
         self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
@@ -81,13 +81,7 @@ class AsyncLifecycle:
                 f"Cannot push {scope} scope when {current} is already active."
             )
 
-        current_stack.update(
-            {
-                scope: AsyncActiveScope(
-                    cache=self._caches.get(scope, MemoryCache()), exit_stack=AsyncExitStack()
-                )
-            }
-        )
+        current_stack.update({scope: AsyncActiveScope(self._caches.get(scope, MemoryCache))})
         return self._stack.set(current_stack)
 
     async def pop(self, token: Token[dict[str, AsyncActiveScope]]) -> None:
