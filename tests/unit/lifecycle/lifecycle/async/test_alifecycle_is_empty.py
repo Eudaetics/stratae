@@ -63,8 +63,8 @@ async def test_is_empty_after_popping_all(scopes: Sequence[str], async_lifecycle
     # Arrange
     token1 = async_lifecycle.push(scopes[0])
     token2 = async_lifecycle.push(scopes[1])
-    await async_lifecycle.pop(token1)
     await async_lifecycle.pop(token2)
+    await async_lifecycle.pop(token1)
 
     # Act & Assert
     assert async_lifecycle.is_empty()
