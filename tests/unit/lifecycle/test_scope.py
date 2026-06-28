@@ -1,6 +1,6 @@
 """Validation of Scope construction."""
 
-from stratae.cache import MemoryCache, ThreadSafeMemoryCache
+from stratae.cache import MemoryCache
 from stratae.lifecycle import Scope
 
 
@@ -36,7 +36,7 @@ def test_scope_init_custom_cache():
     # Arrange
     name = "request"
     isolation = "none"
-    cache = ThreadSafeMemoryCache()
+    cache = MemoryCache()
 
     # Act
     scope = Scope(name, isolation, cache)
