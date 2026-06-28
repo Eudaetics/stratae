@@ -147,11 +147,11 @@ class AsyncLifecycle:
     def get_cache(self, scope: str) -> Cache:
         """Get the cache for the specified lifecycle scope."""
         try:
-            var = self._stack[scope]
+            active_scope = self._stack[scope]
         except KeyError:
             raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
-        active = var.get()
+        active = active_scope.get()
         if active is None:
             raise ScopeInactiveError(f"Scope '{scope}' is not active.")
         return active.cache
