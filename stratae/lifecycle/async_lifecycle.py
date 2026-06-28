@@ -45,7 +45,7 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
-from typing import Callable, Hashable, Sequence
+from typing import Callable, Hashable, Sequence, TypedDict
 
 from stratae.cache import Cache, MemoryCache
 from stratae.lifecycle._context import AsyncLifecycleContext
@@ -59,6 +59,14 @@ from stratae.lifecycle.exceptions import (
 )
 
 
+class _Active(TypedDict):
+    """The currently active scope: its token, the scope itself, and the record it sits on top of."""
+
+    token: Token[AsyncActiveScope | None]
+    scope: AsyncActiveScope
+    previous: "_Active | None"
+
+
 class AsyncLifecycle:
     """Manager for handling lifecycle contexts."""
 
@@ -67,33 +75,43 @@ class AsyncLifecycle:
         validate_config(scopes, caches)
         self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
         self._caches = caches or {}
-        self._stack: ContextVar[dict[str, AsyncActiveScope]] = ContextVar("lifecycle_stack")
+        self._stack: dict[str, ContextVar[AsyncActiveScope | None]] = {
+            scope: ContextVar(scope, default=None) for scope in scopes
+        }
+        self._current: ContextVar[_Active | None] = ContextVar("lifecycle_current", default=None)
 
-    def push(self, scope: str) -> Token[dict[str, AsyncActiveScope]]:
+    def push(self, scope: str) -> Token[AsyncActiveScope | None]:
         """Push a new lifecycle scope onto the stack."""
-        if scope not in self._scopes:
-            raise ScopeNotFoundError(f"Unknown scope: {scope}")
+        try:
+            cur = self._stack[scope]
+        except KeyError:
+            raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
-        current_stack = dict(self._stack.get({}))
-        current = next(reversed(current_stack), None)
-        if current and self._scopes[current] >= self._scopes[scope]:
+        current = self._current.get()
+        if current is not None and self._scopes[current["token"].var.name] >= self._scopes[scope]:
             raise ScopeActivationError(
-                f"Cannot push {scope} scope when {current} is already active."
+                f"Cannot push {scope} scope when {current['token'].var.name} is already active."
             )
 
-        current_stack.update({scope: AsyncActiveScope(self._caches.get(scope, MemoryCache))})
-        return self._stack.set(current_stack)
+        scope_obj = AsyncActiveScope(self._caches.get(scope, MemoryCache))
+        token = cur.set(scope_obj)
+        self._current.set({"token": token, "scope": scope_obj, "previous": current})
+        return token
 
-    async def pop(self, token: Token[dict[str, AsyncActiveScope]]) -> None:
+    async def pop(self, token: Token[AsyncActiveScope | None]) -> None:
         """Asynchronously pop the current lifecycle scope from the stack."""
-        current_stack = dict(self._stack.get({}))
-        if not current_stack:
-            return
+        current = self._current.get()
+        if current is None:
+            raise ScopeActivationError(f"Cannot pop {token.var.name} while no scopes are active.")
+        elif current["token"] is not token:
+            active = current["token"].var.name
+            raise ScopeActivationError(
+                f"Cannot pop {token.var.name} scope while {active} is still active."
+            )
 
-        popped_scope = next(reversed(current_stack))
-        popped = current_stack.pop(popped_scope)
-        self._stack.reset(token)
-        await popped.clear()
+        token.var.set(None)
+        self._current.set(current["previous"])
+        await current["scope"].clear()
 
     def cache(
         self,
@@ -115,28 +133,37 @@ class AsyncLifecycle:
 
     def is_empty(self) -> bool:
         """Check if there are no active scopes."""
-        return not self._stack.get({})
+        return self._current.get() is None
 
     def active_scopes(self) -> Sequence[str]:
-        """Get a list of active scopes."""
-        return list(self._stack.get({}).keys())
+        """Get a list of active scopes, ordered from outermost to innermost."""
+        names: list[str] = []
+        current = self._current.get()
+        while current is not None:
+            names.append(current["token"].var.name)
+            current = current["previous"]
+        return list(reversed(names))
 
     def get_cache(self, scope: str) -> Cache:
         """Get the cache for the specified lifecycle scope."""
-        if scope not in self._scopes:
-            raise ScopeNotFoundError(f"Unknown scope: {scope}")
+        try:
+            active_scope = self._stack[scope]
+        except KeyError:
+            raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
-        current_scopes = self._stack.get({})
-        if scope not in current_scopes:
+        active = active_scope.get()
+        if active is None:
             raise ScopeInactiveError(f"Scope '{scope}' is not active.")
-        return current_scopes[scope].cache
+        return active.cache
 
     def get_exit_stack(self, scope: str) -> AsyncExitStack:
         """Get the exit stack for the specified lifecycle scope."""
-        if scope not in self._scopes:
-            raise ScopeNotFoundError(f"Unknown scope: {scope}")
+        try:
+            var = self._stack[scope]
+        except KeyError:
+            raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
-        current_scopes = self._stack.get({})
-        if scope not in current_scopes:
+        active = var.get()
+        if active is None:
             raise ScopeInactiveError(f"Scope '{scope}' is not active.")
-        return current_scopes[scope].exit_stack
+        return active.exit_stack
