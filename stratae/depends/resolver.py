@@ -32,8 +32,6 @@ class Resolver:
         self,
         func: Callable[P, R],
         _resolving: set[Callable[..., Any]] | None = None,
-        *,
-        allow_override: bool = True,
     ) -> Callable[P, R]:
         """Resolve a function to its dependencies."""
         original_func = unwrap(func)
@@ -51,7 +49,7 @@ class Resolver:
         )
 
         self._validate_sync_async_constraint(func, resolved_deps)
-        resolved_func = self._create_wrapper(func, resolved_deps, allow_override)
+        resolved_func = self._create_wrapper(func, resolved_deps)
         self._functions[original_func] = resolved_func
         return resolved_func
 
@@ -138,19 +136,12 @@ class Resolver:
         self,
         func: Callable[..., Any],
         resolved_deps: dict[str, DependsWrapper],
-        allow_override: bool,
     ) -> Callable[..., Any]:
         """Create a wrapper function that injects resolved dependencies."""
-        # Pre-compute sets for fast lookups
         if not resolved_deps:
             return func
 
-        no_override: set[str] = (
-            {k for k, v in resolved_deps.items() if not v.allow_override}
-            if allow_override
-            else set(resolved_deps.keys())
-        )
-        return self._wrapper_factory(func)(func, resolved_deps, no_override)
+        return self._wrapper_factory(func)(func, resolved_deps)
 
     def _wrapper_factory(self, func: Callable[..., Any]) -> Callable[..., Callable[..., Any]]:
         """Determine the correct create wrapper function based on the function type."""

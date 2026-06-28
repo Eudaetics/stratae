@@ -4,10 +4,7 @@ import asyncio
 from typing import Any, AsyncGenerator
 from unittest.mock import Mock
 
-import pytest
-
 from stratae.depends import Depends, inject
-from stratae.depends.exceptions import OverrideNotAllowedError
 
 
 async def test_inject_on_async_generator():
@@ -199,32 +196,3 @@ async def test_inject_async_generator_dependency_override():
 
     # Assert
     assert result == ["override-0", "override-1"]
-
-
-async def test_inject_async_generator_dependency_override_false():
-    """
-    Test disabling overriding dependencies on an async generator during injection.
-
-    Given: an async generator function injected with a dependency
-    When: the dependency is set to not allow override
-    Then: attempting to override the dependency should raise a RegistrationError.
-    """
-
-    # Arrange
-    def original():
-        return "original"
-
-    def override():
-        return "override"
-
-    @inject
-    async def gen_func(val: str = Depends(original, allow_override=False)):
-        await asyncio.sleep(0)
-        for item in range(2):
-            yield f"{val}-{item}"
-
-    # Act & Assert
-    with pytest.raises(
-        OverrideNotAllowedError, match="Overriding these dependencies is not allowed: val"
-    ):
-        await anext(gen_func(val=override()))

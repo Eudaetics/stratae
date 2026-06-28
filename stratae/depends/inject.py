@@ -28,21 +28,13 @@ def inject[**P, R](func: Callable[P, R]) -> Callable[P, R]: ...
 def inject[**P, R]() -> Callable[[Callable[P, R]], Callable[P, R]]: ...
 
 
-@overload
-def inject[**P, R](func: Callable[P, R], *, allow_override: bool) -> Callable[P, R]: ...
-
-
-@overload
-def inject[**P, R](*, allow_override: bool) -> Callable[[Callable[P, R]], Callable[P, R]]: ...
-
-
 def inject[**P, R](
-    func: Callable[P, R] | None = None, *, allow_override: bool = True
+    func: Callable[P, R] | None = None,
 ) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
     """Inject decorator to resolve dependencies for a function."""
 
     def decorator(f: Callable[P, R]) -> Callable[P, R]:
-        return get_resolver().resolve_function(f, allow_override=allow_override)
+        return get_resolver().resolve_function(f)
 
     if func is None:
         return decorator

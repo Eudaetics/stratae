@@ -3,10 +3,7 @@
 from typing import Generator
 from unittest.mock import Mock
 
-import pytest
-
 from stratae.depends import Depends, inject
-from stratae.depends.exceptions import OverrideNotAllowedError
 
 
 def test_inject_on_generator():
@@ -184,31 +181,3 @@ def test_inject_generator_dependency_override():
 
     # Assert
     assert result == ["override-0", "override-1"]
-
-
-def test_inject_generator_dependency_override_false():
-    """
-    Test disabling overriding dependencies on a generator during injection.
-
-    Given: a generator function injected with a dependency
-    When: the dependency is set to not allow override
-    Then: attempting to override the dependency should raise a RegistrationError.
-    """
-
-    # Arrange
-    def original():
-        return "original"
-
-    def override():
-        return "override"
-
-    @inject
-    def gen_func(val: str = Depends(original, allow_override=False)):
-        for i in range(2):
-            yield f"{val}-{i}"
-
-    # Act & Assert
-    with pytest.raises(
-        OverrideNotAllowedError, match="Overriding these dependencies is not allowed: val"
-    ):
-        list(gen_func(val=override()))
