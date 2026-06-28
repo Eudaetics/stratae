@@ -9,11 +9,10 @@ AUTO: Any = None
 class DependsWrapper:
     """Class used to wrap the dependency injection."""
 
-    def __init__(self, dependency: Callable[..., Any], allow_override: bool = True) -> None:
+    def __init__(self, dependency: Callable[..., Any]) -> None:
         """Initialize the Depends instance with an injectable dependency."""
         self.dependency = dependency
         self._is_async = iscoroutinefunction(dependency)
-        self.allow_override = allow_override
 
     def provide(self):
         """Provide the dependency."""
@@ -47,13 +46,13 @@ class DependsWrapper:
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, Awaitable[R]], *, allow_override: bool = True) -> R: ...
+def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> R: ...
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, R], *, allow_override: bool = True) -> R: ...
+def Depends[**P, R](dependency: Callable[P, R]) -> R: ...
 
 
-def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]], *, allow_override: bool = True) -> R:
+def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> R:
     """Marker function used to denote a dependency injection."""
-    return cast(R, DependsWrapper(dependency=dependency, allow_override=allow_override))
+    return cast(R, DependsWrapper(dependency=dependency))

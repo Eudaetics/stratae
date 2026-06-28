@@ -15,7 +15,3 @@ class CircularDependencyError(DependencyInjectionError):
 
 class RegistrationError(DependencyInjectionError, ValueError):
     """Exception raised when a registration error occurs in dependency resolution."""
-
-
-class OverrideNotAllowedError(DependencyInjectionError, RuntimeError):
-    """Exception raised when an override is attempted but not allowed."""
