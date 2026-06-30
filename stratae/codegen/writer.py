@@ -26,8 +26,8 @@ class Writer:
         Initialize the writer.
 
         Args:
-            width: Number of spaces per indent level. Ignored if `use_tabs`
-                is True.
+            width: Number of spaces per indent level for a block.
+                Ignored if `use_tabs` is True.
             use_tabs: If True, indent with a single tab character per level
                 instead of spaces.
 
@@ -45,13 +45,12 @@ class Writer:
         self._lines: list[str] = []
 
     @contextmanager
-    def indent(self) -> Generator[None]:
+    def block(self) -> Generator[None]:
         """
-        Increase the indentation level for the duration of a block.
+        Create a block section, increasing indentation for the block.
 
         Lines written via `write` while inside this block are indented one
-        additional level. The nesting level is always restored on exit,
-        including when the block raises an exception.
+        additional level. The nesting level is restored on exit.
         """
         self._nesting += 1
         try:
@@ -61,11 +60,11 @@ class Writer:
 
     def write(self, line: str):
         """
-        Append a line of text at the current indentation level.
+        Append a line of text for the current block.
 
         The line is stripped of leading and trailing whitespace before the
-        indent prefix is applied. Lines that are empty after stripping are
-        written without any indentation.
+        block indent prefix is applied. Lines that are empty after stripping
+        are written without any indentation.
         """
         line = line.strip()
         self._lines.append(f"{self._whitespace * self._nesting}{line}" if line else "")
