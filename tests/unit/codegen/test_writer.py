@@ -119,7 +119,7 @@ def test_writer_write_blank_line():
     """
     Writer write should produce a blank line with no prefix for empty input.
 
-    Given: A Writer instance inside an indent block.
+    Given: A Writer instance inside a block.
     When: Writing an empty string.
     Then: The line should be blank with no indentation prefix.
     """
@@ -127,7 +127,7 @@ def test_writer_write_blank_line():
     writer = Writer()
 
     # Act
-    with writer.indent():
+    with writer.block():
         writer.write("")
 
     # Assert
@@ -138,7 +138,7 @@ def test_writer_write_indented():
     """
     Writer write should apply the current indentation level to non-empty lines.
 
-    Given: A Writer instance inside an indent block.
+    Given: A Writer instance inside a block.
     When: Writing a line.
     Then: The line should be prefixed with one indent unit.
     """
@@ -146,46 +146,46 @@ def test_writer_write_indented():
     writer = Writer()
 
     # Act
-    with writer.indent():
+    with writer.block():
         writer.write("x = 1")
 
     # Assert
     assert writer.render() == "    x = 1"
 
 
-def test_writer_indent_nested():
+def test_writer_block_nested():
     """
-    Writer indent should accumulate indentation across nested blocks.
+    Writer block should accumulate indentation across nested blocks.
 
     Given: A Writer instance.
-    When: Writing inside two nested indent blocks.
+    When: Writing inside two nested blocks.
     Then: The line should be prefixed with two indent units.
     """
     # Arrange
     writer = Writer()
 
     # Act
-    with writer.indent():
-        with writer.indent():
+    with writer.block():
+        with writer.block():
             writer.write("x = 1")
 
     # Assert
     assert writer.render() == "        x = 1"
 
 
-def test_writer_indent_restores_after_block():
+def test_writer_block_restores_after_block():
     """
-    Writer indent should restore the nesting level after the block exits.
+    Writer block should restore the nesting level after the block exits.
 
     Given: A Writer instance.
-    When: Exiting an indent block.
+    When: Exiting a block.
     Then: Subsequent lines should be written at the prior nesting level.
     """
     # Arrange
     writer = Writer()
 
     # Act
-    with writer.indent():
+    with writer.block():
         pass
     writer.write("x = 1")
 
@@ -193,12 +193,12 @@ def test_writer_indent_restores_after_block():
     assert writer.render() == "x = 1"
 
 
-def test_writer_indent_restores_after_exception():
+def test_writer_block_restores_after_exception():
     """
-    Writer indent should restore the nesting level even when the block raises.
+    Writer block should restore the nesting level even when the block raises.
 
     Given: A Writer instance.
-    When: An exception is raised inside an indent block.
+    When: An exception is raised inside a block.
     Then: The nesting level should be restored to its prior value.
     """
     # Arrange
@@ -206,7 +206,7 @@ def test_writer_indent_restores_after_exception():
 
     # Act
     with pytest.raises(RuntimeError):
-        with writer.indent():
+        with writer.block():
             raise RuntimeError
 
     # Assert
