@@ -50,9 +50,9 @@ async def test_inject_contextmanager_dep_async():
         mock_cleanup()
 
     @inject
-    async def func_with_cm(cm: AbstractAsyncContextManager[int] = Depends(cm_dep)):
+    async def func_with_cm(cm: Injected[AbstractAsyncContextManager[int], Depends(cm_dep)]):
         """Test function that uses the context manager dependency."""
-        async with cm_dep() as value:
+        async with cm as value:
             return value
 
     # Act

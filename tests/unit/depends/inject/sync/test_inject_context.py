@@ -50,9 +50,9 @@ def test_inject_contextmanager_dep():
         mock_cleanup()
 
     @inject
-    def func_with_cm(cm: AbstractContextManager[int] = Depends(cm_dep)):
+    def func_with_cm(cm: Injected[AbstractContextManager[int], Depends(cm_dep)]):
         """Test function that uses the context manager dependency."""
-        with cm_dep() as value:
+        with cm as value:
             return value
 
     # Act
