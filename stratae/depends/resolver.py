@@ -32,7 +32,7 @@ class Resolver:
         self,
         func: Callable[P, R],
         _resolving: set[Callable[..., Any]] | None = None,
-    ) -> Callable[P, R]:
+    ) -> Callable[..., R]:
         """Resolve a function to its dependencies."""
         original_func = unwrap(func)
 
@@ -40,7 +40,7 @@ class Resolver:
             return self._functions[original_func]
         if _resolving is None:
             _resolving = set()
-        elif original_func in _resolving:
+        if original_func in _resolving:
             raise CircularDependencyError(f"Circular dependency detected for {func}.")
 
         _resolving.add(original_func)
@@ -67,29 +67,13 @@ class Resolver:
         """Clear all registered functions."""
         self._functions.clear()
 
-    def _get_annotated_info(
-        self, annotation: Annotated[Any, ...]
-    ) -> tuple[type, DependsWrapper | None]:
-        """Extract the actual type and DependsWrapper from an Annotated parameter."""
-        actual_type = annotation.__args__[0]
+    def _get_annotated_info(self, annotation: Annotated[Any, ...]) -> DependsWrapper | None:
+        """Extract the DependsWrapper from an Annotated parameter."""
         depends_wrapper = next(
             (x for x in reversed(annotation.__metadata__) if isinstance(x, DependsWrapper)),
             None,
         )
-        return actual_type, depends_wrapper
-
-    def _resolve_type(self, param: Parameter, annotation: Annotated[Any, ...]) -> Any:
-        """Resolve a type to its instance or factory."""
-        if annotation is param.empty:
-            raise RegistrationError(f"Parameter '{param.name}' has no type annotation.")
-
-        actual_type, depends_wrapper = self._get_annotated_info(annotation)
-        if depends_wrapper is not None:
-            modified_param = Parameter(
-                name=param.name, kind=param.kind, annotation=actual_type, default=param.default
-            )
-            return self._resolve_depends(modified_param, depends_wrapper, set())
-        return None
+        return depends_wrapper
 
     def _unwrap_type(self, annotation: Any) -> Any:
         """Unwrap Annotated types to get the actual type."""
@@ -97,25 +81,16 @@ class Resolver:
 
     def _resolve_parameter(
         self, param: Parameter, _resolving: set[Callable[..., Any]]
-    ) -> Any | None:
-        """Resolve a single parameter based on its type and dependencies."""
-        if isinstance(param.default, DependsWrapper):
-            return self._resolve_depends(param, param.default, _resolving)
-        elif get_origin(self._unwrap_type(param.annotation)) is Annotated:
-            return self._resolve_type(param, self._unwrap_type(param.annotation))
-        return None
-
-    def _resolve_depends(
-        self, param: Parameter, depends: DependsWrapper, _resolving: set[Callable[..., Any]]
-    ) -> Any:
-        """Resolve a Depends instance."""
+    ) -> DependsWrapper | None:
+        """Resolve a single parameter to its dependency, if it has one."""
         annotation = self._unwrap_type(param.annotation)
-        if get_origin(annotation) is Annotated:
-            _, inner_depends = self._get_annotated_info(annotation)
-            if inner_depends is not None:
-                raise RegistrationError(
-                    f"Parameter '{param.name}' cannot use both Annotated and default Depends(...)"
-                )
+        if get_origin(annotation) is not Annotated:
+            return None
+
+        depends = self._get_annotated_info(annotation)
+        if depends is None:
+            return None
+
         depends.dependency = self.resolve_function(depends.dependency, _resolving)
         return depends
 

@@ -1,17 +1,11 @@
 """Test suite for verifying active_scopes method of the AsyncLifecycle class."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
+from typing import Sequence
 
 import pytest
 
+from stratae.lifecycle import AsyncLifecycle
 from stratae.lifecycle.exceptions import ScopeActivationError
-
-if TYPE_CHECKING:
-    from typing import Sequence
-
-    from stratae.lifecycle import AsyncLifecycle
 
 
 def test_active_scopes_empty(async_lifecycle: AsyncLifecycle):

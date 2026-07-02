@@ -3,7 +3,7 @@
 from typing import Generator
 from unittest.mock import Mock
 
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 
 
 def test_inject_on_generator():
@@ -19,7 +19,7 @@ def test_inject_on_generator():
 
     # Act (the decorator)
     @inject
-    def gen_func(dep: int = Depends(lambda: 5)):
+    def gen_func(dep: Injected[int, Depends(lambda: 5)]):
         """Inject into a function that returns a generator."""
         for i in range(dep):
             yield i
@@ -55,7 +55,7 @@ def test_inject_generator_dep():
         mock_cleanup()
 
     @inject
-    def func_with_gen(gen: Generator[int] = Depends(gen_dep)):
+    def func_with_gen(gen: Injected[Generator[int], Depends(gen_dep)]):
         return list(gen)
 
     # Act
@@ -81,7 +81,7 @@ def test_inject_nested_generators():
             yield f"inner-{i}"
 
     @inject
-    def outer_gen(dep: Generator[str] = Depends(inner_gen)):
+    def outer_gen(dep: Injected[Generator[str], Depends(inner_gen)]):
         for value in dep:
             yield f"outer-{value}"
 
@@ -103,7 +103,7 @@ def test_inject_on_generator_with_args():
 
     # Act (the decorator)
     @inject
-    def gen_func_with_args(count: int, dep: int = Depends(lambda: 2)):
+    def gen_func_with_args(count: int, dep: Injected[int, Depends(lambda: 2)]):
         for i in range(count):
             yield i * dep
 
@@ -124,7 +124,7 @@ def test_inject_generator_with_kwargs():
 
     # Act (the decorator)
     @inject
-    def gen_func_with_kwargs(*, count: int = 3, dep: int = Depends(lambda: 4)):
+    def gen_func_with_kwargs(*, count: int = 3, dep: Injected[int, Depends(lambda: 4)]):
         for i in range(count):
             yield i + dep
 
@@ -145,7 +145,7 @@ def test_inject_generator_with_mixed_args():
 
     # Act (the decorator)
     @inject
-    def gen_func_mixed_args(count: int, *, start: int = 0, dep: int = Depends(lambda: 3)):
+    def gen_func_mixed_args(count: int, *, start: int = 0, dep: Injected[int, Depends(lambda: 3)]):
         for i in range(start, count + start):
             yield i * dep
 
@@ -172,7 +172,7 @@ def test_inject_generator_dependency_override():
         return "override"
 
     @inject
-    def gen_func(val: str = Depends(original)):
+    def gen_func(val: Injected[str, Depends(original)]):
         for i in range(2):
             yield f"{val}-{i}"
 

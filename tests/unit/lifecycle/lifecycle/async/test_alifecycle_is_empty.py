@@ -1,11 +1,8 @@
 """Test suite for verifying is_empty method of the AsyncLifecycle class."""
 
-from __future__ import annotations
+from typing import Sequence
 
-from typing import TYPE_CHECKING, Sequence
-
-if TYPE_CHECKING:
-    from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle
 
 
 def test_is_empty(async_lifecycle: AsyncLifecycle):

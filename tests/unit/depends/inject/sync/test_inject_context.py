@@ -3,7 +3,7 @@
 from contextlib import AbstractContextManager, contextmanager
 from unittest.mock import Mock
 
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 
 
 def test_inject_contextmanager():
@@ -20,7 +20,7 @@ def test_inject_contextmanager():
     # Act (the decorator)
     @inject
     @contextmanager
-    def cm_func(dep: int = Depends(lambda: 42)):
+    def cm_func(dep: Injected[int, Depends(lambda: 42)]):
         """Context manager function that uses dependency injection."""
         yield dep
         mock_cleanup()

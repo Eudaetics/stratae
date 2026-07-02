@@ -3,7 +3,7 @@
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from unittest.mock import Mock
 
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 
 
 async def test_inject_contextmanager_async():
@@ -20,7 +20,7 @@ async def test_inject_contextmanager_async():
     # Act (the decorator)
     @inject
     @asynccontextmanager
-    async def cm_func(dep: int = Depends(lambda: 42)):
+    async def cm_func(dep: Injected[int, Depends(lambda: 42)]):
         """Async context manager function that uses dependency injection."""
         yield dep
         mock_cleanup()

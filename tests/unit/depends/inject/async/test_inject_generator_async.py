@@ -4,7 +4,7 @@ import asyncio
 from typing import Any, AsyncGenerator
 from unittest.mock import Mock
 
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 
 
 async def test_inject_on_async_generator():
@@ -20,7 +20,7 @@ async def test_inject_on_async_generator():
 
     # Act (the decorator)
     @inject
-    async def gen_func(dep: int = Depends(lambda: 5)):
+    async def gen_func(dep: Injected[int, Depends(lambda: 5)]):
         """Inject into a function that returns a generator."""
         for i in range(dep):
             yield i
@@ -57,7 +57,7 @@ async def test_inject_generator_dep():
         mock_cleanup()
 
     @inject
-    async def func_with_gen(gen: AsyncGenerator[int, Any] = Depends(gen_dep)):
+    async def func_with_gen(gen: Injected[AsyncGenerator[int, Any], Depends(gen_dep)]):
         """Test function that uses the generator dependency."""
         return [x async for x in gen]
 
@@ -85,7 +85,7 @@ async def test_inject_nested_async_generators():
             yield f"inner-{i}"
 
     @inject
-    async def outer_gen(inner: AsyncGenerator[str, Any] = Depends(inner_gen)):
+    async def outer_gen(inner: Injected[AsyncGenerator[str, Any], Depends(inner_gen)]):
         """Outer async generator that depends on inner generator."""
         async for item in inner:
             yield f"outer-{item}"
@@ -110,7 +110,7 @@ async def test_inject_on_async_generator_with_args():
 
     # Act (the decorator)
     @inject
-    async def gen_func_with_args(count: int, dep: int = Depends(lambda: 3)):
+    async def gen_func_with_args(count: int, dep: Injected[int, Depends(lambda: 3)]):
         """Inject into a function that returns a generator and takes args."""
         for i in range(min(count, dep)):
             yield i
@@ -132,7 +132,7 @@ async def test_inject_async_generator_with_kwargs():
 
     # Act (the decorator)
     @inject
-    async def gen_func_with_kwargs(*, count: int = 4, dep: int = Depends(lambda: 2)):
+    async def gen_func_with_kwargs(*, count: int = 4, dep: Injected[int, Depends(lambda: 2)]):
         """Inject into a function that returns a generator and takes kwargs."""
         for i in range(count):
             yield i + dep
@@ -156,7 +156,7 @@ async def test_inject_async_generator_with_mixed_args():
     # Act (the decorator)
     @inject
     async def gen_func_with_mixed_args(
-        count: int, *, start: int = 0, dep: int = Depends(lambda: 3)
+        count: int, *, start: int = 0, dep: Injected[int, Depends(lambda: 3)]
     ):
         for i in range(start, count + start):
             yield i * dep
@@ -184,7 +184,7 @@ async def test_inject_async_generator_dependency_override():
         return "override"
 
     @inject
-    async def gen_func(val: str = Depends(original)):
+    async def gen_func(val: Injected[str, Depends(original)]):
         await asyncio.sleep(0)
         for i in range(2):
             yield f"{val}-{i}"

@@ -4,10 +4,7 @@ from functools import wraps
 from inspect import unwrap
 from typing import Annotated, Callable
 
-import pytest
-
-from stratae.depends import AUTO, Depends, inject
-from stratae.depends.exceptions import RegistrationError
+from stratae.depends import Depends, Injected, inject
 
 type IntDependency = Annotated[int, Depends(lambda: 42)]
 
@@ -33,7 +30,7 @@ def test_inject():
         return SampleType(5)
 
     @inject
-    def test_dep(val: SampleType = Depends(factory_function)) -> SampleType:
+    def test_dep(val: Injected[SampleType, Depends(factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -68,7 +65,7 @@ def test_inject_multiple_calls():
         return SampleType(counter := counter + 1)
 
     @inject
-    def test_dep(val: SampleType = Depends(factory_function)) -> SampleType:
+    def test_dep(val: Injected[SampleType, Depends(factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -104,7 +101,7 @@ def test_inject_with_parens():
         return SampleType(15)
 
     @inject()
-    def test_dep(val: SampleType = Depends(factory_function)) -> SampleType:
+    def test_dep(val: Injected[SampleType, Depends(factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -137,7 +134,7 @@ def test_inject_annotated_dependency():
         return SampleType(35)
 
     @inject
-    def test_dep(val: Annotated[SampleType, Depends(factory_function)] = AUTO) -> SampleType:
+    def test_dep(val: Annotated[SampleType, Depends(factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -159,7 +156,7 @@ def test_inject_with_type_alias():
 
     # Arrange
     @inject
-    def test_dep(val: IntDependency = AUTO) -> int:
+    def test_dep(val: IntDependency) -> int:
         return val
 
     # Act
@@ -185,12 +182,12 @@ def test_nested_annotations():
         return 2
 
     @inject
-    def get_one(dep2: Annotated[int, Depends(get_two)] = AUTO) -> int:
+    def get_one(dep2: Annotated[int, Depends(get_two)]) -> int:
         """Create a factory function that returns a SampleType instance."""
         return 1 + dep2
 
     @inject
-    def test_dep(val: Annotated[int, Depends(get_one)] = AUTO) -> int:
+    def test_dep(val: Annotated[int, Depends(get_one)]) -> int:
         return val - 3
 
     # Act
@@ -221,10 +218,10 @@ def test_mixed_depends_types():
     @inject
     def get_dep(
         no_default: int,
+        type_dep: IntDependency,
+        annotated_dep: Annotated[int, Depends(get_two)],
+        db: Injected[int, Depends(get_three)],
         no_dep: int = -2,
-        type_dep: IntDependency = AUTO,
-        annotated_dep: Annotated[int, Depends(get_two)] = AUTO,
-        db: int = Depends(get_three),
     ) -> int:
         """Sum the various dependencies."""
         return no_default + no_dep + type_dep + annotated_dep + db
@@ -261,64 +258,6 @@ def test_behavior_with_annotated_and_default():
     assert result == 42
 
 
-def test_annotated_with_depends_defaults_errors():
-    """
-    Test the inject decorator with Annotated dependency and default Depends to raise an error.
-
-    Given: a function with Annotated Depends and default Depends
-    When: the function is decorated with @inject,
-    Then: it should raise a RegistrationError.
-    """
-
-    # Arrange
-    def get_forty_two() -> int:
-        """Return the integer 42."""
-        return 42
-
-    def get_default() -> int:
-        """Return the integer 100."""
-        return 100
-
-    # Act & Assert
-    with pytest.raises(
-        RegistrationError,
-        match="Parameter 'annotated_val' cannot use both Annotated and default Depends",
-    ):
-
-        @inject
-        def _(
-            annotated_val: Annotated[int, Depends(get_forty_two)] = Depends(get_default),
-        ) -> int:
-            return annotated_val
-
-
-def test_annotated_type_with_depends_defaults_errors():
-    """
-    Test the inject decorator with Annotated type and default Depends to raise an error.
-
-    Given: a function with Annotated type and default Depends
-    When: the function is decorated with @inject,
-    Then: it should raise a RegistrationError.
-    """
-
-    # Arrange
-    def get_default() -> int:
-        """Return the integer 100."""
-        return 100
-
-    # Act & Assert
-    with pytest.raises(
-        RegistrationError,
-        match="Parameter 'annotated_val' cannot use both Annotated and default Depends",
-    ):
-
-        @inject
-        def _(
-            annotated_val: IntDependency = Depends(get_default),
-        ) -> int:
-            return annotated_val
-
-
 def test_inject_with_outer_wrapper():
     """
     Test the inject decorator with an outer wrapper function.
@@ -338,7 +277,7 @@ def test_inject_with_outer_wrapper():
 
     @outer_wrapper
     @inject
-    def test_dep(val: IntDependency = AUTO) -> int:
+    def test_dep(val: IntDependency) -> int:
         return val
 
     # Act
@@ -378,11 +317,11 @@ def test_nested_inject_with_outer_wrapper():
 
     @outer_wrapper
     @inject
-    def nested_dep(val: IntDependency = AUTO) -> int:
+    def nested_dep(val: IntDependency) -> int:
         return val
 
     @inject
-    def test_dep(val: int = Depends(nested_dep)) -> int:
+    def test_dep(val: Injected[int, Depends(nested_dep)]) -> int:
         return val
 
     # Act
@@ -417,11 +356,11 @@ def test_nested_inject_with_outer_wrapper_no_outermost():
 
     @outer_wrapper
     @inject
-    def nested_dep(val: IntDependency = AUTO) -> int:
+    def nested_dep(val: IntDependency) -> int:
         return val
 
     @inject
-    def test_dep(val: int = Depends(nested_dep)) -> int:
+    def test_dep(val: Injected[int, Depends(nested_dep)]) -> int:
         return val
 
     # Act
