@@ -109,8 +109,27 @@ test = "pytest"
 radon-cc = "radon cc stratae -n B"
 radon-mi = "radon mi stratae -n B"
 
+[tool.poe.tasks.no-cover-check]
+shell = "! grep -rn --include='*.py' 'pragma: no cover' stratae"
+
+[tool.poe.tasks.type-ignore-check]
+shell = "! grep -rn --include='*.py' 'type: ignore' stratae"
+
+[tool.poe.tasks.pyright-ignore-check]
+shell = "! grep -rn --include='*.py' 'pyright: ignore' stratae"
+
 [tool.poe.tasks.check]
-sequence = ["format", "lint", "typecheck", "test", "radon-cc", "radon-mi"]
+sequence = [
+    "format",
+    "lint",
+    "typecheck",
+    "test",
+    "no-cover-check",
+    "type-ignore-check",
+    "pyright-ignore-check",
+    "radon-cc",
+    "radon-mi",
+]
 
 [tool.pyright]
 include = ["stratae", "tests"]
