@@ -161,22 +161,6 @@ async with lifecycle.start('application'):
         user = await create_user("Alice")
 ```
 
-### Easy Testing
-
-With no complex configuration, testing functions decorated with Stratae is easy. The function signature isn't changed, just pass in the mocks you need.
-
-```python
-@inject
-def create_user(name: str, Injected[db, Depends(get_db)]):
-    db.user.create(name=name)
-
-# Use normally
-create_user('Steve')
-
-# Test
-create_user('Jason', db=MockDB())
-```
-
 ### Framework Agnostic
 
 Stratae doesn't have a complex framework to configure or objects to pass around. Write your business logic once with injection, then simply call those functions anywhere.
