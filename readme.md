@@ -184,9 +184,6 @@ async def api_create(name: str):
 def cli_create(name: str):
     asyncio.run(create_user(name))
 
-# Tests
-async def test_create():
-    user = await create_user("Alice", db=mock_db)
 ```
 
 ### Simple Integrations
