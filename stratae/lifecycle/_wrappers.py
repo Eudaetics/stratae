@@ -1,7 +1,5 @@
 """Wrappers for lifecycle-managed functions and context managers."""
 
-from __future__ import annotations
-
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
 from inspect import unwrap
@@ -38,7 +36,7 @@ def _select_key_func(
 
 def create_sync_wrapper[**P, T](
     func: Callable[P, T],
-    lifecycle: Lifecycle,
+    lifecycle: "Lifecycle",
     scope: str,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
@@ -60,7 +58,7 @@ def create_sync_wrapper[**P, T](
 
 def create_synccm_wrapper[**P, T](
     func: Callable[P, AbstractContextManager[T]],
-    lifecycle: Lifecycle,
+    lifecycle: "Lifecycle",
     scope: str,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
@@ -84,7 +82,7 @@ def create_synccm_wrapper[**P, T](
 
 def create_sync_in_async_wrapper[**P, T](
     func: Callable[P, T],
-    lifecycle: AsyncLifecycle,
+    lifecycle: "AsyncLifecycle",
     scope: str,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
@@ -106,7 +104,7 @@ def create_sync_in_async_wrapper[**P, T](
 
 def create_synccm_in_async_wrapper[**P, T](
     func: Callable[P, AbstractContextManager[T]],
-    lifecycle: AsyncLifecycle,
+    lifecycle: "AsyncLifecycle",
     scope: str,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
@@ -130,7 +128,7 @@ def create_synccm_in_async_wrapper[**P, T](
 
 def create_asynccm_wrapper[**P, T](
     func: Callable[P, AbstractAsyncContextManager[T]],
-    lifecycle: AsyncLifecycle,
+    lifecycle: "AsyncLifecycle",
     scope: str,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
@@ -154,7 +152,7 @@ def create_asynccm_wrapper[**P, T](
 
 def create_async_wrapper[**P, T](
     func: Callable[P, Awaitable[T] | AsyncGenerator[T, None]],
-    lifecycle: AsyncLifecycle,
+    lifecycle: "AsyncLifecycle",
     scope: str,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,

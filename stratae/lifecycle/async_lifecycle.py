@@ -41,8 +41,6 @@ Example:
             session = await get_request_session()
 """
 
-from __future__ import annotations
-
 from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
 from typing import Callable, Hashable, Sequence, TypedDict

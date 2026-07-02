@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from inspect import iscoroutinefunction, unwrap
 from typing import (
@@ -54,7 +52,7 @@ class CacheDecorator:
     def __init__(
         self,
         scope: str,
-        lifecycle: Lifecycle,
+        lifecycle: "Lifecycle",
         cache_key: Callable[..., Hashable] | None = None,
         ignore_params: bool = False,
     ) -> None:
@@ -99,7 +97,7 @@ class AsyncCacheDecorator:
     def __init__(
         self,
         scope: str,
-        lifecycle: AsyncLifecycle,
+        lifecycle: "AsyncLifecycle",
         cache_key: Callable[..., Hashable] | None = None,
         ignore_params: bool = False,
     ) -> None:

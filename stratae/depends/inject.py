@@ -6,8 +6,6 @@ This module provides:
 - The `inject` decorator for resolving and injecting dependencies into functions.
 """
 
-from __future__ import annotations
-
 from typing import Callable, overload
 
 from stratae.depends.resolver import Resolver

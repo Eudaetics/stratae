@@ -40,8 +40,6 @@ Example:
             session = get_request_session()
 """
 
-from __future__ import annotations
-
 from collections import deque
 from contextlib import ExitStack
 from typing import TYPE_CHECKING, Callable, Hashable, Sequence
@@ -64,7 +62,9 @@ if TYPE_CHECKING:
 class Lifecycle:
     """Manager for handling lifecycle contexts."""
 
-    def __init__(self, scopes: Sequence[str], caches: dict[str, type[Cache]] | None = None) -> None:
+    def __init__(
+        self, scopes: Sequence[str], caches: dict[str, type["Cache"]] | None = None
+    ) -> None:
         """Initialize the LifecycleManager."""
         validate_config(scopes, caches)
         self._caches = caches or {}
@@ -121,7 +121,7 @@ class Lifecycle:
         """Get a list of active scopes."""
         return list(self._active)
 
-    def get_cache(self, scope: str) -> Cache:
+    def get_cache(self, scope: str) -> "Cache":
         """Get the cache for the specified lifecycle scope."""
         if scope not in self._scopes:
             raise ScopeNotFoundError(f"Unknown scope: {scope}")
