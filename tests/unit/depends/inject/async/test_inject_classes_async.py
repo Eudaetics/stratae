@@ -1,8 +1,7 @@
 """Test suite for verifying dependency injection in class methods and constructors."""
 
-from __future__ import annotations
-
 import asyncio
+from typing import Self
 
 from stratae.depends import Depends, inject
 
@@ -36,7 +35,7 @@ async def test_class_init_async_dep():
 
         @classmethod
         @inject
-        async def create(cls, value: int = Depends(get_async_dep)) -> SimpleObject:
+        async def create(cls, value: int = Depends(get_async_dep)) -> Self:
             return cls(value)
 
     # Act
@@ -78,7 +77,7 @@ async def test_nested_async_class_creation():
 
         @classmethod
         @inject
-        async def create(cls, value: int = Depends(get_async_dep)) -> DepClass:
+        async def create(cls, value: int = Depends(get_async_dep)) -> Self:
             return cls(value)
 
     async def get_dep_class():
@@ -93,7 +92,7 @@ async def test_nested_async_class_creation():
 
         @classmethod
         @inject
-        async def create(cls, dep: DepClass = Depends(get_dep_class)) -> SimpleObject:
+        async def create(cls, dep: DepClass = Depends(get_dep_class)) -> Self:
             return cls(dep)
 
     # Act

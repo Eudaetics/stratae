@@ -1,7 +1,5 @@
 """Test suite for verifying dependency injection in class methods and constructors."""
 
-from __future__ import annotations
-
 import pytest
 
 from stratae.depends import Depends, inject
@@ -311,7 +309,7 @@ def test_circular_class_dependency():
 
     class ClassA:
         @inject
-        def __init__(self, b: ClassB = Depends(lambda: ClassB())):
+        def __init__(self, b: "ClassB" = Depends(lambda: ClassB())):
             self.b = b
 
     class ClassB:

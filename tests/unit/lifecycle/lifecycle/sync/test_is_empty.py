@@ -1,11 +1,8 @@
 """Test suite for verifying is_empty method of the Lifecycle class."""
 
-from __future__ import annotations
+from typing import Sequence
 
-from typing import TYPE_CHECKING, Sequence
-
-if TYPE_CHECKING:
-    from stratae.lifecycle import Lifecycle
+from stratae.lifecycle import Lifecycle
 
 
 def test_is_empty(lifecycle: Lifecycle):

@@ -1,12 +1,9 @@
 """Wrappers for dependency injection in synchronous and asynchronous functions."""
 
-from __future__ import annotations
-
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Callable, Generator
+from typing import Any, Callable, Generator
 
-if TYPE_CHECKING:
-    from stratae.depends.depends import DependsWrapper
+from stratae.depends.depends import DependsWrapper
 
 
 def create_sync_wrapper(

@@ -1,7 +1,5 @@
 """Context managers and decorators for lifecycle scopes."""
 
-from __future__ import annotations
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -32,7 +30,7 @@ class LifecycleContext:
 
     """
 
-    def __init__(self, scope: str, lifecycle: Lifecycle) -> None:
+    def __init__(self, scope: str, lifecycle: "Lifecycle") -> None:
         """Initialize the ScopeDecorator with a specific lifecycle scope."""
         self._scope = scope
         self._lifecycle = lifecycle
@@ -49,7 +47,7 @@ class LifecycleContext:
 class AsyncLifecycleContext:
     """Asynchronous context manager for lifecycle scopes."""
 
-    def __init__(self, scope: str, lifecycle: AsyncLifecycle) -> None:
+    def __init__(self, scope: str, lifecycle: "AsyncLifecycle") -> None:
         """Initialize the AsyncScopeContext with a specific lifecycle scope."""
         self._scope = scope
         self._lifecycle = lifecycle

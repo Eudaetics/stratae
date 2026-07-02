@@ -7,8 +7,6 @@ it through every function signature in between. Because instances are
 callable, a `Context[T]` doubles as a `Depends()` provider.
 """
 
-from __future__ import annotations
-
 from contextvars import ContextVar, Token
 
 
@@ -31,7 +29,7 @@ class _ContextScope[T]:
     state on the `Context` itself.
     """
 
-    def __init__(self, provider: Context[T], value: T):
+    def __init__(self, provider: "Context[T]", value: T):
         """Initialize the context scope with provider and value."""
         self._provider = provider
         self._value = value
