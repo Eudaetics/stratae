@@ -7,7 +7,7 @@ from typing import Annotated, Any, Callable
 
 import pytest
 
-from stratae.depends import AUTO, Depends, inject
+from stratae.depends import Depends, Injected, inject
 from stratae.depends.exceptions import RegistrationError
 
 
@@ -42,7 +42,7 @@ async def test_inject_with_async():
         return SampleType(10)
 
     @inject
-    async def test_dep(val: SampleType = Depends(async_factory_function)) -> SampleType:
+    async def test_dep(val: Injected[SampleType, Depends(async_factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -78,7 +78,7 @@ async def test_inject_with_async_multiple_calls():
         return SampleType(counter := counter + 1)
 
     @inject
-    async def test_dep(val: SampleType = Depends(async_factory_function)) -> SampleType:
+    async def test_dep(val: Injected[SampleType, Depends(async_factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -120,8 +120,8 @@ async def test_inject_async_mixed():
 
     @inject
     async def test_dep(
-        val1: SampleType = Depends(async_factory_function),
-        val2: SampleType = Depends(sync_factory_function),
+        val1: Injected[SampleType, Depends(async_factory_function)],
+        val2: Injected[SampleType, Depends(sync_factory_function)],
     ) -> tuple[SampleType, SampleType]:
         return val1, val2
 
@@ -162,7 +162,7 @@ def test_inject_sync_async_nested_error():
 
     @inject
     async def async_factory_function(
-        val: SampleType = Depends(sync_after_async_factory_function),
+        val: Injected[SampleType, Depends(sync_after_async_factory_function)],
     ) -> SampleType:
         """Create async factory function that returns a SampleType instance."""
         return SampleType(20 + val.value)
@@ -173,7 +173,7 @@ def test_inject_sync_async_nested_error():
     ):
 
         @inject
-        def _(val: SampleType = Depends(async_factory_function)) -> SampleType:
+        def _(val: Injected[SampleType, Depends(async_factory_function)]) -> SampleType:
             """Create sync factory function that returns a SampleType instance."""
             return SampleType(5 + val.value)
 
@@ -201,7 +201,7 @@ async def test_inject_async_sync_nested():
     # Act
     @inject
     async def async_factory_function(
-        val: SampleType = Depends(sync_factory_function),
+        val: Injected[SampleType, Depends(sync_factory_function)],
     ) -> SampleType:
         """Create async factory function that returns a SampleType instance."""
         return SampleType(5 + val.value)
@@ -233,7 +233,7 @@ async def test_inject_with_parens_and_async():
         return SampleType(25)
 
     @inject()
-    async def test_dep(val: SampleType = Depends(async_factory_function)) -> SampleType:
+    async def test_dep(val: Injected[SampleType, Depends(async_factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -268,7 +268,7 @@ async def test_inject_annotated_async_dependency():
 
     @inject
     async def test_dep(
-        val: Annotated[SampleType, Depends(async_factory_function)] = AUTO,
+        val: Annotated[SampleType, Depends(async_factory_function)],
     ) -> SampleType:
         return val
 
@@ -291,7 +291,7 @@ async def test_inject_with_type_alias_async():
 
     # Arrange
     @inject
-    async def test_dep(val: IntDependency = AUTO) -> int:
+    async def test_dep(val: IntDependency) -> int:
         await asyncio.sleep(0)
         return val
 
@@ -319,13 +319,13 @@ async def test_nested_annotations_async():
         return 2
 
     @inject
-    async def get_one(dep2: Annotated[int, Depends(get_two)] = AUTO) -> int:
+    async def get_one(dep2: Annotated[int, Depends(get_two)]) -> int:
         """Create a factory function that returns a SampleType instance."""
         await asyncio.sleep(0)
         return 1 + dep2
 
     @inject
-    async def test_dep(val: Annotated[int, Depends(get_one)] = AUTO) -> int:
+    async def test_dep(val: Annotated[int, Depends(get_one)]) -> int:
         await asyncio.sleep(0)
         return val - 3
 
@@ -358,10 +358,10 @@ async def test_mixed_depends_types_async():
     @inject
     async def get_dep(
         no_default: int,
+        type_dep: IntDependency,
+        annotated_dep: Annotated[int, Depends(get_two)],
+        db: Injected[int, Depends(get_three)],
         no_dep: int = -2,
-        type_dep: IntDependency = AUTO,
-        annotated_dep: Annotated[int, Depends(get_two)] = AUTO,
-        db: int = Depends(get_three),
     ) -> int:
         """Sum the various dependencies."""
         return no_default + no_dep + type_dep + annotated_dep + db
@@ -400,69 +400,6 @@ async def test_behavior_with_annotated_and_default_async():
     assert result == 42
 
 
-def test_annotated_with_depends_defaults_errors_async():
-    """
-    Test the inject decorator with Annotated dependency and default Depends to raise an error.
-
-    Given: a function with Annotated Depends and default Depends
-    When: the function is decorated with @inject,
-    Then: it should raise a RegistrationError.
-    """
-
-    # Arrange
-    async def get_forty_two() -> int:
-        """Return the integer 42."""
-        await asyncio.sleep(0)
-        return 42
-
-    async def get_default() -> int:
-        """Return the integer 100."""
-        await asyncio.sleep(0)
-        return 100
-
-    # Act & Assert
-    with pytest.raises(
-        RegistrationError,
-        match="Parameter 'annotated_val' cannot use both Annotated and default Depends",
-    ):
-
-        @inject
-        async def _(
-            annotated_val: Annotated[int, Depends(get_forty_two)] = Depends(get_default),
-        ) -> int:
-            await asyncio.sleep(0)
-            return annotated_val
-
-
-def test_annotated_type_with_depends_defaults_errors():
-    """
-    Test the inject decorator with Annotated type and default Depends to raise an error.
-
-    Given: a function with Annotated type and default Depends
-    When: the function is decorated with @inject,
-    Then: it should raise a RegistrationError.
-    """
-
-    # Arrange
-    async def get_default() -> int:
-        """Return the integer 100."""
-        await asyncio.sleep(0)
-        return 100
-
-    # Act & Assert
-    with pytest.raises(
-        RegistrationError,
-        match="Parameter 'annotated_val' cannot use both Annotated and default Depends",
-    ):
-
-        @inject
-        async def _(
-            annotated_val: IntDependency = Depends(get_default),
-        ) -> int:
-            await asyncio.sleep(0)
-            return annotated_val
-
-
 async def test_inject_with_outer_wrapper_async():
     """
     Test the inject decorator with an outer async wrapper function.
@@ -482,7 +419,7 @@ async def test_inject_with_outer_wrapper_async():
 
     @outer_wrapper
     @inject
-    async def test_dep(val: IntDependency = AUTO) -> int:
+    async def test_dep(val: IntDependency) -> int:
         return val
 
     # Act
@@ -522,12 +459,12 @@ async def test_async_nested_inject_with_outer_wrapper():
 
     @outer_wrapper
     @inject
-    async def nested_dep(val: IntDependency = AUTO) -> int:
+    async def nested_dep(val: IntDependency) -> int:
         await asyncio.sleep(0)
         return val
 
     @inject
-    async def test_dep(val: int = Depends(nested_dep)) -> int:
+    async def test_dep(val: Injected[int, Depends(nested_dep)]) -> int:
         await asyncio.sleep(0)
         return val
 
@@ -563,12 +500,12 @@ async def test_async_nested_inject_with_outer_wrapper_no_outermost():
 
     @outer_wrapper
     @inject
-    async def nested_dep(val: IntDependency = AUTO) -> int:
+    async def nested_dep(val: IntDependency) -> int:
         await asyncio.sleep(0)
         return val
 
     @inject
-    async def test_dep(val: int = Depends(nested_dep)) -> int:
+    async def test_dep(val: Injected[int, Depends(nested_dep)]) -> int:
         await asyncio.sleep(0)
         return val
 

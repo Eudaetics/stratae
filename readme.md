@@ -26,7 +26,7 @@ def get_database() -> Database:
     return {"users": []}
 
 @inject
-def create_user(name: str, db: Database = Depends(get_database)):
+def create_user(name: str, db: Injected[Database, Depends(get_database)]):
     user = {"name": name}
     db["users"].append(user)
     return user
@@ -66,7 +66,7 @@ def get_config():
 # Decorate the function with inject to resolve dependencies
 @inject
 # Use Depends(...) to mark parameters for injection
-def endpoint(config: dict[str, str] = Depends(get_config)):
+def endpoint(config: Injected[dict[str, str], Depends(get_config)]):
     print(f"Environment: {config['env']}, Mode: {config['mode']}")
 
 endpoint()
@@ -120,13 +120,13 @@ user_id = Context[int]("user_id")
 
 @lifecycle.cache('request')
 @inject
-def get_current_user(uid: int = Depends(user_id)) -> User:
+def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
     return fetch_user(uid)
 
 @inject
 def create_post(
     content: str,
-    user: User = Depends(get_current_user),
+    user: Injected[User, Depends(get_current_user)],
 ) -> Post:
     return Post(author=user, content=content)
 
@@ -151,7 +151,7 @@ async def get_database() -> Database:
 @inject
 async def create_user(
     name: str,
-    db: Database = Depends(get_database),
+    db: Injected[Database, Depends(get_database)],
 ) -> User:
     return await db.users.create(name=name)
 
@@ -159,22 +159,6 @@ async def create_user(
 async with lifecycle.start('application'):
     async with lifecycle.start('request'):
         user = await create_user("Alice")
-```
-
-### Easy Testing
-
-With no complex configuration, testing functions decorated with Stratae is easy. The function signature isn't changed, just pass in the mocks you need.
-
-```python
-@inject
-def create_user(name: str, db = Depends(get_db)):
-    db.user.create(name=name)
-
-# Use normally
-create_user('Steve')
-
-# Test
-create_user('Jason', db=MockDB())
 ```
 
 ### Framework Agnostic
@@ -186,7 +170,7 @@ Stratae doesn't have a complex framework to configure or objects to pass around.
 @inject
 async def create_user(
     name: str,
-    db: Database = Depends(get_database),
+    db: Injected[Database, Depends(get_database)],
 ) -> User:
     return await db.users.create(name=name)
 
@@ -200,9 +184,6 @@ async def api_create(name: str):
 def cli_create(name: str):
     asyncio.run(create_user(name))
 
-# Tests
-async def test_create():
-    user = await create_user("Alice", db=mock_db)
 ```
 
 ### Simple Integrations
@@ -239,7 +220,7 @@ async def get_session():
 async def create_user(
     name: str,
     # Using Stratae Depends
-    db: Session = Depends(get_session)
+    db: Injected[Session, Depends(get_session)]
 ):
     await db.users.create(name=name)
 

@@ -58,7 +58,7 @@ class Context[T]:
         user_id = Context[int]("user_id")
 
         @inject
-        def get_current_user(uid: int = Depends(user_id)) -> User:
+        def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
             return fetch_user(uid)
 
         with user_id.use(123):

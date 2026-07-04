@@ -2,7 +2,6 @@
 
 import asyncio
 from functools import wraps
-from inspect import signature
 from typing import Annotated, Any, Callable
 from unittest.mock import Mock
 
@@ -13,6 +12,7 @@ from stratae.depends.exceptions import (
     CircularDependencyError,
     RegistrationError,
 )
+from stratae.depends.inject import Injected
 
 
 class Dependency:
@@ -37,8 +37,8 @@ def factory_function() -> Dependency:
     return Dependency(100)
 
 
-type DependencyDep = Annotated[Dependency, Depends(factory_function)]
-type IntDependency = Annotated[int, Depends(get_dep)]
+type DependencyDep = Injected[Dependency, Depends(factory_function)]
+type IntDependency = Injected[int, Depends(get_dep)]
 
 
 def test_initialization():
@@ -87,7 +87,7 @@ def test_resolve_function():
     # Arrange
     resolver = Resolver()
 
-    def sample_function(dep: int = Depends(get_dep)) -> int:
+    def sample_function(dep: Injected[int, Depends(get_dep)]) -> int:
         return dep
 
     # Act
@@ -109,7 +109,7 @@ def test_resolve_function_twice():
     # Arrange
     resolver = Resolver()
 
-    def sample_function(dep: int = Depends(get_dep)) -> int:
+    def sample_function(dep: Injected[int, Depends(get_dep)]) -> int:
         return dep
 
     # Act
@@ -132,7 +132,7 @@ def test_resolve_function_with_nested_wrapped_dependencies():
     # Arrange
     resolver = Resolver()
 
-    def some_wrapper(func: Callable[[], int]) -> Callable[[Any], Any]:
+    def some_wrapper(func: Callable[[int], int]) -> Callable[[Any], Any]:
         @wraps(func)
         def wrapped(*args: Any, **kwargs: Any) -> int:
             return func(*args, **kwargs)
@@ -143,14 +143,14 @@ def test_resolve_function_with_nested_wrapped_dependencies():
         return 2
 
     @some_wrapper
-    def second_dependency(dep: int = Depends(first_dependency)) -> int:
+    def second_dependency(dep: Injected[int, Depends(first_dependency)]) -> int:
         return dep + 1
 
     second_dependency = resolver.resolve_function(second_dependency)
 
     def sample_function(
-        dep: int = Depends(second_dependency),
-        other: int = Depends(first_dependency),
+        dep: Injected[int, Depends(second_dependency)],
+        other: Injected[int, Depends(first_dependency)],
     ) -> int:
         return dep + other
 
@@ -180,8 +180,8 @@ def test_resolve_function_with_multiple_dependencies():
     resolver = Resolver()
 
     def sample_function(
-        dep1: int = Depends(get_dep),
-        dep2: int = Depends(get_dep),
+        dep1: Injected[int, Depends(get_dep)],
+        dep2: Injected[int, Depends(get_dep)],
     ) -> int:
         return dep1 + dep2
 
@@ -208,7 +208,7 @@ async def test_resolve_function_with_async_dependency():
         await asyncio.sleep(0)
         return Dependency(3)
 
-    async def sample_function(dep: Dependency = Depends(async_dependency)) -> int:
+    async def sample_function(dep: Injected[Dependency, Depends(async_dependency)]) -> int:
         await asyncio.sleep(0)
         return dep.value
 
@@ -235,7 +235,7 @@ def test_resolve_sync_function_with_async_dependency():
         await asyncio.sleep(0)
         return 3
 
-    def sync_function(dep: int = Depends(async_dependency)) -> int:
+    def sync_function(dep: Injected[int, Depends(async_dependency)]) -> int:
         return dep
 
     # Act & Assert
@@ -259,10 +259,10 @@ def test_resolve_function_with_dependency_chain():
     def first_dependency() -> int:
         return 4
 
-    def second_dependency(dep: int = Depends(first_dependency)) -> int:
+    def second_dependency(dep: Injected[int, Depends(first_dependency)]) -> int:
         return dep + 1
 
-    def sample_function(non_dep: int, dep: int = Depends(second_dependency)) -> int:
+    def sample_function(non_dep: int, dep: Injected[int, Depends(second_dependency)]) -> int:
         return dep + non_dep
 
     # Act
@@ -294,13 +294,13 @@ def test_resolve_function_with_chain_and_factory():
 
     changing_val = 10
 
-    def second_dependency(dep: int = Depends(first_dependency)) -> int:
+    def second_dependency(dep: Injected[int, Depends(first_dependency)]) -> int:
         return dep + changing_val
 
     def sample_function(
         non_dep: int,
-        dep: int = Depends(second_dependency),
-        factory: int = Depends(factory_function),
+        dep: Injected[int, Depends(second_dependency)],
+        factory: Injected[int, Depends(factory_function)],
     ) -> int:
         return dep + non_dep + factory
 
@@ -335,18 +335,18 @@ def test_resolve_function_with_chain_and_mixed():
     def factory_function() -> int:
         return 5
 
-    def first_dependency(something: Intresolver = Depends(Intresolver)) -> int:
+    def first_dependency(something: Injected[Intresolver, Depends(Intresolver)]) -> int:
         return something.value
 
     changing_val = 10
 
-    def second_dependency(dep: int = Depends(first_dependency)) -> int:
+    def second_dependency(dep: Injected[int, Depends(first_dependency)]) -> int:
         return dep + changing_val
 
     def sample_function(
         non_dep: int,
-        dep: int = Depends(second_dependency),
-        factory: int = Depends(factory_function),
+        dep: Injected[int, Depends(second_dependency)],
+        factory: Injected[int, Depends(factory_function)],
     ) -> int:
         return dep + non_dep + factory
 
@@ -436,30 +436,6 @@ def test_resolve_function_with_no_dependencies():
     assert resolved_function(3, 4) == 7
 
 
-def test_resolve_function_with_circular_dependency():
-    """
-    Verify that a function with a circular dependency raises an error.
-
-    Given: a Resolver and a function with a circular dependency,
-    When: resolve_function is called,
-    Then: it should raise a CircularDependencyError.
-    """
-    # Arrange
-    resolver = Resolver()
-
-    def dep1(dep: int = 0) -> int:
-        return dep + 1
-
-    def dep2(dep: int = Depends(dep1)) -> int:
-        return dep + 1
-
-    dep1.__defaults__ = (Depends(dep2),)
-
-    # Act & Assert
-    with pytest.raises(CircularDependencyError, match="Circular dependency detected for .*dep1.*"):
-        resolver.resolve_function(dep1)
-
-
 def test_resolved_function_with_manual_kwargs():
     """
     Verify that manually passing kwargs to a resolved function overrides injected dependencies.
@@ -471,7 +447,9 @@ def test_resolved_function_with_manual_kwargs():
     # Arrange
     resolver = Resolver()
 
-    def sample_function(dep1: int = Depends(get_dep), dep2: int = Depends(get_dep)) -> int:
+    def sample_function(
+        dep1: Injected[int, Depends(get_dep)], dep2: Injected[int, Depends(get_dep)]
+    ) -> int:
         return dep1 + dep2
 
     resolved_function = resolver.resolve_function(sample_function)
@@ -499,7 +477,7 @@ def test_resolved_function_with_manual_kwargs_bypasses_dependswrapper():
         mock()
         return 5
 
-    def sample_function(dep: int = Depends(counting_dependency)) -> int:
+    def sample_function(dep: Injected[int, Depends(counting_dependency)]) -> int:
         return dep
 
     resolved_function = resolver.resolve_function(sample_function)
@@ -572,7 +550,7 @@ def test_manual_args_with_partial_dependencies_sync():
     def dependency() -> int:
         return 7
 
-    def sample_function(a: int, dep: int = Depends(dependency)) -> int:
+    def sample_function(a: int, dep: Injected[int, Depends(dependency)]) -> int:
         return a + dep
 
     resolved_function = resolver.resolve_function(sample_function)
@@ -599,7 +577,7 @@ async def test_manual_args_with_partial_dependencies_async():
         await asyncio.sleep(0)
         return 7
 
-    async def sample_function(a: int, dep: int = Depends(dependency)) -> int:
+    async def sample_function(a: int, dep: Injected[int, Depends(dependency)]) -> int:
         await asyncio.sleep(0)
         return a + dep
 
@@ -627,7 +605,7 @@ async def test_manual_kwargs_with_partial_dependencies_async():
         await asyncio.sleep(0)
         return 8
 
-    async def sample_function(a: int = 0, dep: int = Depends(dependency)) -> int:
+    async def sample_function(dep: Injected[int, Depends(dependency)], a: int = 0) -> int:
         await asyncio.sleep(0)
         return a + dep
 
@@ -655,7 +633,7 @@ def test_resolve_forward_reference():
         """Test dependency that returns SampleType."""
         return Dependency(42)
 
-    def test_dep(val: Dependency = Depends(some_dep)) -> Dependency:
+    def test_dep(val: Injected[Dependency, Depends(some_dep)]) -> Dependency:
         """Test dependency that uses SampleType."""
         return val
 
@@ -719,31 +697,6 @@ def test_resolve_with_mixed_annotations():
     assert resolved_function(val2="value") == "value-10"
 
 
-def test_resolve_type_no_annotation_errors():
-    """
-    Verify that resolving a type without an annotation raises an error.
-
-    Given: a Resolver and a type without an annotation,
-    When: resolve_type is called,
-    Then: it should raise a RegistrationError.
-    """
-    # Arrange
-    resolver = Resolver()
-
-    def test_dep(
-        val,  # pyright: ignore[reportMissingParameterType,reportUnknownParameterType]
-    ) -> int:
-        """Test dependency without type annotation."""
-        return 1
-
-    sig = signature(test_dep)  # pyright: ignore[reportUnknownArgumentType]
-    param = sig.parameters["val"]
-
-    # Act & Assert
-    with pytest.raises(RegistrationError, match="Parameter .*val.* has no type annotation."):
-        resolver._resolve_type(param, param.annotation)  # pyright: ignore[reportPrivateUsage]
-
-
 def test_resolve_type_with_inline_annotation():
     """
     Verify that a type can be resolved with an inline annotation.
@@ -759,7 +712,7 @@ def test_resolve_type_with_inline_annotation():
         def __init__(self, val: int):
             self.val = val
 
-    def get_sample_type(val: int = Depends(get_dep)) -> SampleType:
+    def get_sample_type(val: Injected[int, Depends(get_dep)]) -> SampleType:
         """Create a factory function for SampleType."""
         return SampleType(val)
 
@@ -775,25 +728,25 @@ def test_resolve_type_with_inline_annotation():
     assert resolved_instance() == get_dep() + 1
 
 
-def test_resolve_type_with_annotated_type_but_no_depends():
+def test_circular_dependency_detected():
     """
-    Verify that a type can be resolved when using Annotated without Depends.
+    Verify that a circular dependency chain is detected and raises an error.
 
-    Given: a Resolver and a function with an Annotated type without Depends,
-    When: resolve_type is called,
-    Then: it should return None indicating no dependency to resolve.
+    Given: a Resolver and two functions that depend on each other,
+    When: resolve_function is called,
+    Then: it should raise a CircularDependencyError.
     """
     # Arrange
     resolver = Resolver()
 
-    def function_with_annotated_type(dep: Annotated[int, "SomeMetadata"]) -> int:
+    def dep1(dep: int) -> int:
         return dep + 1
 
-    sig = signature(function_with_annotated_type)
-    param = sig.parameters["dep"]
+    def dep2(dep: Injected[int, Depends(dep1)]) -> int:
+        return dep + 1
 
-    # Act
-    result = resolver._resolve_type(param, param.annotation)  # pyright: ignore[reportPrivateUsage]
+    dep1.__annotations__["dep"] = Injected[int, Depends(dep2)]
 
-    # Assert
-    assert result is None
+    # Act & Assert
+    with pytest.raises(CircularDependencyError, match="Circular dependency detected for .*dep1.*"):
+        resolver.resolve_function(dep1)
