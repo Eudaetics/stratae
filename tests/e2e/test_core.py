@@ -39,7 +39,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
         connection_id = f"db_conn_{randint(1000, 9999)}"
         return connection_id
 
-    @lifecycle.cache("application", ignore_params=True)
+    @lifecycle.cache("application")
     @inject
     def initialize_connection_pool(
         db_conn: Injected[str, Depends(create_database_connection)],
@@ -48,7 +48,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
         pool_size = randint(5, 20)
         return {"connection": db_conn, "pool_size": pool_size, "max_connections": pool_size * 10}
 
-    @lifecycle.cache("request", ignore_params=True)
+    @lifecycle.cache("request")
     @inject
     def authenticate_user(
         pool: Injected[dict[str, Any], Depends(initialize_connection_pool)],
@@ -62,7 +62,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
             "pool_connection": pool["connection"],
         }
 
-    @lifecycle.cache("request", ignore_params=True)
+    @lifecycle.cache("request")
     @inject
     def process_api_request(
         pool: Injected[dict[str, Any], Depends(initialize_connection_pool)],
