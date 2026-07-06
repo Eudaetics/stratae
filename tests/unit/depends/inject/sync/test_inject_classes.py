@@ -42,6 +42,7 @@ def test_nested_class_injection():
     # Arrange
 
     class DepClass:
+        @inject
         def __init__(self, value: Injected[int, Depends(get_dep)]):
             self.value = value
 

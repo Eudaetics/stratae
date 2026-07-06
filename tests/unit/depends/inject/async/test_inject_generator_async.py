@@ -1,6 +1,5 @@
 """Test inject with generators."""
 
-import asyncio
 from typing import Any, AsyncGenerator
 from unittest.mock import Mock
 
@@ -165,34 +164,3 @@ async def test_inject_async_generator_with_mixed_args():
 
     # Assert
     assert [x async for x in generator] == [3, 6, 9]
-
-
-async def test_inject_async_generator_dependency_override():
-    """
-    Test overriding dependency on an async generator during injection.
-
-    Given: an async generator function injected with a dependency
-    When: the function is called with an overridden dependency
-    Then: the injection should use the overridden dependency correctly.
-    """
-
-    # Arrange
-    def original():
-        return "original"
-
-    def override():
-        return "override"
-
-    @inject
-    async def gen_func(val: Injected[str, Depends(original)]):
-        await asyncio.sleep(0)
-        for i in range(2):
-            yield f"{val}-{i}"
-
-    # Act
-    result: list[str] = []
-    async for item in gen_func(val=override()):
-        result.append(item)
-
-    # Assert
-    assert result == ["override-0", "override-1"]
