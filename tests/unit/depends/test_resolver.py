@@ -782,3 +782,67 @@ async def test_resolve_function_wraps_async_context_manager_with_async_dependenc
         assert value == 1
         mock_cleanup.assert_not_called()
     mock_cleanup.assert_called_once()
+
+
+def test_resolve_function_with_var_positional_args():
+    """
+    Verify a function with *args and an injected dependency resolves correctly.
+
+    Given: a Resolver and a function with *args plus an injected dependency,
+    When: resolve_function is called,
+    Then: it should return a resolved function that forwards *args and injects the dependency.
+    """
+    # Arrange
+    resolver = Resolver()
+
+    def sample_function(*args: int, dep: Injected[int, Depends(get_dep)]) -> int:
+        return sum(args) + dep
+
+    # Act
+    resolved_function = resolver.resolve_function(sample_function)
+
+    # Assert
+    assert resolved_function(1, 2, 3) == 7
+
+
+def test_resolve_function_with_var_keyword_kwargs():
+    """
+    Verify a function with **kwargs and an injected dependency resolves correctly.
+
+    Given: a Resolver and a function with **kwargs plus an injected dependency,
+    When: resolve_function is called,
+    Then: it should return a resolved function that forwards **kwargs and injects the dependency.
+    """
+    # Arrange
+    resolver = Resolver()
+
+    def sample_function(dep: Injected[int, Depends(get_dep)], **kwargs: int) -> int:
+        return dep + sum(kwargs.values())
+
+    # Act
+    resolved_function = resolver.resolve_function(sample_function)
+
+    # Assert
+    assert resolved_function(a=2, b=3) == 6
+
+
+def test_resolve_function_with_var_positional_and_var_keyword():
+    """
+    Verify a function with *args, **kwargs, and an injected dependency resolves correctly.
+
+    Given: a Resolver and a function with *args, **kwargs, and an injected dependency,
+    When: resolve_function is called,
+    Then: it should return a resolved function that forwards *args and **kwargs and injects
+            the dependency.
+    """
+    # Arrange
+    resolver = Resolver()
+
+    def sample_function(*args: int, dep: Injected[int, Depends(get_dep)], **kwargs: int) -> int:
+        return sum(args) + dep + sum(kwargs.values())
+
+    # Act
+    resolved_function = resolver.resolve_function(sample_function)
+
+    # Assert
+    assert resolved_function(1, 2, a=3, b=4) == 11
