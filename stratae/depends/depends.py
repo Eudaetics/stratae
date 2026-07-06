@@ -3,8 +3,6 @@
 from inspect import iscoroutinefunction, unwrap
 from typing import Any, Awaitable, Callable, cast, overload
 
-AUTO: Any = None
-
 
 class DependsWrapper:
     """Class used to wrap the dependency injection."""

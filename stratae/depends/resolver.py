@@ -90,6 +90,8 @@ class Resolver:
         depends = self._get_annotated_info(annotation)
         if depends is None:
             return None
+        elif param.default is not Parameter.empty:
+            raise RegistrationError(f"Cannot use a default with injected parameter {param.name}")
 
         depends.dependency = self.resolve_function(depends.dependency, _resolving)
         return depends
@@ -99,7 +101,7 @@ class Resolver:
         func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
     ) -> None:
         """Check if a function has async dependencies."""
-        if iscoroutinefunction(func):
+        if iscoroutinefunction(func) or isasyncgenfunction(func):
             return
 
         if any(v.is_async for v in resolved_deps.values()):

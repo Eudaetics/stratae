@@ -1,13 +1,14 @@
 """Test suite for the Dependency Injection Resolver."""
 
 import asyncio
+from contextlib import asynccontextmanager, contextmanager
 from functools import wraps
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, AsyncGenerator, Callable, Generator
 from unittest.mock import Mock
 
 import pytest
 
-from stratae.depends import AUTO, Depends, Resolver
+from stratae.depends import Depends, Resolver
 from stratae.depends.exceptions import (
     CircularDependencyError,
     RegistrationError,
@@ -380,8 +381,8 @@ def test_resolve_function_with_annotated():
         return "test"
 
     def sample_function(
-        dep1: Annotated[str, Depends(get_string)] = AUTO,
-        dep2: Annotated[int, Depends(get_integer)] = AUTO,
+        dep1: Annotated[str, Depends(get_string)],
+        dep2: Annotated[int, Depends(get_integer)],
     ) -> str:
         return f"{dep1}-{dep2}"
 
@@ -404,7 +405,7 @@ def test_resolve_function_with_annotated_type():
     # Arrange
     resolver = Resolver()
 
-    def sample_function(dep: IntDependency = AUTO) -> int:
+    def sample_function(dep: IntDependency) -> int:
         return dep
 
     # Act
@@ -684,8 +685,8 @@ def test_resolve_with_mixed_annotations():
         return 10
 
     def test_dep(
-        val1: Annotated[int, Depends(get_integer)] = AUTO,
-        val2: Annotated[str, "SomeMetadata"] = AUTO,
+        val1: Annotated[int, Depends(get_integer)],
+        val2: Annotated[str, "SomeMetadata"],
     ) -> str:
         """Test dependency that uses mixed annotations."""
         return f"{val2}-{val1}"
@@ -717,7 +718,7 @@ def test_resolve_type_with_inline_annotation():
         return SampleType(val)
 
     def function_with_dependency(
-        dep: Annotated[SampleType, Depends(get_sample_type)] = AUTO,
+        dep: Annotated[SampleType, Depends(get_sample_type)],
     ) -> int:
         return dep.val + 1
 
@@ -750,3 +751,111 @@ def test_circular_dependency_detected():
     # Act & Assert
     with pytest.raises(CircularDependencyError, match="Circular dependency detected for .*dep1.*"):
         resolver.resolve_function(dep1)
+
+
+def test_resolve_function_with_default_on_injected_parameter_raises():
+    """
+    Default on an injected parameter raises a RegistrationError.
+
+    Given: a Resolver and a function with an injected parameter that has a default value,
+    When: resolve_function is called,
+    Then: it should raise a RegistrationError.
+    """
+    # Arrange
+    resolver = Resolver()
+
+    def sample_function(dep: Injected[int, Depends(get_dep)] = 1) -> int:
+        return dep
+
+    # Act & Assert
+    with pytest.raises(RegistrationError, match="Cannot use a default with injected parameter dep"):
+        resolver.resolve_function(sample_function)
+
+
+def test_resolve_function_wraps_sync_context_manager():
+    """
+    Injection should work correctly over context managers.
+
+    Given: a Resolver and a function decorated with contextmanager that has a dependency,
+    When: resolve_function is called,
+    Then: it should return a resolved function that still behaves as a context manager
+            with the dependency injected.
+    """
+    # Arrange
+    resolver = Resolver()
+    mock_cleanup = Mock()
+
+    @contextmanager
+    def cm_func(dep: Injected[int, Depends(get_dep)]) -> Generator[int]:
+        yield dep
+        mock_cleanup()
+
+    # Act
+    resolved_function = resolver.resolve_function(cm_func)
+
+    # Assert
+    with resolved_function() as value:
+        assert value == 1
+        mock_cleanup.assert_not_called()
+    mock_cleanup.assert_called_once()
+
+
+async def test_resolve_function_wraps_async_context_manager():
+    """
+    Injection should work correctly over async context managers.
+
+    Given: a Resolver and a function decorated with asynccontextmanager that has a dependency,
+    When: resolve_function is called,
+    Then: it should return a resolved function that still behaves as an async context manager
+            with the dependency injected.
+    """
+    # Arrange
+    resolver = Resolver()
+    mock_cleanup = Mock()
+
+    @asynccontextmanager
+    async def cm_func(dep: Injected[int, Depends(get_dep)]) -> AsyncGenerator[int]:
+        yield dep
+        mock_cleanup()
+
+    # Act
+    resolved_function = resolver.resolve_function(cm_func)
+
+    # Assert
+    async with resolved_function() as value:
+        assert value == 1
+        mock_cleanup.assert_not_called()
+    mock_cleanup.assert_called_once()
+
+
+async def test_resolve_function_wraps_async_context_manager_with_async_dependency():
+    """
+    An async dependency can be injected into an async context manager if resolved before wrapping.
+
+    Given: a Resolver and an async generator function with an async dependency,
+    When: resolve_function is called on the raw generator function and the result is wrapped
+            with asynccontextmanager afterward,
+    Then: the async dependency should be resolved lazily inside __aenter__, and the context
+            manager should behave correctly.
+    """
+    # Arrange
+    resolver = Resolver()
+    mock_cleanup = Mock()
+
+    async def async_dependency() -> int:
+        await asyncio.sleep(0)
+        return 1
+
+    async def cm_func(dep: Injected[int, Depends(async_dependency)]) -> AsyncGenerator[int]:
+        yield dep
+        mock_cleanup()
+
+    # Act
+    resolved_function = resolver.resolve_function(cm_func)
+    db = asynccontextmanager(resolved_function)
+
+    # Assert
+    async with db() as value:
+        assert value == 1
+        mock_cleanup.assert_not_called()
+    mock_cleanup.assert_called_once()
