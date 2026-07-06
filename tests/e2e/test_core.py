@@ -1,5 +1,6 @@
 """End-to-end tests for core dependency injection with lifecycle management."""
 
+import inspect
 from random import randint
 from typing import Any
 
@@ -38,7 +39,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
         connection_id = f"db_conn_{randint(1000, 9999)}"
         return connection_id
 
-    @lifecycle.cache("application")
+    @lifecycle.cache("application", ignore_params=True)
     @inject
     def initialize_connection_pool(
         db_conn: Injected[str, Depends(create_database_connection)],
@@ -47,7 +48,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
         pool_size = randint(5, 20)
         return {"connection": db_conn, "pool_size": pool_size, "max_connections": pool_size * 10}
 
-    @lifecycle.cache("request")
+    @lifecycle.cache("request", ignore_params=True)
     @inject
     def authenticate_user(
         pool: Injected[dict[str, Any], Depends(initialize_connection_pool)],
@@ -61,7 +62,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
             "pool_connection": pool["connection"],
         }
 
-    @lifecycle.cache("request")
+    @lifecycle.cache("request", ignore_params=True)
     @inject
     def process_api_request(
         pool: Injected[dict[str, Any], Depends(initialize_connection_pool)],
@@ -83,6 +84,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
         user_id.set(42)
         pool = initialize_connection_pool()
         with lifecycle.start("request"):
+            print(inspect.signature(process_api_request))
             response1 = process_api_request()
             assert response1["status"] == "success"
             assert response1["user_id"] == 42
