@@ -375,11 +375,11 @@ async def test_mixed_depends_types_async():
 
 async def test_behavior_with_annotated_and_default_async():
     """
-    Test the inject decorator with Annotated dependencies that have default values.
+    Injected params cannot use defaults.
 
     Given: a function with Annotated dependencies with defaults,
     When: the function is decorated with @inject,
-    Then: it should prioritize the Annotated dependency over the default.
+    Then: A RegistrationError should be raised.
     """
 
     # Arrange
@@ -388,16 +388,13 @@ async def test_behavior_with_annotated_and_default_async():
         await asyncio.sleep(0)
         return 42
 
-    @inject
-    async def test_dep(val: Annotated[int, Depends(get_forty_two)] = 10) -> int:
-        await asyncio.sleep(0)
-        return val
+    # Act & Assert
+    with pytest.raises(RegistrationError, match="Cannot use a default with injected parameter val"):
 
-    # Act
-    result = await test_dep()
-
-    # Assert
-    assert result == 42
+        @inject
+        async def _(val: Annotated[int, Depends(get_forty_two)] = 10) -> int:
+            await asyncio.sleep(0)
+            return val
 
 
 async def test_inject_with_outer_wrapper_async():
