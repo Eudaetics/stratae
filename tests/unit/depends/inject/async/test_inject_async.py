@@ -2,7 +2,6 @@
 
 import asyncio
 from functools import wraps
-from inspect import unwrap
 from typing import Annotated, Any, Callable
 
 import pytest
@@ -424,90 +423,3 @@ async def test_inject_with_outer_wrapper_async():
 
     # Assert
     assert result == 43
-
-
-async def test_async_nested_inject_with_outer_wrapper():
-    """
-    Test the inject decorator with nested functions and an outer wrapper.
-
-    This is the positive test case where the outermost is set. The issue being tested is
-    that the resolved function is the outermost function set using the wrapper. Nested
-    dependencies need to work on the function marked by inject, but also respect the outermost
-    if it is set. This lets the dependency injection system work correctly with other
-    decorators that may intercept or otherwise do something with the function. Notably this
-    is important for caching functions where the cache decorator would be the outermost. The
-    nested dependencies need to work on the cached function, not the inner function. Otherwise
-    the caching would be bypassed.
-
-    Given: a nested function wrapped by another decorator that sets outermost,
-    When: the outer function is decorated with @inject,
-    Then: it should resolve the dependencies correctly.
-    """
-
-    # Arrange
-    def outer_wrapper(func: Callable[[], Any]) -> Callable[[], Any]:
-        @wraps(func)
-        async def inner_wrapper() -> int:
-            return await func() + 2
-
-        original = unwrap(func)
-        original.__outermost__ = inner_wrapper
-        return inner_wrapper
-
-    @outer_wrapper
-    @inject
-    async def nested_dep(val: IntDependency) -> int:
-        await asyncio.sleep(0)
-        return val
-
-    @inject
-    async def test_dep(val: Injected[int, Depends(nested_dep)]) -> int:
-        await asyncio.sleep(0)
-        return val
-
-    # Act
-    result = await test_dep()
-
-    # Assert
-    assert result == 44
-
-
-async def test_async_nested_inject_with_outer_wrapper_no_outermost():
-    """
-    Test the inject decorator with nested functions and an outer wrapper.
-
-    This is a negative test case where the outermost is not set. The issue being tested is
-    that the resolved function is the innermost function directly set using inject. Nested
-    dependencies need to work on the function marked by inject, but also respect the outermost
-    if it is set. This lets the dependency injection system work correctly with other
-    decorators that may intercept or otherwise do something with the function.
-
-    Given: a nested function wrapped by another decorator that sets outermost,
-    When: the outer function is decorated with @inject,
-    Then: it should resolve the dependencies correctly.
-    """
-
-    # Arrange
-    def outer_wrapper(func: Callable[[], Any]) -> Callable[[], Any]:
-        @wraps(func)
-        async def inner_wrapper() -> int:
-            return await func() + 2
-
-        return inner_wrapper
-
-    @outer_wrapper
-    @inject
-    async def nested_dep(val: IntDependency) -> int:
-        await asyncio.sleep(0)
-        return val
-
-    @inject
-    async def test_dep(val: Injected[int, Depends(nested_dep)]) -> int:
-        await asyncio.sleep(0)
-        return val
-
-    # Act
-    result = await test_dep()
-
-    # Assert
-    assert result == 42

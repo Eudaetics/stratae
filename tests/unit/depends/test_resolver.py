@@ -55,7 +55,7 @@ def test_initialization():
 
     # Assert
     assert isinstance(resolver, Resolver)
-    assert resolver._functions == {}  # pyright: ignore[reportPrivateUsage]
+    assert not resolver._functions  # pyright: ignore[reportPrivateUsage]
 
 
 def test_clear():
@@ -68,13 +68,13 @@ def test_clear():
     """
     # Arrange
     resolver = Resolver()
-    resolver._functions["TestFunction"] = lambda: "function_instance"  # pyright: ignore
+    resolver._functions.add(lambda: "function_instance")  # pyright: ignore[reportPrivateUsage]
 
     # Act
     resolver.clear()
 
     # Assert
-    assert resolver._functions == {}  # pyright: ignore[reportPrivateUsage]
+    assert not resolver._functions  # pyright: ignore[reportPrivateUsage]
 
 
 def test_resolve_function():
@@ -97,29 +97,6 @@ def test_resolve_function():
     # Assert
     assert callable(resolved_function)
     assert resolved_function() == 1
-
-
-def test_resolve_function_twice():
-    """
-    Verify that resolving the same function multiple times returns the same result.
-
-    Given: a Resolver and a function with dependencies,
-    When: resolve_function is called multiple times,
-    Then: it should return the same resolved function each time.
-    """
-    # Arrange
-    resolver = Resolver()
-
-    def sample_function(dep: Injected[int, Depends(get_dep)]) -> int:
-        return dep
-
-    # Act
-    resolved_function1 = resolver.resolve_function(sample_function)
-    resolved_function2 = resolver.resolve_function(sample_function)
-
-    # Assert
-    assert resolved_function1 is resolved_function2
-    assert resolved_function1() == 1
 
 
 def test_resolve_function_with_nested_wrapped_dependencies():

@@ -1,6 +1,6 @@
 """Depends function for dependency injection."""
 
-from inspect import iscoroutinefunction, unwrap
+from inspect import iscoroutinefunction
 from typing import Any, Awaitable, Callable, cast, overload
 
 
@@ -14,28 +14,11 @@ class DependsWrapper:
 
     def provide(self):
         """Provide the dependency."""
-        self._fix_outermost()
-        self.provide = self._fixed_provide
         return self.dependency()
 
     async def aprovide(self):
         """Asynchronously provide the dependency."""
-        self._fix_outermost()
-        self.aprovide = self._fixed_aprovide
         return await self.dependency()
-
-    def _fixed_provide(self):
-        return self.dependency()
-
-    async def _fixed_aprovide(self):
-        return await self.dependency()
-
-    def _fix_outermost(self) -> None:
-        """Fix the dependency to use its outermost version, if applicable."""
-        original = unwrap(self.dependency)
-        if hasattr(original, "__outermost__"):
-            self.dependency = original.__outermost__
-        self._resolved_outermost = True
 
     @property
     def is_async(self) -> bool:
