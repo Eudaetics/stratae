@@ -4,7 +4,10 @@ from functools import wraps
 from inspect import unwrap
 from typing import Annotated, Callable
 
+import pytest
+
 from stratae.depends import Depends, Injected, inject
+from stratae.depends.exceptions import RegistrationError
 
 type IntDependency = Annotated[int, Depends(lambda: 42)]
 
@@ -235,11 +238,11 @@ def test_mixed_depends_types():
 
 def test_behavior_with_annotated_and_default():
     """
-    Test the inject decorator with Annotated dependencies that have default values.
+    Injected functions cannot use default with dependencies.
 
     Given: a function with Annotated dependencies with defaults,
     When: the function is decorated with @inject,
-    Then: it should prioritize the Annotated dependency over the default.
+    Then: A RegistrationError should be raised.
     """
 
     # Arrange
@@ -247,15 +250,12 @@ def test_behavior_with_annotated_and_default():
         """Return the integer 42."""
         return 42
 
-    @inject
-    def test_dep(val: Annotated[int, Depends(get_forty_two)] = 10) -> int:
-        return val
+    # Act & Assert
+    with pytest.raises(RegistrationError, match="Cannot use a default with injected parameter val"):
 
-    # Act
-    result = test_dep()
-
-    # Assert
-    assert result == 42
+        @inject
+        def _(val: Annotated[int, Depends(get_forty_two)] = 10) -> int:
+            return val
 
 
 def test_inject_with_outer_wrapper():
