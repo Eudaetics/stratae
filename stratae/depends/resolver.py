@@ -7,7 +7,6 @@ from inspect import (
     iscoroutinefunction,
     isgeneratorfunction,
     signature,
-    unwrap,
 )
 from typing import Annotated, Any, Callable, get_origin
 
@@ -26,7 +25,7 @@ class Resolver:
 
     def __init__(self):
         """Initialize the resolver with empty registries."""
-        self._functions: dict[Callable[..., Any], Callable[..., Any]] = {}
+        self._functions: set[Callable[..., Any]] = set()
 
     def resolve_function[**P, R](
         self,
@@ -34,23 +33,21 @@ class Resolver:
         _resolving: set[Callable[..., Any]] | None = None,
     ) -> Callable[..., R]:
         """Resolve a function to its dependencies."""
-        original_func = unwrap(func)
-
-        if original_func in self._functions:
-            return self._functions[original_func]
+        if func in self._functions:
+            return func
         if _resolving is None:
             _resolving = set()
-        if original_func in _resolving:
+        if func in _resolving:
             raise CircularDependencyError(f"Circular dependency detected for {func}.")
 
-        _resolving.add(original_func)
+        _resolving.add(func)
         resolved_deps: dict[str, DependsWrapper] = self._resolve_parameters(
             signature(func), _resolving
         )
 
         self._validate_sync_async_constraint(func, resolved_deps)
         resolved_func = self._create_wrapper(func, resolved_deps)
-        self._functions[original_func] = resolved_func
+        self._functions.add(resolved_func)
         return resolved_func
 
     def _resolve_parameters(

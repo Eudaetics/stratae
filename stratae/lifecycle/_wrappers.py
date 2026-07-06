@@ -2,7 +2,6 @@
 
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
-from inspect import unwrap
 from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Hashable, cast
 
 if TYPE_CHECKING:
@@ -51,8 +50,6 @@ def create_sync_wrapper[**P, T](
 
         return lifecycle.get_cache(scope).get_or_set(key_func(key, args, kwargs), factory)
 
-    original = unwrap(func)
-    original.__outermost__ = wrapper
     return wrapper
 
 
@@ -75,8 +72,6 @@ def create_synccm_wrapper[**P, T](
 
         return lifecycle.get_cache(scope).get_or_set(key_func(key, args, kwargs), factory)
 
-    original = unwrap(func)
-    original.__outermost__ = gen_wrapper
     return gen_wrapper
 
 
@@ -97,8 +92,6 @@ def create_sync_in_async_wrapper[**P, T](
 
         return lifecycle.get_cache(scope).get_or_set(key_func(key, args, kwargs), factory)
 
-    original = unwrap(func)
-    original.__outermost__ = wrapper
     return wrapper
 
 
@@ -121,8 +114,6 @@ def create_synccm_in_async_wrapper[**P, T](
 
         return lifecycle.get_cache(scope).get_or_set(key_func(key, args, kwargs), factory)
 
-    original = unwrap(func)
-    original.__outermost__ = gen_wrapper
     return gen_wrapper
 
 
@@ -145,8 +136,6 @@ def create_asynccm_wrapper[**P, T](
 
         return await lifecycle.get_cache(scope).aget_or_set(key_func(key, args, kwargs), factory)
 
-    original = unwrap(func)
-    original.__outermost__ = gen_wrapper
     return gen_wrapper
 
 
@@ -167,6 +156,4 @@ def create_async_wrapper[**P, T](
 
         return await lifecycle.get_cache(scope).aget_or_set(key_func(key, args, kwargs), factory)
 
-    original = unwrap(func)
-    original.__outermost__ = wrapper
     return wrapper
