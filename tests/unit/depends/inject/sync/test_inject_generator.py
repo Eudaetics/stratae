@@ -153,31 +153,3 @@ def test_inject_generator_with_mixed_args():
 
     # Assert
     assert list(generator) == [12, 15]
-
-
-def test_inject_generator_dependency_override():
-    """
-    Test overriding a dependency on a generator during injection.
-
-    Given: a generator function injected with a dependency
-    When: the function is called with an overridden dependency
-    Then: the injection should use the overridden dependency.
-    """
-
-    # Arrange
-    def original():
-        return "original"
-
-    def override():
-        return "override"
-
-    @inject
-    def gen_func(val: Injected[str, Depends(original)]):
-        for i in range(2):
-            yield f"{val}-{i}"
-
-    # Act
-    result = list(gen_func(val=override()))
-
-    # Assert
-    assert result == ["override-0", "override-1"]

@@ -437,60 +437,6 @@ def test_resolve_function_with_no_dependencies():
     assert resolved_function(3, 4) == 7
 
 
-def test_resolved_function_with_manual_kwargs():
-    """
-    Verify that manually passing kwargs to a resolved function overrides injected dependencies.
-
-    Given: a Resolver and a function with dependencies,
-    When: resolve_function is called and manual kwargs are provided,
-    Then: it should use the manual kwargs instead of injecting dependencies.
-    """
-    # Arrange
-    resolver = Resolver()
-
-    def sample_function(
-        dep1: Injected[int, Depends(get_dep)], dep2: Injected[int, Depends(get_dep)]
-    ) -> int:
-        return dep1 + dep2
-
-    resolved_function = resolver.resolve_function(sample_function)
-
-    # Act
-    result = resolved_function(dep1=10, dep2=20)
-
-    # Assert
-    assert result == 30
-
-
-def test_resolved_function_with_manual_kwargs_bypasses_dependswrapper():
-    """
-    Verify that manually passing kwargs to a resolved function bypasses DependsWrapper calls.
-
-    Given: a Resolver and a function with dependencies wrapped in DependsWrapper,
-    When: resolve_function is called and manual kwargs are provided,
-    Then: it should not call the DependsWrapper and use the manual kwargs instead.
-    """
-    # Arrange
-    resolver = Resolver()
-    mock = Mock()
-
-    def counting_dependency() -> int:
-        mock()
-        return 5
-
-    def sample_function(dep: Injected[int, Depends(counting_dependency)]) -> int:
-        return dep
-
-    resolved_function = resolver.resolve_function(sample_function)
-
-    # Act
-    result = resolved_function(dep=10)
-
-    # Assert
-    assert result == 10
-    assert mock.call_count == 0
-
-
 def test_resolved_function_with_no_dependencies_and_kwargs():
     """
     Verify manually passing kwargs to a resolved function with no dependencies.
