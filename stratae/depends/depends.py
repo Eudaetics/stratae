@@ -1,16 +1,28 @@
 """Depends function for dependency injection."""
 
 from inspect import iscoroutinefunction
-from typing import Any, Awaitable, Callable, cast, overload
+from typing import Any, Awaitable, Callable, Hashable, Self, overload
 
 
 class DependsWrapper:
     """Class used to wrap the dependency injection."""
 
-    def __init__(self, dependency: Callable[..., Any]) -> None:
-        """Initialize the Depends instance with an injectable dependency."""
-        self.dependency = dependency
-        self._is_async = iscoroutinefunction(dependency)
+    __slots__ = {"dependency", "_is_async"}
+
+    _registry: dict[Hashable, Self] = {}
+    dependency: Callable[..., Any]
+    _is_async: bool
+
+    def __new__(cls, dependency: Callable[..., Any]) -> Self:
+        """Singleton factory for dependency wrappers."""
+        existing = cls._registry.get(dependency)
+        if existing is not None:
+            return existing
+        instance = super().__new__(cls)
+        instance.dependency = dependency
+        instance._is_async = iscoroutinefunction(dependency)
+        cls._registry[dependency] = instance
+        return instance
 
     def provide(self):
         """Provide the dependency."""
@@ -27,13 +39,13 @@ class DependsWrapper:
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> R: ...
+def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> DependsWrapper: ...
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, R]) -> R: ...
+def Depends[**P, R](dependency: Callable[P, R]) -> DependsWrapper: ...
 
 
-def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> R:
+def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> DependsWrapper:
     """Marker function used to denote a dependency injection."""
-    return cast(R, DependsWrapper(dependency=dependency))
+    return DependsWrapper(dependency=dependency)

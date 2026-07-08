@@ -160,3 +160,95 @@ def test_depends_wrapper_call_multiple_times():
 
     result3 = depends.provide()
     assert result3 == "sample 3"
+
+
+def test_create_returns_same_instance_for_same_dependency():
+    """
+    Verify that DependsWrapper.create returns the same instance for the same dependency.
+
+    Given: a dependency already wrapped via DependsWrapper.create,
+    When: DependsWrapper.create is called again with the same dependency,
+    Then: it should return the exact same DependsWrapper instance.
+    """
+
+    # Arrange
+    def sample_dependency():
+        return "sample"
+
+    # Act
+    first = DependsWrapper(sample_dependency)
+    second = DependsWrapper(sample_dependency)
+
+    # Assert
+    assert first is second
+
+
+def test_create_returns_different_instance_for_different_dependency():
+    """
+    Verify that DependsWrapper.create returns distinct instances for distinct dependencies.
+
+    Given: two different dependencies,
+    When: DependsWrapper.create is called with each,
+    Then: it should return two distinct DependsWrapper instances.
+    """
+
+    # Arrange
+    def first_dependency():
+        return "first"
+
+    def second_dependency():
+        return "second"
+
+    # Act
+    first = DependsWrapper(first_dependency)
+    second = DependsWrapper(second_dependency)
+
+    # Assert
+    assert first is not second
+
+
+def test_create_wraps_the_given_dependency():
+    """
+    Verify that DependsWrapper.create wraps the given dependency correctly.
+
+    Given: a dependency,
+    When: DependsWrapper.create is called with it,
+    Then: the resulting instance's dependency should be the one given.
+    """
+
+    # Arrange
+    def sample_dependency():
+        return "sample"
+
+    # Act
+    depends = DependsWrapper(sample_dependency)
+
+    # Assert
+    assert depends.dependency == sample_dependency
+
+
+def test_create_shared_instance_reflects_mutations():
+    """
+    Verify that mutating a DependsWrapper obtained via create is visible to every other caller.
+
+    Given: two calls to DependsWrapper.create for the same dependency,
+    When: the dependency attribute is mutated on the instance returned by the first call,
+    Then: the instance returned by the second call reflects that mutation too.
+    """
+
+    # Arrange
+    def original_dependency():
+        return "original"
+
+    def replacement_dependency():
+        return "replacement"
+
+    first = DependsWrapper(original_dependency)
+    second = DependsWrapper(original_dependency)
+
+    # Act
+    first.dependency = replacement_dependency
+
+    # Assert
+    assert second.dependency == replacement_dependency
+    assert second.provide() == "replacement"
