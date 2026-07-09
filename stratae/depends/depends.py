@@ -28,10 +28,6 @@ class DependsWrapper:
         """Provide the dependency."""
         return self.dependency()
 
-    async def aprovide(self):
-        """Asynchronously provide the dependency."""
-        return await self.dependency()
-
     @property
     def is_async(self) -> bool:
         """Return True if the dependency is asynchronous, False otherwise."""

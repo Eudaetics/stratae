@@ -127,7 +127,7 @@ async def test_depends_wrapper_call_with_coroutine():
     depends = DependsWrapper(sample_dependency)
 
     # Act
-    result = await depends.aprovide()
+    result = await depends.provide()
 
     # Assert
     assert result == "sample"
