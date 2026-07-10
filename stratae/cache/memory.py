@@ -6,6 +6,8 @@ from typing import Any, Awaitable, Callable, Hashable
 class MemoryCache:
     """A simple in-memory cache."""
 
+    __slots__ = ("_cache",)
+
     _missing = object()
 
     def __init__(self):

@@ -22,6 +22,8 @@ class RequestLifecycleMiddleware:
     Works with any ASGI framework (FastAPI, Starlette, Quart, etc.).
     """
 
+    __slots__ = ("app", "_lifecycle", "_scope")
+
     def __init__(self, app: ASGI3Application, lifecycle: AsyncLifecycle, scope: str):
         """Initialize the RequestLifecycleMiddleware."""
         self.app = app

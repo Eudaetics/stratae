@@ -29,6 +29,8 @@ class _ContextScope[T]:
     state on the `Context` itself.
     """
 
+    __slots__ = ("_provider", "_value", "_token")
+
     def __init__(self, provider: "Context[T]", value: T):
         """Initialize the context scope with provider and value."""
         self._provider = provider
@@ -65,6 +67,8 @@ class Context[T]:
             get_current_user()
 
     """
+
+    __slots__ = ("_name", "_var", "_default")
 
     def __init__(self, name: str, default: T | _NoDefault = _NO_DEFAULT):
         """

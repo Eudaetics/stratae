@@ -68,6 +68,8 @@ class _Active(TypedDict):
 class AsyncLifecycle:
     """Manager for handling lifecycle contexts."""
 
+    __slots__ = ("_scopes", "_caches", "_stack", "_current")
+
     def __init__(self, scopes: Sequence[str], caches: dict[str, type[Cache]] | None = None) -> None:
         """Initialize the LifecycleManager."""
         validate_config(scopes, caches)

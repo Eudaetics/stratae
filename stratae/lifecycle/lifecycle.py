@@ -62,6 +62,8 @@ if TYPE_CHECKING:
 class Lifecycle:
     """Manager for handling lifecycle contexts."""
 
+    __slots__ = ("_caches", "_scopes", "_stack", "_active")
+
     def __init__(
         self, scopes: Sequence[str], caches: dict[str, type["Cache"]] | None = None
     ) -> None:

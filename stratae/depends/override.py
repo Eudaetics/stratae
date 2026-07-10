@@ -19,6 +19,8 @@ class _ReusableAwaitable:
 
 
 class _Override:
+    __slots__ = ("dep", "value", "token")
+
     def __init__(self, dep: DependsWrapper, value: Any):
         self.dep = dep
         self.value = value
