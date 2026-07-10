@@ -15,3 +15,7 @@ class CircularDependencyError(DependencyInjectionError):
 
 class RegistrationError(DependencyInjectionError, ValueError):
     """Exception raised when a registration error occurs in dependency resolution."""
+
+
+class DependencyNotFoundError(DependencyInjectionError, ValueError):
+    """Raised when attempting to reference a non-existent dependency."""

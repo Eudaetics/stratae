@@ -17,7 +17,7 @@ def _kept_parameters(
 
 def _render_dependency_source(name: str, dep: DependsWrapper) -> str:
     """Render the source expression that resolves a single dependency by name."""
-    return f"{'await ' if dep.is_async else ''}__dep_{name}__.dependency()"
+    return f"{'await ' if dep.is_async else ''}__dep_{name}__.provide()"
 
 
 def _render_argument_source(value: Any, param: Parameter):

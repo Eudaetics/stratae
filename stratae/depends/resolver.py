@@ -90,7 +90,7 @@ class Resolver:
         elif param.default is not Parameter.empty:
             raise RegistrationError(f"Cannot use a default with injected parameter {param.name}")
 
-        depends.dependency = self.resolve_function(depends.dependency, _resolving)
+        depends.update(self.resolve_function(depends.dependency, _resolving))
         return depends
 
     @staticmethod

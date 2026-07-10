@@ -2,7 +2,10 @@
 
 import asyncio
 
+import pytest
+
 from stratae.depends import DependsWrapper
+from stratae.depends.exceptions import DependencyNotFoundError
 
 
 def test_depends_wrapper_initialization():
@@ -227,28 +230,224 @@ def test_create_wraps_the_given_dependency():
     assert depends.dependency == sample_dependency
 
 
-def test_create_shared_instance_reflects_mutations():
+def test_update_dependency():
     """
-    Verify that mutating a DependsWrapper obtained via create is visible to every other caller.
+    Updating a dependnecy replaces both dependency and provide.
 
-    Given: two calls to DependsWrapper.create for the same dependency,
-    When: the dependency attribute is mutated on the instance returned by the first call,
-    Then: the instance returned by the second call reflects that mutation too.
+    Given: a DependsWrapper instance with no active override,
+    When: update is called with a new dependency,
+    Then: both dependency and provide should reflect the new dependency.
     """
 
     # Arrange
     def original_dependency():
         return "original"
 
-    def replacement_dependency():
-        return "replacement"
+    def updated_dependency():
+        return "updated"
 
-    first = DependsWrapper(original_dependency)
-    second = DependsWrapper(original_dependency)
+    depends = DependsWrapper(original_dependency)
 
     # Act
-    first.dependency = replacement_dependency
+    depends.update(updated_dependency)
 
     # Assert
-    assert second.dependency == replacement_dependency
-    assert second.provide() == "replacement"
+    assert depends.dependency == updated_dependency
+    assert depends.provide == updated_dependency
+
+
+def test_update_dependency_during_override():
+    """
+    Verify that update does not resync provide while an override is active.
+
+    Given: a DependsWrapper instance with an active override,
+    When: update is called with a new dependency,
+    Then: dependency should update but provide should be left untouched.
+    """
+
+    # Arrange
+    def original_dependency():
+        return "original"
+
+    def updated_dependency():
+        return "updated"
+
+    depends = DependsWrapper(original_dependency)
+    depends.override_count = 1
+
+    # Act
+    depends.update(updated_dependency)
+
+    # Assert
+    assert depends.dependency == updated_dependency
+    assert depends.provide == original_dependency
+
+
+def test_returns_same_instance_after_update():
+    """
+    Verify that DependsWrapper singleton identity survives update.
+
+    Given: a DependsWrapper instance that has been updated to a new dependency,
+    When: DependsWrapper is constructed again with the original dependency,
+    Then: it should return the same instance as before the update.
+    """
+
+    # Arrange
+    def original_dependency():
+        return "original"
+
+    def updated_dependency():
+        return "updated"
+
+    depends = DependsWrapper(original_dependency)
+
+    # Act
+    depends.update(updated_dependency)
+    same = DependsWrapper(original_dependency)
+
+    # Assert
+    assert same is depends
+
+
+def test_find_with_dependency():
+    """
+    Verify that find returns the wrapper for a registered dependency.
+
+    Given: a dependency wrapped via DependsWrapper,
+    When: find is called with that dependency,
+    Then: it should return the associated DependsWrapper instance.
+    """
+
+    # Arrange
+    def sample_dependency():
+        return "sample"
+
+    depends = DependsWrapper(sample_dependency)
+
+    # Act
+    found = DependsWrapper.find(sample_dependency)
+
+    # Assert
+    assert found is depends
+
+
+def test_find_invalid_dependency():
+    """
+    Verify that find raises for an unregistered dependency.
+
+    Given: a function that has never been wrapped via DependsWrapper,
+    When: find is called with that function,
+    Then: it should raise DependencyNotFoundError.
+    """
+
+    # Arrange
+    def unregistered_dependency():
+        return "unregistered"
+
+    # Act & Assert
+    with pytest.raises(DependencyNotFoundError):
+        DependsWrapper.find(unregistered_dependency)
+
+
+def test_find_after_update():
+    """
+    Verify that find still resolves the original dependency after an update.
+
+    Given: a DependsWrapper that has been updated to a new dependency,
+    When: find is called with the original dependency,
+    Then: it should return the same DependsWrapper instance.
+    """
+
+    # Arrange
+    def original_dependency():
+        return "original"
+
+    def updated_dependency():
+        return "updated"
+
+    depends = DependsWrapper(original_dependency)
+
+    # Act
+    depends.update(updated_dependency)
+    found = DependsWrapper.find(original_dependency)
+
+    # Assert
+    assert found is depends
+
+
+def test_provide_override_unset():
+    """
+    Verify that provide_override falls back to the dependency when unset.
+
+    Given: a DependsWrapper instance with no override set,
+    When: provide_override is called,
+    Then: it should return the result of calling the dependency.
+    """
+
+    # Arrange
+    def sample_dependency():
+        return "sample"
+
+    depends = DependsWrapper(sample_dependency)
+
+    # Act
+    result = depends.provide_override()
+
+    # Assert
+    assert result == "sample"
+
+
+def test_provide_override_set():
+    """
+    Verify that provide_override returns the override value when set.
+
+    Given: a DependsWrapper instance with an override value set,
+    When: provide_override is called,
+    Then: it should return the override value instead of calling the dependency.
+    """
+
+    # Arrange
+    def sample_dependency():
+        return "sample"
+
+    depends = DependsWrapper(sample_dependency)
+    token = depends.override.set("overridden")
+
+    try:
+        # Act
+        result = depends.provide_override()
+
+        # Assert
+        assert result == "overridden"
+    finally:
+        depends.override.reset(token)
+
+
+def test_provide_override_nested():
+    """
+    Verify that nested overrides resolve and restore correctly.
+
+    Given: a DependsWrapper instance with an override set inside another override,
+    When: provide_override is called at each nesting level,
+    Then: it should return the innermost value while nested, and fall back to
+    the outer value and then the dependency as each override is reset.
+    """
+
+    # Arrange
+    def sample_dependency():
+        return "sample"
+
+    depends = DependsWrapper(sample_dependency)
+
+    # Act & Assert
+    outer_token = depends.override.set("outer")
+    assert depends.provide_override() == "outer"
+
+    inner_token = depends.override.set("inner")
+    assert depends.provide_override() == "inner"
+
+    depends.override.reset(inner_token)
+    assert depends.provide_override() == "outer"
+
+    depends.override.reset(outer_token)
+    assert depends.provide_override() == "sample"
