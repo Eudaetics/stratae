@@ -46,7 +46,7 @@ class DependsWrapper:
         return ctx
 
     def update(self, dependency: Callable[..., Any]):
-        """Update the dependency, correcting the provide and registry."""
+        """Update the dependency while also correcting the provide."""
         with self.lock:
             self.dependency = dependency
             if self.override_count == 0:

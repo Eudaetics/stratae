@@ -1,7 +1,7 @@
 """Test suite for the override tool in the dependency injection module."""
 
 import threading
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -24,6 +24,41 @@ def test_override_returns_value_while_active():
     # Act & Assert
     with override(dep, "overridden"):
         assert depends.provide() == "overridden"
+
+
+async def test_override_returns_value_while_active_async():
+    """
+    Provide should return the override value while the override is active, for an async dependency.
+
+    Given: a DependsWrapper for an async dependency,
+    When: it is overridden inside a with block,
+    Then: awaiting provide should return the override value instead of the dependency's result.
+    """
+    # Arrange
+    dep = AsyncMock(return_value="real")
+    depends = DependsWrapper(dep)
+
+    # Act & Assert
+    with override(dep, "overridden"):
+        assert await depends.provide() == "overridden"
+
+
+async def test_override_supports_repeated_provide_calls_async():
+    """
+    Provide should return the override value on every call, not just the first, for an async dep.
+
+    Given: a DependsWrapper for an async dependency,
+    When: it is overridden inside a with block and provide is awaited more than once,
+    Then: every call should return the override value.
+    """
+    # Arrange
+    dep = AsyncMock(return_value="real")
+    depends = DependsWrapper(dep)
+
+    # Act & Assert
+    with override(dep, "overridden"):
+        assert await depends.provide() == "overridden"
+        assert await depends.provide() == "overridden"
 
 
 def test_override_restores_dependency_after_exit():

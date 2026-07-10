@@ -6,6 +6,18 @@ from typing import Any, Callable
 from stratae.depends import DependsWrapper
 
 
+class _ReusableAwaitable:
+    __slots__ = ("value",)
+
+    def __init__(self, value: Any) -> None:
+        self.value = value
+
+    def __await__(self):
+        if False:
+            yield
+        return self.value
+
+
 class _Override:
     def __init__(self, dep: DependsWrapper, value: Any):
         self.dep = dep
@@ -17,7 +29,9 @@ class _Override:
             if self.dep.override_count == 0:
                 self.dep.provide = self.dep.provide_override
             self.dep.override_count += 1
-            self.token = self.dep.override.set(self.value)
+            self.token = self.dep.override.set(
+                _ReusableAwaitable(self.value) if self.dep.is_async else self.value
+            )
 
     def __exit__(self, *_):
         with self.dep.lock:
