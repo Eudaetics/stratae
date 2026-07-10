@@ -8,7 +8,7 @@ from stratae.cache import Cache, MemoryCache
 IsolationType = Literal["none", "context"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Scope:
     """
     Definition of a scope and configuration for cache isolation behavior.

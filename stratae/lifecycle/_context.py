@@ -30,6 +30,8 @@ class LifecycleContext:
 
     """
 
+    __slots__ = ("_scope", "_lifecycle")
+
     def __init__(self, scope: str, lifecycle: "Lifecycle") -> None:
         """Initialize the ScopeDecorator with a specific lifecycle scope."""
         self._scope = scope
@@ -46,6 +48,8 @@ class LifecycleContext:
 
 class AsyncLifecycleContext:
     """Asynchronous context manager for lifecycle scopes."""
+
+    __slots__ = ("_scope", "_lifecycle", "token")
 
     def __init__(self, scope: str, lifecycle: "AsyncLifecycle") -> None:
         """Initialize the AsyncScopeContext with a specific lifecycle scope."""

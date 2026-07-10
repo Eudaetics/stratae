@@ -23,6 +23,8 @@ from stratae.depends.exceptions import CircularDependencyError, RegistrationErro
 class Resolver:
     """Dependency Injection resolver with registration-time resolution."""
 
+    __slots__ = ("_functions",)
+
     def __init__(self):
         """Initialize the resolver with empty registries."""
         self._functions: set[Callable[..., Any]] = set()

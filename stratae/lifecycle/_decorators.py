@@ -49,6 +49,8 @@ def _is_auto_async_cm[**P, T, U](
 class CacheDecorator:
     """Decorator class to set the lifecycle scope for caching function results."""
 
+    __slots__ = ("_scope", "_lifecycle", "_cache_key", "_ignore_params")
+
     def __init__(
         self,
         scope: str,
@@ -93,6 +95,8 @@ class CacheDecorator:
 
 class AsyncCacheDecorator:
     """Asynchronous decorator class to set the lifecycle scope for caching function results."""
+
+    __slots__ = ("_scope", "_lifecycle", "_cache_key", "_ignore_params")
 
     def __init__(
         self,
