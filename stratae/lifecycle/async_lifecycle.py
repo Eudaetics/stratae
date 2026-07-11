@@ -41,7 +41,6 @@ Example:
             session = await get_request_session()
 """
 
-from contextlib import AsyncExitStack
 from contextvars import ContextVar, Token
 from typing import Callable, Hashable, Sequence, TypedDict
 
@@ -156,7 +155,7 @@ class AsyncLifecycle:
             raise ScopeInactiveError(f"Scope '{scope}' is not active.")
         return active.cache
 
-    def get_exit_stack(self, scope: str) -> AsyncExitStack:
+    def get_exit_stack(self, scope: str):
         """Get the exit stack for the specified lifecycle scope."""
         try:
             var = self._stack[scope]

@@ -41,7 +41,6 @@ Example:
 """
 
 from collections import deque
-from contextlib import ExitStack
 from typing import TYPE_CHECKING, Callable, Hashable, Sequence
 
 from stratae.cache import MemoryCache
@@ -133,7 +132,7 @@ class Lifecycle:
 
         return self._stack[scope].cache
 
-    def get_exit_stack(self, scope: str) -> ExitStack:
+    def get_exit_stack(self, scope: str):
         """Get the exit stack for the specified lifecycle scope."""
         if scope not in self._scopes:
             raise ScopeNotFoundError(f"Unknown scope: {scope}")
