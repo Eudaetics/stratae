@@ -2,7 +2,7 @@
 
 from unittest.mock import Mock
 
-from stratae.lifecycle import AsyncLifecycle, async_managed, managed
+from stratae.lifecycle import AsyncLifecycle, async_resource, resource
 
 
 async def test_decorator_on_sync(async_lifecycle: AsyncLifecycle):
@@ -46,7 +46,7 @@ async def test_decorator_on_sync_generator(async_lifecycle: AsyncLifecycle):
     mock_cleanup = Mock()
 
     @async_lifecycle.cache("application")
-    @managed
+    @resource
     def sample_generator():
         try:
             yield "test"
@@ -102,7 +102,7 @@ async def test_decorator_on_async_generator(async_lifecycle: AsyncLifecycle):
     mock_cleanup = Mock()
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def sample_generator():
         try:
             yield "test"

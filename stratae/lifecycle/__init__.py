@@ -2,7 +2,7 @@
 
 from .async_lifecycle import AsyncLifecycle
 from .lifecycle import Lifecycle
-from .manage import async_managed, managed
+from .resource import async_resource, resource
 from .scope import Scope
 
-__all__ = ["AsyncLifecycle", "Lifecycle", "Scope", "async_managed", "managed"]
+__all__ = ["AsyncLifecycle", "Lifecycle", "Scope", "async_resource", "resource"]

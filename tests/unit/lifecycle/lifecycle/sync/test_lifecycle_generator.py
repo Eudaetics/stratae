@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import Lifecycle, managed
+from stratae.lifecycle import Lifecycle, resource
 
 
 def test_generator_sync(lifecycle: Lifecycle):
@@ -31,7 +31,7 @@ def test_generator_sync(lifecycle: Lifecycle):
     class SimpleObject: ...
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def sample_generator():
         try:
             yield SimpleObject()
@@ -65,7 +65,7 @@ def test_decorate_generator_inactive_scope(lifecycle: Lifecycle):
 
     # Arrange
     @lifecycle.cache("application")
-    @managed
+    @resource
     def sample_generator():
         yield "test"
 
@@ -88,7 +88,7 @@ def test_decorate_generator_sync_exception_cleanup(lifecycle: Lifecycle):
     class SimpleObject: ...
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def sample_generator():
         try:
             yield SimpleObject()
@@ -119,7 +119,7 @@ def test_decorator_generator_sync_exception_handling(lifecycle: Lifecycle):
     class SimpleObject: ...
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def sample_generator():
         try:
             yield SimpleObject()
@@ -159,7 +159,7 @@ def test_multiple_generators_sync(lifecycle: Lifecycle):
     class SimpleObject: ...
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def generator_one():
         try:
             yield SimpleObject()
@@ -167,7 +167,7 @@ def test_multiple_generators_sync(lifecycle: Lifecycle):
             mock_cleanup_1()
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def generator_two():
         try:
             yield SimpleObject()
@@ -175,7 +175,7 @@ def test_multiple_generators_sync(lifecycle: Lifecycle):
             mock_cleanup_2()
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def generator_three():
         try:
             yield SimpleObject()
@@ -211,7 +211,7 @@ def test_generator_sync_exception_group(lifecycle: Lifecycle):
     class SimpleObject: ...
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def generator_one():
         try:
             yield SimpleObject()
@@ -219,7 +219,7 @@ def test_generator_sync_exception_group(lifecycle: Lifecycle):
             mock_cleanup_1()
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def generator_two():
         try:
             yield SimpleObject()
@@ -227,7 +227,7 @@ def test_generator_sync_exception_group(lifecycle: Lifecycle):
             mock_cleanup_2()
 
     @lifecycle.cache("application")
-    @managed
+    @resource
     def generator_three():
         try:
             yield SimpleObject()

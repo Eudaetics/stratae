@@ -8,7 +8,7 @@ import pytest
 
 from stratae.context import Context
 from stratae.depends import Depends, Injected, inject
-from stratae.lifecycle import AsyncLifecycle, async_managed
+from stratae.lifecycle import AsyncLifecycle, async_resource
 
 
 async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):
@@ -29,7 +29,7 @@ async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
+    @async_resource
     async def get_resource(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
@@ -68,7 +68,7 @@ async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
+    @async_resource
     async def get_app_resource(resource: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield resource
@@ -78,7 +78,7 @@ async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle
 
     @async_lifecycle.cache("request")
     @inject
-    @async_managed
+    @async_resource
     async def get_request_resource(
         resource: Injected[SimpleObject, Depends(lambda: SimpleObject())],
     ):
@@ -150,7 +150,7 @@ async def test_lifecycle_inject_async_gen_with_exception(async_lifecycle: AsyncL
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
+    @async_resource
     async def get_resource(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
@@ -184,7 +184,7 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecyc
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
+    @async_resource
     async def get_one(
         db: Injected[SimpleObject, Depends(SimpleObject)],
     ) -> AsyncGenerator[SimpleObject, None]:
@@ -198,7 +198,7 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecyc
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
+    @async_resource
     async def get_two(
         db: Injected[SimpleObject, Depends(SimpleObject)],
     ) -> AsyncGenerator[SimpleObject, None]:

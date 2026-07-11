@@ -84,7 +84,7 @@ lifecycle = Lifecycle(['application', 'request'])
 # Lifecycle will cache the yielded value and return it for all calls within a request
 @lifecycle.cache('request')
 # Mark get_session as a contextmanager that will be auto-entered to get the session
-@managed
+@resource
 def get_session():
     session = Session()
     try:
@@ -193,7 +193,7 @@ The design of Stratae means integrating with other tools or frameworks is typica
 ```python
 from fastapi import FastAPI
 from stratae.integrations import RequestLifecycleMiddleware
-from stratae.lifecycle import AsyncLifecycle, managed
+from stratae.lifecycle import AsyncLifecycle, async_resource
 
 
 app = FastAPI()
@@ -204,7 +204,7 @@ app.add_middleware(RequestLifecycleMiddleware, lifecycle, 'request')
 
 # Everything that needs the session will get the same session
 @lifecycle.cache('request')
-@managed
+@async_resource
 async def get_session():
     session = AsyncSession()
     try:
