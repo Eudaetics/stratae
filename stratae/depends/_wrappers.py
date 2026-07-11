@@ -4,7 +4,7 @@ from functools import wraps
 from inspect import Parameter, Signature, isclass, signature
 from typing import Any, Callable
 
-from stratae.codegen import Writer, render_parameters
+from stratae.codegen import Writer, render_parameters, wrapper_filename
 from stratae.depends.depends import DependsWrapper
 
 
@@ -65,7 +65,7 @@ def _finalize(
         "__func__": func,
         **{f"__dep_{name}__": dep for name, dep in resolved_deps.items()},
     }
-    exec(compile(writer.render(), "<generated>", "exec"), namespace)  # noqa: S102
+    exec(compile(writer.render(), wrapper_filename(func), "exec"), namespace)  # noqa: S102
 
     metadata_source: Callable[..., Any] = _get_source(func)
 
