@@ -18,7 +18,7 @@ from stratae.lifecycle._wrappers import (
     create_synccm_in_async_wrapper,
     create_synccm_wrapper,
 )
-from stratae.lifecycle.manage import AUTO_ENTER_ASYNC, AUTO_ENTER_SYNC
+from stratae.lifecycle.resource import AUTO_ENTER_ASYNC, AUTO_ENTER_SYNC
 
 if TYPE_CHECKING:
     from stratae.lifecycle.async_lifecycle import AsyncLifecycle

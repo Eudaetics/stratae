@@ -6,7 +6,7 @@ import pytest
 
 from stratae.context import Context
 from stratae.depends import Depends, Injected, inject
-from stratae.lifecycle import Lifecycle, managed
+from stratae.lifecycle import Lifecycle, resource
 
 
 def test_lifecycle_inject_sync(lifecycle: Lifecycle):
@@ -84,7 +84,7 @@ def test_lifecycle_inject_sync_generator(lifecycle: Lifecycle):
 
     @lifecycle.cache("application")
     @inject
-    @managed
+    @resource
     def get_resource(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
@@ -118,7 +118,7 @@ def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
 
     @lifecycle.cache("application")
     @inject
-    @managed
+    @resource
     def get_app_resource(resource: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield resource
@@ -127,7 +127,7 @@ def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
 
     @lifecycle.cache("request")
     @inject
-    @managed
+    @resource
     def get_request_resource(resource: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield resource
@@ -169,7 +169,7 @@ def test_lifecycle_inject_sync_with_exception(lifecycle: Lifecycle):
 
     @lifecycle.cache("application")
     @inject
-    @managed
+    @resource
     def get_resource(_: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         yield
         raise ValueError("Simulated exception")
@@ -198,7 +198,7 @@ def test_lifecycle_inject_sync_gen_with_exception(lifecycle: Lifecycle):
 
     @lifecycle.cache("application")
     @inject
-    @managed
+    @resource
     def get_resource(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
@@ -236,7 +236,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle
 
     @lifecycle.cache("application")
     @inject
-    @managed
+    @resource
     def get_one(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
@@ -250,7 +250,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle
 
     @lifecycle.cache("application")
     @inject
-    @managed
+    @resource
     def get_two(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db

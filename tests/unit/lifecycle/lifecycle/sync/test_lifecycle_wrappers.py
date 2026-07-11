@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import Lifecycle, managed
+from stratae.lifecycle import Lifecycle, resource
 
 
 class SimpleObject:
@@ -40,7 +40,7 @@ def callable_factory(
         return SimpleObject(calc(x, y, z))
 
     @lifecycle.cache("application", **(config or {}))
-    @managed
+    @resource
     def get_object_cm_sync(x: int | SimpleObject = 0, y: int = 0, z: int | SimpleObject = 0):
         call_counter()
         yield SimpleObject(calc(x, y, z))
