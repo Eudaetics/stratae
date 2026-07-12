@@ -114,6 +114,7 @@ def _finalize(
     wrapper.__annotations__ = _get_annotations(kept)
     if not isclass(func) and "return" in metadata_source.__annotations__:
         wrapper.__annotations__["return"] = metadata_source.__annotations__["return"]
+    wrapper.__stratae_resolved__ = True
     return wrapper
 
 

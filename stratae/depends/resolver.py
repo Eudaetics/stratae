@@ -23,11 +23,7 @@ from stratae.depends.exceptions import CircularDependencyError, RegistrationErro
 class Resolver:
     """Dependency Injection resolver with registration-time resolution."""
 
-    __slots__ = ("_functions",)
-
-    def __init__(self):
-        """Initialize the resolver with empty registries."""
-        self._functions: set[Callable[..., Any]] = set()
+    __slots__ = ()
 
     def resolve_function[**P, R](
         self,
@@ -35,7 +31,7 @@ class Resolver:
         _resolving: set[Callable[..., Any]] | None = None,
     ) -> Callable[..., R]:
         """Resolve a function to its dependencies."""
-        if func in self._functions:
+        if getattr(func, "__stratae_resolved__", False):
             return func
         if _resolving is None:
             _resolving = set()
@@ -48,9 +44,7 @@ class Resolver:
         )
 
         self._validate_sync_async_constraint(func, resolved_deps)
-        resolved_func = self._create_wrapper(func, resolved_deps)
-        self._functions.add(resolved_func)
-        return resolved_func
+        return self._create_wrapper(func, resolved_deps)
 
     def _resolve_parameters(
         self, sig: Signature, _resolving: set[Callable[..., Any]]
@@ -61,10 +55,6 @@ class Resolver:
             for name, param in sig.parameters.items()
             if (value := self._resolve_parameter(param, _resolving)) is not None
         }
-
-    def clear(self) -> None:
-        """Clear all registered functions."""
-        self._functions.clear()
 
     def _get_annotated_info(self, annotation: Annotated[Any, ...]) -> DependsWrapper | None:
         """Extract the DependsWrapper from an Annotated parameter."""
@@ -92,7 +82,9 @@ class Resolver:
         elif param.default is not Parameter.empty:
             raise RegistrationError(f"Cannot use a default with injected parameter {param.name}")
 
-        depends.update(self.resolve_function(depends.dependency, _resolving))
+        if not depends.resolved:
+            depends.update(self.resolve_function(depends.dependency, _resolving))
+            depends.resolved = True
         return depends
 
     @staticmethod

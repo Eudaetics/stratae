@@ -4,6 +4,7 @@ from contextvars import ContextVar
 from inspect import iscoroutinefunction
 from threading import Lock
 from typing import Any, Awaitable, Callable, Hashable, Self, overload
+from weakref import WeakValueDictionary
 
 from stratae.depends.exceptions import DependencyNotFoundError
 
@@ -13,15 +14,25 @@ _UNSET = object()
 class DependsWrapper:
     """Class used to wrap the dependency injection."""
 
-    __slots__ = {"dependency", "provide", "is_async", "override", "override_count", "lock"}
+    __slots__ = {
+        "dependency",
+        "provide",
+        "is_async",
+        "override",
+        "override_count",
+        "lock",
+        "resolved",
+        "__weakref__",
+    }
 
-    _registry: dict[Hashable, Self] = {}
+    _registry: WeakValueDictionary[Hashable, Self] = WeakValueDictionary()
     dependency: Callable[[], Any]
     provide: Callable[[], Any]
     is_async: bool
     override: ContextVar[Any]
     override_count: int
     lock: Lock
+    resolved: bool
 
     def __new__(cls, dependency: Callable[..., Any]) -> Self:
         """Singleton factory for dependency wrappers."""
@@ -35,6 +46,7 @@ class DependsWrapper:
         instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
         instance.override_count = 0
         instance.lock = Lock()
+        instance.resolved = False
         cls._registry[dependency] = instance
         return instance
 
