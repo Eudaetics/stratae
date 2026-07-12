@@ -1,20 +1,21 @@
 """Validation of Scope construction."""
 
-from stratae.cache import MemoryCache
+import pytest
+
 from stratae.lifecycle import Scope
 
 
 def test_scope_init():
     """
-    Verify that Scope can be constructed with positional args and no cache.
+    Verify that Scope can be constructed with positional args.
 
     Given: a name and isolation level,
-    When: Scope is constructed positionally without a cache,
-    Then: it should store the name and isolation, and default to a MemoryCache.
+    When: Scope is constructed positionally,
+    Then: it should store the name and isolation.
     """
     # Arrange
     name = "request"
-    isolation = "none"
+    isolation = "shared"
 
     # Act
     scope = Scope(name, isolation)
@@ -22,48 +23,50 @@ def test_scope_init():
     # Assert
     assert scope.name == name
     assert scope.isolation == isolation
-    assert isinstance(scope.cache, MemoryCache)
-
-
-def test_scope_init_custom_cache():
-    """
-    Verify that Scope stores a custom cache when one is provided.
-
-    Given: a name, isolation level, and a custom cache instance,
-    When: Scope is constructed positionally with that cache,
-    Then: it should store the same cache instance rather than creating a default one.
-    """
-    # Arrange
-    name = "request"
-    isolation = "none"
-    cache = MemoryCache()
-
-    # Act
-    scope = Scope(name, isolation, cache)
-
-    # Assert
-    assert scope.name == name
-    assert scope.isolation == isolation
-    assert scope.cache is cache
 
 
 def test_scope_keyword_init():
     """
     Verify that Scope fields can be assigned via keyword arguments.
 
-    Given: a name, isolation level, and cache instance,
+    Given: a name and isolation level,
     When: Scope is constructed using keyword arguments,
     Then: it should store each field correctly.
     """
     # Arrange
     name = "request"
     isolation = "context"
-    cache = MemoryCache()
 
     # Act
-    scope = Scope(name=name, isolation=isolation, cache=cache)
+    scope = Scope(name=name, isolation=isolation)
 
     # Assert
     assert scope.name == name
     assert scope.isolation == isolation
-    assert scope.cache is cache
+
+
+@pytest.mark.parametrize("invalid_name", ["app-1", "request scope", "123scope", "scope!"])
+def test_scope_init_with_non_identifier_name(invalid_name: str):
+    """
+    Verify that constructing a Scope with a non-identifier name raises an error.
+
+    Given: a scope name that is not a valid Python identifier,
+    When: a Scope is constructed with that name,
+    Then: a ValueError should be raised.
+    """
+    # Act & Assert
+    with pytest.raises(ValueError, match="All scopes must be valid Python identifiers."):
+        Scope(invalid_name, "shared")
+
+
+def test_scope_init_with_invalid_isolation():
+    """
+    Verify that constructing a Scope with an invalid isolation raises an error.
+
+    Given: an isolation value that is neither "shared" nor "context",
+    When: a Scope is constructed with that isolation,
+    Then: a ValueError should be raised.
+    """
+    # Act & Assert
+    with pytest.raises(ValueError, match="Invalid scope isolation given for application."):
+        Scope("application", "bogus")  # pyright: ignore[reportArgumentType]

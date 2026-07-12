@@ -6,20 +6,19 @@ and cache the results of function calls based on specified scopes. It supports o
 functions, including generator functions with automatic cleanup for resource management.
 
 Key Features:
-- Configurable lifecycle scopes using enums.
-    - lifecycle = Lifecycle(['application', 'request', 'block'])
+- Scopes are declared as Scope objects, each naming its cache isolation (see Scope).
+    - lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
 - Context managers for managing resource lifetimes.
 - `@lifecycle.cache('<scope>')`: Decorator to define the cache scope of a function
     - `@lifecycle.cache('application')`
     - `@lifecycle.cache('request')`
-    - `@lifecycle.cache('block')`
 - Automatic caching of function results based on the defined scope.
 - Support for synchronous functions, including generators.
 - Automatic cleanup of resources when the scope ends.
 
 Usage:
 Example:
-    lifecycle = Lifecycle(['application', 'request', 'block'])
+    lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
 
     @lifecycle.cache('application')
     def get_database_connection() -> Connection:
@@ -53,6 +52,7 @@ from stratae.lifecycle.exceptions import (
     ScopeInactiveError,
     ScopeNotFoundError,
 )
+from stratae.lifecycle.scope import Scope
 
 if TYPE_CHECKING:
     from stratae.cache import Cache
@@ -61,17 +61,14 @@ if TYPE_CHECKING:
 class Lifecycle:
     """Manager for handling lifecycle contexts."""
 
-    __slots__ = ("_caches", "_scopes", "_stack", "_active")
+    __slots__ = ("_scopes", "_stack", "_active")
 
-    def __init__(
-        self, scopes: Sequence[str], caches: dict[str, type["Cache"]] | None = None
-    ) -> None:
+    def __init__(self, scopes: Sequence[Scope]) -> None:
         """Initialize the LifecycleManager."""
-        validate_config(scopes, caches)
-        self._caches = caches or {}
-        self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
+        validate_config(scopes)
+        self._scopes: dict[str, int] = {scope.name: index for index, scope in enumerate(scopes)}
         self._stack: dict[str, ActiveScope] = {
-            scope: ActiveScope(self._caches.get(scope, MemoryCache)) for scope in scopes
+            scope.name: ActiveScope(MemoryCache) for scope in scopes
         }
         self._active: deque[str] = deque()
 

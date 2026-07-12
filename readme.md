@@ -14,9 +14,9 @@ pip install stratae
 
 ```python
 from stratae.depends import Depends, inject
-from stratae.lifecycle import Lifecycle
+from stratae.lifecycle import Lifecycle, Scope
 
-lifecycle = Lifecycle(["application"])
+lifecycle = Lifecycle([Scope("application", "shared")])
 
 type Database = dict[str, list[dict[str, str]]]
 
@@ -79,7 +79,7 @@ Use lifecycle management when you want to cache objects or guarantee resource cl
 
 ```python
 # Set up the lifecycle with your application scopes
-lifecycle = Lifecycle(['application', 'request'])
+lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
 
 # Lifecycle will cache the yielded value and return it for all calls within a request
 @lifecycle.cache('request')
@@ -115,7 +115,7 @@ To enable decoupled systems, Stratae uses context variables for setting values t
 ```python
 from stratae.context import Context
 
-lifecycle = Lifecycle('request')
+lifecycle = Lifecycle([Scope('request', 'shared')])
 user_id = Context[int]("user_id")
 
 @lifecycle.cache('request')
@@ -140,9 +140,9 @@ Stratae is fully async compatible. Injection natively works with sync or async f
 
 ```python
 from stratae.depends import Depends, inject
-from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, Scope
 
-lifecycle = AsyncLifecycle(['application', 'request'])
+lifecycle = AsyncLifecycle([Scope('application', 'shared'), Scope('request', 'context')])
 
 @lifecycle.cache('application')
 async def get_database() -> Database:
@@ -193,11 +193,11 @@ The design of Stratae means integrating with other tools or frameworks is typica
 ```python
 from fastapi import FastAPI
 from stratae.integrations import RequestLifecycleMiddleware
-from stratae.lifecycle import AsyncLifecycle, async_resource
+from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
 
 
 app = FastAPI()
-lifecycle = AsyncLifecycle(['request'])
+lifecycle = AsyncLifecycle([Scope('request', 'context')])
 
 # Add the middleware that starts a lifecycle request
 app.add_middleware(RequestLifecycleMiddleware, lifecycle, 'request')
