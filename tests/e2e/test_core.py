@@ -8,14 +8,14 @@ import pytest
 
 from stratae.context import Context
 from stratae.depends import Depends, Injected, inject
-from stratae.lifecycle import Lifecycle
+from stratae.lifecycle import Lifecycle, Scope
 
 
 @pytest.fixture
 def lifecycle():
     """Provide a Lifecycle instance for testing."""
     scopes = ["application", "session", "request"]
-    yield Lifecycle(scopes)
+    yield Lifecycle([Scope(name, "shared") for name in scopes])
 
 
 def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):

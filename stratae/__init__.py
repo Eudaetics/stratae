@@ -7,9 +7,9 @@ it works anywhere: APIs, CLIs, workers, and tests.
 
 Quick example:
     >>> from stratae.depends import Depends, Injected, inject
-    >>> from stratae.lifecycle import Lifecycle
+    >>> from stratae.lifecycle import Lifecycle, Scope
     >>>
-    >>> lifecycle = Lifecycle(['application', 'request'])
+    >>> lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
     >>>
     >>> @lifecycle.cache('application')
     >>> def get_database():

@@ -7,20 +7,19 @@ and asynchronous functions, including generator functions with automatic cleanup
 resource management.
 
 Key Features:
-- Configurable lifecycle scopes using enums.
-    - lifecycle = AsyncLifecycle(['application', 'request', 'block'])
+- Scopes are declared as Scope objects, each naming its cache isolation (see Scope).
+    - lifecycle = AsyncLifecycle([Scope('application', 'shared'), Scope('request', 'context')])
 - Context managers for managing resource lifetimes.
 - `@lifecycle.cache('<scope>')`: Decorator to define the cache scope of a function
     - `@lifecycle.cache('application')`
     - `@lifecycle.cache('request')`
-    - `@lifecycle.cache('block')`
 - Automatic caching of function results based on the defined scope.
 - Support for synchronous and asynchronous functions, including generators.
 - Automatic cleanup of resources when the scope ends.
 
 Usage:
 Example:
-    lifecycle = Lifecycle(['application', 'request', 'block'])
+    lifecycle = AsyncLifecycle([Scope('application', 'shared'), Scope('request', 'context')])
 
     @lifecycle.cache('application')
     async def get_database_connection() -> Connection:
@@ -54,6 +53,7 @@ from stratae.lifecycle.exceptions import (
     ScopeInactiveError,
     ScopeNotFoundError,
 )
+from stratae.lifecycle.scope import Scope
 
 
 class _Active(TypedDict):
@@ -67,15 +67,14 @@ class _Active(TypedDict):
 class AsyncLifecycle:
     """Manager for handling lifecycle contexts."""
 
-    __slots__ = ("_scopes", "_caches", "_stack", "_current")
+    __slots__ = ("_scopes", "_stack", "_current")
 
-    def __init__(self, scopes: Sequence[str], caches: dict[str, type[Cache]] | None = None) -> None:
+    def __init__(self, scopes: Sequence[Scope]) -> None:
         """Initialize the LifecycleManager."""
-        validate_config(scopes, caches)
-        self._scopes: dict[str, int] = {scope: index for index, scope in enumerate(scopes)}
-        self._caches = caches or {}
+        validate_config(scopes)
+        self._scopes: dict[str, int] = {scope.name: index for index, scope in enumerate(scopes)}
         self._stack: dict[str, ContextVar[AsyncActiveScope | None]] = {
-            scope: ContextVar(scope, default=None) for scope in scopes
+            scope.name: ContextVar(scope.name, default=None) for scope in scopes
         }
         self._current: ContextVar[_Active | None] = ContextVar("lifecycle_current", default=None)
 
@@ -92,7 +91,7 @@ class AsyncLifecycle:
                 f"Cannot push {scope} scope when {current['token'].var.name} is already active."
             )
 
-        scope_obj = AsyncActiveScope(self._caches.get(scope, MemoryCache))
+        scope_obj = AsyncActiveScope(MemoryCache)
         token = cur.set(scope_obj)
         self._current.set({"token": token, "scope": scope_obj, "previous": current})
         return token
