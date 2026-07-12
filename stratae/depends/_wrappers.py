@@ -9,10 +9,10 @@ from stratae.depends.depends import DependsWrapper
 
 
 def _kept_parameters(
-    func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
+    params: list[Parameter], resolved_deps: dict[str, DependsWrapper]
 ) -> list[Parameter]:
     """Return func's parameters that are not resolved dependencies, preserving order."""
-    return [param for key, param in signature(func).parameters.items() if key not in resolved_deps]
+    return [param for param in params if param.name not in resolved_deps]
 
 
 def _render_dependency_source(name: str, dep: DependsWrapper) -> str:
@@ -32,11 +32,11 @@ def _render_argument_source(value: Any, param: Parameter):
 
 
 def _render_call_arguments(
-    func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
+    params: list[Parameter], resolved_deps: dict[str, DependsWrapper]
 ) -> str:
     """Render the call arguments passed to the wrapped function."""
     args: list[str] = []
-    for param in signature(func).parameters.values():
+    for param in params:
         dep = resolved_deps.get(param.name)
         value = _render_dependency_source(param.name, dep) if dep is not None else param.name
         args.append(_render_argument_source(value, param))
@@ -84,12 +84,13 @@ def create_sync_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
 ) -> Callable[..., Any]:
     """Create a synchronous wrapper function that injects resolved dependencies."""
-    kept = _kept_parameters(func, resolved_deps)
+    params = list(signature(func).parameters.values())
+    kept = _kept_parameters(params, resolved_deps)
 
     writer = Writer()
     writer.write(f"def wrapper({render_parameters(kept)}):")
     with writer.block():
-        writer.write(f"return __func__({_render_call_arguments(func, resolved_deps)})")
+        writer.write(f"return __func__({_render_call_arguments(params, resolved_deps)})")
 
     return _finalize(writer, func, kept, resolved_deps)
 
@@ -98,12 +99,13 @@ def create_sync_gen_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
 ) -> Callable[..., Any]:
     """Create a synchronous generator wrapper function that injects resolved dependencies."""
-    kept = _kept_parameters(func, resolved_deps)
+    params = list(signature(func).parameters.values())
+    kept = _kept_parameters(params, resolved_deps)
 
     writer = Writer()
     writer.write(f"def wrapper({render_parameters(kept)}):")
     with writer.block():
-        writer.write(f"yield from __func__({_render_call_arguments(func, resolved_deps)})")
+        writer.write(f"yield from __func__({_render_call_arguments(params, resolved_deps)})")
     return _finalize(writer, func, kept, resolved_deps)
 
 
@@ -111,12 +113,13 @@ def create_async_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
 ) -> Callable[..., Any]:
     """Create an asynchronous wrapper function that injects resolved dependencies."""
-    kept = _kept_parameters(func, resolved_deps)
+    params = list(signature(func).parameters.values())
+    kept = _kept_parameters(params, resolved_deps)
 
     writer = Writer()
     writer.write(f"async def wrapper({render_parameters(kept)}):")
     with writer.block():
-        writer.write(f"return await __func__({_render_call_arguments(func, resolved_deps)})")
+        writer.write(f"return await __func__({_render_call_arguments(params, resolved_deps)})")
 
     return _finalize(writer, func, kept, resolved_deps)
 
@@ -125,13 +128,14 @@ def create_async_gen_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
 ) -> Callable[..., Any]:
     """Create an asynchronous generator wrapper function that injects resolved dependencies."""
-    kept = _kept_parameters(func, resolved_deps)
+    params = list(signature(func).parameters.values())
+    kept = _kept_parameters(params, resolved_deps)
 
     writer = Writer()
     writer.write(f"async def wrapper({render_parameters(kept)}):")
     with writer.block():
         writer.write(
-            f"async for __item__ in __func__({_render_call_arguments(func, resolved_deps)}):"
+            f"async for __item__ in __func__({_render_call_arguments(params, resolved_deps)}):"
         )
         with writer.block():
             writer.write("yield __item__")
