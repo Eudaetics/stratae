@@ -114,6 +114,9 @@ def _finalize(
     wrapper.__annotations__ = _get_annotations(kept)
     if not isclass(func) and "return" in metadata_source.__annotations__:
         wrapper.__annotations__["return"] = metadata_source.__annotations__["return"]
+    # The Resolver short-circuits on this marker: a wrapper's restored metadata still
+    # shows the injected parameters, so re-resolving one would wrap it a second time.
+    wrapper.__stratae_resolved__ = True
     return wrapper
 
 

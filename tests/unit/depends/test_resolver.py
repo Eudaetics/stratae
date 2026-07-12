@@ -55,26 +55,6 @@ def test_initialization():
 
     # Assert
     assert isinstance(resolver, Resolver)
-    assert not resolver._functions  # pyright: ignore[reportPrivateUsage]
-
-
-def test_clear():
-    """
-    Verify that clear method empties the Resolver.
-
-    Given: a Resolver with registered singletons and factories,
-    When: clear is called,
-    Then: it should remove all registrations.
-    """
-    # Arrange
-    resolver = Resolver()
-    resolver._functions.add(lambda: "function_instance")  # pyright: ignore[reportPrivateUsage]
-
-    # Act
-    resolver.clear()
-
-    # Assert
-    assert not resolver._functions  # pyright: ignore[reportPrivateUsage]
 
 
 def test_resolve_function():
@@ -139,11 +119,7 @@ def test_resolve_function_with_nested_wrapped_dependencies():
     # Assert
     assert callable(resolved_function)
     assert resolved_function() == 5
-    original_functions = [
-        getattr(func, "__wrapped__", func)
-        for func in resolver._functions  # pyright: ignore[reportPrivateUsage]
-    ]
-    assert len(original_functions) == len(set(original_functions))
+    assert resolver.resolve_function(second_dependency) is second_dependency
 
 
 def test_resolve_function_with_multiple_dependencies():
