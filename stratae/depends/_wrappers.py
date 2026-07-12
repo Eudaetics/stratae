@@ -8,7 +8,7 @@ introspection by other tooling.
 """
 
 from functools import wraps
-from inspect import Parameter, Signature, isclass, signature
+from inspect import Parameter, Signature, isclass, markcoroutinefunction, signature
 from typing import Any, Callable
 
 from stratae.codegen import Writer, render_parameters, wrapper_filename
@@ -158,6 +158,10 @@ def create_sync_gen_wrapper(
     )
 
 
+def _has_async_deps(resolved_deps: dict[str, DependsWrapper]) -> bool:
+    return any(dep.is_async for dep in resolved_deps.values())
+
+
 def create_async_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
 ) -> Callable[..., Any]:
@@ -167,9 +171,11 @@ def create_async_wrapper(
     func must be awaited so the wrapper resolves to the coroutine's result, rather
     than returning an unawaited coroutine object to the caller.
     """
-    return _build_wrapper(
-        func, resolved_deps, True, lambda w, call: w.write(f"return await __func__({call})")
-    )
+    if _has_async_deps(resolved_deps):
+        return _build_wrapper(
+            func, resolved_deps, True, lambda w, call: w.write(f"return await __func__({call})")
+        )
+    return markcoroutinefunction(create_sync_wrapper(func, resolved_deps))
 
 
 def _write_async_gen_body(writer: Writer, call: str) -> None:
@@ -188,4 +194,7 @@ def create_async_gen_wrapper(
     Async generators have no yield-from equivalent (there is no syntax for it), so
     items must be pulled and re-yielded one at a time via an async for loop.
     """
-    return _build_wrapper(func, resolved_deps, True, write_body=_write_async_gen_body)
+    if _has_async_deps(resolved_deps):
+        return _build_wrapper(func, resolved_deps, True, write_body=_write_async_gen_body)
+
+    return create_sync_wrapper(func, resolved_deps)
