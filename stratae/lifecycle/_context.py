@@ -30,7 +30,7 @@ class LifecycleContext:
 
     """
 
-    __slots__ = ("_scope", "_lifecycle")
+    __slots__ = ("_scope", "_lifecycle", "token")
 
     def __init__(self, scope: str, lifecycle: "Lifecycle") -> None:
         """Initialize the ScopeDecorator with a specific lifecycle scope."""
@@ -38,12 +38,12 @@ class LifecycleContext:
         self._lifecycle = lifecycle
 
     def __enter__(self, *_):
-        """Enter the context manager."""
-        self._lifecycle.push(self._scope)
+        """Enter the context manager, keeping the activation handle for exit."""
+        self.token = self._lifecycle.push(self._scope)
 
     def __exit__(self, *_) -> None:
-        """Exit the context manager."""
-        self._lifecycle.pop()
+        """Exit the context manager, popping the activation entered by this context."""
+        self._lifecycle.pop(self.token)
 
 
 class AsyncLifecycleContext:

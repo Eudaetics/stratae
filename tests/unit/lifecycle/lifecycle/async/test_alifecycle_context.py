@@ -104,6 +104,6 @@ async def test_async_context_lifecycle_invalid_scope(
     Then: An AttributeError should be raised indicating the invalid scope
     """
     # Act & Assert
-    with pytest.raises(ScopeNotFoundError, match="No lifecycle scope named 'invalid'."):
+    with pytest.raises(ScopeNotFoundError, match="Unknown scope: invalid"):
         async with async_lifecycle.start("invalid"):
             ...

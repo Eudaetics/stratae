@@ -14,6 +14,7 @@ construction and is covered in tests/unit/lifecycle/test_scope.py.
 import pytest
 
 from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle.exceptions import ScopeNotFoundError
 
 
 def test_initialization(lifecycle: Lifecycle):
@@ -59,14 +60,26 @@ def test_initialization_with_no_scopes():
         Lifecycle(scopes)
 
 
-def test_get_cache_invalid_scope(lifecycle: Lifecycle):
+def test_get_slots_invalid_scope(lifecycle: Lifecycle):
     """
-    Test that getting a cache for an invalid scope raises an error.
+    Test that getting slots for an invalid scope raises an error.
 
     Given: A Lifecycle instance
-    When: An attempt is made to get a cache for an invalid scope
+    When: An attempt is made to get slots for an invalid scope
     Then: A ValueError should be raised
     """
     # Act & Assert
     with pytest.raises(ValueError, match="Unknown scope: bad"):
-        lifecycle.get_cache("bad")
+        lifecycle.get_slots("bad")
+
+
+def test_allocate_invalid(lifecycle: Lifecycle):
+    """
+    Allocating a slot for an invalid scope raises.
+
+    Given: A Lifecycle instance,
+    When: An attempt is made to allocate a slot for a non-existent scope,
+    Then: A ScopeNotFoundError is raised.
+    """
+    with pytest.raises(ScopeNotFoundError, match="Unknown scope: bad"):
+        lifecycle.allocate_slot("bad")

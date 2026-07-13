@@ -50,10 +50,10 @@ def test_active_scopes_after_pop(scopes: Sequence[str], lifecycle: Lifecycle):
     # Arrange
     lifecycle.push(scopes[0])
     lifecycle.push(scopes[1])
-    lifecycle.push(scopes[2])
+    t2 = lifecycle.push(scopes[2])
 
     # Act
-    lifecycle.pop()
+    lifecycle.pop(t2)
     active = lifecycle.active_scopes()
 
     # Assert
@@ -69,12 +69,12 @@ def test_active_scopes_after_popping_all(scopes: Sequence[str], lifecycle: Lifec
     Then: An empty list should be returned
     """
     # Arrange
-    lifecycle.push(scopes[0])
-    lifecycle.push(scopes[1])
+    t0 = lifecycle.push(scopes[0])
+    t1 = lifecycle.push(scopes[1])
 
     # Act
-    lifecycle.pop()
-    lifecycle.pop()
+    lifecycle.pop(t1)
+    lifecycle.pop(t0)
     active = lifecycle.active_scopes()
 
     # Assert

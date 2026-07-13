@@ -14,12 +14,18 @@ def scopes():
 
 
 @pytest.fixture
-def lifecycle(scopes: Sequence[str]):
-    """Provide a Lifecycle instance with shared-isolation scopes for testing."""
-    yield Lifecycle([Scope(name, "shared") for name in scopes])
+def scope_objs():
+    """Provide a list of scope objects."""
+    yield [Scope("application", "shared"), Scope("session", "context"), Scope("request", "context")]
 
 
 @pytest.fixture
-async def async_lifecycle(scopes: Sequence[str]):
+def lifecycle(scope_objs: Sequence[Scope]):
+    """Provide a Lifecycle instance with shared-isolation scopes for testing."""
+    yield Lifecycle(scope_objs)
+
+
+@pytest.fixture
+async def async_lifecycle(scope_objs: Sequence[Scope]):
     """Provide an AsyncLifecycle instance with context-isolation scopes for testing."""
-    yield AsyncLifecycle([Scope(name, "context") for name in scopes])
+    yield AsyncLifecycle(scope_objs)

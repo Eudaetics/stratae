@@ -2,10 +2,7 @@
 
 from typing import Sequence
 
-import pytest
-
 from stratae.lifecycle import AsyncLifecycle
-from stratae.lifecycle.exceptions import ScopeActivationError
 
 
 def test_active_scopes_empty(async_lifecycle: AsyncLifecycle):
@@ -88,20 +85,23 @@ async def test_active_scopes_after_popping_all(
     assert active == []
 
 
-async def test_active_scopes_popped_out_of_order_raise(
+async def test_active_scopes_popped_out_of_order(
     scopes: Sequence[str], async_lifecycle: AsyncLifecycle
 ):
     """
-    AsyncLifecycle should enforce scope hierarchy.
+    Popping out of order deactivates just that scope.
 
     Given: An AsyncLifecycle instance with multiple pushed scopes.
-    When: A scope is popped out of order.
-    Then: A ScopeActivationError is raised.
+    When: An outer scope is popped while an inner one is still active.
+    Then: Only the popped scope is deactivated
     """
     # Arrange
     t1 = async_lifecycle.push(scopes[0])
-    _ = async_lifecycle.push(scopes[1])
+    t2 = async_lifecycle.push(scopes[1])
 
-    # Act & Assert
-    with pytest.raises(ScopeActivationError, match="Cannot pop .* scope while .* is still active."):
-        await async_lifecycle.pop(t1)
+    # Act
+    await async_lifecycle.pop(t1)
+
+    # Assert
+    assert async_lifecycle.active_scopes() == [scopes[1]]
+    await async_lifecycle.pop(t2)
