@@ -1,10 +1,8 @@
 # Stratae
 
-**Composable tools for dependency injection in Python. Fast, simple, and framework-agnostic.**
+Stratae is a set of individual tools for Python 3.12+. It currently covers dependency injection and lifecycle-scoped caching and cleanup. Each tool works on its own: use lifecycle management without injection, or dependency injection by itself.
 
-Stratae is a toolkit designed of small, focused components that layer together to create more powerful systems. It's built to complement Python's 3.12+ features, leveraging decorators, contexts, and functions to create a system that works anywhere.
-
-Write your business logic once, use it everywhere: APIs, CLIs, workers, and tests.
+These tools work anywhere instead of being tied to a particular framework. A function decorated with @inject is still an ordinary function: callable directly, importable, or wired into a web framework or worker. The same holds for @lifecycle.cache.
 
 ```bash
 pip install stratae
@@ -31,31 +29,16 @@ def create_user(name: str, db: Injected[Database, Depends(get_database)]):
     db["users"].append(user)
     return user
 
-# Use anywhere: APIs, CLIs, workers, tests
 with lifecycle.start('application'):
     user = create_user("Alice")
     print(f"Created user: {user['name']}")
 ```
 
-## Why Stratae?
-
-**Simple by design.** Stratae doesn't impose architectural patterns or force you into a framework. It provides focused tools that solve specific problems: dependency injection, lifecycle management, and context variables. Use what you need, ignore what you don't.
-
-**Zero lock-in.** Your business logic is just functions with decorators. Remove Stratae anytime by replacing `Depends()` with actual values. No container to untangle, no framework to escape.
-
-**Built for performance.** Stratae keeps overhead minimal through straightforward design:
-
-- Analyze dependencies once at decoration time
-- No runtime introspection or provider lookups
-- Direct function calls with minimal indirection
-
-The result is a system that minimizes overhead and stays out of your way. If you're using a system that has dependency injection, we encourage you to test it yourself. Change one small piece to use Stratae and see if it works for you.
-
 ## Features
 
 ### Dependency Injection
 
-Dependency injection in Stratae uses familiar decorator syntax that works with any callable. Use this to send values, objects, or anything into a function.
+Dependency injection in Stratae uses familiar decorator syntax that works with callables. Use this to send values, objects, or anything into a function.
 
 ```python
 from stratae.depends import Depends, inject
@@ -63,9 +46,7 @@ from stratae.depends import Depends, inject
 def get_config():
     return {"env": "dev", "mode": "strict"}
 
-# Decorate the function with inject to resolve dependencies
 @inject
-# Use Depends(...) to mark parameters for injection
 def endpoint(config: Injected[dict[str, str], Depends(get_config)]):
     print(f"Environment: {config['env']}, Mode: {config['mode']}")
 
@@ -78,12 +59,11 @@ endpoint()
 Use lifecycle management when you want to cache objects or guarantee resource cleanup for context managers. With managed resources, everything is cleaned up automatically at the end of a lifecycle scope.
 
 ```python
-# Set up the lifecycle with your application scopes
 lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
 
-# Lifecycle will cache the yielded value and return it for all calls within a request
+# Cache the yielded value and return it for all calls within a request;
+# @resource marks get_session as a contextmanager to be auto-entered
 @lifecycle.cache('request')
-# Mark get_session as a contextmanager that will be auto-entered to get the session
 @resource
 def get_session():
     session = Session()
@@ -108,9 +88,11 @@ with lifecycle.start('application'):
         db = get_session()
 ```
 
+Each `Scope` also takes a `storage` option (`"dense"`, the default, or `"sparse"`) that controls how cached slots are allocated. Dense indexes slots by position and is cheapest per access; sparse allocates lazily and resets only the slots touched during an activation. Dense wins for scopes with few registered functions or where most get used per activation; sparse pulls ahead for scopes registering many functions where a given activation only touches a handful (e.g. a large API's per-resource caches).
+
 ### Context Variables
 
-To enable decoupled systems, Stratae uses context variables for setting values that need to be shared among components. This is particularly useful for setting values at runtime that are needed deep in dependency chains. Change values at runtime, or even whole behavior, without needing to thread parameters or manipulate overrides.
+Stratae uses context variables for setting values that are needed deep in dependency chains. Change values at runtime, or even whole behavior, without needing to thread parameters or manipulate overrides.
 
 ```python
 from stratae.context import Context
@@ -155,7 +137,6 @@ async def create_user(
 ) -> User:
     return await db.users.create(name=name)
 
-# Use anywhere: APIs, CLIs, workers, tests
 async with lifecycle.start('application'):
     async with lifecycle.start('request'):
         user = await create_user("Alice")
@@ -185,6 +166,39 @@ def cli_create(name: str):
     asyncio.run(create_user(name))
 
 ```
+
+### Testing Overrides
+
+Swap a dependency's value in a `with` block without touching the function that declares it - useful for tests or temporarily forcing a code path.
+
+```python
+from stratae.depends import override
+
+def get_config():
+    return {"env": "prod"}
+
+with override(get_config, {"env": "test"}):
+    endpoint()  # sees {"env": "test"}
+endpoint()  # back to {"env": "prod"}
+```
+
+### Guard Checks
+
+`require` runs zero-arg checks ahead of a function call, in order. A check's return value is discarded - only its side effects and raises matter, and the first one to raise aborts the call.
+
+```python
+from stratae.check import require
+
+def is_admin():
+    if not current_user().is_admin:
+        raise PermissionError("admin required")
+
+@require(is_admin)
+def delete_account(account_id: int):
+    ...
+```
+
+Sync functions only accept sync checks. Async functions accept a mix of sync and async checks, run in order.
 
 ### Simple Integrations
 
