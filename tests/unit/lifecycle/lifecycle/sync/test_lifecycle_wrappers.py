@@ -195,19 +195,18 @@ def test_lifecycle_cache_object_kwargs(lifecycle: Lifecycle, func_type: TestType
 @pytest.mark.parametrize("func_type", ["sync", "cm_sync"])
 def test_lifecycle_cache_args_mixed(lifecycle: Lifecycle, func_type: TestType):
     """
-    Test the lifecycle cache functionality with args used as kwargs.
+    Test the lifecycle cache functionality with equivalent positional/keyword calling styles.
 
-    Note: Args are not parsed and updated from kwargs to try to keep performance high.
-
-    To ensure cache hits, use consistent calling conventions within lifecycle-scoped functions:
-    - Use all positional: get_simple_object(1, 2, z=3)
-    - Use all kwargs: get_simple_object(x=1, y=2, z=3)
+    Note: Codegen'd wrappers (plain sync) normalize the cache key from the wrapped function's
+    bound parameter values, so equivalent calls share one cache entry regardless of calling
+    style. Context-manager wrappers still key on the raw call shape until they move to codegen.
 
     Given: A function that takes both positional and keyword arguments and uses
            lifecycle caching.
-    When: The function is called multiple times with the same and different combinations of
-          arguments as kwargs within the same lifecycle scope.
-    Then: The cached result is different for different combinations of arguments.
+    When: The function is called multiple times with the same argument values but different
+          combinations of positional and keyword calling style within the same lifecycle scope.
+    Then: The cached result is shared for plain wrappers and distinct for context-manager
+          wrappers.
     """
     # Arrange
     call_counter = Mock()
@@ -221,13 +220,16 @@ def test_lifecycle_cache_args_mixed(lifecycle: Lifecycle, func_type: TestType):
         obj3 = get_object(y=2, x=1, z=3)
 
         # Assert
-        assert obj1 is not obj2
-        assert obj2 is not obj3
         assert obj1.value == 6
-        assert obj2.value == 6
-        assert obj3.value == 6
-        assert call_counter.call_count == 3
-        if func_type == "cm_sync":
+        if func_type == "sync":
+            assert obj1 is obj2 is obj3
+            assert call_counter.call_count == 1
+        else:
+            assert obj1 is not obj2
+            assert obj2 is not obj3
+            assert obj2.value == 6
+            assert obj3.value == 6
+            assert call_counter.call_count == 3
             assert cleanup_counter.call_count == 0
     if func_type == "cm_sync":
         assert cleanup_counter.call_count == 3
@@ -452,8 +454,14 @@ def test_lifecycle_cache_with_custom_cache_key(lifecycle: Lifecycle, func_type: 
     call_counter = Mock()
     cleanup_counter = Mock()
 
-    def custom_cache_key(*args: tuple[str, ...], **kwargs: dict[str, Any]) -> str:
-        return f"{args[0]}-{kwargs.get('y', 'default_key')}"
+    if func_type == "sync":
+
+        def custom_cache_key(*args: Any, **kwargs: Any) -> str:
+            return f"{args[0]}-{args[1]}"
+    else:
+
+        def custom_cache_key(*args: Any, **kwargs: Any) -> str:
+            return f"{args[0]}-{kwargs.get('y', 'default_key')}"
 
     config = {"cache_key": custom_cache_key}
     get_object = callable_factory(
@@ -521,3 +529,66 @@ def test_lifecycle_cache_key_no_params(lifecycle: Lifecycle):
         assert get_value() == 2
         x = 1
         assert get_value() == 1
+
+
+def test_lifecycle_wrapper_parameter_types(lifecycle: Lifecycle):
+    """
+    Lifecycle caching must work for every parameter kind.
+
+    Given: A cached function with positional-only, positional-or-keyword, *args,
+           keyword-only, and **kwargs parameters.
+    When: The function is called with matching arguments.
+    Then: The result should be cached and returned for identical calls.
+    """
+
+    # Arrange
+    class Container:
+        def __init__(self, value: int):
+            self.value = value
+
+    @lifecycle.cache("application")
+    def foo(x: int, /, y: int, z: int = 0, *args: int, c: int = 1, **kwargs: int) -> Container:
+        return Container(x + y + z + c + sum(args) + sum(kwargs.values()))
+
+    with lifecycle.start("application"):
+        # Act
+        simple = foo(1, 2)
+        complex = foo(1, 1, 1, 1, 1, 1, c=1, f=1)
+
+        # Assert
+        assert simple.value == 4
+        assert simple is foo(1, 2)
+        assert simple is not foo(1, 1)
+
+        assert complex.value == 8
+        assert complex is foo(1, 1, 1, 1, 1, 1, c=1, f=1)
+        assert complex is not foo(1, 1, 1, 1, 1, c=1, f=1)
+
+
+def test_lifecycle_wrapper_kwargs_only(lifecycle: Lifecycle):
+    """
+    Test lifecycle caching with a function that only takes **kwargs.
+
+    Given: A cached function whose only parameter is **kwargs.
+    When: The function is called with the same and different keyword arguments.
+    Then: The cached result is returned for the same keyword arguments, and a new
+          result is created for different keyword arguments.
+    """
+
+    # Arrange
+    class Container:
+        def __init__(self, value: int):
+            self.value = value
+
+    @lifecycle.cache("application")
+    def foo(**kwargs: int):
+        return Container(sum(kwargs.values()))
+
+    with lifecycle.start("application"):
+        # Act
+        result = foo(a=1, b=2, c=3)
+
+        # Assert
+        assert result.value == 6
+        assert result is foo(a=1, b=2, c=3)
+        assert result is not foo(a=0, b=2, c=3)
