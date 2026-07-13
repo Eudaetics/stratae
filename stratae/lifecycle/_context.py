@@ -1,65 +1,118 @@
-"""Context managers and decorators for lifecycle scopes."""
+"""Context managers for lifecycle scope activations."""
 
-from typing import TYPE_CHECKING
+from contextvars import ContextVar
+from typing import Any
 
-if TYPE_CHECKING:
-    from stratae.lifecycle.async_lifecycle import AsyncLifecycle
-    from stratae.lifecycle.lifecycle import Lifecycle
+from stratae.lifecycle._scope import UNSET
 
 
-class LifecycleContext:
-    """
-    Defines lifecycle context for functions and context managers.
+class SharedLifecycleContext:
+    """Reusable context manager for a shared-isolation scope on a sync Lifecycle."""
 
-    Allows decorating functions to specify their lifecycle scope for caching. Supports
-    both synchronous and asynchronous functions, including generator functions. Generators
-    are automatically converted to return their yielded value, with cleanup handled by
-    the lifecycle manager. Cleanup is automatic when the scope ends.
+    __slots__ = ("_scope", "_entry", "_active", "_template")
 
-    Attributes:
-        scope (Scope): The lifecycle scope to apply to the decorated function.
-
-    Usage:
-        @scoped.application
-        def get_resource() -> Resource:
-            try:
-                resource = create_resource()
-                yield resource  # This will be cached for the application scope
-            finally:
-                cleanup_resource(resource)
-
-    """
-
-    __slots__ = ("_scope", "_lifecycle", "token")
-
-    def __init__(self, scope: str, lifecycle: "Lifecycle") -> None:
-        """Initialize the ScopeDecorator with a specific lifecycle scope."""
+    def __init__(
+        self,
+        scope: str,
+        entry: list[Any],
+        active: dict[str, list[Any]],
+        template: list[Any],
+    ) -> None:
+        """Initialize with the scope's permanent slot list and reset template pre-resolved."""
         self._scope = scope
-        self._lifecycle = lifecycle
+        self._entry = entry
+        self._active = active
+        self._template = template
 
-    def __enter__(self, *_):
-        """Enter the context manager, keeping the activation handle for exit."""
-        self.token = self._lifecycle.push(self._scope)
+    def __enter__(self) -> None:
+        """Activate the scope - push minus the lookup already done at construction."""
+        self._active[self._scope] = self._entry
 
     def __exit__(self, *_) -> None:
-        """Exit the context manager, popping the activation entered by this context."""
-        self._lifecycle.pop(self.token)
+        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
+        self._active.pop(self._scope, None)
+        slots = self._entry
+        stack = slots[0]
+        slots[:] = self._template
+        if stack is not UNSET:
+            stack.close()
 
 
-class AsyncLifecycleContext:
-    """Asynchronous context manager for lifecycle scopes."""
+class IsolatedLifecycleContext:
+    """Per-activation context manager for a context-isolation scope on a sync Lifecycle."""
 
-    __slots__ = ("_scope", "_lifecycle", "token")
+    __slots__ = ("_cv", "_template", "_slots", "token")
 
-    def __init__(self, scope: str, lifecycle: "AsyncLifecycle") -> None:
-        """Initialize the AsyncScopeContext with a specific lifecycle scope."""
+    def __init__(self, cv: ContextVar[list[Any]], template: list[Any]) -> None:
+        """Initialize with the scope's ContextVar and all-UNSET slot template pre-resolved."""
+        self._cv = cv
+        self._template = template
+
+    def __enter__(self) -> None:
+        """Activate the scope in the current execution context."""
+        slots = self._template.copy()
+        self.token = self._cv.set(slots)
+        self._slots = slots
+
+    def __exit__(self, *_) -> None:
+        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
+        self._cv.reset(self.token)
+        stack = self._slots[0]
+        if stack is not UNSET:
+            stack.close()
+
+
+class AsyncSharedLifecycleContext:
+    """Reusable async context manager for a shared-isolation scope on an AsyncLifecycle."""
+
+    __slots__ = ("_scope", "_entry", "_active", "_template")
+
+    def __init__(
+        self,
+        scope: str,
+        entry: list[Any],
+        active: dict[str, list[Any]],
+        template: list[Any],
+    ) -> None:
+        """Initialize with the scope's permanent slot list and reset template pre-resolved."""
         self._scope = scope
-        self._lifecycle = lifecycle
+        self._entry = entry
+        self._active = active
+        self._template = template
 
-    async def __aenter__(self):
-        """Asynchronously enter the context manager."""
-        self.token = self._lifecycle.push(self._scope)
+    async def __aenter__(self) -> None:
+        """Activate the scope - push minus the lookup already done at construction."""
+        self._active[self._scope] = self._entry
 
     async def __aexit__(self, *_) -> None:
-        """Asynchronously exit the context manager."""
-        await self._lifecycle.pop(self.token)
+        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
+        self._active.pop(self._scope, None)
+        slots = self._entry
+        stack = slots[0]
+        slots[:] = self._template
+        if stack is not UNSET:
+            await stack.aclose()
+
+
+class AsyncIsolatedLifecycleContext:
+    """Per-activation async context manager for a context-isolation scope on an AsyncLifecycle."""
+
+    __slots__ = ("_cv", "_template", "_slots", "token")
+
+    def __init__(self, cv: ContextVar[list[Any]], template: list[Any]) -> None:
+        """Initialize with the scope's ContextVar and all-UNSET slot template pre-resolved."""
+        self._cv = cv
+        self._template = template
+
+    async def __aenter__(self):
+        """Activate the scope - AsyncLifecycle.push minus the lookups done at start()."""
+        slots = self._template.copy()
+        self.token = self._cv.set(slots)
+        self._slots = slots
+
+    async def __aexit__(self, *_) -> None:
+        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
+        self._cv.reset(self.token)
+        stack = self._slots[0]
+        if stack is not UNSET:
+            await stack.aclose()

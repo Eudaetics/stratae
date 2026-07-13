@@ -44,7 +44,7 @@ Example:
 from contextvars import ContextVar, Token
 from typing import Any, Callable, Hashable, Sequence
 
-from stratae.lifecycle._context import LifecycleContext
+from stratae.lifecycle._context import IsolatedLifecycleContext, SharedLifecycleContext
 from stratae.lifecycle._decorators import CacheDecorator
 from stratae.lifecycle._scope import UNSET, ExitStack
 from stratae.lifecycle._validation import validate_config
@@ -59,7 +59,7 @@ from stratae.lifecycle.scope import Scope
 class Lifecycle:
     """Manager for handling lifecycle contexts."""
 
-    __slots__ = ("_scopes", "_templates", "_cvars", "_shared", "_active")
+    __slots__ = ("_scopes", "_templates", "_cvars", "_shared", "_active", "_contexts")
 
     def __init__(self, scopes: Sequence[Scope]) -> None:
         """Initialize the LifecycleManager."""
@@ -75,6 +75,10 @@ class Lifecycle:
             if scope.isolation == "shared"
         }
         self._active: dict[str, list[Any]] = {}
+        self._contexts: dict[str, SharedLifecycleContext] = {
+            name: SharedLifecycleContext(name, entry, self._active, self._templates[name])
+            for name, entry in self._shared.items()
+        }
 
     def push(self, scope: str) -> Token[list[Any]] | str:
         """Push a new lifecycle scope activation, returning the handle pop() takes."""
@@ -129,12 +133,24 @@ class Lifecycle:
             raise ValueError("Cannot use both ignore_params and cache_key together.")
         return CacheDecorator(scope, self, cache_key, ignore_params)
 
-    def start(self, scope: str) -> LifecycleContext:
-        """Get a scope context by name for use as a context manager."""
-        if scope not in self._scopes:
-            raise ScopeNotFoundError(f"Unknown scope: {scope}")
+    def start(self, scope: str) -> SharedLifecycleContext | IsolatedLifecycleContext:
+        """
+        Get a scope context by name for use as a context manager.
 
-        return LifecycleContext(scope, self)
+        Shared scopes return the same reusable SharedLifecycleContext instance on every
+        call - they carry no per-activation state, so sharing one per scope skips an
+        allocation per activation. Context-isolated scopes get a fresh
+        IsolatedLifecycleContext with the scope's ContextVar and slot template
+        pre-resolved, so its enter/exit run with zero dict lookups. The dict lookups
+        double as scope validation.
+        """
+        ctx = self._contexts.get(scope)
+        if ctx is not None:
+            return ctx
+        try:
+            return IsolatedLifecycleContext(self._cvars[scope], self._templates[scope])
+        except KeyError:
+            raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
     def is_empty(self) -> bool:
         """Check if there are no active scopes, introspection only."""

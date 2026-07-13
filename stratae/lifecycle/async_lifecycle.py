@@ -48,7 +48,10 @@ Example:
 from contextvars import ContextVar, Token
 from typing import Any, Callable, Hashable, Sequence
 
-from stratae.lifecycle._context import AsyncLifecycleContext
+from stratae.lifecycle._context import (
+    AsyncIsolatedLifecycleContext,
+    AsyncSharedLifecycleContext,
+)
 from stratae.lifecycle._decorators import AsyncCacheDecorator
 from stratae.lifecycle._scope import UNSET, AsyncExitStack
 from stratae.lifecycle._validation import validate_config
@@ -63,7 +66,7 @@ from stratae.lifecycle.scope import Scope
 class AsyncLifecycle:
     """Manager for handling lifecycle contexts."""
 
-    __slots__ = ("_scopes", "_templates", "_cvars", "_shared", "_active")
+    __slots__ = ("_scopes", "_templates", "_cvars", "_shared", "_active", "_contexts")
 
     def __init__(self, scopes: Sequence[Scope]) -> None:
         """Initialize the LifecycleManager."""
@@ -79,6 +82,10 @@ class AsyncLifecycle:
             if scope.isolation == "shared"
         }
         self._active: dict[str, list[Any]] = {}
+        self._contexts: dict[str, AsyncSharedLifecycleContext] = {
+            name: AsyncSharedLifecycleContext(name, entry, self._active, self._templates[name])
+            for name, entry in self._shared.items()
+        }
 
     def push(self, scope: str) -> Token[list[Any]] | str:
         """Push a new lifecycle scope activation, returning the handle pop() takes."""
@@ -149,11 +156,24 @@ class AsyncLifecycle:
             raise ValueError("Cannot use both ignore_params and cache_key together.")
         return AsyncCacheDecorator(scope, self, cache_key, ignore_params)
 
-    def start(self, scope: str) -> AsyncLifecycleContext:
-        """Get a scope context by name for use as an async context manager."""
-        if scope not in self._scopes:
-            raise ScopeNotFoundError(f"Unknown scope: {scope}")
-        return AsyncLifecycleContext(scope, self)
+    def start(self, scope: str) -> AsyncSharedLifecycleContext | AsyncIsolatedLifecycleContext:
+        """
+        Get a scope context by name for use as an async context manager.
+
+        Shared scopes return the same reusable AsyncSharedLifecycleContext instance on
+        every call - they carry no per-activation state, so sharing one per scope skips
+        an allocation per activation. Context-isolated scopes get a fresh
+        AsyncIsolatedLifecycleContext with the scope's ContextVar and slot template
+        pre-resolved, so its enter/exit run with zero dict lookups and no method call
+        back into this class. The dict lookups double as scope validation.
+        """
+        ctx = self._contexts.get(scope)
+        if ctx is not None:
+            return ctx
+        try:
+            return AsyncIsolatedLifecycleContext(self._cvars[scope], self._templates[scope])
+        except KeyError:
+            raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
     def is_empty(self) -> bool:
         """Check if there are no active scopes, introspection only."""
