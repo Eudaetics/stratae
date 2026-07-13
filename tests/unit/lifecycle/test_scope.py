@@ -70,3 +70,16 @@ def test_scope_init_with_invalid_isolation():
     # Act & Assert
     with pytest.raises(ValueError, match="Invalid scope isolation given for application."):
         Scope("application", "bogus")  # pyright: ignore[reportArgumentType]
+
+
+def test_scope_init_with_invalid_storage():
+    """
+    Verify that constructing a Scope with an invalid storage raises an error.
+
+    Given: a storage value that is neither "dense" nor "sparse",
+    When: a Scope is constructed with that storage,
+    Then: a ValueError should be raised.
+    """
+    # Act & Assert
+    with pytest.raises(ValueError, match="Invalid scope storage given for application."):
+        Scope("application", "shared", "bogus")  # pyright: ignore[reportArgumentType]

@@ -6,6 +6,7 @@ from typing import Literal, get_args
 from stratae.lifecycle.exceptions import LifecycleConfigurationError
 
 IsolationType = Literal["shared", "context"]
+StorageType = Literal["dense", "sparse"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,15 +29,36 @@ class Scope:
                    by a ContextVar, so concurrent contexts (e.g. concurrent
                    requests) each see their own cache - suitable for request-
                    or session-scoped state.
+        storage: Slot storage strategy for this scope's cached values. "dense"
+                  indexes slots directly by position - the cheapest per-access
+                  cost, but every activation pays to copy/reset the full slot
+                  list, so it fits scopes with few registered functions or
+                  where most of them get used per activation. "sparse"
+                  allocates slots lazily and resets in O(touched) rather than
+                  O(registered) - the fit for scopes registering many
+                  functions where a given activation only touches a handful,
+                  e.g. a large API's per-resource caches.
+
+    Choosing storage:
+        Storage defaults to dense. Below ~50 registered functions, dense wins outright
+        regardless of touched count - allocating a dict already costs more than copying
+        the whole list. Above that, it's the touched/registered ratio that decides: dense
+        and sparse roughly break even around 1-4% touched (2% at 1,000 registered / 20
+        touched), sparse pulling ahead below it (~4x faster at 1,000 registered / 0
+        touched) and dense pulling ahead above it (~1.5x faster at 1,000 registered / 90
+        touched).
 
     """
 
     name: str
     isolation: IsolationType
+    storage: StorageType = "dense"
 
     def __post_init__(self):
-        """Validate the name and isolation values are acceptable for scoping."""
+        """Validate the name, isolation, and storage values are acceptable for scoping."""
         if not self.name.isidentifier():
             raise LifecycleConfigurationError("All scopes must be valid Python identifiers.")
         if self.isolation not in frozenset(get_args(IsolationType)):
             raise LifecycleConfigurationError(f"Invalid scope isolation given for {self.name}.")
+        if self.storage not in frozenset(get_args(StorageType)):
+            raise LifecycleConfigurationError(f"Invalid scope storage given for {self.name}.")

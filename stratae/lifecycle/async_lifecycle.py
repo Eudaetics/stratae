@@ -45,15 +45,22 @@ Example:
             session = await get_request_session()
 """
 
-from contextvars import ContextVar, Token
-from typing import Any, Callable, Hashable, Sequence
+from contextvars import Token
+from typing import Callable, Hashable, Sequence
 
 from stratae.lifecycle._context import (
     AsyncIsolatedLifecycleContext,
     AsyncSharedLifecycleContext,
 )
 from stratae.lifecycle._decorators import AsyncCacheDecorator
-from stratae.lifecycle._scope import UNSET, AsyncExitStack
+from stratae.lifecycle._scope import (
+    UNSET,
+    AsyncExitStack,
+    SlotDict,
+    SlotStorage,
+    build_lifecycle_state,
+    reset_slots,
+)
 from stratae.lifecycle._validation import validate_config
 from stratae.lifecycle.exceptions import (
     ScopeActivationError,
@@ -66,28 +73,21 @@ from stratae.lifecycle.scope import Scope
 class AsyncLifecycle:
     """Manager for handling lifecycle contexts."""
 
-    __slots__ = ("_scopes", "_templates", "_cvars", "_shared", "_active", "_contexts")
+    __slots__ = ("_scopes", "_templates", "_cvars", "_shared", "_active", "_contexts", "_counters")
 
     def __init__(self, scopes: Sequence[Scope]) -> None:
         """Initialize the LifecycleManager."""
         validate_config(scopes)
         self._scopes: dict[str, Scope] = {scope.name: scope for scope in scopes}
-        self._templates: dict[str, list[Any]] = {scope.name: [UNSET] for scope in scopes}
-        self._cvars: dict[str, ContextVar[list[Any]]] = {
-            scope.name: ContextVar(scope.name) for scope in scopes if scope.isolation == "context"
-        }
-        self._shared: dict[str, list[Any]] = {
-            scope.name: self._templates[scope.name].copy()
-            for scope in scopes
-            if scope.isolation == "shared"
-        }
-        self._active: dict[str, list[Any]] = {}
-        self._contexts: dict[str, AsyncSharedLifecycleContext] = {
-            name: AsyncSharedLifecycleContext(name, entry, self._active, self._templates[name])
-            for name, entry in self._shared.items()
-        }
+        state = build_lifecycle_state(scopes, AsyncSharedLifecycleContext)
+        self._templates = state.templates
+        self._cvars = state.cvars
+        self._shared = state.shared
+        self._active = state.active
+        self._contexts: dict[str, AsyncSharedLifecycleContext] = state.contexts
+        self._counters = state.counters
 
-    def push(self, scope: str) -> Token[list[Any]] | str:
+    def push(self, scope: str) -> Token[SlotStorage] | str:
         """Push a new lifecycle scope activation, returning the handle pop() takes."""
         if scope in self._cvars:
             return self._cvars[scope].set(self._templates[scope].copy())
@@ -97,7 +97,7 @@ class AsyncLifecycle:
             raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
         return scope
 
-    async def pop(self, handle: Token[list[Any]] | str) -> None:
+    async def pop(self, handle: Token[SlotStorage] | str) -> None:
         """
         Asynchronously pop the lifecycle scope activation identified by handle.
 
@@ -113,8 +113,8 @@ class AsyncLifecycle:
         """
         Deactivate a shared scope by name.
 
-        The permanent slot list is reset in place from its template before the exit stack
-        closes, so even if cleanup raises, the scope is already empty for its next
+        The permanent slot storage is reset in place from its template before the exit
+        stack closes, so even if cleanup raises, the scope is already empty for its next
         activation. Only awaits when the activation actually created an exit stack.
         """
         try:
@@ -122,11 +122,11 @@ class AsyncLifecycle:
         except KeyError:
             raise self._pop_error(scope) from None
         stack = slots[0]
-        slots[:] = self._templates[scope]
+        reset_slots(slots, self._templates[scope])
         if stack is not UNSET:
             await stack.aclose()
 
-    async def _pop_isolated(self, token: Token[list[Any]]) -> None:
+    async def _pop_isolated(self, token: Token[SlotStorage]) -> None:
         """
         Deactivate a context-isolated activation by resetting its ContextVar.
 
@@ -216,19 +216,30 @@ class AsyncLifecycle:
         return stack
 
     def allocate_slot(self, scope: str) -> int:
-        """Allocate a dedicated slot for a cached function - a value directly, or a dict."""
+        """
+        Allocate a dedicated slot for a cached function - a value directly, or a dict.
+
+        Dense-backed scopes grow their template by one slot and index by position.
+        Sparse-backed scopes hand out the next int key from a per-scope counter instead -
+        SlotDict.__missing__ means the key needn't exist anywhere until first written.
+        """
         try:
             template = self._templates[scope]
         except KeyError:
             raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
+        if isinstance(template, SlotDict):
+            slot = self._counters[scope]
+            self._counters[scope] = slot + 1
+            return slot
+
         template.append(UNSET)
         shared = self._shared.get(scope)
-        if shared is not None:
+        if isinstance(shared, list):
             shared.append(UNSET)
         return len(template) - 1
 
-    def get_slots(self, scope: str) -> list[Any]:
+    def get_slots(self, scope: str) -> SlotStorage:
         """Get the scope's slot list - slot 0 is reserved for the exit stack (see __init__)."""
         cv = self._cvars.get(scope)
         if cv is not None:
