@@ -341,35 +341,60 @@ def _write_resolve_exit_stack(writer: Writer) -> None:
         writer.write("__stack__ = __slots__[0] = __stack_type__()")
 
 
-def create_synccm_wrapper[**P, T](
-    func: Callable[P, AbstractContextManager[T]],
-    lifecycle: "Lifecycle | AsyncLifecycle",
+def _write_cm_slot_body(
+    writer: Writer, slot: int, lifecycle: Any, scope: str, params: list[Parameter], enter_expr: str
+) -> None:
+    """Write the whole body of a slot-eligible context-manager wrapper."""
+    _write_slot_guard(writer, slot, lifecycle, scope)
+    with writer.block():
+        writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
+        _write_resolve_exit_stack(writer)
+        writer.write(f"__value__ = {enter_expr}")
+        writer.write(f"__slots__[{slot}] = __value__")
+    writer.write("return __value__")
+
+
+def _write_cm_keyed_body(
+    writer: Writer,
+    slot: int,
+    lifecycle: Any,
     scope: str,
-    cache_key: Callable[..., Hashable] | None = None,
-    ignore_params: bool = False,
-) -> Callable[P, T]:
+    cache_key: Callable[..., Hashable] | None,
+    params: list[Parameter],
+    enter_expr: str,
+) -> None:
+    """Write the whole body of a keyed context-manager wrapper."""
+    _write_keyed_cache_guard(writer, slot, lifecycle, scope)
+    _write_key(writer, cache_key, params)
+    _write_cache_check(writer)
+    writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
+    _write_resolve_exit_stack(writer)
+    writer.write(f"__value__ = {enter_expr}")
+    _write_cache_store(writer)
+
+
+def _create_cm_wrapper_impl(
+    func: Callable[..., Any],
+    lifecycle: Any,
+    scope: str,
+    cache_key: Callable[..., Hashable] | None,
+    ignore_params: bool,
+    is_async: bool,
+    enter_expr: str,
+) -> Callable[..., Any]:
+    """Build the codegen'd wrapper shared by the sync and async context-manager decorators."""
     params = list(signature(func).parameters.values())
     slot = lifecycle.allocate_slot(scope)
 
     writer = Writer()
-    writer.write(f"def wrapper({render_parameters(params)}):")
+    def_kw = "async def" if is_async else "def"
+    writer.write(f"{def_kw} wrapper({render_parameters(params)}):")
     with writer.block():
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_guard(writer, slot, lifecycle, scope)
-            with writer.block():
-                writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-                _write_resolve_exit_stack(writer)
-                writer.write("__value__ = __stack__.enter_context(__ctx__)")
-                writer.write(f"__slots__[{slot}] = __value__")
-            writer.write("return __value__")
+            _write_cm_slot_body(writer, slot, lifecycle, scope, params, enter_expr)
         else:
-            _write_keyed_cache_guard(writer, slot, lifecycle, scope)
-            _write_key(writer, cache_key, params)
-            _write_cache_check(writer)
-            writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-            _write_resolve_exit_stack(writer)
-            writer.write("__value__ = __stack__.enter_context(__ctx__)")
-            _write_cache_store(writer)
+            _write_cm_keyed_body(writer, slot, lifecycle, scope, cache_key, params, enter_expr)
+
     namespace: dict[str, Any] = {
         "__func__": func,
         "__lifecycle__": lifecycle,
@@ -380,6 +405,27 @@ def create_synccm_wrapper[**P, T](
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     return _finalize(writer, func, params, namespace)
+
+
+def create_synccm_wrapper[**P, T](
+    func: Callable[P, AbstractContextManager[T]],
+    lifecycle: "Lifecycle | AsyncLifecycle",
+    scope: str,
+    cache_key: Callable[..., Hashable] | None = None,
+    ignore_params: bool = False,
+) -> Callable[P, T]:
+    return cast(
+        Callable[P, T],
+        _create_cm_wrapper_impl(
+            func,
+            lifecycle,
+            scope,
+            cache_key,
+            ignore_params,
+            is_async=False,
+            enter_expr="__stack__.enter_context(__ctx__)",
+        ),
+    )
 
 
 def create_asynccm_wrapper[**P, T](
@@ -389,36 +435,15 @@ def create_asynccm_wrapper[**P, T](
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, Awaitable[T]]:
-    params = list(signature(func).parameters.values())
-    slot = lifecycle.allocate_slot(scope)
-
-    writer = Writer()
-    writer.write(f"async def wrapper({render_parameters(params)}):")
-    with writer.block():
-        if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_guard(writer, slot, lifecycle, scope)
-            with writer.block():
-                writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-                _write_resolve_exit_stack(writer)
-                writer.write("__value__ = await __stack__.enter_async_context(__ctx__)")
-                writer.write(f"__slots__[{slot}] = __value__")
-            writer.write("return __value__")
-        else:
-            _write_keyed_cache_guard(writer, slot, lifecycle, scope)
-            _write_key(writer, cache_key, params)
-            _write_cache_check(writer)
-            writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-            _write_resolve_exit_stack(writer)
-            writer.write("__value__ = await __stack__.enter_async_context(__ctx__)")
-            _write_cache_store(writer)
-
-    namespace: dict[str, Any] = {
-        "__func__": func,
-        "__lifecycle__": lifecycle,
-        "__UNSET__": UNSET,
-        "__stack_type__": lifecycle.exit_stack_type(),
-    }
-    _bind_slot_lookup(namespace, lifecycle, scope)
-    if cache_key is not None:
-        namespace["__cache_key__"] = cache_key
-    return _finalize(writer, func, params, namespace)
+    return cast(
+        Callable[P, Awaitable[T]],
+        _create_cm_wrapper_impl(
+            func,
+            lifecycle,
+            scope,
+            cache_key,
+            ignore_params,
+            is_async=True,
+            enter_expr="await __stack__.enter_async_context(__ctx__)",
+        ),
+    )
