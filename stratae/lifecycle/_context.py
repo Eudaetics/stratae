@@ -1,9 +1,8 @@
 """Context managers for lifecycle scope activations."""
 
 from contextvars import ContextVar
-from typing import Any
 
-from stratae.lifecycle._scope import UNSET
+from stratae.lifecycle._scope import UNSET, SlotStorage, reset_slots
 
 
 class SharedLifecycleContext:
@@ -14,9 +13,9 @@ class SharedLifecycleContext:
     def __init__(
         self,
         scope: str,
-        entry: list[Any],
-        active: dict[str, list[Any]],
-        template: list[Any],
+        entry: SlotStorage,
+        active: dict[str, SlotStorage],
+        template: SlotStorage,
     ) -> None:
         """Initialize with the scope's permanent slot list and reset template pre-resolved."""
         self._scope = scope
@@ -33,7 +32,7 @@ class SharedLifecycleContext:
         self._active.pop(self._scope, None)
         slots = self._entry
         stack = slots[0]
-        slots[:] = self._template
+        reset_slots(slots, self._template)
         if stack is not UNSET:
             stack.close()
 
@@ -43,7 +42,7 @@ class IsolatedLifecycleContext:
 
     __slots__ = ("_cv", "_template", "_slots", "token")
 
-    def __init__(self, cv: ContextVar[list[Any]], template: list[Any]) -> None:
+    def __init__(self, cv: ContextVar[SlotStorage], template: SlotStorage) -> None:
         """Initialize with the scope's ContextVar and all-UNSET slot template pre-resolved."""
         self._cv = cv
         self._template = template
@@ -70,9 +69,9 @@ class AsyncSharedLifecycleContext:
     def __init__(
         self,
         scope: str,
-        entry: list[Any],
-        active: dict[str, list[Any]],
-        template: list[Any],
+        entry: SlotStorage,
+        active: dict[str, SlotStorage],
+        template: SlotStorage,
     ) -> None:
         """Initialize with the scope's permanent slot list and reset template pre-resolved."""
         self._scope = scope
@@ -89,7 +88,7 @@ class AsyncSharedLifecycleContext:
         self._active.pop(self._scope, None)
         slots = self._entry
         stack = slots[0]
-        slots[:] = self._template
+        reset_slots(slots, self._template)
         if stack is not UNSET:
             await stack.aclose()
 
@@ -99,7 +98,7 @@ class AsyncIsolatedLifecycleContext:
 
     __slots__ = ("_cv", "_template", "_slots", "token")
 
-    def __init__(self, cv: ContextVar[list[Any]], template: list[Any]) -> None:
+    def __init__(self, cv: ContextVar[SlotStorage], template: SlotStorage) -> None:
         """Initialize with the scope's ContextVar and all-UNSET slot template pre-resolved."""
         self._cv = cv
         self._template = template
