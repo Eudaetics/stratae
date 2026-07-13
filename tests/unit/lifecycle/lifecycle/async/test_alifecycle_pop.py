@@ -7,10 +7,11 @@ for invalid scopes.
 """
 
 from typing import Sequence
+from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, resource
 from stratae.lifecycle.exceptions import ScopeActivationError, ScopeNotFoundError
 
 
@@ -81,7 +82,7 @@ async def test_pop_inactive_context_scope(async_lifecycle: AsyncLifecycle):
 
 async def test_pop_context_by_name_raises(async_lifecycle: AsyncLifecycle):
     """
-    PoppiQng an inactive context scope raises.
+    Popping an inactive context scope raises.
 
     Given: An AsyncLifecycle instance,
     When: A name is passed for a scope that must be popped with a token,
@@ -89,3 +90,33 @@ async def test_pop_context_by_name_raises(async_lifecycle: AsyncLifecycle):
     """
     with pytest.raises(ScopeActivationError, match="Cannot pop request by name"):
         await async_lifecycle.pop("request")
+
+
+@pytest.mark.parametrize("scope", ("application", "request"))
+async def test_pop_with_used_resource(async_lifecycle: AsyncLifecycle, scope: str):
+    """
+    Popping a context manager with an exit stack cleans up properly.
+
+    Given: An AsyncLifecycle instance with a registered resource for a scope,
+    When: The scope is popped,
+    Then: The exit stack should clean up the resource.
+    """
+    # Arrange
+    mock = Mock()
+
+    @async_lifecycle.cache(scope)
+    @resource
+    def test_resource():
+        try:
+            yield
+        finally:
+            mock()
+
+    token = async_lifecycle.push(scope)
+    test_resource()
+
+    # Act
+    await async_lifecycle.pop(token)
+
+    # Assert
+    mock.assert_called_once()

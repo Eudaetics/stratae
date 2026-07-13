@@ -11,10 +11,11 @@ Test Cases:
 """
 
 from typing import Sequence
+from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import Lifecycle
+from stratae.lifecycle import Lifecycle, resource
 from stratae.lifecycle.exceptions import ScopeActivationError, ScopeNotFoundError
 
 
@@ -94,3 +95,33 @@ def test_pop_context_by_name(lifecycle: Lifecycle):
     """
     with pytest.raises(ScopeActivationError, match="Cannot pop request by name"):
         lifecycle.pop("request")
+
+
+@pytest.mark.parametrize("scope", ("application", "request"))
+def test_pop_with_used_resource(lifecycle: Lifecycle, scope: str):
+    """
+    Popping a context manager with an exit stack cleans up properly.
+
+    Given: A Lifecycle instance with a registered resource for a scope,
+    When: The scope is popped,
+    Then: The exit stack should clean up the resource.
+    """
+    # Arrange
+    mock = Mock()
+
+    @lifecycle.cache(scope)
+    @resource
+    def test_resource():
+        try:
+            yield
+        finally:
+            mock()
+
+    token = lifecycle.push(scope)
+    test_resource()
+
+    # Act
+    lifecycle.pop(token)
+
+    # Assert
+    mock.assert_called_once()
