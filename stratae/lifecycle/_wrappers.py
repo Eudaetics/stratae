@@ -327,85 +327,105 @@ def create_async_wrapper[**P, T](
     return cast(Callable[P, Awaitable[T]], _finalize(writer, func, params, namespace))
 
 
-def _select_key_func(
+def _write_resolve_exit_stack(writer: Writer) -> None:
+    """
+    Write the lazy resolution of the scope's exit stack from reserved slot 0 into __stack__.
+
+    Only ever written on a context-manager wrapper's miss path, so the stack (an ExitStack
+    or AsyncExitStack, chosen per lifecycle type via the __stack_type__ namespace binding)
+    is created the first time this scope activation actually enters a context manager.
+    """
+    writer.write("__stack__ = __slots__[0]")
+    writer.write("if __stack__ is __UNSET__:")
+    with writer.block():
+        writer.write("__stack__ = __slots__[0] = __stack_type__()")
+
+
+def _write_cm_slot_body(
+    writer: Writer, slot: int, lifecycle: Any, scope: str, params: list[Parameter], enter_expr: str
+) -> None:
+    """Write the whole body of a slot-eligible context-manager wrapper."""
+    _write_slot_guard(writer, slot, lifecycle, scope)
+    with writer.block():
+        writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
+        _write_resolve_exit_stack(writer)
+        writer.write(f"__value__ = {enter_expr}")
+        writer.write(f"__slots__[{slot}] = __value__")
+    writer.write("return __value__")
+
+
+def _write_cm_keyed_body(
+    writer: Writer,
+    slot: int,
+    lifecycle: Any,
+    scope: str,
+    cache_key: Callable[..., Hashable] | None,
+    params: list[Parameter],
+    enter_expr: str,
+) -> None:
+    """Write the whole body of a keyed context-manager wrapper."""
+    _write_keyed_cache_guard(writer, slot, lifecycle, scope)
+    _write_key(writer, cache_key, params)
+    _write_cache_check(writer)
+    writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
+    _write_resolve_exit_stack(writer)
+    writer.write(f"__value__ = {enter_expr}")
+    _write_cache_store(writer)
+
+
+def _create_cm_wrapper_impl(
+    func: Callable[..., Any],
+    lifecycle: Any,
+    scope: str,
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
-):
+    is_async: bool,
+    enter_expr: str,
+) -> Callable[..., Any]:
+    """Build the codegen'd wrapper shared by the sync and async context-manager decorators."""
+    params = list(signature(func).parameters.values())
+    slot = lifecycle.allocate_slot(scope)
+
+    writer = Writer()
+    def_kw = "async def" if is_async else "def"
+    writer.write(f"{def_kw} wrapper({render_parameters(params)}):")
+    with writer.block():
+        if _is_slot_eligible(params, cache_key, ignore_params):
+            _write_cm_slot_body(writer, slot, lifecycle, scope, params, enter_expr)
+        else:
+            _write_cm_keyed_body(writer, slot, lifecycle, scope, cache_key, params, enter_expr)
+
+    namespace: dict[str, Any] = {
+        "__func__": func,
+        "__lifecycle__": lifecycle,
+        "__UNSET__": UNSET,
+        "__stack_type__": lifecycle.exit_stack_type(),
+    }
+    _bind_slot_lookup(namespace, lifecycle, scope)
     if cache_key is not None:
-
-        def make_key_with_cache_key(args: tuple[Any, ...], kwargs: dict[str, Any]):
-            return cache_key(*args, **kwargs)
-
-        return make_key_with_cache_key
-    elif ignore_params:
-
-        def make_key_ignore_params(*_: Any):
-            return None
-
-        return make_key_ignore_params
-    else:
-
-        def make_key_default(args: tuple[Any, ...], kwargs: dict[str, Any]):
-            return None if not (args or kwargs) else (args, frozenset(kwargs.items()))
-
-        return make_key_default
-
-
-def _resolve_cache(lifecycle: Any, scope: str, slot: int) -> dict[Hashable, Any]:
-    """Get the function's dedicated cache dict from its slot, creating it on first use."""
-    slots = lifecycle.get_slots(scope)
-    cache: dict[Hashable, Any] = slots[slot]
-    if cache is UNSET:
-        cache = slots[slot] = {}
-    return cache
+        namespace["__cache_key__"] = cache_key
+    return _finalize(writer, func, params, namespace)
 
 
 def create_synccm_wrapper[**P, T](
     func: Callable[P, AbstractContextManager[T]],
-    lifecycle: "Lifecycle",
+    lifecycle: "Lifecycle | AsyncLifecycle",
     scope: str,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, T]:
-    slot = lifecycle.allocate_slot(scope)
-    key_func = _select_key_func(cache_key, ignore_params)
-
-    @wraps(func)
-    def gen_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        cache = _resolve_cache(lifecycle, scope, slot)
-        key = key_func(args, kwargs)
-        if key in cache:
-            return cache[key]
-        ctx = func(*args, **kwargs)
-        value = lifecycle.get_exit_stack(scope).enter_context(ctx)
-        cache[key] = value
-        return value
-
-    return gen_wrapper
-
-
-def create_synccm_in_async_wrapper[**P, T](
-    func: Callable[P, AbstractContextManager[T]],
-    lifecycle: "AsyncLifecycle",
-    scope: str,
-    cache_key: Callable[..., Hashable] | None = None,
-    ignore_params: bool = False,
-) -> Callable[P, T]:
-    slot = lifecycle.allocate_slot(scope)
-    key_func = _select_key_func(cache_key, ignore_params)
-
-    @wraps(func)
-    def gen_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        cache = _resolve_cache(lifecycle, scope, slot)
-        key = key_func(args, kwargs)
-        if key in cache:
-            return cache[key]
-        ctx = func(*args, **kwargs)
-        value = lifecycle.get_exit_stack(scope).enter_context(ctx)
-        cache[key] = value
-        return value
-
-    return gen_wrapper
+    return cast(
+        Callable[P, T],
+        _create_cm_wrapper_impl(
+            func,
+            lifecycle,
+            scope,
+            cache_key,
+            ignore_params,
+            is_async=False,
+            enter_expr="__stack__.enter_context(__ctx__)",
+        ),
+    )
 
 
 def create_asynccm_wrapper[**P, T](
@@ -415,18 +435,15 @@ def create_asynccm_wrapper[**P, T](
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, Awaitable[T]]:
-    slot = lifecycle.allocate_slot(scope)
-    key_func = _select_key_func(cache_key, ignore_params)
-
-    @wraps(func)
-    async def gen_wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        cache = _resolve_cache(lifecycle, scope, slot)
-        key = key_func(args, kwargs)
-        if key in cache:
-            return cache[key]
-        ctx = func(*args, **kwargs)
-        value = await lifecycle.get_exit_stack(scope).enter_async_context(ctx)
-        cache[key] = value
-        return value
-
-    return gen_wrapper
+    return cast(
+        Callable[P, Awaitable[T]],
+        _create_cm_wrapper_impl(
+            func,
+            lifecycle,
+            scope,
+            cache_key,
+            ignore_params,
+            is_async=True,
+            enter_expr="await __stack__.enter_async_context(__ctx__)",
+        ),
+    )
