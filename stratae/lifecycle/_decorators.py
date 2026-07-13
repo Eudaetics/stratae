@@ -15,7 +15,6 @@ from stratae.lifecycle._wrappers import (
     create_asynccm_wrapper,
     create_sync_in_async_wrapper,
     create_sync_wrapper,
-    create_synccm_in_async_wrapper,
     create_synccm_wrapper,
 )
 from stratae.lifecycle.resource import AUTO_ENTER_ASYNC, AUTO_ENTER_SYNC
@@ -142,7 +141,7 @@ class AsyncCacheDecorator:
                     f, self._lifecycle, self._scope, self._cache_key, self._ignore_params
                 )
             elif _is_auto_sync_cm(f):
-                return create_synccm_in_async_wrapper(
+                return create_synccm_wrapper(
                     f, self._lifecycle, self._scope, self._cache_key, self._ignore_params
                 )
             elif _is_awaitable(f):

@@ -217,3 +217,8 @@ class Lifecycle:
             return self._active[scope]
         except KeyError:
             raise self._scope_error(scope) from None
+
+    @staticmethod
+    def exit_stack_type():
+        """Return the exit stack type for codegen lazily initiating exit stacks."""
+        return ExitStack

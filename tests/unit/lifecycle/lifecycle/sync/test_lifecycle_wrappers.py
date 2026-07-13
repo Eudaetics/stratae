@@ -221,18 +221,10 @@ def test_lifecycle_cache_args_mixed(lifecycle: Lifecycle, func_type: TestType):
 
         # Assert
         assert obj1.value == 6
-        if func_type == "sync":
-            assert obj1 is obj2 is obj3
-            assert call_counter.call_count == 1
-        else:
-            assert obj1 is not obj2
-            assert obj2 is not obj3
-            assert obj2.value == 6
-            assert obj3.value == 6
-            assert call_counter.call_count == 3
-            assert cleanup_counter.call_count == 0
+        assert obj1 is obj2 is obj3
+        assert call_counter.call_count == 1
     if func_type == "cm_sync":
-        assert cleanup_counter.call_count == 3
+        assert cleanup_counter.call_count == 1
 
 
 @pytest.mark.parametrize("func_type", ["sync", "cm_sync"])
@@ -454,14 +446,8 @@ def test_lifecycle_cache_with_custom_cache_key(lifecycle: Lifecycle, func_type: 
     call_counter = Mock()
     cleanup_counter = Mock()
 
-    if func_type == "sync":
-
-        def custom_cache_key(*args: Any, **kwargs: Any) -> str:
-            return f"{args[0]}-{args[1]}"
-    else:
-
-        def custom_cache_key(*args: Any, **kwargs: Any) -> str:
-            return f"{args[0]}-{kwargs.get('y', 'default_key')}"
+    def custom_cache_key(x: int | SimpleObject = 0, y: int = 0, z: int | SimpleObject = 0) -> str:
+        return f"{x}-{y}"
 
     config = {"cache_key": custom_cache_key}
     get_object = callable_factory(
