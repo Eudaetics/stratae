@@ -1,9 +1,9 @@
-"""Scope container for cache and exit stack."""
+"""Exit stacks and the UNSET sentinel backing lifecycle scope activations."""
 
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
-from typing import Any, Callable
+from typing import Any
 
-from stratae.cache import Cache
+UNSET: Any = object()
 
 
 def _raise_collected(exc: Exception) -> None:
@@ -90,51 +90,3 @@ class AsyncExitStack:
                 exc = _close_one(ctx, exc)
         if exc is not None:
             _raise_collected(exc)
-
-
-class ActiveScope:
-    """Container class for a lifecycle scope's cache and exit stack."""
-
-    __slots__ = ("cache", "_exit_stack")
-
-    def __init__(self, cache_factory: Callable[[], Cache]):
-        """Initialize the ActiveScope with a cache and exit stack."""
-        self.cache = cache_factory()
-        self._exit_stack: ExitStack | None = None
-
-    def clear(self) -> None:
-        """Clear the scope's cache."""
-        self.cache.clear()
-        if self._exit_stack is not None:
-            self._exit_stack.close()
-
-    @property
-    def exit_stack(self) -> ExitStack:
-        """Get the scope's exit stack."""
-        if self._exit_stack is None:
-            self._exit_stack = ExitStack()
-        return self._exit_stack
-
-
-class AsyncActiveScope:
-    """Asynchronous container class for a lifecycle scope's cache and exit stack."""
-
-    __slots__ = ("cache", "_exit_stack")
-
-    def __init__(self, cache_factory: Callable[[], Cache]):
-        """Initialize the AsyncActiveScope with a cache and exit stack."""
-        self.cache = cache_factory()
-        self._exit_stack: AsyncExitStack | None = None
-
-    async def clear(self) -> None:
-        """Asynchronously clear the scope's cache."""
-        await self.cache.aclear()
-        if self._exit_stack is not None:
-            await self._exit_stack.aclose()
-
-    @property
-    def exit_stack(self) -> AsyncExitStack:
-        """Get the scope's exit stack."""
-        if self._exit_stack is None:
-            self._exit_stack = AsyncExitStack()
-        return self._exit_stack

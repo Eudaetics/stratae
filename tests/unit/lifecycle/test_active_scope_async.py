@@ -1,24 +1,24 @@
-"""Tests for the AsyncActiveScope class in stratae.lifecycle._scope."""
+"""Tests for AsyncExitStack and the exit-stack teardown behavior of AsyncLifecycle.pop."""
 
 from contextlib import asynccontextmanager
 from unittest.mock import Mock
 
 import pytest
 
-from stratae.cache.memory import MemoryCache
-from stratae.lifecycle._scope import AsyncActiveScope
+from stratae.lifecycle import AsyncLifecycle, Scope
+from stratae.lifecycle._scope import AsyncExitStack
 
 
 async def test_context_behavior():
     """
     Test that the exit stack properly manages context managers.
 
-    Given: an AsyncActiveScope with an exit stack containing a context manager
-    When: the exit stack is closed
+    Given: an AsyncExitStack containing an entered context manager
+    When: the stack is closed
     Then: the context manager's cleanup function should be called
     """
     # Arrange
-    scope = AsyncActiveScope(MemoryCache)
+    stack = AsyncExitStack()
 
     spy_mock = Mock()
     spy_success = Mock()
@@ -26,18 +26,18 @@ async def test_context_behavior():
     @asynccontextmanager
     async def generator():
         try:
-            yield "resource"
+            yield
             spy_success()
         finally:
             spy_mock()
 
     # Act
-    await scope.exit_stack.enter_async_context(generator())
+    await stack.enter_async_context(generator())
     spy_mock.assert_not_called()
     spy_success.assert_not_called()
 
     # Assert
-    await scope.exit_stack.aclose()
+    await stack.aclose()
     spy_mock.assert_called_once()
     spy_success.assert_called_once()
 
@@ -46,12 +46,12 @@ async def test_context_with_failure():
     """
     Test that the exit stack properly handles exceptions within a context.
 
-    Given: an AsyncActiveScope containing a context manager that raises an exception
-    When: the exit stack is closed
+    Given: an AsyncExitStack containing an entered context manager that raises an exception
+    When: the stack is closed
     Then: the exception should be propagated and the cleanup function should be called
     """
     # Arrange
-    scope = AsyncActiveScope(MemoryCache)
+    stack = AsyncExitStack()
 
     spy_mock = Mock()
     mock_failure = Mock(side_effect=ValueError("Test Failure"))
@@ -60,7 +60,7 @@ async def test_context_with_failure():
     @asynccontextmanager
     async def generator():
         try:
-            yield "resource"
+            yield
             mock_failure()
         except ValueError:
             spy_except()
@@ -69,44 +69,42 @@ async def test_context_with_failure():
             spy_mock()
 
     # Act
-    await scope.exit_stack.enter_async_context(generator())
+    await stack.enter_async_context(generator())
     spy_mock.assert_not_called()
     mock_failure.assert_not_called()
     spy_except.assert_not_called()
 
     # Assert
     with pytest.raises(ValueError, match="Test Failure"):
-        await scope.exit_stack.aclose()
+        await stack.aclose()
     spy_except.assert_called_once()
     spy_mock.assert_called_once()
 
 
-async def test_clear():
+async def test_pop_closes_stack():
     """
-    Test clearing the scope's cache and exit stack.
+    Test that popping a scope closes the exit stack created during its activation.
 
-    Given: an AsyncActiveScope with mock cache and exit stack,
-    When: clear is called,
-    Then: both the cache and exit stack should be cleared.
+    Given: an active AsyncLifecycle scope with an entered context manager,
+    When: the scope is popped,
+    Then: the context manager's cleanup function should be called.
     """
     # Arrange
     cleanup = Mock()
-
-    scope = AsyncActiveScope(MemoryCache)
+    lifecycle = AsyncLifecycle([Scope("application", "context")])
+    token = lifecycle.push("application")
 
     @asynccontextmanager
     async def generator():
         try:
-            yield "Something"
+            yield
         finally:
             cleanup()
 
-    scope.cache.set("key", "value")
-    await scope.exit_stack.enter_async_context(generator())
+    await lifecycle.get_exit_stack("application").enter_async_context(generator())
 
     # Act
-    await scope.clear()
+    await lifecycle.pop(token)
 
     # Assert
-    assert scope.cache.is_empty()
     cleanup.assert_called_once()

@@ -1,5 +1,5 @@
 """
-Unit tests for initialization and configuration for the `Lifecycle` class.
+Unit tests for initialization and configuration for the `AsyncLifecycle` class.
 
 This test suite verifies the following behaviors:
 - Proper initialization of the Lifecycle stack.
@@ -14,13 +14,14 @@ construction and is covered in tests/unit/lifecycle/test_scope.py.
 import pytest
 
 from stratae.lifecycle import AsyncLifecycle, Scope
+from stratae.lifecycle.exceptions import ScopeNotFoundError
 
 
 def test_initialization(async_lifecycle: AsyncLifecycle):
     """
-    Test that Lifecycle initializes with an empty lifecycle stack.
+    Test that AsyncLifecycle initializes with an empty lifecycle stack.
 
-    Given: A new instance of Lifecycle
+    Given: A new instance of AsyncLifecycle
     When: The instance is created
     Then: The lifecycle stack should be empty
     """
@@ -62,16 +63,28 @@ def test_initialization_with_no_scopes():
         AsyncLifecycle(scopes)
 
 
-def test_get_cache_invalid_scope(async_lifecycle: AsyncLifecycle):
+def test_get_slots_invalid_scope(async_lifecycle: AsyncLifecycle):
     """
-    Test that getting a cache for an invalid scope raises an error.
+    Test that getting slots for an invalid scope raises an error.
 
-    Given: A Lifecycle instance
-    When: An attempt is made to get a cache for an invalid scope
+    Given: An AsyncLifecycle instance
+    When: An attempt is made to get slots for an invalid scope
     Then: A ValueError should be raised
     """
     # Arrange (done via fixture)
 
     # Act & Assert
     with pytest.raises(ValueError, match="Unknown scope: bad"):
-        async_lifecycle.get_cache("bad")
+        async_lifecycle.get_slots("bad")
+
+
+def test_allocate_invalid(async_lifecycle: AsyncLifecycle):
+    """
+    Allocating a slot for an invalid scope raises.
+
+    Given: An AsyncLifecycle instance,
+    When: An attempt is made to allocate a slot for a non-existent scope,
+    Then: A ScopeNotFoundError is raised.
+    """
+    with pytest.raises(ScopeNotFoundError, match="Unknown scope: bad"):
+        async_lifecycle.allocate_slot("bad")

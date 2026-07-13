@@ -2,11 +2,10 @@
 Unit tests for the push functionality of the Lifecycle class.
 
 This test suite verifies the following behaviors:
-- Attempting to get a cache for a scope not in the stack raises a ValueError.
+- Attempting to get slots for a scope not in the stack raises a ValueError.
 - Pushing an undefined scope onto the stack raises a ValueError.
 - Pushing a valid scope adds it to the lifecycle stack.
 - Pushing multiple valid scopes adds all of them to the stack in order.
-- Pushing an invalid scope when another is active raises a ValueError.
 """
 
 from typing import Sequence
@@ -14,20 +13,19 @@ from typing import Sequence
 import pytest
 
 from stratae.lifecycle import Lifecycle
-from stratae.lifecycle.exceptions import ScopeActivationError
 
 
-def test_get_cache_not_in_stack(lifecycle: Lifecycle, scopes: Sequence[str]):
+def test_get_slots_not_in_stack(lifecycle: Lifecycle, scopes: Sequence[str]):
     """
-    Test that getting a cache for a scope not in the stack raises an error.
+    Test that getting slots for a scope not in the stack raises an error.
 
     Given: A Lifecycle instance with no scopes pushed
-    When: An attempt is made to get a cache for a scope
+    When: An attempt is made to get slots for a scope
     Then: A ValueError should be raised
     """
     # Act & Assert
     with pytest.raises(RuntimeError, match=f"Scope '{scopes[2]}' is not active."):
-        lifecycle.get_cache(scopes[2])
+        lifecycle.get_slots(scopes[2])
 
 
 def test_push_scope_not_defined(lifecycle: Lifecycle):
@@ -73,22 +71,3 @@ def test_push_multiple_scopes(lifecycle: Lifecycle, scopes: Sequence[str]):
 
     # Assert
     assert lifecycle.active_scopes() == [scopes[0], scopes[1], scopes[2]]
-
-
-def test_push_invalid_scope(lifecycle: Lifecycle, scopes: Sequence[str]):
-    """
-    Test pushing an invalid lifecycle scope onto the stack.
-
-    Given: A Lifecycle instance and a LifecycleScope
-    When: An attempt is made to push a scope that is not allowed
-    Then: A ValueError should be raised
-    """
-    # Arrange
-    lifecycle.push(scopes[1])
-
-    # Act & Assert
-    with pytest.raises(
-        ScopeActivationError,
-        match=f"Cannot push {scopes[0]} scope when {scopes[1]} is already active.",
-    ):
-        lifecycle.push(scopes[0])

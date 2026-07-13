@@ -11,7 +11,7 @@ from typing import Sequence
 import pytest
 
 from stratae.lifecycle import AsyncLifecycle
-from stratae.lifecycle.exceptions import ScopeActivationError
+from stratae.lifecycle.exceptions import ScopeActivationError, ScopeNotFoundError
 
 
 async def test_apop_most_recent_scope(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):
@@ -46,5 +46,46 @@ async def test_apop_empty_stack(async_lifecycle: AsyncLifecycle, scopes: Sequenc
     await async_lifecycle.pop(token)
 
     # Act & Assert
-    with pytest.raises(ScopeActivationError, match="Cannot pop .* while no scopes are active."):
+    with pytest.raises(ScopeActivationError, match="Cannot pop .*: scope is not active."):
         await async_lifecycle.pop(token)
+
+
+async def test_pop_invalid_scope(async_lifecycle: AsyncLifecycle):
+    """
+    Attempting to pop an invalid scope raises.
+
+    Given: An AsyncLifecycle instance,
+    When: A name is passed to pop that doesn't correspond to a scope for that lifecycle,
+    Then: A ScopeNotFoundError is raised.
+    """
+    with pytest.raises(ScopeNotFoundError, match="Unknown scope: bad"):
+        await async_lifecycle.pop("bad")
+
+
+async def test_pop_inactive_context_scope(async_lifecycle: AsyncLifecycle):
+    """
+    Popping an inactive context scope raises.
+
+    Given: An AsyncLifecycle instance,
+    When: A token is passed for a scope already popped,
+    Then: A ScopeActivationError is raised.
+    """
+    # Arrange
+    t0 = async_lifecycle.push("request")
+    await async_lifecycle.pop(t0)
+
+    # Act & Assert
+    with pytest.raises(ScopeActivationError, match="Cannot pop request: scope is not active."):
+        await async_lifecycle.pop(t0)
+
+
+async def test_pop_context_by_name_raises(async_lifecycle: AsyncLifecycle):
+    """
+    PoppiQng an inactive context scope raises.
+
+    Given: An AsyncLifecycle instance,
+    When: A name is passed for a scope that must be popped with a token,
+    Then: A ScopeActivationError is raised.
+    """
+    with pytest.raises(ScopeActivationError, match="Cannot pop request by name"):
+        await async_lifecycle.pop("request")

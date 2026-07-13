@@ -6,8 +6,10 @@ and cache the results of function calls based on specified scopes. It supports o
 functions, including generator functions with automatic cleanup for resource management.
 
 Key Features:
-- Scopes are declared as Scope objects, each naming its cache isolation (see Scope).
-    - lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
+- Scopes are declared as Scope objects, each choosing its cache isolation:
+    - lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'context')])
+    - "shared": one cache visible to all threads/contexts while the scope is active.
+    - "context": a cache per execution context, backed by a ContextVar.
 - Context managers for managing resource lifetimes.
 - `@lifecycle.cache('<scope>')`: Decorator to define the cache scope of a function
     - `@lifecycle.cache('application')`
@@ -18,7 +20,7 @@ Key Features:
 
 Usage:
 Example:
-    lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
+    lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'context')])
 
     @lifecycle.cache('application')
     def get_database_connection() -> Connection:
@@ -39,13 +41,12 @@ Example:
             session = get_request_session()
 """
 
-from collections import deque
-from typing import TYPE_CHECKING, Callable, Hashable, Sequence
+from contextvars import ContextVar, Token
+from typing import Any, Callable, Hashable, Sequence
 
-from stratae.cache import MemoryCache
 from stratae.lifecycle._context import LifecycleContext
 from stratae.lifecycle._decorators import CacheDecorator
-from stratae.lifecycle._scope import ActiveScope
+from stratae.lifecycle._scope import UNSET, ExitStack
 from stratae.lifecycle._validation import validate_config
 from stratae.lifecycle.exceptions import (
     ScopeActivationError,
@@ -54,43 +55,67 @@ from stratae.lifecycle.exceptions import (
 )
 from stratae.lifecycle.scope import Scope
 
-if TYPE_CHECKING:
-    from stratae.cache import Cache
-
 
 class Lifecycle:
     """Manager for handling lifecycle contexts."""
 
-    __slots__ = ("_scopes", "_stack", "_active")
+    __slots__ = ("_scopes", "_templates", "_cvars", "_shared", "_active")
 
     def __init__(self, scopes: Sequence[Scope]) -> None:
         """Initialize the LifecycleManager."""
         validate_config(scopes)
-        self._scopes: dict[str, int] = {scope.name: index for index, scope in enumerate(scopes)}
-        self._stack: dict[str, ActiveScope] = {
-            scope.name: ActiveScope(MemoryCache) for scope in scopes
+        self._scopes: dict[str, Scope] = {scope.name: scope for scope in scopes}
+        self._templates: dict[str, list[Any]] = {scope.name: [UNSET] for scope in scopes}
+        self._cvars: dict[str, ContextVar[list[Any]]] = {
+            scope.name: ContextVar(scope.name) for scope in scopes if scope.isolation == "context"
         }
-        self._active: deque[str] = deque()
+        self._shared: dict[str, list[Any]] = {
+            scope.name: self._templates[scope.name].copy()
+            for scope in scopes
+            if scope.isolation == "shared"
+        }
+        self._active: dict[str, list[Any]] = {}
 
-    def push(self, scope: str) -> None:
-        """Push a new lifecycle scope onto the stack."""
-        if scope not in self._scopes:
-            raise ScopeNotFoundError(f"Unknown scope: {scope}")
+    def push(self, scope: str) -> Token[list[Any]] | str:
+        """Push a new lifecycle scope activation, returning the handle pop() takes."""
+        if scope in self._cvars:
+            return self._cvars[scope].set(self._templates[scope].copy())
+        try:
+            self._active[scope] = self._shared[scope]
+        except KeyError:
+            raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
+        return scope
 
-        current = self._active[-1] if self._active else None
-        if current and self._scopes[current] >= self._scopes[scope]:
+    def pop(self, handle: Token[list[Any]] | str) -> None:
+        """Pop the lifecycle scope activation identified by handle."""
+        if isinstance(handle, str):
+            self._pop_shared(handle)
+        else:
+            self._pop_isolated(handle)
+
+    def _pop_shared(self, scope: str) -> None:
+        """Deactivate a shared scope by name."""
+        try:
+            slots = self._active.pop(scope)
+        except KeyError:
+            raise self._pop_error(scope) from None
+        stack = slots[0]
+        slots[:] = self._templates[scope]
+        if stack is not UNSET:
+            stack.close()
+
+    def _pop_isolated(self, token: Token[list[Any]]) -> None:
+        """Deactivate a context-isolated activation by resetting its ContextVar."""
+        try:
+            slots = token.var.get()
+        except LookupError:
             raise ScopeActivationError(
-                f"Cannot push {scope} scope when {current} is already active."
-            )
-        self._active.append(scope)
-
-    def pop(self) -> None:
-        """Pop the current lifecycle scope from the stack."""
-        if not self._active:
-            return
-
-        current = self._active.pop()
-        self._stack[current].clear()
+                f"Cannot pop {token.var.name}: scope is not active."
+            ) from None
+        token.var.reset(token)
+        stack = slots[0]
+        if stack is not UNSET:
+            stack.close()
 
     def cache(
         self,
@@ -105,36 +130,74 @@ class Lifecycle:
         return CacheDecorator(scope, self, cache_key, ignore_params)
 
     def start(self, scope: str) -> LifecycleContext:
-        """Get the current scope context by name for use as a decorator or context manager."""
+        """Get a scope context by name for use as a context manager."""
         if scope not in self._scopes:
-            raise ScopeNotFoundError(f"No lifecycle scope named '{scope}'.")
+            raise ScopeNotFoundError(f"Unknown scope: {scope}")
 
         return LifecycleContext(scope, self)
 
     def is_empty(self) -> bool:
-        """Check if there are no active scopes."""
-        return not self._active
+        """Check if there are no active scopes, introspection only."""
+        return not self._active and all(cv.get(UNSET) is UNSET for cv in self._cvars.values())
 
     def active_scopes(self) -> Sequence[str]:
-        """Get a list of active scopes."""
-        return list(self._active)
+        """Get a list of active scopes, in declaration order."""
+        return [name for name in self._scopes if self._is_active(name)]
 
-    def get_cache(self, scope: str) -> "Cache":
-        """Get the cache for the specified lifecycle scope."""
+    def _is_active(self, scope: str) -> bool:
+        """Whether the scope has a live activation in the calling context."""
+        cv = self._cvars.get(scope)
+        if cv is not None:
+            return cv.get(UNSET) is not UNSET
+        return scope in self._active
+
+    def _scope_error(self, scope: str) -> ScopeNotFoundError | ScopeInactiveError:
+        """Build the exception for a failed scope lookup - only ever called off the hot path."""
         if scope not in self._scopes:
-            raise ScopeNotFoundError(f"Unknown scope: {scope}")
+            return ScopeNotFoundError(f"Unknown scope: {scope}")
+        return ScopeInactiveError(f"Scope '{scope}' is not active.")
 
-        if scope not in self._active:
-            raise ScopeInactiveError(f"Scope '{scope}' is not active.")
-
-        return self._stack[scope].cache
-
-    def get_exit_stack(self, scope: str):
-        """Get the exit stack for the specified lifecycle scope."""
+    def _pop_error(self, scope: str) -> ScopeNotFoundError | ScopeActivationError:
+        """Build the exception for a failed by-name pop - only ever called off the hot path."""
         if scope not in self._scopes:
-            raise ScopeNotFoundError(f"Unknown scope: {scope}")
+            return ScopeNotFoundError(f"Unknown scope: {scope}")
+        if scope in self._cvars:
+            return ScopeActivationError(
+                f"Cannot pop {scope} by name: context-isolated scopes pop with the token"
+                " returned by push()."
+            )
+        return ScopeActivationError(f"Cannot pop {scope}: scope is not active.")
 
-        if scope not in self._active:
-            raise ScopeInactiveError(f"Scope '{scope}' is not active.")
+    def get_exit_stack(self, scope: str) -> ExitStack:
+        """Get the exit stack for the specified lifecycle scope, creating it on first use."""
+        slots = self.get_slots(scope)
+        stack = slots[0]
+        if stack is UNSET:
+            stack = slots[0] = ExitStack()
+        return stack
 
-        return self._stack[scope].exit_stack
+    def allocate_slot(self, scope: str) -> int:
+        """Allocate a dedicated slot for a cached function - a value directly, or a dict."""
+        try:
+            template = self._templates[scope]
+        except KeyError:
+            raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
+
+        template.append(UNSET)
+        shared = self._shared.get(scope)
+        if shared is not None:
+            shared.append(UNSET)
+        return len(template) - 1
+
+    def get_slots(self, scope: str) -> list[Any]:
+        """Get the scope's slot list - slot 0 is reserved for the exit stack (see __init__)."""
+        cv = self._cvars.get(scope)
+        if cv is not None:
+            try:
+                return cv.get()
+            except LookupError:
+                raise ScopeInactiveError(f"Scope '{scope}' is not active.") from None
+        try:
+            return self._active[scope]
+        except KeyError:
+            raise self._scope_error(scope) from None
