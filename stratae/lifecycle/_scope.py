@@ -1,12 +1,13 @@
-"""Exit stacks and the UNSET sentinel backing lifecycle scope activations."""
+"""Scope activation storage - shared vars, exit stacks, and the UNSET sentinel."""
 
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from contextvars import ContextVar
-from typing import Any, Callable, NamedTuple, Sequence
+from typing import Any, Callable, NamedTuple, Protocol, Sequence
 
 from stratae.lifecycle.scope import Scope
 
 UNSET: Any = object()
+_MISSING: Any = object()
 
 
 class SlotDict(dict[int, Any]):
@@ -24,13 +25,79 @@ class SlotDict(dict[int, Any]):
 SlotStorage = list[Any] | SlotDict
 
 
+class SharedToken:
+    """Activation token for a shared scope, mirroring contextvars.Token's .var backref."""
+
+    __slots__ = ("var",)
+
+    var: "SharedVar"
+
+    def __init__(self, var: "SharedVar") -> None:
+        self.var = var
+
+
+class SharedVar:
+    """
+    ContextVar-shaped holder for a shared scope's activation, visible to every context.
+
+    The live SlotStorage sits in the storage slot - codegen'd wrappers bind the var and
+    read the attribute directly - and UNSET there marks the scope inactive. set() always
+    hands back the same token: shared activations don't nest, so deactivation clears the
+    storage rather than restoring a prior value.
+    """
+
+    __slots__ = ("name", "storage", "_token")
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.storage: SlotStorage = UNSET
+        self._token = SharedToken(self)
+
+    def get(self, default: Any = _MISSING) -> SlotStorage:
+        """Return the live storage, or default when inactive, else raise LookupError."""
+        value = self.storage
+        if value is not UNSET:
+            return value
+        if default is _MISSING:
+            raise LookupError(self.name)
+        return default
+
+    def set(self, value: SlotStorage) -> SharedToken:
+        """Activate the scope with the given storage, returning its reusable token."""
+        self.storage = value
+        return self._token
+
+    def clear(self) -> None:
+        """Deactivate the scope, leaving UNSET as the storage."""
+        self.storage = UNSET
+
+    def reset(self, _token: SharedToken) -> None:
+        """Deactivate like clear() - the token is unused since shared activations don't nest."""
+        self.storage = UNSET
+
+
+ScopeVar = ContextVar[SlotStorage] | SharedVar
+
+
+class ScopeVarProto[TokenT](Protocol):
+    """
+    The set/reset pairing a lifecycle context needs, generic over the token type.
+
+    Correlates a var with its token type so the ContextVar/Token and SharedVar/
+    SharedToken pairs both type-check a reset(token) call without narrowing at the
+    call site - narrowing would cost an isinstance per activation exit.
+    """
+
+    def set(self, value: SlotStorage, /) -> TokenT: ...
+
+    def reset(self, token: TokenT, /) -> None: ...
+
+
 class LifecycleState(NamedTuple):
     """Per-scope state a Lifecycle/AsyncLifecycle manager builds once at construction."""
 
     templates: dict[str, SlotStorage]
-    cvars: dict[str, ContextVar[SlotStorage]]
-    shared: dict[str, SlotStorage]
-    active: dict[str, SlotStorage]
+    scope_vars: dict[str, ScopeVar]
     contexts: dict[str, Any]
     counters: dict[str, int]
     free_slots: dict[str, list[int]]
@@ -41,34 +108,32 @@ def _build_templates(scopes: Sequence[Scope]) -> dict[str, SlotStorage]:
     return {scope.name: [UNSET] if scope.storage == "dense" else SlotDict() for scope in scopes}
 
 
-def _build_cvars(scopes: Sequence[Scope]) -> dict[str, ContextVar[SlotStorage]]:
-    """Build one ContextVar per context-isolated scope."""
-    return {scope.name: ContextVar(scope.name) for scope in scopes if scope.isolation == "context"}
-
-
-def _build_shared(
-    scopes: Sequence[Scope], templates: dict[str, SlotStorage]
-) -> dict[str, SlotStorage]:
-    """Build each shared-isolation scope's permanent slot storage from its template."""
+def _build_scope_vars(scopes: Sequence[Scope]) -> dict[str, ScopeVar]:
+    """Build each scope's activation holder - a ContextVar if context-isolated, else a SharedVar."""
     return {
-        scope.name: templates[scope.name].copy() for scope in scopes if scope.isolation == "shared"
+        scope.name: (
+            ContextVar(scope.name) if scope.isolation == "context" else SharedVar(scope.name)
+        )
+        for scope in scopes
     }
 
 
 def _build_contexts(
-    shared: dict[str, SlotStorage],
+    scopes: Sequence[Scope],
+    scope_vars: dict[str, ScopeVar],
     templates: dict[str, SlotStorage],
-    active: dict[str, SlotStorage],
-    shared_context_cls: Callable[[str, SlotStorage, dict[str, SlotStorage], SlotStorage], Any],
+    context_cls: Callable[[ScopeVarProto[Any], SlotStorage], Any],
 ) -> dict[str, Any]:
     """
-    Build one reusable context manager per shared scope, all sharing the same active dict.
+    Build one reusable context manager per shared scope.
 
-    The manager's push()/pop()/get_slots() must observe that identical `active` object.
+    Shared activations don't nest, so one instance per scope can carry the activation
+    state that context-isolated scopes need a fresh instance for on every start().
     """
     return {
-        name: shared_context_cls(name, entry, active, templates[name])
-        for name, entry in shared.items()
+        scope.name: context_cls(scope_vars[scope.name], templates[scope.name])
+        for scope in scopes
+        if scope.isolation == "shared"
     }
 
 
@@ -79,7 +144,7 @@ def _build_counters(scopes: Sequence[Scope]) -> dict[str, int]:
 
 def build_lifecycle_state(
     scopes: Sequence[Scope],
-    shared_context_cls: Callable[[str, SlotStorage, dict[str, SlotStorage], SlotStorage], Any],
+    context_cls: Callable[[ScopeVarProto[Any], SlotStorage], Any],
 ) -> LifecycleState:
     """
     Build the per-scope state shared by Lifecycle and AsyncLifecycle construction.
@@ -89,29 +154,11 @@ def build_lifecycle_state(
     agnostic to sync vs. async.
     """
     templates = _build_templates(scopes)
-    cvars = _build_cvars(scopes)
-    shared = _build_shared(scopes, templates)
-    active: dict[str, SlotStorage] = {}
-    contexts = _build_contexts(shared, templates, active, shared_context_cls)
+    scope_vars = _build_scope_vars(scopes)
+    contexts = _build_contexts(scopes, scope_vars, templates, context_cls)
     counters = _build_counters(scopes)
     free_slots: dict[str, list[int]] = {scope.name: [] for scope in scopes}
-    return LifecycleState(templates, cvars, shared, active, contexts, counters, free_slots)
-
-
-def reset_slots(slots: SlotStorage, template: SlotStorage) -> None:
-    """
-    Reset slot storage in place for the scope's next activation.
-
-    In place rather than replacing, since the manager's _shared entry and whatever a
-    shared context captured as its own _entry are independent references to the same
-    object - only an in-place reset keeps both observing the same state without a
-    lookup. Lists refill from their template; dicts just empty, since missing keys
-    already read as UNSET.
-    """
-    if isinstance(slots, list):
-        slots[:] = template
-    else:
-        slots.clear()
+    return LifecycleState(templates, scope_vars, contexts, counters, free_slots)
 
 
 def _raise_collected(exc: Exception) -> None:

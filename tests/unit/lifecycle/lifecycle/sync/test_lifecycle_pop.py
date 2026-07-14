@@ -1,12 +1,11 @@
 """
 Unit tests for the Lifecycle class's pop functionality.
 
-This test suite verifies the behavior of popping scope activations by the handle push()
-returned - for shared scopes, the scope name - including error handling for popping a
-scope that is not active.
+This test suite verifies the behavior of popping scope activations by the token push()
+returned, including error handling for popping a scope that is not active.
 
 Test Cases:
-- test_pop_scope_by_handle: Ensure popping by push()'s handle removes that scope.
+- test_pop_scope_by_handle: Ensure popping by push()'s token removes that scope.
 - test_pop_inactive_scope: Ensure popping a scope that is not active raises an error.
 """
 
@@ -16,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.lifecycle import Lifecycle, resource
-from stratae.lifecycle.exceptions import ScopeActivationError, ScopeNotFoundError
+from stratae.lifecycle.exceptions import ScopeActivationError
 
 
 def test_pop_scope_by_handle(lifecycle: Lifecycle, scopes: Sequence[str]):
@@ -56,18 +55,6 @@ def test_pop_inactive_scope(lifecycle: Lifecycle, scopes: Sequence[str]):
     assert lifecycle.is_empty()
 
 
-def test_pop_invalid_scope(lifecycle: Lifecycle):
-    """
-    Attempting to pop an invalid scope raises.
-
-    Given: A Lifecycle instance,
-    When: A name is passed to pop that doesn't correspond to a scope for that lifecycle,
-    Then: A ScopeNotFoundError is raised.
-    """
-    with pytest.raises(ScopeNotFoundError, match="Unknown scope: bad"):
-        lifecycle.pop("bad")
-
-
 def test_pop_context_scope(lifecycle: Lifecycle):
     """
     Popping an inactive context scope raises.
@@ -83,18 +70,6 @@ def test_pop_context_scope(lifecycle: Lifecycle):
     # Act & Assert
     with pytest.raises(ScopeActivationError, match="Cannot pop request: scope is not active."):
         lifecycle.pop(t0)
-
-
-def test_pop_context_by_name(lifecycle: Lifecycle):
-    """
-    PoppiQng an inactive context scope raises.
-
-    Given: A Lifecycle instance,
-    When: A name is passed for a scope that must be popped with a token,
-    Then: A ScopeActivationError is raised.
-    """
-    with pytest.raises(ScopeActivationError, match="Cannot pop request by name"):
-        lifecycle.pop("request")
 
 
 @pytest.mark.parametrize("scope", ("application", "request"))

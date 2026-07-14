@@ -87,7 +87,7 @@ async def test_release_slot_deletes_unwritten_sparse_key():
         gc.collect()
 
     # Assert
-    assert len(sparse_lifecycle._shared["sparse_scope"]) == 0  # pyright: ignore[reportPrivateUsage]
+    assert len(sparse_lifecycle._templates["sparse_scope"]) == 0  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_reclaimed_slot_does_not_leak_stale_value(async_lifecycle: AsyncLifecycle):

@@ -1,117 +1,73 @@
 """Context managers for lifecycle scope activations."""
 
-from contextvars import ContextVar
+from typing import Any
 
-from stratae.lifecycle._scope import UNSET, SlotStorage, reset_slots
+from stratae.lifecycle._scope import UNSET, ScopeVarProto, SlotStorage
 
 
-class SharedLifecycleContext:
-    """Reusable context manager for a shared-isolation scope on a sync Lifecycle."""
+class LifecycleContext:
+    """
+    Context manager for a scope activation on a sync Lifecycle.
 
-    __slots__ = ("_scope", "_entry", "_active", "_template")
+    Works for both isolations through the ScopeVarProto interface, which pairs set with
+    reset so exit needs no narrowing: shared scopes reuse one instance per scope (their
+    activations don't nest), context-isolated scopes get a fresh instance per start().
+    Deliberately not generic over the token type - a Generic base taxes per-activation
+    instantiation - so the var/token pairing is typed Any here.
+    """
 
-    def __init__(
-        self,
-        scope: str,
-        entry: SlotStorage,
-        active: dict[str, SlotStorage],
-        template: SlotStorage,
-    ) -> None:
-        """Initialize with the scope's permanent slot list and reset template pre-resolved."""
-        self._scope = scope
-        self._entry = entry
-        self._active = active
+    __slots__ = ("_var", "_template", "_slots", "token")
+
+    token: Any
+
+    def __init__(self, var: ScopeVarProto[Any], template: SlotStorage) -> None:
+        """Initialize with the scope's var and all-UNSET slot template pre-resolved."""
+        self._var = var
         self._template = template
 
     def __enter__(self) -> None:
-        """Activate the scope - push minus the lookup already done at construction."""
-        self._active[self._scope] = self._entry
-
-    def __exit__(self, *_) -> None:
-        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
-        self._active.pop(self._scope, None)
-        slots = self._entry
-        stack = slots[0]
-        reset_slots(slots, self._template)
-        if stack is not UNSET:
-            stack.close()
-
-
-class IsolatedLifecycleContext:
-    """Per-activation context manager for a context-isolation scope on a sync Lifecycle."""
-
-    __slots__ = ("_cv", "_template", "_slots", "token")
-
-    def __init__(self, cv: ContextVar[SlotStorage], template: SlotStorage) -> None:
-        """Initialize with the scope's ContextVar and all-UNSET slot template pre-resolved."""
-        self._cv = cv
-        self._template = template
-
-    def __enter__(self) -> None:
-        """Activate the scope in the current execution context."""
+        """Activate the scope with a fresh copy of the template."""
         slots = self._template.copy()
-        self.token = self._cv.set(slots)
+        self.token = self._var.set(slots)
         self._slots = slots
 
     def __exit__(self, *_) -> None:
         """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
-        self._cv.reset(self.token)
+        self._var.reset(self.token)
         stack = self._slots[0]
         if stack is not UNSET:
             stack.close()
 
 
-class AsyncSharedLifecycleContext:
-    """Reusable async context manager for a shared-isolation scope on an AsyncLifecycle."""
+class AsyncLifecycleContext:
+    """
+    Async context manager for a scope activation on an AsyncLifecycle.
 
-    __slots__ = ("_scope", "_entry", "_active", "_template")
+    Works for both isolations through the ScopeVarProto interface, which pairs set with
+    reset so exit needs no narrowing: shared scopes reuse one instance per scope (their
+    activations don't nest), context-isolated scopes get a fresh instance per start().
+    Deliberately not generic over the token type - a Generic base taxes per-activation
+    instantiation - so the var/token pairing is typed Any here.
+    """
 
-    def __init__(
-        self,
-        scope: str,
-        entry: SlotStorage,
-        active: dict[str, SlotStorage],
-        template: SlotStorage,
-    ) -> None:
-        """Initialize with the scope's permanent slot list and reset template pre-resolved."""
-        self._scope = scope
-        self._entry = entry
-        self._active = active
+    __slots__ = ("_var", "_template", "_slots", "token")
+
+    token: Any
+
+    def __init__(self, var: ScopeVarProto[Any], template: SlotStorage) -> None:
+        """Initialize with the scope's var and all-UNSET slot template pre-resolved."""
+        self._var = var
         self._template = template
 
     async def __aenter__(self) -> None:
-        """Activate the scope - push minus the lookup already done at construction."""
-        self._active[self._scope] = self._entry
-
-    async def __aexit__(self, *_) -> None:
-        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
-        self._active.pop(self._scope, None)
-        slots = self._entry
-        stack = slots[0]
-        reset_slots(slots, self._template)
-        if stack is not UNSET:
-            await stack.aclose()
-
-
-class AsyncIsolatedLifecycleContext:
-    """Per-activation async context manager for a context-isolation scope on an AsyncLifecycle."""
-
-    __slots__ = ("_cv", "_template", "_slots", "token")
-
-    def __init__(self, cv: ContextVar[SlotStorage], template: SlotStorage) -> None:
-        """Initialize with the scope's ContextVar and all-UNSET slot template pre-resolved."""
-        self._cv = cv
-        self._template = template
-
-    async def __aenter__(self):
-        """Activate the scope - AsyncLifecycle.push minus the lookups done at start()."""
+        """Activate the scope with a fresh copy of the template."""
         slots = self._template.copy()
-        self.token = self._cv.set(slots)
+        self.token = self._var.set(slots)
         self._slots = slots
 
     async def __aexit__(self, *_) -> None:
         """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
-        self._cv.reset(self.token)
+        self._var.reset(self.token)
         stack = self._slots[0]
         if stack is not UNSET:
             await stack.aclose()

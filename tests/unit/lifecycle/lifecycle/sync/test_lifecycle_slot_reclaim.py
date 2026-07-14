@@ -87,7 +87,7 @@ def test_release_slot_deletes_unwritten_sparse_key():
         gc.collect()
 
     # Assert
-    assert len(sparse_lifecycle._shared["sparse_scope"]) == 0  # pyright: ignore[reportPrivateUsage]
+    assert len(sparse_lifecycle._templates["sparse_scope"]) == 0  # pyright: ignore[reportPrivateUsage]
 
 
 def test_context_scope_template_growth_is_bounded(lifecycle: Lifecycle, scopes: Sequence[str]):
@@ -185,4 +185,4 @@ def test_hot_loop_template_growth_is_bounded(lifecycle: Lifecycle):
             del get_value
             gc.collect()
 
-    assert len(lifecycle._shared["application"]) == 2  # pyright: ignore[reportPrivateUsage]
+    assert len(lifecycle._templates["application"]) == 2  # pyright: ignore[reportPrivateUsage]

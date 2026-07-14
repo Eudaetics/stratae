@@ -1,4 +1,4 @@
-"""Tests for ExitStack and the slot-list reset behavior of Lifecycle.pop."""
+"""Tests for ExitStack and the cleanup behavior of Lifecycle.pop."""
 
 from contextlib import contextmanager
 from typing import Generator
@@ -82,14 +82,14 @@ def test_context_with_failure():
     spy_mock.assert_called_once()
 
 
-def test_pop_resets_slots_in_place_and_closes_stack():
+def test_pop_closes_stack_and_next_push_starts_fresh():
     """
-    Test that popping a scope resets its permanent slot list and closes its exit stack.
+    Test that popping a scope closes its exit stack and the next activation starts empty.
 
     Given: an active Lifecycle scope with a populated slot and an entered context manager,
     When: the scope is popped and pushed again,
-    Then: the same slot list should be active (its identity is permanent), every slot
-        including the reserved exit-stack slot 0 should be UNSET, and cleanup should have run.
+    Then: cleanup should have run and the new activation's slots, including the reserved
+        exit-stack slot 0, should all be UNSET.
     """
     # Arrange
     cleanup = Mock()
@@ -103,16 +103,15 @@ def test_pop_resets_slots_in_place_and_closes_stack():
         finally:
             cleanup()
 
-    lifecycle.push("application")
+    token = lifecycle.push("application")
     slots = lifecycle.get_slots("application")
     slots[index] = "value"
     lifecycle.get_exit_stack("application").enter_context(generator())
 
     # Act
-    lifecycle.pop("application")
+    lifecycle.pop(token)
 
     # Assert
     cleanup.assert_called_once()
     lifecycle.push("application")
-    assert lifecycle.get_slots("application") is slots
-    assert slots == [UNSET, UNSET]
+    assert lifecycle.get_slots("application") == [UNSET, UNSET]
