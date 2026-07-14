@@ -35,7 +35,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev,test,asgi]"
+        run: pip install -e ".[dev,test,asgi,msgspec]"
 
       - name: Format check
         run: ruff format --check .
