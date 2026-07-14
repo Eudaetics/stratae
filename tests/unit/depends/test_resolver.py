@@ -685,7 +685,7 @@ def test_resolve_function_wraps_sync_context_manager():
     mock_cleanup = Mock()
 
     @contextmanager
-    def cm_func(dep: Injected[int, Depends(get_dep)]) -> Generator[int]:
+    def cm_func(dep: Injected[int, Depends(get_dep)]) -> Generator[int, None, None]:
         yield dep
         mock_cleanup()
 
@@ -713,7 +713,7 @@ async def test_resolve_function_wraps_async_context_manager():
     mock_cleanup = Mock()
 
     @asynccontextmanager
-    async def cm_func(dep: Injected[int, Depends(get_dep)]) -> AsyncGenerator[int]:
+    async def cm_func(dep: Injected[int, Depends(get_dep)]) -> AsyncGenerator[int, None]:
         yield dep
         mock_cleanup()
 
@@ -745,7 +745,7 @@ async def test_resolve_function_wraps_async_context_manager_with_async_dependenc
         await asyncio.sleep(0)
         return 1
 
-    async def cm_func(dep: Injected[int, Depends(async_dependency)]) -> AsyncGenerator[int]:
+    async def cm_func(dep: Injected[int, Depends(async_dependency)]) -> AsyncGenerator[int, None]:
         yield dep
         mock_cleanup()
 

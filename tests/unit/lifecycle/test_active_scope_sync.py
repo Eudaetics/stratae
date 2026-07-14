@@ -25,7 +25,7 @@ def test_context_behavior():
     spy_success = Mock()
 
     @contextmanager
-    def generator() -> Generator[None]:
+    def generator() -> Generator[None, None, None]:
         try:
             yield
             spy_success()
@@ -59,7 +59,7 @@ def test_context_with_failure():
     spy_except = Mock()
 
     @contextmanager
-    def generator() -> Generator[None]:
+    def generator() -> Generator[None, None, None]:
         try:
             yield
             mock_failure()

@@ -55,7 +55,7 @@ def test_inject_generator_dep():
         mock_cleanup()
 
     @inject
-    def func_with_gen(gen: Injected[Generator[int], Depends(gen_dep)]):
+    def func_with_gen(gen: Injected[Generator[int, None, None], Depends(gen_dep)]):
         return list(gen)
 
     # Act
@@ -81,7 +81,7 @@ def test_inject_nested_generators():
             yield f"inner-{i}"
 
     @inject
-    def outer_gen(dep: Injected[Generator[str], Depends(inner_gen)]):
+    def outer_gen(dep: Injected[Generator[str, None, None], Depends(inner_gen)]):
         for value in dep:
             yield f"outer-{value}"
 
