@@ -40,23 +40,22 @@ class SharedVar:
     """
     ContextVar-shaped holder for a shared scope's activation, visible to every context.
 
-    The live SlotStorage sits in cell[0] - a one-element list rather than a plain
-    attribute so codegen'd wrappers can bind the cell and read it with a constant index -
-    and UNSET in the cell marks the scope inactive. set() always hands back the same
-    token: shared activations don't nest, so deactivation clears the cell rather than
-    restoring a prior value.
+    The live SlotStorage sits in the storage slot - codegen'd wrappers bind the var and
+    read the attribute directly - and UNSET there marks the scope inactive. set() always
+    hands back the same token: shared activations don't nest, so deactivation clears the
+    storage rather than restoring a prior value.
     """
 
-    __slots__ = ("name", "cell", "_token")
+    __slots__ = ("name", "storage", "_token")
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self.cell: list[Any] = [UNSET]
+        self.storage: SlotStorage = UNSET
         self._token = SharedToken(self)
 
     def get(self, default: Any = _MISSING) -> SlotStorage:
         """Return the live storage, or default when inactive, else raise LookupError."""
-        value = self.cell[0]
+        value = self.storage
         if value is not UNSET:
             return value
         if default is _MISSING:
@@ -65,16 +64,16 @@ class SharedVar:
 
     def set(self, value: SlotStorage) -> SharedToken:
         """Activate the scope with the given storage, returning its reusable token."""
-        self.cell[0] = value
+        self.storage = value
         return self._token
 
     def clear(self) -> None:
-        """Deactivate the scope, leaving UNSET in the cell."""
-        self.cell[0] = UNSET
+        """Deactivate the scope, leaving UNSET as the storage."""
+        self.storage = UNSET
 
     def reset(self, _token: SharedToken) -> None:
         """Deactivate like clear() - the token is unused since shared activations don't nest."""
-        self.cell[0] = UNSET
+        self.storage = UNSET
 
 
 ScopeVar = ContextVar[SlotStorage] | SharedVar

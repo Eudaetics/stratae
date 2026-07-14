@@ -114,14 +114,14 @@ def _write_resolve_first_read(writer: Writer, lifecycle: Any, scope: str, read: 
     Which lookup is written depends on the scope's isolation (see _bind_slot_lookup for
     the matching namespace binding): a context-isolated scope's ContextVar is bound
     straight into the wrapper's namespace at codegen time, with the read following the
-    resolve. A shared scope reads its SharedVar's cell by constant index, unguarded -
-    when the scope is inactive the cell holds UNSET, whose subscript in the read raises
+    resolve. A shared scope reads its SharedVar's storage attribute, unguarded - when
+    the scope is inactive the attribute holds UNSET, whose subscript in the read raises
     TypeError, so the active path pays no explicit check. The read can't raise TypeError
     otherwise: it subscripts a list or SlotDict with an int constant. Either miss falls
     back to get_slots(), which raises the right error.
     """
     if isinstance(lifecycle._vars[scope], SharedVar):
-        writer.write("__slots__ = __cell__[0]")
+        writer.write("__slots__ = __var__.storage")
         writer.write("try:")
         with writer.block():
             writer.write(read)
@@ -132,25 +132,21 @@ def _write_resolve_first_read(writer: Writer, lifecycle: Any, scope: str, read: 
         return
     writer.write("try:")
     with writer.block():
-        writer.write("__slots__ = __cv__.get()")
+        writer.write("__slots__ = __var__.get()")
     writer.write("except LookupError:")
     with writer.block():
         writer.write(f"__slots__ = __lifecycle__.get_slots({scope!r})")
     writer.write(read)
 
 
-def _bind_slot_lookup(namespace: dict[str, Any], lifecycle: Any, scope: str) -> None:
-    """
-    Bind the slot-list lookup object matching _write_resolve_first_read into the namespace.
-
-    Context-isolated scopes get the scope's ContextVar as __cv__; shared scopes get
-    their SharedVar's cell as __cell__.
-    """
-    var = lifecycle._vars[scope]
-    if isinstance(var, SharedVar):
-        namespace["__cell__"] = var.cell
-    else:
-        namespace["__cv__"] = var
+def _build_namespace(func: Callable[..., Any], lifecycle: Any, scope: str) -> dict[str, Any]:
+    """Build the namespace bindings every codegen'd wrapper compiles against."""
+    return {
+        "__func__": func,
+        "__lifecycle__": lifecycle,
+        "__UNSET__": UNSET,
+        "__var__": lifecycle._vars[scope],
+    }
 
 
 def _write_slot_guard(writer: Writer, slot: int, lifecycle: Any, scope: str) -> None:
@@ -265,12 +261,7 @@ def _create_sync_wrapper_impl(
         else:
             _write_keyed_body(writer, slot, lifecycle, scope, cache_key, params, call)
 
-    namespace: dict[str, Any] = {
-        "__func__": func,
-        "__lifecycle__": lifecycle,
-        "__UNSET__": UNSET,
-    }
-    _bind_slot_lookup(namespace, lifecycle, scope)
+    namespace = _build_namespace(func, lifecycle, scope)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
@@ -326,12 +317,7 @@ def create_async_wrapper[**P, T](
         else:
             _write_keyed_body(writer, slot, lifecycle, scope, cache_key, params, call)
 
-    namespace: dict[str, Any] = {
-        "__func__": func,
-        "__lifecycle__": lifecycle,
-        "__UNSET__": UNSET,
-    }
-    _bind_slot_lookup(namespace, lifecycle, scope)
+    namespace = _build_namespace(func, lifecycle, scope)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = cast(Callable[P, Awaitable[T]], _finalize(writer, func, params, namespace))
@@ -407,13 +393,8 @@ def _create_cm_wrapper_impl(
         else:
             _write_cm_keyed_body(writer, slot, lifecycle, scope, cache_key, params, enter_expr)
 
-    namespace: dict[str, Any] = {
-        "__func__": func,
-        "__lifecycle__": lifecycle,
-        "__UNSET__": UNSET,
-        "__stack_type__": lifecycle.exit_stack_type(),
-    }
-    _bind_slot_lookup(namespace, lifecycle, scope)
+    namespace = _build_namespace(func, lifecycle, scope)
+    namespace["__stack_type__"] = lifecycle.exit_stack_type()
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
