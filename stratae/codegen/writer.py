@@ -45,7 +45,7 @@ class Writer:
         self._lines: list[str] = []
 
     @contextmanager
-    def block(self) -> Generator[None]:
+    def block(self) -> Generator[None, None, None]:
         """
         Create a block section, increasing indentation for the block.
 
