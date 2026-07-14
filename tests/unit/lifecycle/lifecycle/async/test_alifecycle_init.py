@@ -13,8 +13,9 @@ construction and is covered in tests/unit/lifecycle/test_scope.py.
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle, Scope
+from stratae.lifecycle import Scope
 from stratae.lifecycle.exceptions import ScopeNotFoundError
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 def test_initialization(async_lifecycle: AsyncLifecycle):

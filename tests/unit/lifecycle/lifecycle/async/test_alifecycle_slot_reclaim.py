@@ -4,7 +4,8 @@ import gc
 from typing import Sequence
 from unittest.mock import Mock, call
 
-from stratae.lifecycle import AsyncLifecycle, Scope
+from stratae.lifecycle import Scope
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 class SimpleObject:

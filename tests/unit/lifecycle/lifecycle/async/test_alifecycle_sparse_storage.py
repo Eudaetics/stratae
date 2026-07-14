@@ -6,7 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle, Scope, async_resource, resource
+from stratae.lifecycle import Scope, async_resource, resource
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 class SimpleObject:

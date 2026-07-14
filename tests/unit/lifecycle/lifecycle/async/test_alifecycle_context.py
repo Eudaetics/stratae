@@ -18,8 +18,8 @@ from typing import Sequence
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle
 from stratae.lifecycle.exceptions import ScopeNotFoundError
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 async def test_async_context_lifecycle(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):

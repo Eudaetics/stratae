@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from stratae.depends import inject
 from stratae.integrations.lifecycle.asgi import RequestLifecycleMiddleware
-from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 @pytest.fixture

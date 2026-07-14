@@ -1,7 +1,6 @@
 """Lifecycle module for managing hierarchical contexts in applications."""
 
-from .async_lifecycle import AsyncLifecycle
-from .lifecycle import Lifecycle
+from .lifecycle import AsyncLifecycle, Lifecycle
 from .resource import async_resource, resource
 from .scope import Scope
 

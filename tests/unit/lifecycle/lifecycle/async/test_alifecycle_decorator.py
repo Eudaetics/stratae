@@ -2,7 +2,8 @@
 
 from unittest.mock import Mock
 
-from stratae.lifecycle import AsyncLifecycle, async_resource, resource
+from stratae.lifecycle import async_resource, resource
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 async def test_decorator_on_sync(async_lifecycle: AsyncLifecycle):

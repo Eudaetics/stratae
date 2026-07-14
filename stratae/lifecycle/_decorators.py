@@ -20,8 +20,7 @@ from stratae.lifecycle._wrappers import (
 from stratae.lifecycle.resource import AUTO_ENTER_ASYNC, AUTO_ENTER_SYNC
 
 if TYPE_CHECKING:
-    from stratae.lifecycle.async_lifecycle import AsyncLifecycle
-    from stratae.lifecycle.lifecycle import Lifecycle
+    from stratae.lifecycle.lifecycle import AsyncLifecycle, Lifecycle
 
 
 def _is_awaitable[**P, T](

@@ -2,7 +2,7 @@
 
 from typing import Sequence
 
-from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 def test_is_empty(async_lifecycle: AsyncLifecycle):

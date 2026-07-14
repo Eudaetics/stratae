@@ -12,7 +12,7 @@ from typing import Sequence
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 def test_get_slots_not_in_stack(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):
