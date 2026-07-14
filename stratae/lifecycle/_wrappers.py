@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Hash
 
 from stratae.codegen import Writer, render_parameters
 from stratae.codegen.util import wrapper_filename
-from stratae.lifecycle._scope import UNSET
+from stratae.lifecycle._scope import UNSET, SharedVar
 
 if TYPE_CHECKING:
     from stratae.lifecycle.async_lifecycle import AsyncLifecycle
@@ -107,41 +107,50 @@ def _write_cache_store(writer: Writer) -> None:
     writer.write("return __value__")
 
 
-def _write_resolve_slots(writer: Writer, lifecycle: Any, scope: str) -> None:
+def _write_resolve_first_read(writer: Writer, lifecycle: Any, scope: str, read: str) -> None:
     """
-    Write the fast-path lookup of the active scope's slot list into __slots__.
+    Write the fast-path resolution of __slots__ plus the first slot read into it.
 
     Which lookup is written depends on the scope's isolation (see _bind_slot_lookup for
     the matching namespace binding): a context-isolated scope's ContextVar is bound
-    straight into the wrapper's namespace at codegen time, while a shared scope reads its
-    entry from the manager's _active dict - that by-name lookup doubles as the "is this
-    scope active" check, but the dict object itself never changes identity, so it's bound
-    in as __active_map__.
+    straight into the wrapper's namespace at codegen time, with the read following the
+    resolve. A shared scope reads its SharedVar's cell by constant index, unguarded -
+    when the scope is inactive the cell holds UNSET, whose subscript in the read raises
+    TypeError, so the active path pays no explicit check. The read can't raise TypeError
+    otherwise: it subscripts a list or SlotDict with an int constant. Either miss falls
+    back to get_slots(), which raises the right error.
     """
-    is_context = scope in lifecycle._cvars
+    if isinstance(lifecycle._vars[scope], SharedVar):
+        writer.write("__slots__ = __cell__[0]")
+        writer.write("try:")
+        with writer.block():
+            writer.write(read)
+        writer.write("except TypeError:")
+        with writer.block():
+            writer.write(f"__slots__ = __lifecycle__.get_slots({scope!r})")
+            writer.write(read)
+        return
     writer.write("try:")
     with writer.block():
-        if is_context:
-            writer.write("__slots__ = __cv__.get()")
-        else:
-            writer.write(f"__slots__ = __active_map__[{scope!r}]")
-    writer.write("except LookupError:" if is_context else "except KeyError:")
+        writer.write("__slots__ = __cv__.get()")
+    writer.write("except LookupError:")
     with writer.block():
         writer.write(f"__slots__ = __lifecycle__.get_slots({scope!r})")
+    writer.write(read)
 
 
 def _bind_slot_lookup(namespace: dict[str, Any], lifecycle: Any, scope: str) -> None:
     """
-    Bind the slot-list lookup object matching _write_resolve_slots into the namespace.
+    Bind the slot-list lookup object matching _write_resolve_first_read into the namespace.
 
-    Context-isolated scopes get the scope's ContextVar as __cv__; shared scopes get the
-    manager's _active dict as __active_map__.
+    Context-isolated scopes get the scope's ContextVar as __cv__; shared scopes get
+    their SharedVar's cell as __cell__.
     """
-    cv = lifecycle._cvars.get(scope)
-    if cv is not None:
-        namespace["__cv__"] = cv
+    var = lifecycle._vars[scope]
+    if isinstance(var, SharedVar):
+        namespace["__cell__"] = var.cell
     else:
-        namespace["__active_map__"] = lifecycle._active
+        namespace["__cv__"] = var
 
 
 def _write_slot_guard(writer: Writer, slot: int, lifecycle: Any, scope: str) -> None:
@@ -151,8 +160,7 @@ def _write_slot_guard(writer: Writer, slot: int, lifecycle: Any, scope: str) -> 
     Reads the slot into __value__ once, rather than indexing __slots__ again on both the
     hit-path return and the miss-path store. The caller opens the miss block.
     """
-    _write_resolve_slots(writer, lifecycle, scope)
-    writer.write(f"__value__ = __slots__[{slot}]")
+    _write_resolve_first_read(writer, lifecycle, scope, f"__value__ = __slots__[{slot}]")
     writer.write("if __value__ is __UNSET__:")
 
 
@@ -164,8 +172,7 @@ def _write_keyed_cache_guard(writer: Writer, slot: int, lifecycle: Any, scope: s
     front than allocating an empty dict for every keyed function in the scope whether or
     not it's ever actually called.
     """
-    _write_resolve_slots(writer, lifecycle, scope)
-    writer.write(f"__cache__ = __slots__[{slot}]")
+    _write_resolve_first_read(writer, lifecycle, scope, f"__cache__ = __slots__[{slot}]")
     writer.write("if __cache__ is __UNSET__:")
     with writer.block():
         writer.write("__cache__ = {}")
