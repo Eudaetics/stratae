@@ -72,6 +72,26 @@ def test_pop_context_scope(lifecycle: Lifecycle):
         lifecycle.pop(t0)
 
 
+def test_pop_out_of_order(scopes: Sequence[str], lifecycle: Lifecycle):
+    """
+    Popping out of order deactivates just that scope.
+
+    Given: A Lifecycle instance with multiple pushed scopes.
+    When: An outer scope is popped while an inner one is still active.
+    Then: Only the popped scope is deactivated.
+    """
+    # Arrange
+    t1 = lifecycle.push(scopes[0])
+    t2 = lifecycle.push(scopes[1])
+
+    # Act
+    lifecycle.pop(t1)
+
+    # Assert
+    assert lifecycle.active_scopes() == [scopes[1]]
+    lifecycle.pop(t2)
+
+
 @pytest.mark.parametrize("scope", ("application", "request"))
 def test_pop_with_used_resource(lifecycle: Lifecycle, scope: str):
     """

@@ -1,7 +1,13 @@
-"""Test suite for reclaiming dead cache-decorated functions' slots in dense scopes."""
+"""
+Test suite for reclaiming dead cache-decorated functions' slots in dense scopes.
+
+allocate_slot/release_slot themselves are BaseLifecycle behavior and are only covered
+once, via Lifecycle, in the sync counterpart of this file. This file covers slot
+reclaim as it interacts with the async cache-decorator/wrapper codegen path, which is
+genuinely separate code from the sync path.
+"""
 
 import gc
-from typing import Sequence
 from unittest.mock import Mock, call
 
 from stratae.lifecycle import Scope
@@ -14,49 +20,6 @@ class SimpleObject:
     def __init__(self, value: int):
         """Initialize the SimpleObject with a value."""
         self.value = value
-
-
-def test_allocate_slot_reuses_released_slot(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):
-    """
-    allocate_slot draws from the free-slot pool before growing a shared dense scope.
-
-    Given: A shared dense scope ("application") with two slots already allocated,
-    When: The first slot is released and a third allocation is requested,
-    Then: The released slot is handed back out instead of growing past the second slot.
-    """
-    # Arrange
-    slot_a = async_lifecycle.allocate_slot(scopes[0])
-    slot_b = async_lifecycle.allocate_slot(scopes[0])
-
-    # Act
-    async_lifecycle.release_slot(scopes[0], slot_a)
-    slot_c = async_lifecycle.allocate_slot(scopes[0])
-
-    # Assert
-    assert slot_c == slot_a
-    assert slot_c != slot_b
-
-
-def test_allocate_slot_reuses_released_slot_for_sparse_scope():
-    """
-    allocate_slot draws from the free-slot pool for sparse-backed scopes too.
-
-    Given: A sparse-backed scope with two keys already allocated,
-    When: The first key is released and a third allocation is requested,
-    Then: The released key is handed back out instead of advancing the counter.
-    """
-    # Arrange
-    sparse_lifecycle = AsyncLifecycle([Scope("sparse_scope", "shared", "sparse")])
-    key_a = sparse_lifecycle.allocate_slot("sparse_scope")
-    key_b = sparse_lifecycle.allocate_slot("sparse_scope")
-
-    # Act
-    sparse_lifecycle.release_slot("sparse_scope", key_a)
-    key_c = sparse_lifecycle.allocate_slot("sparse_scope")
-
-    # Assert
-    assert key_c == key_a
-    assert key_c != key_b
 
 
 async def test_release_slot_deletes_unwritten_sparse_key():

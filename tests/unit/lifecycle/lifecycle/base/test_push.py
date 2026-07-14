@@ -1,5 +1,8 @@
 """
-Unit tests for the push functionality of the Lifecycle class.
+Unit tests for BaseLifecycle.push and get_slots, exercised via Lifecycle.
+
+push and get_slots are inherited unchanged by AsyncLifecycle, so testing them through
+Lifecycle covers both - there is no separate async test module for this.
 
 This test suite verifies the following behaviors:
 - Attempting to get slots for a scope not in the stack raises a ValueError.
