@@ -44,7 +44,7 @@ Example:
 from contextvars import Token
 from typing import Callable, Hashable, Sequence
 
-from stratae.lifecycle._context import LifecycleContext
+from stratae.lifecycle._context import AsyncLifecycleContext, LifecycleContext
 from stratae.lifecycle._decorators import CacheDecorator
 from stratae.lifecycle._scope import (
     UNSET,
@@ -63,8 +63,8 @@ from stratae.lifecycle.exceptions import (
 from stratae.lifecycle.scope import Scope
 
 
-class Lifecycle:
-    """Manager for handling lifecycle contexts."""
+class BaseLifecycle:
+    """Shared behavior for sync and async lifecycles."""
 
     __slots__ = (
         "_scopes",
@@ -75,16 +75,28 @@ class Lifecycle:
         "_free_slots",
     )
 
-    def __init__(self, scopes: Sequence[Scope]) -> None:
+    def __init__(
+        self,
+        scopes: Sequence[Scope],
+        context_cls: type[LifecycleContext] | type[AsyncLifecycleContext],
+    ):
         """Initialize the LifecycleManager."""
         validate_config(scopes)
         self._scopes: dict[str, Scope] = {scope.name: scope for scope in scopes}
-        state = build_lifecycle_state(scopes, LifecycleContext)
+        state = build_lifecycle_state(scopes, context_cls)
         self._templates = state.templates
         self._vars = state.scope_vars
-        self._contexts: dict[str, LifecycleContext] = state.contexts
+        self._contexts = state.contexts
         self._counters = state.counters
         self._free_slots = state.free_slots
+
+
+class Lifecycle(BaseLifecycle):
+    """Manager for handling lifecycle contexts."""
+
+    def __init__(self, scopes: Sequence[Scope]) -> None:
+        """Initialize lifecycle state using the sync lifecycle context."""
+        super().__init__(scopes, LifecycleContext)
 
     def push(self, scope: str) -> Token[SlotStorage] | SharedToken:
         """Push a new lifecycle scope activation, returning the token pop() takes."""

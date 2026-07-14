@@ -56,39 +56,22 @@ from stratae.lifecycle._scope import (
     SharedToken,
     SlotDict,
     SlotStorage,
-    build_lifecycle_state,
 )
-from stratae.lifecycle._validation import validate_config
 from stratae.lifecycle.exceptions import (
     ScopeActivationError,
     ScopeInactiveError,
     ScopeNotFoundError,
 )
+from stratae.lifecycle.lifecycle import BaseLifecycle
 from stratae.lifecycle.scope import Scope
 
 
-class AsyncLifecycle:
+class AsyncLifecycle(BaseLifecycle):
     """Manager for handling lifecycle contexts."""
 
-    __slots__ = (
-        "_scopes",
-        "_templates",
-        "_vars",
-        "_contexts",
-        "_counters",
-        "_free_slots",
-    )
-
     def __init__(self, scopes: Sequence[Scope]) -> None:
-        """Initialize the LifecycleManager."""
-        validate_config(scopes)
-        self._scopes: dict[str, Scope] = {scope.name: scope for scope in scopes}
-        state = build_lifecycle_state(scopes, AsyncLifecycleContext)
-        self._templates = state.templates
-        self._vars = state.scope_vars
-        self._contexts: dict[str, AsyncLifecycleContext] = state.contexts
-        self._counters = state.counters
-        self._free_slots = state.free_slots
+        """Initialize async lifecycle state using async context."""
+        super().__init__(scopes, AsyncLifecycleContext)
 
     def push(self, scope: str) -> Token[SlotStorage] | SharedToken:
         """Push a new lifecycle scope activation, returning the token pop() takes."""
