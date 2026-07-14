@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stratae"
 description = "A toolkit of composable tools for dependency injection, lifecycle management, and more."
-version = "0.0.1a2"
+version = "0.0.1a3"
 readme = "readme.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
