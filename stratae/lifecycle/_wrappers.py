@@ -11,8 +11,7 @@ from stratae.codegen.util import wrapper_filename
 from stratae.lifecycle._scope import UNSET, SharedVar
 
 if TYPE_CHECKING:
-    from stratae.lifecycle.async_lifecycle import AsyncLifecycle
-    from stratae.lifecycle.lifecycle import Lifecycle
+    from stratae.lifecycle.lifecycle import AsyncLifecycle, Lifecycle
 
 
 def _is_slot_eligible(

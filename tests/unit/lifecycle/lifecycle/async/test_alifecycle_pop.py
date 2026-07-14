@@ -11,8 +11,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle, resource
+from stratae.lifecycle import resource
 from stratae.lifecycle.exceptions import ScopeActivationError
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 async def test_apop_most_recent_scope(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):
@@ -66,6 +67,26 @@ async def test_pop_inactive_context_scope(async_lifecycle: AsyncLifecycle):
     # Act & Assert
     with pytest.raises(ScopeActivationError, match="Cannot pop request: scope is not active."):
         await async_lifecycle.pop(t0)
+
+
+async def test_pop_out_of_order(scopes: Sequence[str], async_lifecycle: AsyncLifecycle):
+    """
+    Popping out of order deactivates just that scope.
+
+    Given: An AsyncLifecycle instance with multiple pushed scopes.
+    When: An outer scope is popped while an inner one is still active.
+    Then: Only the popped scope is deactivated.
+    """
+    # Arrange
+    t1 = async_lifecycle.push(scopes[0])
+    t2 = async_lifecycle.push(scopes[1])
+
+    # Act
+    await async_lifecycle.pop(t1)
+
+    # Assert
+    assert async_lifecycle.active_scopes() == [scopes[1]]
+    await async_lifecycle.pop(t2)
 
 
 @pytest.mark.parametrize("scope", ("application", "request"))

@@ -44,10 +44,11 @@ Example:
 from contextvars import Token
 from typing import Callable, Hashable, Sequence
 
-from stratae.lifecycle._context import LifecycleContext
-from stratae.lifecycle._decorators import CacheDecorator
+from stratae.lifecycle._context import AsyncLifecycleContext, LifecycleContext
+from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._scope import (
     UNSET,
+    AsyncExitStack,
     ExitStack,
     SharedToken,
     SlotDict,
@@ -63,8 +64,19 @@ from stratae.lifecycle.exceptions import (
 from stratae.lifecycle.scope import Scope
 
 
-class Lifecycle:
-    """Manager for handling lifecycle contexts."""
+class BaseLifecycle[
+    ContextT: (LifecycleContext, AsyncLifecycleContext),
+    StackT: (ExitStack, AsyncExitStack),
+]:
+    """
+    Shared behavior for sync and async lifecycles.
+
+    Generic over the context manager and exit stack types a concrete subclass uses, so
+    `start()` and `get_exit_stack()` stay typed to the subclass's sync/async flavor while
+    every other scope/slot mechanic lives here once. `Lifecycle` and `AsyncLifecycle` only
+    need to pin `_context_cls`/`_exit_stack_cls` and add `pop()`/`cache()`, which differ in
+    ways (async-ness, decorator class) generics can't paper over.
+    """
 
     __slots__ = (
         "_scopes",
@@ -75,14 +87,17 @@ class Lifecycle:
         "_free_slots",
     )
 
+    _context_cls: type[ContextT]
+    _exit_stack_cls: type[StackT]
+
     def __init__(self, scopes: Sequence[Scope]) -> None:
         """Initialize the LifecycleManager."""
         validate_config(scopes)
         self._scopes: dict[str, Scope] = {scope.name: scope for scope in scopes}
-        state = build_lifecycle_state(scopes, LifecycleContext)
+        state = build_lifecycle_state(scopes, self._context_cls)
         self._templates = state.templates
         self._vars = state.scope_vars
-        self._contexts: dict[str, LifecycleContext] = state.contexts
+        self._contexts = state.contexts
         self._counters = state.counters
         self._free_slots = state.free_slots
 
@@ -93,46 +108,13 @@ class Lifecycle:
         except KeyError:
             raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
-    def pop(self, token: Token[SlotStorage] | SharedToken) -> None:
-        """
-        Pop the lifecycle scope activation identified by the token push() returned.
-
-        Under LIFO push/pop discipline, get() always returns the token's own activation;
-        a reused or cross-context ContextVar token surfaces contextvars' own error from
-        reset(), while a shared scope's token simply clears its var.
-        """
-        var = token.var
-        try:
-            slots = var.get()
-        except LookupError:
-            raise ScopeActivationError(f"Cannot pop {var.name}: scope is not active.") from None
-        if isinstance(token, SharedToken):
-            token.var.clear()
-        else:
-            token.var.reset(token)
-        stack = slots[0]
-        if stack is not UNSET:
-            stack.close()
-
-    def cache(
-        self,
-        scope: str,
-        *,
-        cache_key: Callable[..., Hashable] | None = None,
-        ignore_params: bool = False,
-    ):
-        """Create a decorator to set the lifecycle scope for caching function results."""
-        if ignore_params and cache_key is not None:
-            raise ValueError("Cannot use both ignore_params and cache_key together.")
-        return CacheDecorator(scope, self, cache_key, ignore_params)
-
-    def start(self, scope: str) -> LifecycleContext:
+    def start(self, scope: str) -> ContextT:
         """
         Get a scope context by name for use as a context manager.
 
-        Shared scopes return the same reusable LifecycleContext instance on every call -
-        their activations don't nest, so sharing one per scope skips an allocation per
-        activation. Context-isolated scopes get a fresh LifecycleContext with the scope's
+        Shared scopes return the same reusable context instance on every call - their
+        activations don't nest, so sharing one per scope skips an allocation per
+        activation. Context-isolated scopes get a fresh context with the scope's
         ContextVar and slot template pre-resolved, so its enter/exit run with zero dict
         lookups. The dict lookups double as scope validation.
         """
@@ -140,7 +122,7 @@ class Lifecycle:
         if ctx is not None:
             return ctx
         try:
-            return LifecycleContext(self._vars[scope], self._templates[scope])
+            return self._context_cls(self._vars[scope], self._templates[scope])
         except KeyError:
             raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
 
@@ -162,12 +144,12 @@ class Lifecycle:
             return ScopeNotFoundError(f"Unknown scope: {scope}")
         return ScopeInactiveError(f"Scope '{scope}' is not active.")
 
-    def get_exit_stack(self, scope: str) -> ExitStack:
+    def get_exit_stack(self, scope: str) -> StackT:
         """Get the exit stack for the specified lifecycle scope, creating it on first use."""
         slots = self.get_slots(scope)
         stack = slots[0]
         if stack is UNSET:
-            stack = slots[0] = ExitStack()
+            stack = slots[0] = self._exit_stack_cls()
         return stack
 
     def allocate_slot(self, scope: str) -> int:
@@ -224,7 +206,91 @@ class Lifecycle:
         except LookupError:
             raise self._scope_error(scope) from None
 
-    @staticmethod
-    def exit_stack_type():
+    def exit_stack_type(self) -> type[StackT]:
         """Return the exit stack type for codegen lazily initiating exit stacks."""
-        return ExitStack
+        return self._exit_stack_cls
+
+
+class Lifecycle(BaseLifecycle[LifecycleContext, ExitStack]):
+    """Manager for handling lifecycle contexts."""
+
+    __slots__ = ()
+
+    _context_cls = LifecycleContext
+    _exit_stack_cls = ExitStack
+
+    def pop(self, token: Token[SlotStorage] | SharedToken) -> None:
+        """
+        Pop the lifecycle scope activation identified by the token push() returned.
+
+        Under LIFO push/pop discipline, get() always returns the token's own activation;
+        a reused or cross-context ContextVar token surfaces contextvars' own error from
+        reset(), while a shared scope's token simply clears its var.
+        """
+        var = token.var
+        try:
+            slots = var.get()
+        except LookupError:
+            raise ScopeActivationError(f"Cannot pop {var.name}: scope is not active.") from None
+        if isinstance(token, SharedToken):
+            token.var.clear()
+        else:
+            token.var.reset(token)
+        stack = slots[0]
+        if stack is not UNSET:
+            stack.close()
+
+    def cache(
+        self,
+        scope: str,
+        *,
+        cache_key: Callable[..., Hashable] | None = None,
+        ignore_params: bool = False,
+    ) -> CacheDecorator:
+        """Create a decorator to set the lifecycle scope for caching function results."""
+        if ignore_params and cache_key is not None:
+            raise ValueError("Cannot use both ignore_params and cache_key together.")
+        return CacheDecorator(scope, self, cache_key, ignore_params)
+
+
+class AsyncLifecycle(BaseLifecycle[AsyncLifecycleContext, AsyncExitStack]):
+    """Manager for handling lifecycle contexts."""
+
+    __slots__ = ()
+
+    _context_cls = AsyncLifecycleContext
+    _exit_stack_cls = AsyncExitStack
+
+    async def pop(self, token: Token[SlotStorage] | SharedToken) -> None:
+        """
+        Asynchronously pop the lifecycle scope activation identified by the token.
+
+        Under LIFO push/pop discipline, get() always returns the token's own activation;
+        a reused or cross-context ContextVar token surfaces contextvars' own error from
+        reset(), while a shared scope's token simply clears its var. Only awaits when the
+        activation actually created an exit stack.
+        """
+        var = token.var
+        try:
+            slots = var.get()
+        except LookupError:
+            raise ScopeActivationError(f"Cannot pop {var.name}: scope is not active.") from None
+        if isinstance(token, SharedToken):
+            token.var.clear()
+        else:
+            token.var.reset(token)
+        stack = slots[0]
+        if stack is not UNSET:
+            await stack.aclose()
+
+    def cache(
+        self,
+        scope: str,
+        *,
+        cache_key: Callable[..., Hashable] | None = None,
+        ignore_params: bool = False,
+    ) -> AsyncCacheDecorator:
+        """Create a decorator to set the lifecycle scope for caching function results."""
+        if ignore_params and cache_key is not None:
+            raise ValueError("Cannot use both ignore_params and cache_key together.")
+        return AsyncCacheDecorator(scope, self, cache_key, ignore_params)

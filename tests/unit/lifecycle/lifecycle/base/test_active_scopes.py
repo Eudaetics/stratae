@@ -1,4 +1,9 @@
-"""Test suite for verifying active_scopes method of the Lifecycle class."""
+"""
+Test suite for BaseLifecycle.active_scopes, exercised via Lifecycle.
+
+active_scopes is inherited unchanged by AsyncLifecycle, so testing it through Lifecycle
+covers both - there is no separate async test module for this.
+"""
 
 from typing import Sequence
 

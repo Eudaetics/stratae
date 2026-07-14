@@ -1,4 +1,10 @@
-"""Test suite for sparse-backed slot storage (Scope(storage="sparse")), exercised via Lifecycle."""
+"""
+Test suite for sparse-backed slot storage (Scope(storage="sparse")), exercised via Lifecycle.
+
+allocate_slot's sequential-key behavior itself is BaseLifecycle behavior and is only
+covered once, via Lifecycle, in
+tests/unit/lifecycle/lifecycle/base/test_slot_allocation.py.
+"""
 
 from typing import Callable, Literal
 from unittest.mock import Mock
@@ -175,21 +181,6 @@ def test_sparse_storage_context_fresh_per_activation(sparse_lifecycle: Lifecycle
     assert obj1 is not obj2
     assert obj2.value == 2
     assert call_counter.call_count == 2
-
-
-@pytest.mark.parametrize("scope", ["app_sparse", "req_sparse"])
-def test_sparse_storage_allocate_slot_sequential(sparse_lifecycle: Lifecycle, scope: str):
-    """
-    allocate_slot hands out sequential int keys for a sparse-backed scope, skipping slot 0.
-
-    Given: A sparse-backed scope with no functions registered yet,
-    When: allocate_slot is called repeatedly,
-    Then: It returns 1, 2, 3, ... - slot 0 stays reserved for the lazily-created exit stack.
-    """
-    # Act & Assert
-    assert sparse_lifecycle.allocate_slot(scope) == 1
-    assert sparse_lifecycle.allocate_slot(scope) == 2
-    assert sparse_lifecycle.allocate_slot(scope) == 3
 
 
 @pytest.mark.parametrize("scope", ["app_sparse", "req_sparse"])
