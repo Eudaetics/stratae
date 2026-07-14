@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+        experimental: [false]
+        include:
+          - python-version: "3.15"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev,test,asgi]"
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Typecheck
+        run: pyright
+
+      - name: Test
+        run: pytest
+
+      - name: No coverage pragmas
+        run: "! grep -rn --include='*.py' 'pragma: no cover' stratae"
+
+      - name: No type ignores
+        run: "! grep -rn --include='*.py' 'type: ignore' stratae"
+
+      - name: No pyright ignores
+        run: "! grep -rn --include='*.py' 'pyright: ignore' stratae"
+
+      - name: Cyclomatic complexity
+        run: radon cc stratae -n B
+
+      - name: Maintainability index
+        run: radon mi stratae -n B
