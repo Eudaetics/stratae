@@ -1,88 +1,105 @@
-# pyright: reportMissingImports=false
-"""ASGI Integration Tests for Stratae Lifecycle Management."""
+"""Protocol-level tests for RequestLifecycleMiddleware, using no ASGI framework."""
 
-from unittest.mock import Mock
+from typing import Sequence
 
 import pytest
 
-pytest.importorskip("fastapi")
-pytest.importorskip("httpx")
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from stratae.depends import inject
-from stratae.integrations.lifecycle.asgi import RequestLifecycleMiddleware
+from stratae.integrations.lifecycle.asgi import (
+    ASGIReceiveCallable,
+    ASGISendCallable,
+    RequestLifecycleMiddleware,
+    Scope,
+)
 from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
-@pytest.fixture
-def fastapi_app(async_lifecycle: AsyncLifecycle):
-    """Create a FastAPI app with RequestLifecycleMiddleware for testing."""
-    app = FastAPI()
-    app.add_middleware(RequestLifecycleMiddleware, lifecycle=async_lifecycle, scope="request")
-
-    counter = Mock()
-
-    class SampleObject:
-        def __init__(self):
-            counter()
-            self.value = counter.call_count
-
-    @inject
-    def get_object() -> SampleObject:
-        return SampleObject()
-
-    @async_lifecycle.cache("request")
-    @inject
-    def get_request_object() -> SampleObject:
-        return SampleObject()
-
-    @app.get("/")
-    def get_endpoint():  # pyright: ignore[reportUnusedFunction]
-        no_lifecycle_1 = get_object()
-        no_lifecycle_2 = get_object()
-        lifecycle_1 = get_request_object()
-        lifecycle_2 = get_request_object()
-
-        return {
-            "status": "ok",
-            "no_lifecycle_first_value": no_lifecycle_1.value,
-            "no_lifecycle_second_value": no_lifecycle_2.value,
-            "first_value": lifecycle_1.value,
-            "second_value": lifecycle_2.value,
-        }
-
-    return app
+async def _receive() -> dict[str, object]:
+    """Fail the test if the middleware calls receive - it must stay transparent."""
+    raise AssertionError("middleware must not call receive")
 
 
-@pytest.mark.asgi
-def test_asgi_stratae_integration(fastapi_app: FastAPI):
+async def _send(message: dict[str, object]) -> None:
+    """Fail the test if the middleware calls send - it must stay transparent."""
+    raise AssertionError("middleware must not call send")
+
+
+async def test_http_request_runs_app_inside_scope(async_lifecycle: AsyncLifecycle):
     """
-    Test that the ASGI integration with Stratae lifecycle works correctly.
+    Test that HTTP requests are wrapped in the configured lifecycle scope.
 
-    Given: An ASGI application with RequestLifecycleMiddleware
-    When: A request is made to the application
-    Then: The request is processed within a REQUEST scope lifecycle
+    Given: A RequestLifecycleMiddleware wrapping a recording ASGI app
+    When: The middleware handles an http-type scope
+    Then: The app runs with the request scope active, receives the middleware's arguments
+        unchanged, and the scope is exited before the middleware returns
     """
+    # Arrange
+    calls: list[tuple[Sequence[str], Scope, ASGIReceiveCallable, ASGISendCallable]] = []
+
+    async def app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable) -> None:
+        """Record the active scopes and arguments seen by the downstream app."""
+        calls.append((async_lifecycle.active_scopes(), scope, receive, send))
+
+    middleware = RequestLifecycleMiddleware(app, async_lifecycle, "request")
+    http_scope: Scope = {"type": "http"}
+
     # Act
-    with TestClient(fastapi_app) as app_client:
-        response = app_client.get("/")
+    await middleware(http_scope, _receive, _send)
 
     # Assert
-    assert response.status_code == 200
-    data = response.json()
+    assert len(calls) == 1
+    active_scopes, seen_scope, seen_receive, seen_send = calls[0]
+    assert active_scopes == ["request"], "App should run inside the request scope"
+    assert seen_scope is http_scope
+    assert seen_receive is _receive
+    assert seen_send is _send
+    assert async_lifecycle.is_empty(), "Scope should be exited before the middleware returns"
 
-    assert data["status"] == "ok"
-    assert data["no_lifecycle_first_value"] != data["no_lifecycle_second_value"], (
-        "Non-lifecycle managed objects should be different"
-    )
-    assert data["first_value"] == data["second_value"], (
-        "Lifecycle managed objects should be the same within REQUEST scope"
-    )
+
+async def test_non_http_scope_passes_through_without_lifecycle(async_lifecycle: AsyncLifecycle):
+    """
+    Test that non-HTTP scope types bypass lifecycle management.
+
+    Given: A RequestLifecycleMiddleware wrapping a recording ASGI app
+    When: The middleware handles a lifespan-type scope
+    Then: The app runs with no lifecycle scope active
+    """
+    # Arrange
+    active: list[Sequence[str]] = []
+
+    async def app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable) -> None:
+        """Record the active scopes seen by the downstream app."""
+        active.append(async_lifecycle.active_scopes())
+
+    middleware = RequestLifecycleMiddleware(app, async_lifecycle, "request")
+
+    # Act
+    await middleware({"type": "lifespan"}, _receive, _send)
+
+    # Assert
+    assert active == [[]], "App should run with no lifecycle scope active"
+
+
+async def test_app_exception_propagates_and_scope_exits(async_lifecycle: AsyncLifecycle):
+    """
+    Test that app exceptions propagate while the scope still exits.
+
+    Given: A RequestLifecycleMiddleware wrapping an ASGI app that raises
+    When: The middleware handles an http-type scope
+    Then: The exception propagates to the caller and the request scope is exited
+    """
+
+    # Arrange
+    class BoomError(Exception):
+        """Sentinel exception raised by the downstream app."""
+
+    async def app(scope: Scope, receive: ASGIReceiveCallable, send: ASGISendCallable) -> None:
+        """Raise from within the request scope."""
+        raise BoomError
+
+    middleware = RequestLifecycleMiddleware(app, async_lifecycle, "request")
+
+    # Act / Assert
+    with pytest.raises(BoomError):
+        await middleware({"type": "http"}, _receive, _send)
+
+    assert async_lifecycle.is_empty(), "Scope should be exited even when the app raises"
