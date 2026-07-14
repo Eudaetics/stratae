@@ -33,6 +33,7 @@ class LifecycleState(NamedTuple):
     active: dict[str, SlotStorage]
     contexts: dict[str, Any]
     counters: dict[str, int]
+    free_slots: dict[str, list[int]]
 
 
 def _build_templates(scopes: Sequence[Scope]) -> dict[str, SlotStorage]:
@@ -93,7 +94,8 @@ def build_lifecycle_state(
     active: dict[str, SlotStorage] = {}
     contexts = _build_contexts(shared, templates, active, shared_context_cls)
     counters = _build_counters(scopes)
-    return LifecycleState(templates, cvars, shared, active, contexts, counters)
+    free_slots: dict[str, list[int]] = {scope.name: [] for scope in scopes}
+    return LifecycleState(templates, cvars, shared, active, contexts, counters, free_slots)
 
 
 def reset_slots(slots: SlotStorage, template: SlotStorage) -> None:
