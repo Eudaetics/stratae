@@ -73,7 +73,16 @@ from stratae.lifecycle.scope import Scope
 class AsyncLifecycle:
     """Manager for handling lifecycle contexts."""
 
-    __slots__ = ("_scopes", "_templates", "_cvars", "_shared", "_active", "_contexts", "_counters")
+    __slots__ = (
+        "_scopes",
+        "_templates",
+        "_cvars",
+        "_shared",
+        "_active",
+        "_contexts",
+        "_counters",
+        "_free_slots",
+    )
 
     def __init__(self, scopes: Sequence[Scope]) -> None:
         """Initialize the LifecycleManager."""
@@ -86,6 +95,7 @@ class AsyncLifecycle:
         self._active = state.active
         self._contexts: dict[str, AsyncSharedLifecycleContext] = state.contexts
         self._counters = state.counters
+        self._free_slots = state.free_slots
 
     def push(self, scope: str) -> Token[SlotStorage] | str:
         """Push a new lifecycle scope activation, returning the handle pop() takes."""
@@ -219,14 +229,19 @@ class AsyncLifecycle:
         """
         Allocate a dedicated slot for a cached function - a value directly, or a dict.
 
-        Dense-backed scopes grow their template by one slot and index by position.
-        Sparse-backed scopes hand out the next int key from a per-scope counter instead -
-        SlotDict.__missing__ means the key needn't exist anywhere until first written.
+        Every scope draws from its free-slot stack first, if it isn't empty (see
+        release_slot), before minting a new index. Dense-backed scopes that do mint a new
+        index grow their template by one slot and index by position. Sparse-backed scopes
+        hand out the next int key from a per-scope counter instead - SlotDict.__missing__
+        means the key needn't exist anywhere until first written.
         """
         try:
             template = self._templates[scope]
         except KeyError:
             raise ScopeNotFoundError(f"Unknown scope: {scope}") from None
+
+        if free := self._free_slots.get(scope):
+            return free.pop()
 
         if isinstance(template, SlotDict):
             slot = self._counters[scope]
@@ -238,6 +253,15 @@ class AsyncLifecycle:
         if isinstance(shared, list):
             shared.append(UNSET)
         return len(template) - 1
+
+    def release_slot(self, scope: str, slot: int) -> None:
+        """Return a scope's slot to the free pool once its owning wrapper is gone."""
+        shared = self._shared.get(scope)
+        if isinstance(shared, list):
+            shared[slot] = UNSET
+        elif shared is not None:
+            shared.pop(slot, None)
+        self._free_slots[scope].append(slot)
 
     def get_slots(self, scope: str) -> SlotStorage:
         """Get the scope's slot list - slot 0 is reserved for the exit stack (see __init__)."""

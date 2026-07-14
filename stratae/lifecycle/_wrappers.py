@@ -1,5 +1,6 @@
 """Wrappers for lifecycle-managed functions and context managers."""
 
+import weakref
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
 from inspect import Parameter, signature
@@ -265,7 +266,9 @@ def _create_sync_wrapper_impl(
     _bind_slot_lookup(namespace, lifecycle, scope)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
-    return _finalize(writer, func, params, namespace)
+    wrapper = _finalize(writer, func, params, namespace)
+    weakref.finalize(wrapper, lifecycle.release_slot, scope, slot)
+    return wrapper
 
 
 def create_sync_wrapper[**P, T](
@@ -324,7 +327,9 @@ def create_async_wrapper[**P, T](
     _bind_slot_lookup(namespace, lifecycle, scope)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
-    return cast(Callable[P, Awaitable[T]], _finalize(writer, func, params, namespace))
+    wrapper = cast(Callable[P, Awaitable[T]], _finalize(writer, func, params, namespace))
+    weakref.finalize(wrapper, lifecycle.release_slot, scope, slot)
+    return wrapper
 
 
 def _write_resolve_exit_stack(writer: Writer) -> None:
@@ -404,7 +409,9 @@ def _create_cm_wrapper_impl(
     _bind_slot_lookup(namespace, lifecycle, scope)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
-    return _finalize(writer, func, params, namespace)
+    wrapper = _finalize(writer, func, params, namespace)
+    weakref.finalize(wrapper, lifecycle.release_slot, scope, slot)
+    return wrapper
 
 
 def create_synccm_wrapper[**P, T](
