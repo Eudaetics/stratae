@@ -1,6 +1,6 @@
 # Stratae
 
-Stratae is a set of individual tools for Python 3.12+. It currently covers dependency injection and lifecycle-scoped caching and cleanup. Each tool works on its own: use lifecycle management without injection, or dependency injection by itself.
+Stratae is a set of individual tools for Python 3.12+. It currently covers dependency injection, lifecycle-scoped caching and cleanup, and typed events. Each tool works on its own: use lifecycle management without injection, or dependency injection by itself.
 
 These tools work anywhere instead of being tied to a particular framework. A function decorated with @inject is still an ordinary function: callable directly, importable, or wired into a web framework or worker. The same holds for @lifecycle.cache.
 
@@ -116,6 +116,65 @@ with lifecycle.start('request'), user_id.use(123):
     post = create_post("Hello world!")
 ```
 
+### Events
+
+Stratae events separate what an event is from how it is dispatched. An event pairs a payload with a dispatch pattern: `PubSub` for fire-and-forget fan-out, or `Request[Reply]` for a blocking call answered by exactly one responder. Emitting a payload for the event dispatches it to the registered handlers.
+
+```python
+from stratae.events import EventConfig, PubSub
+from stratae.events.adapters import DirectBus
+
+bus = DirectBus()
+
+class OrderPlaced:
+    def __init__(self, order_id: int) -> None:
+        self.order_id = order_id
+
+order_placed = EventConfig(OrderPlaced, PubSub)
+
+@bus.handle(order_placed)
+def notify(order: OrderPlaced) -> None:
+    print(f"Order {order.order_id} placed")
+
+bus.emit(OrderPlaced(42), order_placed)
+# Order 42 placed
+```
+
+`bind` is an optional helper that wraps `emit` in a callable: calling the bound event constructs the payload from its arguments and forwards it to the same `emit`, so emission can be passed around like an ordinary function.
+
+```python
+place_order = bus.bind(order_placed)
+
+place_order(order_id=42)
+# Order 42 placed
+```
+
+The `EventConfig` is the shareable definition of the event. What `bind` and `handle` take beyond that is adapter-specific, and the two sides are independent: the direct buses need no routing config and use the event definition itself as the handler key, while a broker adapter might bind an emitter with an exchange and routing key and register handlers against a queue.
+
+Request events block until their responder returns, and the reply is fully typed:
+
+```python
+from stratae.events import EventConfig, Request
+
+class Quote:
+    def __init__(self, total: int) -> None:
+        self.total = total
+
+class PriceOrder:
+    def __init__(self, order_id: int) -> None:
+        self.order_id = order_id
+
+price_order = EventConfig(PriceOrder, Request[Quote])
+
+@bus.handle(price_order)
+def price(order: PriceOrder) -> Quote:
+    return Quote(total=100)
+
+quote = bus.emit(PriceOrder(42), price_order)  # typed as Quote
+```
+
+`AsyncDirectBus` offers the same surface for async code, accepting both sync and async handlers. Handlers are ordinary functions, so `@inject` and lifecycle-cached dependencies compose with them unchanged.
+
 ### Async Support
 
 Stratae is fully async compatible. Injection natively works with sync or async functions. Lifecycle offers versions for sync and async handling of resources.
@@ -230,18 +289,15 @@ async def get_session():
     finally:
         session.close()
 
+# Every request will get a new session
+@app.post('/users')
 @inject
-async def create_user(
-    name: str,
+async def post_user(
+    name: str
     # Using Stratae Depends
     db: Injected[Session, Depends(get_session)]
 ):
     await db.users.create(name=name)
-
-# Every request will get a new session
-@app.post('/users')
-async def post_user(name: str):
-    await create_user(name)
 ```
 
 ## Documentation
