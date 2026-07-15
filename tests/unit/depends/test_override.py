@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from stratae.depends import DependsWrapper, override
+from stratae.depends import DependsWrapper, override, overrides
 from stratae.depends.exceptions import DependencyNotFoundError
 
 
@@ -145,6 +145,119 @@ def test_nested_override_same_dependency():
         assert depends.provide() == "outer"
 
     assert depends.provide() == "real"
+
+
+def test_override_dict_overrides_all_while_active():
+    """
+    All deps in the mapping should return their override values while active.
+
+    Given: two DependsWrappers for separate dependencies,
+    When: both are overridden together via a dict,
+    Then: both should return their override values inside the with block.
+    """
+    # Arrange
+    dep_a = Mock(return_value="real-a")
+    dep_b = Mock(return_value="real-b")
+    wrapper_a = DependsWrapper(dep_a)
+    wrapper_b = DependsWrapper(dep_b)
+
+    # Act & Assert
+    with overrides({dep_a: "override-a", dep_b: "override-b"}):
+        assert wrapper_a.provide() == "override-a"
+        assert wrapper_b.provide() == "override-b"
+
+
+def test_override_dict_restores_all_after_exit():
+    """
+    All deps in the mapping should be restored to their real values after the block exits.
+
+    Given: two DependsWrappers for separate dependencies,
+    When: both are overridden together and the block exits,
+    Then: both should call their real dependencies again.
+    """
+    # Arrange
+    dep_a = Mock(return_value="real-a")
+    dep_b = Mock(return_value="real-b")
+    wrapper_a = DependsWrapper(dep_a)
+    wrapper_b = DependsWrapper(dep_b)
+
+    # Act
+    with overrides({dep_a: "override-a", dep_b: "override-b"}):
+        ...
+
+    # Assert
+    assert wrapper_a.provide() == "real-a"
+    assert wrapper_b.provide() == "real-b"
+
+
+def test_override_dict_does_not_call_dependencies_while_active():
+    """
+    The real dependencies should not be invoked while the dict override is active.
+
+    Given: two DependsWrappers for separate dependencies,
+    When: both are overridden together and provide is called on each,
+    Then: neither real dependency should be invoked.
+    """
+    # Arrange
+    dep_a = Mock()
+    dep_b = Mock()
+    wrapper_a = DependsWrapper(dep_a)
+    wrapper_b = DependsWrapper(dep_b)
+
+    # Act
+    with overrides({dep_a: "override-a", dep_b: "override-b"}):
+        wrapper_a.provide()
+        wrapper_b.provide()
+
+    # Assert
+    dep_a.assert_not_called()
+    dep_b.assert_not_called()
+
+
+async def test_override_dict_with_async_dependency():
+    """
+    A dict override containing an async dependency should wrap the value as awaitable.
+
+    Given: a DependsWrapper for an async dependency,
+    When: it is overridden via a dict,
+    Then: awaiting provide should return the override value.
+    """
+    # Arrange
+    dep = AsyncMock(return_value="real")
+    depends = DependsWrapper(dep)
+
+    # Act & Assert
+    with overrides({dep: "overridden"}):
+        assert await depends.provide() == "overridden"
+
+
+def test_overrides_unwinds_entered_on_partial_failure():
+    """
+    If __enter__ fails partway through, already-entered overrides should be unwound.
+
+    Given: two DependsWrappers where the second dep's lock raises on entry,
+    When: overrides.__enter__ fails on the second dep,
+    Then: the first dep's override should be cleaned up and provide restored.
+    """
+    # Arrange
+    dep_a = Mock(return_value="real-a")
+    dep_b = Mock(return_value="real-b")
+    wrapper_a = DependsWrapper(dep_a)
+    wrapper_b = DependsWrapper(dep_b)
+
+    failing_lock = Mock()
+    failing_lock.__enter__ = Mock(side_effect=RuntimeError("forced failure"))
+    failing_lock.__exit__ = Mock(return_value=False)
+    wrapper_b.lock = failing_lock
+
+    # Act
+    with pytest.raises(RuntimeError):
+        with overrides({dep_a: "override-a", dep_b: "override-b"}):
+            ...
+
+    # Assert
+    assert wrapper_a.provide() == "real-a"
+    assert wrapper_a.override_count == 0
 
 
 def test_override_raises_for_unregistered_dependency():
