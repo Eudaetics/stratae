@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from inspect import iscoroutinefunction, unwrap
 from typing import (
@@ -17,14 +15,12 @@ from stratae.lifecycle._wrappers import (
     create_asynccm_wrapper,
     create_sync_in_async_wrapper,
     create_sync_wrapper,
-    create_synccm_in_async_wrapper,
     create_synccm_wrapper,
 )
-from stratae.lifecycle.manage import AUTO_ENTER_ASYNC, AUTO_ENTER_SYNC
+from stratae.lifecycle.resource import AUTO_ENTER_ASYNC, AUTO_ENTER_SYNC
 
 if TYPE_CHECKING:
-    from stratae.lifecycle.async_lifecycle import AsyncLifecycle
-    from stratae.lifecycle.lifecycle import Lifecycle
+    from stratae.lifecycle.lifecycle import AsyncLifecycle, Lifecycle
 
 
 def _is_awaitable[**P, T](
@@ -51,10 +47,12 @@ def _is_auto_async_cm[**P, T, U](
 class CacheDecorator:
     """Decorator class to set the lifecycle scope for caching function results."""
 
+    __slots__ = ("_scope", "_lifecycle", "_cache_key", "_ignore_params")
+
     def __init__(
         self,
         scope: str,
-        lifecycle: Lifecycle,
+        lifecycle: "Lifecycle",
         cache_key: Callable[..., Hashable] | None = None,
         ignore_params: bool = False,
     ) -> None:
@@ -96,10 +94,12 @@ class CacheDecorator:
 class AsyncCacheDecorator:
     """Asynchronous decorator class to set the lifecycle scope for caching function results."""
 
+    __slots__ = ("_scope", "_lifecycle", "_cache_key", "_ignore_params")
+
     def __init__(
         self,
         scope: str,
-        lifecycle: AsyncLifecycle,
+        lifecycle: "AsyncLifecycle",
         cache_key: Callable[..., Hashable] | None = None,
         ignore_params: bool = False,
     ) -> None:
@@ -140,7 +140,7 @@ class AsyncCacheDecorator:
                     f, self._lifecycle, self._scope, self._cache_key, self._ignore_params
                 )
             elif _is_auto_sync_cm(f):
-                return create_synccm_in_async_wrapper(
+                return create_synccm_wrapper(
                     f, self._lifecycle, self._scope, self._cache_key, self._ignore_params
                 )
             elif _is_awaitable(f):

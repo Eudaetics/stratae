@@ -1,11 +1,13 @@
-"""Test suite for verifying is_empty method of the Lifecycle class."""
+"""
+Test suite for BaseLifecycle.is_empty, exercised via Lifecycle.
 
-from __future__ import annotations
+is_empty is inherited unchanged by AsyncLifecycle, so testing it through Lifecycle
+covers both - there is no separate async test module for this.
+"""
 
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
 
-if TYPE_CHECKING:
-    from stratae.lifecycle import Lifecycle
+from stratae.lifecycle import Lifecycle
 
 
 def test_is_empty(lifecycle: Lifecycle):
@@ -44,8 +46,8 @@ def test_is_not_empty_after_pop(scopes: Sequence[str], lifecycle: Lifecycle):
     """
     # Arrange
     lifecycle.push(scopes[0])
-    lifecycle.push(scopes[1])
-    lifecycle.pop()
+    t1 = lifecycle.push(scopes[1])
+    lifecycle.pop(t1)
 
     # Act & Assert
     assert not lifecycle.is_empty()
@@ -60,10 +62,10 @@ def test_is_empty_after_popping_all(scopes: Sequence[str], lifecycle: Lifecycle)
     Then: is_empty should return True
     """
     # Arrange
-    lifecycle.push(scopes[0])
-    lifecycle.push(scopes[1])
-    lifecycle.pop()
-    lifecycle.pop()
+    t0 = lifecycle.push(scopes[0])
+    t1 = lifecycle.push(scopes[1])
+    lifecycle.pop(t1)
+    lifecycle.pop(t0)
 
     # Act & Assert
     assert lifecycle.is_empty()

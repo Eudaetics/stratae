@@ -7,8 +7,6 @@ it through every function signature in between. Because instances are
 callable, a `Context[T]` doubles as a `Depends()` provider.
 """
 
-from __future__ import annotations
-
 from contextvars import ContextVar, Token
 
 
@@ -31,7 +29,9 @@ class _ContextScope[T]:
     state on the `Context` itself.
     """
 
-    def __init__(self, provider: Context[T], value: T):
+    __slots__ = ("_provider", "_value", "_token")
+
+    def __init__(self, provider: "Context[T]", value: T):
         """Initialize the context scope with provider and value."""
         self._provider = provider
         self._value = value
@@ -60,13 +60,15 @@ class Context[T]:
         user_id = Context[int]("user_id")
 
         @inject
-        def get_current_user(uid: int = Depends(user_id)) -> User:
+        def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
             return fetch_user(uid)
 
         with user_id.use(123):
             get_current_user()
 
     """
+
+    __slots__ = ("_name", "_var", "_default")
 
     def __init__(self, name: str, default: T | _NoDefault = _NO_DEFAULT):
         """
@@ -89,31 +91,6 @@ class Context[T]:
         self._var: ContextVar[T] = ContextVar(name)
         self._default = default
 
-    def __call__(self, default: T | _NoDefault = _NO_DEFAULT) -> T:
-        """
-        Get the current context value.
-
-        Resolution order when the variable is unset: the `default` passed
-        here, then the default given at construction time, then a
-        `RuntimeError` if neither is set.
-
-        Args:
-            default: Fallback value to use if the variable is unset. Defaults
-                to `_NO_DEFAULT`, meaning fall back to the constructor's
-                default (if any) instead.
-
-        """
-        try:
-            if not isinstance(default, _NoDefault):
-                return self._var.get(default)
-            if default is not IGNORE and not isinstance(self._default, _NoDefault):
-                return self._var.get(self._default)
-            return self._var.get()
-        except LookupError as lookup_err:
-            raise RuntimeError(
-                f"Context '{self._name}' is not set. Use `with {self._name}.use(value):` to set it."
-            ) from lookup_err
-
     def get(self, default: T | _NoDefault = _NO_DEFAULT) -> T:
         """
         Get the current value, or a default if unset.
@@ -127,7 +104,16 @@ class Context[T]:
                 default (if any) instead.
 
         """
-        return self(default)
+        if default is _NO_DEFAULT:
+            default = self._default
+        try:
+            return self._var.get() if isinstance(default, _NoDefault) else self._var.get(default)
+        except LookupError as lookup_err:
+            raise RuntimeError(
+                f"Context '{self._name}' is not set. Use `with {self._name}.use(value):` to set it."
+            ) from lookup_err
+
+    __call__ = get
 
     def set(self, value: T) -> Token[T]:
         """

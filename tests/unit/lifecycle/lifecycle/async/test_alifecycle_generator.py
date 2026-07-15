@@ -22,7 +22,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle, async_managed
+from stratae.lifecycle import async_resource
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 async def test_generator_async(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):
@@ -40,7 +41,7 @@ async def test_generator_async(async_lifecycle: AsyncLifecycle, scopes: Sequence
     class SimpleObject: ...
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def sample_generator():
         try:
             yield SimpleObject()
@@ -73,7 +74,7 @@ async def test_register_generator_inactive_scope_async(async_lifecycle: AsyncLif
 
     # Arrange
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def sample_generator():
         yield "test"
 
@@ -96,7 +97,7 @@ async def test_decorate_generator_async_exception_cleanup(async_lifecycle: Async
     class SimpleObject: ...
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def sample_generator():
         try:
             yield SimpleObject()
@@ -128,7 +129,7 @@ async def test_decorator_generator_async_exception_handling(async_lifecycle: Asy
     class SimpleObject: ...
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def sample_generator():
         try:
             await asyncio.sleep(0)
@@ -169,7 +170,7 @@ async def test_multiple_generators_async(async_lifecycle: AsyncLifecycle):
     class SimpleObject: ...
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def generator_one():
         try:
             await asyncio.sleep(0)
@@ -178,7 +179,7 @@ async def test_multiple_generators_async(async_lifecycle: AsyncLifecycle):
             mock_cleanup_1()
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def generator_two():
         try:
             await asyncio.sleep(0)
@@ -187,7 +188,7 @@ async def test_multiple_generators_async(async_lifecycle: AsyncLifecycle):
             mock_cleanup_2()
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def generator_three():
         try:
             await asyncio.sleep(0)
@@ -224,7 +225,7 @@ async def test_generator_async_exception_group(async_lifecycle: AsyncLifecycle):
     class SimpleObject: ...
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def generator_one():
         try:
             await asyncio.sleep(0)
@@ -233,7 +234,7 @@ async def test_generator_async_exception_group(async_lifecycle: AsyncLifecycle):
             mock_cleanup_1()
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def generator_two():
         try:
             await asyncio.sleep(0)
@@ -242,7 +243,7 @@ async def test_generator_async_exception_group(async_lifecycle: AsyncLifecycle):
             mock_cleanup_2()
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def generator_three():
         try:
             await asyncio.sleep(0)

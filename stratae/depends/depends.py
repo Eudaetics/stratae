@@ -1,59 +1,86 @@
 """Depends function for dependency injection."""
 
-from inspect import iscoroutinefunction, unwrap
-from typing import Any, Awaitable, Callable, cast, overload
+from contextvars import ContextVar
+from inspect import iscoroutinefunction
+from threading import Lock
+from typing import Any, Awaitable, Callable, Hashable, Self, overload
+from weakref import WeakValueDictionary
 
-AUTO: Any = None
+from stratae.depends.exceptions import DependencyNotFoundError
+
+_UNSET = object()
 
 
 class DependsWrapper:
     """Class used to wrap the dependency injection."""
 
-    def __init__(self, dependency: Callable[..., Any], allow_override: bool = True) -> None:
-        """Initialize the Depends instance with an injectable dependency."""
-        self.dependency = dependency
-        self._is_async = iscoroutinefunction(dependency)
-        self.allow_override = allow_override
+    __slots__ = {
+        "dependency",
+        "provide",
+        "is_async",
+        "override",
+        "override_count",
+        "lock",
+        "resolved",
+        "__weakref__",
+    }
 
-    def provide(self):
-        """Provide the dependency."""
-        self._fix_outermost()
-        self.provide = self._fixed_provide
-        return self.dependency()
+    _registry: WeakValueDictionary[Hashable, Self] = WeakValueDictionary()
+    dependency: Callable[[], Any]
+    provide: Callable[[], Any]
+    is_async: bool
+    override: ContextVar[Any]
+    override_count: int
+    lock: Lock
+    resolved: bool
 
-    async def aprovide(self):
-        """Asynchronously provide the dependency."""
-        self._fix_outermost()
-        self.aprovide = self._fixed_aprovide
-        return await self.dependency()
+    def __new__(cls, dependency: Callable[..., Any]) -> Self:
+        """Singleton factory for dependency wrappers."""
+        existing = cls._registry.get(dependency)
+        if existing is not None:
+            return existing
+        instance = super().__new__(cls)
+        instance.dependency = dependency
+        instance.provide = dependency
+        instance.is_async = iscoroutinefunction(dependency)
+        instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
+        instance.override_count = 0
+        instance.lock = Lock()
+        instance.resolved = False
+        cls._registry[dependency] = instance
+        return instance
 
-    def _fixed_provide(self):
-        return self.dependency()
+    def provide_override(self):
+        """Return override if set, otherwise evaluate the dependency."""
+        ctx = self.override.get()
+        if ctx is _UNSET:
+            return self.dependency()
+        return ctx
 
-    async def _fixed_aprovide(self):
-        return await self.dependency()
+    def update(self, dependency: Callable[..., Any]):
+        """Update the dependency while also correcting the provide."""
+        with self.lock:
+            self.dependency = dependency
+            if self.override_count == 0:
+                self.provide = self.dependency
 
-    def _fix_outermost(self) -> None:
-        """Fix the dependency to use its outermost version, if applicable."""
-        original = unwrap(self.dependency)
-        if hasattr(original, "__outermost__"):
-            self.dependency = original.__outermost__
-        self._resolved_outermost = True
-
-    @property
-    def is_async(self) -> bool:
-        """Return True if the dependency is asynchronous, False otherwise."""
-        return self._is_async
+    @classmethod
+    def find(cls, func: Callable[..., Any]):
+        """Find the associated DependsWrapper for the injected dependency."""
+        try:
+            return cls._registry[func]
+        except KeyError:
+            raise DependencyNotFoundError(f"No Dependency found for {func}") from None
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, Awaitable[R]], *, allow_override: bool = True) -> R: ...
+def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> DependsWrapper: ...
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, R], *, allow_override: bool = True) -> R: ...
+def Depends[**P, R](dependency: Callable[P, R]) -> DependsWrapper: ...
 
 
-def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]], *, allow_override: bool = True) -> R:
+def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> DependsWrapper:
     """Marker function used to denote a dependency injection."""
-    return cast(R, DependsWrapper(dependency=dependency, allow_override=allow_override))
+    return DependsWrapper(dependency=dependency)

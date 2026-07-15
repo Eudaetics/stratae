@@ -1,13 +1,15 @@
 """Dependency Injection Module."""
 
-from stratae.depends.depends import AUTO, Depends, DependsWrapper
-from stratae.depends.inject import inject
+from stratae.depends.depends import Depends, DependsWrapper
+from stratae.depends.inject import Injected, inject
+from stratae.depends.override import override
 from stratae.depends.resolver import Resolver
 
 __all__ = [
     "Resolver",
-    "AUTO",
     "Depends",
     "DependsWrapper",
+    "override",
+    "Injected",
     "inject",
 ]

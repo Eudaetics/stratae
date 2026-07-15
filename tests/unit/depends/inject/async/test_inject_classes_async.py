@@ -1,10 +1,9 @@
 """Test suite for verifying dependency injection in class methods and constructors."""
 
-from __future__ import annotations
-
 import asyncio
+from typing import Self
 
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 
 
 def get_dep():
@@ -36,7 +35,7 @@ async def test_class_init_async_dep():
 
         @classmethod
         @inject
-        async def create(cls, value: int = Depends(get_async_dep)) -> SimpleObject:
+        async def create(cls, value: Injected[int, Depends(get_async_dep)]) -> Self:
             return cls(value)
 
     # Act
@@ -78,7 +77,7 @@ async def test_nested_async_class_creation():
 
         @classmethod
         @inject
-        async def create(cls, value: int = Depends(get_async_dep)) -> DepClass:
+        async def create(cls, value: Injected[int, Depends(get_async_dep)]) -> Self:
             return cls(value)
 
     async def get_dep_class():
@@ -93,7 +92,7 @@ async def test_nested_async_class_creation():
 
         @classmethod
         @inject
-        async def create(cls, dep: DepClass = Depends(get_dep_class)) -> SimpleObject:
+        async def create(cls, dep: Injected[DepClass, Depends(get_dep_class)]) -> Self:
             return cls(dep)
 
     # Act
@@ -118,7 +117,7 @@ async def test_method_injection_async():
 
     class SimpleObject:
         @inject
-        async def set_value(self, value: int = Depends(get_async_dep)):
+        async def set_value(self, value: Injected[int, Depends(get_async_dep)]):
             self.value = value
 
     # Act
@@ -148,7 +147,7 @@ async def test_static_method_injection_async():
 
         @staticmethod
         @inject
-        async def set_value(value: int = Depends(get_async_dep)):
+        async def set_value(value: Injected[int, Depends(get_async_dep)]):
             SimpleObject.value = value
 
     # Act
@@ -177,7 +176,7 @@ async def test_class_method_injection_async():
 
         @classmethod
         @inject
-        async def set_value(cls, value: int = Depends(get_async_dep)):
+        async def set_value(cls, value: Injected[int, Depends(get_async_dep)]):
             cls.value = value
 
     # Act

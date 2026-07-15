@@ -1,10 +1,8 @@
 # Stratae
 
-**Composable tools for dependency injection in Python. Fast, simple, and framework-agnostic.**
+Stratae is a set of individual tools for Python 3.12+. It currently covers dependency injection and lifecycle-scoped caching and cleanup. Each tool works on its own: use lifecycle management without injection, or dependency injection by itself.
 
-Stratae is a toolkit designed of small, focused components that layer together to create more powerful systems. It's built to complement Python's 3.12+ features, leveraging decorators, contexts, and functions to create a system that works anywhere.
-
-Write your business logic once, use it everywhere: APIs, CLIs, workers, and tests.
+These tools work anywhere instead of being tied to a particular framework. A function decorated with @inject is still an ordinary function: callable directly, importable, or wired into a web framework or worker. The same holds for @lifecycle.cache.
 
 ```bash
 pip install stratae
@@ -14,9 +12,9 @@ pip install stratae
 
 ```python
 from stratae.depends import Depends, inject
-from stratae.lifecycle import Lifecycle
+from stratae.lifecycle import Lifecycle, Scope
 
-lifecycle = Lifecycle(["application"])
+lifecycle = Lifecycle([Scope("application", "shared")])
 
 type Database = dict[str, list[dict[str, str]]]
 
@@ -26,36 +24,21 @@ def get_database() -> Database:
     return {"users": []}
 
 @inject
-def create_user(name: str, db: Database = Depends(get_database)):
+def create_user(name: str, db: Injected[Database, Depends(get_database)]):
     user = {"name": name}
     db["users"].append(user)
     return user
 
-# Use anywhere: APIs, CLIs, workers, tests
 with lifecycle.start('application'):
     user = create_user("Alice")
     print(f"Created user: {user['name']}")
 ```
 
-## Why Stratae?
-
-**Simple by design.** Stratae doesn't impose architectural patterns or force you into a framework. It provides focused tools that solve specific problems: dependency injection, lifecycle management, and context variables. Use what you need, ignore what you don't.
-
-**Zero lock-in.** Your business logic is just functions with decorators. Remove Stratae anytime by replacing `Depends()` with actual values. No container to untangle, no framework to escape.
-
-**Built for performance.** Stratae keeps overhead minimal through straightforward design:
-
-- Analyze dependencies once at decoration time
-- No runtime introspection or provider lookups
-- Direct function calls with minimal indirection
-
-The result is a system that minimizes overhead and stays out of your way. If you're using a system that has dependency injection, we encourage you to test it yourself. Change one small piece to use Stratae and see if it works for you.
-
 ## Features
 
 ### Dependency Injection
 
-Dependency injection in Stratae uses familiar decorator syntax that works with any callable. Use this to send values, objects, or anything into a function.
+Dependency injection in Stratae uses familiar decorator syntax that works with callables. Use this to send values, objects, or anything into a function.
 
 ```python
 from stratae.depends import Depends, inject
@@ -63,10 +46,8 @@ from stratae.depends import Depends, inject
 def get_config():
     return {"env": "dev", "mode": "strict"}
 
-# Decorate the function with inject to resolve dependencies
 @inject
-# Use Depends(...) to mark parameters for injection
-def endpoint(config: dict[str, str] = Depends(get_config)):
+def endpoint(config: Injected[dict[str, str], Depends(get_config)]):
     print(f"Environment: {config['env']}, Mode: {config['mode']}")
 
 endpoint()
@@ -78,13 +59,12 @@ endpoint()
 Use lifecycle management when you want to cache objects or guarantee resource cleanup for context managers. With managed resources, everything is cleaned up automatically at the end of a lifecycle scope.
 
 ```python
-# Set up the lifecycle with your application scopes
-lifecycle = Lifecycle(['application', 'request'])
+lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
 
-# Lifecycle will cache the yielded value and return it for all calls within a request
+# Cache the yielded value and return it for all calls within a request;
+# @resource marks get_session as a contextmanager to be auto-entered
 @lifecycle.cache('request')
-# Mark get_session as a contextmanager that will be auto-entered to get the session
-@managed
+@resource
 def get_session():
     session = Session()
     try:
@@ -108,25 +88,27 @@ with lifecycle.start('application'):
         db = get_session()
 ```
 
+Each `Scope` also takes a `storage` option (`"dense"`, the default, or `"sparse"`) that controls how cached slots are allocated. Dense indexes slots by position and is cheapest per access; sparse allocates lazily and resets only the slots touched during an activation. Dense wins for scopes with few registered functions or where most get used per activation; sparse pulls ahead for scopes registering many functions where a given activation only touches a handful (e.g. a large API's per-resource caches).
+
 ### Context Variables
 
-To enable decoupled systems, Stratae uses context variables for setting values that need to be shared among components. This is particularly useful for setting values at runtime that are needed deep in dependency chains. Change values at runtime, or even whole behavior, without needing to thread parameters or manipulate overrides.
+Stratae uses context variables for setting values that are needed deep in dependency chains. Change values at runtime, or even whole behavior, without needing to thread parameters or manipulate overrides.
 
 ```python
 from stratae.context import Context
 
-lifecycle = Lifecycle('request')
+lifecycle = Lifecycle([Scope('request', 'shared')])
 user_id = Context[int]("user_id")
 
 @lifecycle.cache('request')
 @inject
-def get_current_user(uid: int = Depends(user_id)) -> User:
+def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
     return fetch_user(uid)
 
 @inject
 def create_post(
     content: str,
-    user: User = Depends(get_current_user),
+    user: Injected[User, Depends(get_current_user)],
 ) -> Post:
     return Post(author=user, content=content)
 
@@ -140,9 +122,9 @@ Stratae is fully async compatible. Injection natively works with sync or async f
 
 ```python
 from stratae.depends import Depends, inject
-from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, Scope
 
-lifecycle = AsyncLifecycle(['application', 'request'])
+lifecycle = AsyncLifecycle([Scope('application', 'shared'), Scope('request', 'context')])
 
 @lifecycle.cache('application')
 async def get_database() -> Database:
@@ -151,30 +133,13 @@ async def get_database() -> Database:
 @inject
 async def create_user(
     name: str,
-    db: Database = Depends(get_database),
+    db: Injected[Database, Depends(get_database)],
 ) -> User:
     return await db.users.create(name=name)
 
-# Use anywhere: APIs, CLIs, workers, tests
 async with lifecycle.start('application'):
     async with lifecycle.start('request'):
         user = await create_user("Alice")
-```
-
-### Easy Testing
-
-With no complex configuration, testing functions decorated with Stratae is easy. The function signature isn't changed, just pass in the mocks you need.
-
-```python
-@inject
-def create_user(name: str, db = Depends(get_db)):
-    db.user.create(name=name)
-
-# Use normally
-create_user('Steve')
-
-# Test
-create_user('Jason', db=MockDB())
 ```
 
 ### Framework Agnostic
@@ -186,7 +151,7 @@ Stratae doesn't have a complex framework to configure or objects to pass around.
 @inject
 async def create_user(
     name: str,
-    db: Database = Depends(get_database),
+    db: Injected[Database, Depends(get_database)],
 ) -> User:
     return await db.users.create(name=name)
 
@@ -200,10 +165,40 @@ async def api_create(name: str):
 def cli_create(name: str):
     asyncio.run(create_user(name))
 
-# Tests
-async def test_create():
-    user = await create_user("Alice", db=mock_db)
 ```
+
+### Testing Overrides
+
+Swap a dependency's value in a `with` block without touching the function that declares it - useful for tests or temporarily forcing a code path.
+
+```python
+from stratae.depends import override
+
+def get_config():
+    return {"env": "prod"}
+
+with override(get_config, {"env": "test"}):
+    endpoint()  # sees {"env": "test"}
+endpoint()  # back to {"env": "prod"}
+```
+
+### Guard Checks
+
+`require` runs zero-arg checks ahead of a function call, in order. A check's return value is discarded - only its side effects and raises matter, and the first one to raise aborts the call.
+
+```python
+from stratae.check import require
+
+def is_admin():
+    if not current_user().is_admin:
+        raise PermissionError("admin required")
+
+@require(is_admin)
+def delete_account(account_id: int):
+    ...
+```
+
+Sync functions only accept sync checks. Async functions accept a mix of sync and async checks, run in order.
 
 ### Simple Integrations
 
@@ -212,18 +207,18 @@ The design of Stratae means integrating with other tools or frameworks is typica
 ```python
 from fastapi import FastAPI
 from stratae.integrations import RequestLifecycleMiddleware
-from stratae.lifecycle import AsyncLifecycle, managed
+from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
 
 
 app = FastAPI()
-lifecycle = AsyncLifecycle(['request'])
+lifecycle = AsyncLifecycle([Scope('request', 'context')])
 
 # Add the middleware that starts a lifecycle request
 app.add_middleware(RequestLifecycleMiddleware, lifecycle, 'request')
 
 # Everything that needs the session will get the same session
 @lifecycle.cache('request')
-@managed
+@async_resource
 async def get_session():
     session = AsyncSession()
     try:
@@ -239,7 +234,7 @@ async def get_session():
 async def create_user(
     name: str,
     # Using Stratae Depends
-    db: Session = Depends(get_session)
+    db: Injected[Session, Depends(get_session)]
 ):
     await db.users.create(name=name)
 

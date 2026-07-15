@@ -1,9 +1,7 @@
 """Lifecycle module for managing hierarchical contexts in applications."""
 
-from __future__ import annotations
+from .lifecycle import AsyncLifecycle, Lifecycle
+from .resource import async_resource, resource
+from .scope import Scope
 
-from .async_lifecycle import AsyncLifecycle
-from .lifecycle import Lifecycle
-from .manage import async_managed, managed
-
-__all__ = ["AsyncLifecycle", "Lifecycle", "async_managed", "managed"]
+__all__ = ["AsyncLifecycle", "Lifecycle", "Scope", "async_resource", "resource"]

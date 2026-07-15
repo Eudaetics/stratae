@@ -1,12 +1,168 @@
-"""Scope container for cache and exit stack."""
+"""Scope activation storage - shared vars, exit stacks, and the UNSET sentinel."""
 
-from contextlib import AsyncExitStack, ExitStack
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
+from contextvars import ContextVar
+from typing import Any, Callable, NamedTuple, Protocol, Sequence
 
-from stratae.cache import Cache
+from stratae.lifecycle.scope import Scope
+
+UNSET: Any = object()
+_MISSING: Any = object()
 
 
-def _handle_exception_group(exc: Exception) -> None:
-    """Flatten an ExceptionGroup into a list of exceptions."""
+class SlotDict(dict[int, Any]):
+    """Dict-backed slot storage - missing slots read as UNSET without inserting them."""
+
+    __slots__ = ()
+
+    def __missing__(self, key: int) -> Any:
+        return UNSET
+
+    def copy(self) -> "SlotDict":
+        return SlotDict(self)
+
+
+SlotStorage = list[Any] | SlotDict
+
+
+class SharedToken:
+    """Activation token for a shared scope, mirroring contextvars.Token's .var backref."""
+
+    __slots__ = ("var",)
+
+    var: "SharedVar"
+
+    def __init__(self, var: "SharedVar") -> None:
+        self.var = var
+
+
+class SharedVar:
+    """
+    ContextVar-shaped holder for a shared scope's activation, visible to every context.
+
+    The live SlotStorage sits in the storage slot - codegen'd wrappers bind the var and
+    read the attribute directly - and UNSET there marks the scope inactive. set() always
+    hands back the same token: shared activations don't nest, so deactivation clears the
+    storage rather than restoring a prior value.
+    """
+
+    __slots__ = ("name", "storage", "_token")
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.storage: SlotStorage = UNSET
+        self._token = SharedToken(self)
+
+    def get(self, default: Any = _MISSING) -> SlotStorage:
+        """Return the live storage, or default when inactive, else raise LookupError."""
+        value = self.storage
+        if value is not UNSET:
+            return value
+        if default is _MISSING:
+            raise LookupError(self.name)
+        return default
+
+    def set(self, value: SlotStorage) -> SharedToken:
+        """Activate the scope with the given storage, returning its reusable token."""
+        self.storage = value
+        return self._token
+
+    def clear(self) -> None:
+        """Deactivate the scope, leaving UNSET as the storage."""
+        self.storage = UNSET
+
+    def reset(self, _token: SharedToken) -> None:
+        """Deactivate like clear() - the token is unused since shared activations don't nest."""
+        self.storage = UNSET
+
+
+ScopeVar = ContextVar[SlotStorage] | SharedVar
+
+
+class ScopeVarProto[TokenT](Protocol):
+    """
+    The set/reset pairing a lifecycle context needs, generic over the token type.
+
+    Correlates a var with its token type so the ContextVar/Token and SharedVar/
+    SharedToken pairs both type-check a reset(token) call without narrowing at the
+    call site - narrowing would cost an isinstance per activation exit.
+    """
+
+    def set(self, value: SlotStorage, /) -> TokenT: ...
+
+    def reset(self, token: TokenT, /) -> None: ...
+
+
+class LifecycleState(NamedTuple):
+    """Per-scope state a Lifecycle/AsyncLifecycle manager builds once at construction."""
+
+    templates: dict[str, SlotStorage]
+    scope_vars: dict[str, ScopeVar]
+    contexts: dict[str, Any]
+    counters: dict[str, int]
+    free_slots: dict[str, list[int]]
+
+
+def _build_templates(scopes: Sequence[Scope]) -> dict[str, SlotStorage]:
+    """Build each scope's empty-slot template - a list for "dense" storage, else a dict."""
+    return {scope.name: [UNSET] if scope.storage == "dense" else SlotDict() for scope in scopes}
+
+
+def _build_scope_vars(scopes: Sequence[Scope]) -> dict[str, ScopeVar]:
+    """Build each scope's activation holder - a ContextVar if context-isolated, else a SharedVar."""
+    return {
+        scope.name: (
+            ContextVar(scope.name) if scope.isolation == "context" else SharedVar(scope.name)
+        )
+        for scope in scopes
+    }
+
+
+def _build_contexts(
+    scopes: Sequence[Scope],
+    scope_vars: dict[str, ScopeVar],
+    templates: dict[str, SlotStorage],
+    context_cls: Callable[[ScopeVarProto[Any], SlotStorage], Any],
+) -> dict[str, Any]:
+    """
+    Build one reusable context manager per shared scope.
+
+    Shared activations don't nest, so one instance per scope can carry the activation
+    state that context-isolated scopes need a fresh instance for on every start().
+    """
+    return {
+        scope.name: context_cls(scope_vars[scope.name], templates[scope.name])
+        for scope in scopes
+        if scope.isolation == "shared"
+    }
+
+
+def _build_counters(scopes: Sequence[Scope]) -> dict[str, int]:
+    """Build the per-scope slot counter used by sparse-backed scopes, starting after slot 0."""
+    return {scope.name: 1 for scope in scopes if scope.storage == "sparse"}
+
+
+def build_lifecycle_state(
+    scopes: Sequence[Scope],
+    context_cls: Callable[[ScopeVarProto[Any], SlotStorage], Any],
+) -> LifecycleState:
+    """
+    Build the per-scope state shared by Lifecycle and AsyncLifecycle construction.
+
+    Both managers derive identical state from their scopes, differing only in which
+    context manager class wraps a shared scope's activation - passed in so this stays
+    agnostic to sync vs. async.
+    """
+    templates = _build_templates(scopes)
+    scope_vars = _build_scope_vars(scopes)
+    contexts = _build_contexts(scopes, scope_vars, templates, context_cls)
+    counters = _build_counters(scopes)
+    free_slots: dict[str, list[int]] = {scope.name: [] for scope in scopes}
+    return LifecycleState(templates, scope_vars, contexts, counters, free_slots)
+
+
+def _raise_collected(exc: Exception) -> None:
+    """Collect an exception's __context__ chain and raise it as an ExceptionGroup."""
     exceptions: list[Exception] = [exc]
     ctx = exc.__context__
     while ctx:
@@ -14,60 +170,78 @@ def _handle_exception_group(exc: Exception) -> None:
             exceptions.append(ctx)
         ctx = getattr(ctx, "__context__", None)
     if len(exceptions) > 1:
-        raise ExceptionGroup("Multiple exceptions during scope cleanup", exceptions)
-    else:
-        raise
+        raise ExceptionGroup("Multiple exceptions raised during scope cleanup", exceptions)
+    raise exc
 
 
-class Scope:
-    """Container class for a lifecycle scope's cache and exit stack."""
-
-    def __init__(self, cache: Cache, exit_stack: ExitStack):
-        """Initialize the Scope with a cache and exit stack."""
-        self._cache = cache
-        self._exit_stack = exit_stack
-
-    def clear(self) -> None:
-        """Clear the scope's cache."""
-        self._cache.clear()
-        try:
-            self._exit_stack.close()
-        except Exception as exc:
-            _handle_exception_group(exc)
-
-    @property
-    def cache(self) -> Cache:
-        """Get the scope's cache."""
-        return self._cache
-
-    @property
-    def exit_stack(self) -> ExitStack:
-        """Get the scope's exit stack."""
-        return self._exit_stack
+def _close_one(ctx: AbstractContextManager[Any], exc: Exception | None) -> Exception | None:
+    exc_type = type(exc) if exc else None
+    tb = exc.__traceback__ if exc else None
+    try:
+        suppressed = ctx.__exit__(exc_type, exc, tb)
+    except Exception as new_exc:
+        return new_exc
+    return None if suppressed else exc
 
 
-class AsyncScope:
-    """Asynchronous container class for a lifecycle scope's cache and exit stack."""
+async def _aclose_one(
+    ctx: AbstractAsyncContextManager[Any], exc: Exception | None
+) -> Exception | None:
+    exc_type = type(exc) if exc else None
+    tb = exc.__traceback__ if exc else None
+    try:
+        suppressed = await ctx.__aexit__(exc_type, exc, tb)
+    except Exception as new_exc:
+        return new_exc
+    return None if suppressed else exc
 
-    def __init__(self, cache: Cache, exit_stack: AsyncExitStack):
-        """Initialize the AsyncScope with a cache and exit stack."""
-        self._cache = cache
-        self._exit_stack = exit_stack
 
-    async def clear(self) -> None:
-        """Asynchronously clear the scope's cache."""
-        await self._cache.aclear()
-        try:
-            await self._exit_stack.aclose()
-        except Exception as exc:
-            _handle_exception_group(exc)
+class ExitStack:
+    __slots__ = ("_contexts",)
 
-    @property
-    def cache(self) -> Cache:
-        """Get the scope's cache."""
-        return self._cache
+    def __init__(self) -> None:
+        self._contexts: list[AbstractContextManager[Any]] = []
 
-    @property
-    def exit_stack(self) -> AsyncExitStack:
-        """Get the scope's exit stack."""
-        return self._exit_stack
+    def enter_context[R](self, ctx: AbstractContextManager[R]) -> R:
+        result = ctx.__enter__()
+        self._contexts.append(ctx)
+        return result
+
+    def close(self) -> None:
+        exc: Exception | None = None
+        while self._contexts:
+            exc = _close_one(self._contexts.pop(), exc)
+        if exc is not None:
+            _raise_collected(exc)
+
+
+class AsyncExitStack:
+    __slots__ = ("_contexts",)
+
+    def __init__(self) -> None:
+        """Initialize with no registered context managers."""
+        self._contexts: list[tuple[bool, Any]] = []
+
+    def enter_context[T](self, ctx: AbstractContextManager[T]) -> T:
+        """Enter a sync context manager and register it for cleanup on aclose()."""
+        result = ctx.__enter__()
+        self._contexts.append((False, ctx))
+        return result
+
+    async def enter_async_context[T](self, ctx: AbstractAsyncContextManager[T]) -> T:
+        """Enter an async context manager and register it for cleanup on aclose()."""
+        result = await ctx.__aenter__()
+        self._contexts.append((True, ctx))
+        return result
+
+    async def aclose(self) -> None:
+        """Close every registered context manager, in reverse order, running all of them."""
+        exc: Exception | None = None
+        while self._contexts:
+            is_async, ctx = self._contexts.pop()
+            if is_async:
+                exc = await _aclose_one(ctx, exc)
+            else:
+                exc = _close_one(ctx, exc)
+        if exc is not None:
+            _raise_collected(exc)

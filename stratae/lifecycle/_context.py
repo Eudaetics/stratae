@@ -1,63 +1,73 @@
-"""Context managers and decorators for lifecycle scopes."""
+"""Context managers for lifecycle scope activations."""
 
-from __future__ import annotations
+from typing import Any
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from stratae.lifecycle.async_lifecycle import AsyncLifecycle
-    from stratae.lifecycle.lifecycle import Lifecycle
+from stratae.lifecycle._scope import UNSET, ScopeVarProto, SlotStorage
 
 
 class LifecycleContext:
     """
-    Defines lifecycle context for functions and context managers.
+    Context manager for a scope activation on a sync Lifecycle.
 
-    Allows decorating functions to specify their lifecycle scope for caching. Supports
-    both synchronous and asynchronous functions, including generator functions. Generators
-    are automatically converted to return their yielded value, with cleanup handled by
-    the lifecycle manager. Cleanup is automatic when the scope ends.
-
-    Attributes:
-        scope (Scope): The lifecycle scope to apply to the decorated function.
-
-    Usage:
-        @scoped.application
-        def get_resource() -> Resource:
-            try:
-                resource = create_resource()
-                yield resource  # This will be cached for the application scope
-            finally:
-                cleanup_resource(resource)
-
+    Works for both isolations through the ScopeVarProto interface, which pairs set with
+    reset so exit needs no narrowing: shared scopes reuse one instance per scope (their
+    activations don't nest), context-isolated scopes get a fresh instance per start().
+    Deliberately not generic over the token type - a Generic base taxes per-activation
+    instantiation - so the var/token pairing is typed Any here.
     """
 
-    def __init__(self, scope: str, lifecycle: Lifecycle) -> None:
-        """Initialize the ScopeDecorator with a specific lifecycle scope."""
-        self._scope = scope
-        self._lifecycle = lifecycle
+    __slots__ = ("_var", "_template", "_slots", "token")
 
-    def __enter__(self, *_):
-        """Enter the context manager."""
-        self._lifecycle.push(self._scope)
+    token: Any
+
+    def __init__(self, var: ScopeVarProto[Any], template: SlotStorage) -> None:
+        """Initialize with the scope's var and all-UNSET slot template pre-resolved."""
+        self._var = var
+        self._template = template
+
+    def __enter__(self) -> None:
+        """Activate the scope with a fresh copy of the template."""
+        slots = self._template.copy()
+        self.token = self._var.set(slots)
+        self._slots = slots
 
     def __exit__(self, *_) -> None:
-        """Exit the context manager."""
-        self._lifecycle.pop()
+        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
+        self._var.reset(self.token)
+        stack = self._slots[0]
+        if stack is not UNSET:
+            stack.close()
 
 
 class AsyncLifecycleContext:
-    """Asynchronous context manager for lifecycle scopes."""
+    """
+    Async context manager for a scope activation on an AsyncLifecycle.
 
-    def __init__(self, scope: str, lifecycle: AsyncLifecycle) -> None:
-        """Initialize the AsyncScopeContext with a specific lifecycle scope."""
-        self._scope = scope
-        self._lifecycle = lifecycle
+    Works for both isolations through the ScopeVarProto interface, which pairs set with
+    reset so exit needs no narrowing: shared scopes reuse one instance per scope (their
+    activations don't nest), context-isolated scopes get a fresh instance per start().
+    Deliberately not generic over the token type - a Generic base taxes per-activation
+    instantiation - so the var/token pairing is typed Any here.
+    """
 
-    async def __aenter__(self):
-        """Asynchronously enter the context manager."""
-        self.token = self._lifecycle.push(self._scope)
+    __slots__ = ("_var", "_template", "_slots", "token")
+
+    token: Any
+
+    def __init__(self, var: ScopeVarProto[Any], template: SlotStorage) -> None:
+        """Initialize with the scope's var and all-UNSET slot template pre-resolved."""
+        self._var = var
+        self._template = template
+
+    async def __aenter__(self) -> None:
+        """Activate the scope with a fresh copy of the template."""
+        slots = self._template.copy()
+        self.token = self._var.set(slots)
+        self._slots = slots
 
     async def __aexit__(self, *_) -> None:
-        """Asynchronously exit the context manager."""
-        await self._lifecycle.pop(self.token)
+        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
+        self._var.reset(self.token)
+        stack = self._slots[0]
+        if stack is not UNSET:
+            await stack.aclose()
