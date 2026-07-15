@@ -1,19 +1,16 @@
 """Direct, in-process asynchronous event bus."""
 
 import asyncio
-from collections import defaultdict
 from typing import Any, Callable, overload
 
+from stratae.events.adapters._base import AnyEventConfig, BaseDirectBus
 from stratae.events.bound import AsyncBoundEvent, abind
 from stratae.events.envelope import Envelope
 from stratae.events.event import EventConfig, PubSub, Request, is_request
-from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.handler import Handler
 
-_AnyEventConfig = EventConfig[Any, Any, Any]
 
-
-class AsyncDirectBus:
+class AsyncDirectBus(BaseDirectBus):
     """
     In-process, asynchronous event bus with no routing config.
 
@@ -58,10 +55,8 @@ class AsyncDirectBus:
 
     def __init__(self, *, use_envelope: bool = False) -> None:
         """Initialise the bus with optional envelope tracking."""
+        super().__init__()
         self._use_envelope = use_envelope
-        self._handlers: dict[_AnyEventConfig, set[Handler[Any, _AnyEventConfig, Any]]] = (
-            defaultdict(set)
-        )
 
     @overload
     def bind[**P, S: Any, R](
@@ -73,7 +68,7 @@ class AsyncDirectBus:
         self, event: EventConfig[P, S, PubSub]
     ) -> AsyncBoundEvent[P, S, PubSub, None, None]: ...
 
-    def bind(self, event: _AnyEventConfig) -> AsyncBoundEvent[Any, Any, Any, None, Any]:
+    def bind(self, event: AnyEventConfig) -> AsyncBoundEvent[Any, Any, Any, None, Any]:
         """Return an ``AsyncBoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return abind(self.emit, event, config=None, serializer=None)
 
@@ -100,7 +95,7 @@ class AsyncDirectBus:
     async def emit(
         self,
         payload: Any,
-        event: _AnyEventConfig,
+        event: AnyEventConfig,
         config: None = None,
         *,
         serializer: Callable[..., Any] | None = None,
@@ -137,81 +132,19 @@ class AsyncDirectBus:
                 return await self._dispatch(payload, event)
         return await self._dispatch(payload, event)
 
-    async def _dispatch(self, payload: Any, event: _AnyEventConfig) -> Any:
+    async def _dispatch(self, payload: Any, event: AnyEventConfig) -> Any:
         if is_request(event):
             return await self._dispatch_request(payload, event)
         await self.dispatch(payload, config=event)
         return None
 
-    async def _dispatch_request(self, payload: Any, event: _AnyEventConfig) -> Any:
-        responders = self._handlers.get(event)
-        if not responders:
-            raise NoResponderError(f"no responder registered for request event '{event.name}'")
-        if len(responders) > 1:
-            raise MultipleRespondersError(
-                f"request event '{event.name}' has {len(responders)} responders;"
-                " exactly one is required"
-            )
-        (responder,) = responders
+    async def _dispatch_request(self, payload: Any, event: AnyEventConfig) -> Any:
+        responder = self._single_responder(event)
         if responder.is_async:
             return await responder(payload)
         return responder(payload)
 
-    @overload
-    def handle[**P, R](
-        self,
-        config: _AnyEventConfig,
-        fn: Callable[P, R],
-    ) -> Handler[P, _AnyEventConfig, R]: ...
-
-    @overload
-    def handle[**P, R](
-        self,
-        config: _AnyEventConfig,
-        fn: None = None,
-    ) -> Callable[[Callable[P, R]], Handler[P, _AnyEventConfig, R]]: ...
-
-    def handle[**P, R](
-        self,
-        config: _AnyEventConfig,
-        fn: Callable[P, R] | None = None,
-    ) -> (
-        Handler[P, _AnyEventConfig, R] | Callable[[Callable[P, R]], Handler[P, _AnyEventConfig, R]]
-    ):
-        """
-        Register a handler callable for a config, as a decorator or direct call.
-
-        Returns the ``Handler`` instance in both forms so callers can pass it
-        to ``remove`` later.
-
-        Args:
-            config: The ``EventConfig`` used as the handler routing key.
-            fn:     When supplied, registers ``fn`` directly and returns its
-                    ``Handler``.  When omitted, returns a decorator that
-                    registers and returns the ``Handler``.
-
-        """
-
-        def decorator(f: Callable[P, R]) -> Handler[P, _AnyEventConfig, R]:
-            handler: Handler[P, _AnyEventConfig, R] = Handler(f, config)
-            self._handlers[config].add(handler)
-            return handler
-
-        if fn is not None:
-            return decorator(fn)
-        return decorator
-
-    def remove(self, handler: Handler[Any, _AnyEventConfig, Any]) -> None:
-        """
-        Remove a previously registered handler.
-
-        Args:
-            handler: The ``Handler`` instance returned by ``handle``.
-
-        """
-        self._handlers[handler.config].discard(handler)
-
-    async def dispatch(self, payload: Any, *, config: _AnyEventConfig) -> None:
+    async def dispatch(self, payload: Any, *, config: AnyEventConfig) -> None:
         """
         Invoke every handler registered for the given ``EventConfig`` concurrently.
 
@@ -224,7 +157,7 @@ class AsyncDirectBus:
 
         """
 
-        async def _call(handler: Handler[Any, _AnyEventConfig, Any]) -> None:
+        async def _call(handler: Handler[Any, AnyEventConfig, Any]) -> None:
             if handler.is_async:
                 await handler(payload)
             else:
