@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol, overload
+from typing import Any, Awaitable, Callable, Protocol, cast, get_args, get_origin, overload
 
 from stratae.events._typeguards import is_async_factory, is_class_factory
+
+_UNSUBSCRIPTED_REQUEST = "Request must be subscripted with its reply type (e.g. Request[BookFound])"
+_NOT_A_REQUEST = "event does not carry a subscripted Request discriminant"
 
 
 class EventType:
@@ -13,6 +16,22 @@ class EventType:
 
 class PubSub(EventType):
     """Pub/sub pattern discriminant — fire and forget, no return value."""
+
+
+class Request[Reply](EventType):
+    """
+    Request/reply pattern discriminant — emit blocks until a responder returns ``Reply``.
+
+    Always subscript with the reply type (e.g. ``Request[BookFound]``).
+    ``EventConfig`` rejects a bare ``Request`` because the reply type could
+    not be recovered at runtime for dispatch or deserialization; use
+    ``reply_type`` to recover it from a request event.
+    """
+
+
+def _validate_event_type(event_type: type[EventType]):
+    if get_origin(event_type) is None and issubclass(event_type, Request):
+        raise TypeError(_UNSUBSCRIPTED_REQUEST)
 
 
 class EventConfig[**P, E: Any, T: EventType]:
@@ -73,6 +92,7 @@ class EventConfig[**P, E: Any, T: EventType]:
                           Defaults to ``factory.__name__``.
 
         """
+        _validate_event_type(event_type)
         self._factory = factory
         self.event_type = event_type
 
@@ -239,3 +259,56 @@ def event[E: Any, T: EventType](
         return EventConfig(schema, event_type, name=name, payload_type=None)
 
     return decorator
+
+
+def is_request[**P, S: Any, T: EventType](event: EventConfig[P, S, T]) -> bool:
+    """
+    Report whether the event carries a subscripted ``Request`` discriminant.
+
+    Adapters branch on this at dispatch time to select request/reply
+    semantics over fire-and-forget.
+
+    Args:
+        event: Any ``EventConfig``.
+
+    Returns:
+        ``True`` when the event's discriminant is a subscripted ``Request``
+        (or a subscripted subclass of it), ``False`` otherwise.
+
+    """
+    origin: object = get_origin(event.event_type)
+    return isinstance(origin, type) and issubclass(origin, Request)
+
+
+def reply_type[**P, S: Any, R](event: EventConfig[P, S, Request[R]]) -> type[R]:
+    """
+    Recover the reply type from a request event's discriminant.
+
+    Adapters use this to know what a blocking emit resolves to at runtime —
+    e.g. to deserialize a reply arriving from the far side of a broker.
+
+    Args:
+        event: An ``EventConfig`` whose discriminant is a subscripted
+               ``Request``.
+
+    Returns:
+        The type ``Request`` was subscripted with when the event was defined.
+
+    Raises:
+        TypeError: When the event's discriminant is not a subscripted
+                   ``Request``.  Unreachable for type-checked callers; guards
+                   dynamic construction paths.
+
+    Example::
+
+        @event(Request[BookFound])
+        class FindBook:
+            def __init__(self, query: str) -> None:
+                self.query = query
+
+        reply_type(FindBook)  # BookFound
+
+    """
+    if not is_request(event):
+        raise TypeError(_NOT_A_REQUEST)
+    return cast(type[R], get_args(event.event_type)[0])
