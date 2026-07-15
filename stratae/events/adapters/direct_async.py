@@ -48,16 +48,18 @@ class AsyncDirectBus(BaseDirectBus):
 
         bus = AsyncDirectBus()
 
-        order_placed = abind(bus.emit, event(PubSub)(OrderPlaced), config=None)
+        order_placed = EventConfig(OrderPlaced, PubSub)
+        place_order = bus.bind(order_placed)
 
-        @bus.handle(order_placed.event)
+        @bus.handle(order_placed)
         async def on_order(payload: OrderPlaced) -> None: ...
 
-        await order_placed(order_id=42)
+        await place_order(order_id=42)
 
-        find_book = bus.bind(event(Request[Book])(BookQuery))
+        book_requested = EventConfig(BookQuery, Request[Book])
+        find_book = bus.bind(book_requested)
 
-        @bus.handle(find_book.event)
+        @bus.handle(book_requested)
         async def lookup(query: BookQuery) -> Book: ...
 
         book = await find_book(title="Dune")

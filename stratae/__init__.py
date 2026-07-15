@@ -28,4 +28,5 @@ Modules:
     depends: Dependency injection and resolution
     lifecycle: Scope-based caching and resource management
     context: Context variables with nested scopes
+    events: Typed events with pub/sub and request/reply dispatch
 """
