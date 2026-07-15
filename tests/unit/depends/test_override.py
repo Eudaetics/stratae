@@ -276,6 +276,18 @@ def test_override_raises_for_unregistered_dependency():
         override(dep, "value")
 
 
+def test_overrides_raises_for_empty_mapping():
+    """
+    overrides() should raise if given an empty mapping.
+
+    Given: an empty dict,
+    When: overrides is called with it,
+    Then: it should raise ValueError.
+    """
+    with pytest.raises(ValueError):
+        overrides({})
+
+
 def test_override_thread_isolation():
     """
     Concurrent overrides on the same dependency should be isolated per thread.

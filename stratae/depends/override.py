@@ -76,4 +76,6 @@ def override(func: Callable[..., Any], value: Any) -> _Override:
 
 def overrides(mapping: _OverrideMap) -> _Overrides:
     """Override multiple dependency values simultaneously."""
+    if not mapping:
+        raise ValueError("overrides() requires at least one entry.")
     return _Overrides(mapping)
