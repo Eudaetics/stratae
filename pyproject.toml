@@ -45,6 +45,9 @@ test = [
 msgspec = [
     "msgspec>=0.21.0"
 ]
+rabbitmq = [
+    "aiormq>=6.8.0"
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
