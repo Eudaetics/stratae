@@ -261,6 +261,25 @@ def event[E: Any, T: EventType](
     return decorator
 
 
+def is_request[**P, S: Any, T: EventType](event: EventConfig[P, S, T]) -> bool:
+    """
+    Report whether the event carries a subscripted ``Request`` discriminant.
+
+    Adapters branch on this at dispatch time to select request/reply
+    semantics over fire-and-forget.
+
+    Args:
+        event: Any ``EventConfig``.
+
+    Returns:
+        ``True`` when the event's discriminant is a subscripted ``Request``
+        (or a subscripted subclass of it), ``False`` otherwise.
+
+    """
+    origin: object = get_origin(event.event_type)
+    return isinstance(origin, type) and issubclass(origin, Request)
+
+
 def reply_type[**P, S: Any, R](event: EventConfig[P, S, Request[R]]) -> type[R]:
     """
     Recover the reply type from a request event's discriminant.
@@ -290,7 +309,6 @@ def reply_type[**P, S: Any, R](event: EventConfig[P, S, Request[R]]) -> type[R]:
         reply_type(FindBook)  # BookFound
 
     """
-    origin: object = get_origin(event.event_type)
-    if not (isinstance(origin, type) and issubclass(origin, Request)):
+    if not is_request(event):
         raise TypeError(_NOT_A_REQUEST)
     return cast(type[R], get_args(event.event_type)[0])

@@ -5,7 +5,8 @@ from typing import Any, Callable, overload
 
 from stratae.events.bound import BoundEvent, bind
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, EventType
+from stratae.events.event import EventConfig, PubSub, Request, is_request
+from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.handler import Handler
 
 _AnyEventConfig = EventConfig[Any, Any, Any]
@@ -21,6 +22,12 @@ class DirectBus:
     ``EventConfig`` as the routing key.  Each ``handle`` call is an
     independent registration; the same callable may be registered multiple
     times.
+
+    Pub/sub events fan out to every registered handler and emit returns
+    ``None``.  Request events block until the registered responder returns
+    and emit returns its reply; a request event must have exactly one
+    responder at emit time, otherwise ``NoResponderError`` or
+    ``MultipleRespondersError`` is raised.
 
     Args:
         use_envelope: When ``True``, each emission opens a scoped
@@ -39,6 +46,13 @@ class DirectBus:
 
         create_book(title="Dune", author="Herbert")
 
+        find_book = bus.bind(event(Request[Book])(BookQuery))
+
+        @bus.handle(find_book.event)
+        def lookup(query: BookQuery) -> Book: ...
+
+        book = find_book(title="Dune")
+
     """
 
     def __init__(self, *, use_envelope: bool = False) -> None:
@@ -46,15 +60,43 @@ class DirectBus:
         self._handlers: dict[_AnyEventConfig, set[Handler[Any, _AnyEventConfig, Any]]] = (
             defaultdict(set)
         )
-        self._dispatch: Callable[[Any, _AnyEventConfig], None] = (
+        self._dispatch: Callable[[Any, _AnyEventConfig], Any] = (
             self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
 
-    def bind[**P, S: Any, T: EventType](
-        self, event: EventConfig[P, S, T]
-    ) -> BoundEvent[P, S, T, None, None]:
+    @overload
+    def bind[**P, S: Any, R](
+        self, event: EventConfig[P, S, Request[R]]
+    ) -> BoundEvent[P, S, Request[R], None, R]: ...
+
+    @overload
+    def bind[**P, S: Any](
+        self, event: EventConfig[P, S, PubSub]
+    ) -> BoundEvent[P, S, PubSub, None, None]: ...
+
+    def bind(self, event: _AnyEventConfig) -> BoundEvent[Any, Any, Any, None, Any]:
         """Return a ``BoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return bind(self.emit, event, config=None, serializer=None)
+
+    @overload
+    def emit[**P, S: Any, R](
+        self,
+        payload: S,
+        event: EventConfig[P, S, Request[R]],
+        config: None = None,
+        *,
+        serializer: Callable[[S], Any] | None = None,
+    ) -> R: ...
+
+    @overload
+    def emit[**P, S: Any](
+        self,
+        payload: S,
+        event: EventConfig[P, S, PubSub],
+        config: None = None,
+        *,
+        serializer: Callable[[S], Any] | None = None,
+    ) -> None: ...
 
     def emit(
         self,
@@ -63,9 +105,14 @@ class DirectBus:
         config: None = None,
         *,
         serializer: Callable[..., Any] | None = None,
-    ) -> None:
+    ) -> Any:
         """
         Dispatch the payload to registered handlers, opening an envelope scope if configured.
+
+        Pub/sub events fan out to every registered handler; handler
+        exceptions are collected into an ``ExceptionGroup``.  Request events
+        dispatch to exactly one responder, block until it returns, and
+        propagate its exceptions directly.
 
         Args:
             payload:    The constructed payload instance to dispatch.
@@ -73,8 +120,17 @@ class DirectBus:
             config:     Unused; ``DirectBus`` requires no routing config.
             serializer: Unused; ``DirectBus`` requires no serializer.
 
+        Returns:
+            The responder's reply for request events; ``None`` for pub/sub.
+
+        Raises:
+            NoResponderError:        When a request event has no registered
+                                     responder.
+            MultipleRespondersError: When a request event has more than one
+                                     registered responder.
+
         """
-        self._dispatch(payload, event)
+        return self._dispatch(payload, event)
 
     @overload
     def handle[**P, R](
@@ -130,7 +186,13 @@ class DirectBus:
         """
         self._handlers[handler.config].discard(handler)
 
-    def _dispatch_plain(self, payload: Any, event: _AnyEventConfig) -> None:
+    def _dispatch_plain(self, payload: Any, event: _AnyEventConfig) -> Any:
+        if is_request(event):
+            return self._dispatch_request(payload, event)
+        self._dispatch_fanout(payload, event)
+        return None
+
+    def _dispatch_fanout(self, payload: Any, event: _AnyEventConfig) -> None:
         exceptions: list[Exception] = []
         handlers = list(self._handlers.get(event, ()))
         for handler in handlers:
@@ -141,6 +203,18 @@ class DirectBus:
         if exceptions:
             raise ExceptionGroup("Handler Errors", exceptions)
 
-    def _dispatch_in_envelope(self, payload: Any, event: _AnyEventConfig) -> None:
+    def _dispatch_request(self, payload: Any, event: _AnyEventConfig) -> Any:
+        responders = self._handlers.get(event)
+        if not responders:
+            raise NoResponderError(f"no responder registered for request event '{event.name}'")
+        if len(responders) > 1:
+            raise MultipleRespondersError(
+                f"request event '{event.name}' has {len(responders)} responders;"
+                " exactly one is required"
+            )
+        (responder,) = responders
+        return responder(payload)
+
+    def _dispatch_in_envelope(self, payload: Any, event: _AnyEventConfig) -> Any:
         with Envelope.scope():
-            self._dispatch_plain(payload, event)
+            return self._dispatch_plain(payload, event)

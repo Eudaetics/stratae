@@ -6,7 +6,8 @@ from typing import Any, Callable, overload
 
 from stratae.events.bound import AsyncBoundEvent, abind
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, EventType
+from stratae.events.event import EventConfig, PubSub, Request, is_request
+from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.handler import Handler
 
 _AnyEventConfig = EventConfig[Any, Any, Any]
@@ -22,6 +23,12 @@ class AsyncDirectBus:
     routing key.  Sync and async handlers are both supported; all are dispatched
     concurrently via ``asyncio.gather``.  Each ``handle`` call is an independent
     registration; the same callable may be registered multiple times.
+
+    Pub/sub events fan out to every registered handler and emit resolves to
+    ``None``.  Request events dispatch to the registered responder, sync or
+    async, and emit resolves to its reply; a request event must have exactly
+    one responder at emit time, otherwise ``NoResponderError`` or
+    ``MultipleRespondersError`` is raised.
 
     Args:
         use_envelope: When ``True``, each emission opens a scoped
@@ -40,6 +47,13 @@ class AsyncDirectBus:
 
         await order_placed(order_id=42)
 
+        find_book = bus.bind(event(Request[Book])(BookQuery))
+
+        @bus.handle(find_book.event)
+        async def lookup(query: BookQuery) -> Book: ...
+
+        book = await find_book(title="Dune")
+
     """
 
     def __init__(self, *, use_envelope: bool = False) -> None:
@@ -49,11 +63,39 @@ class AsyncDirectBus:
             defaultdict(set)
         )
 
-    def bind[**P, S: Any, T: EventType](
-        self, event: EventConfig[P, S, T]
-    ) -> AsyncBoundEvent[P, S, T, None, None]:
+    @overload
+    def bind[**P, S: Any, R](
+        self, event: EventConfig[P, S, Request[R]]
+    ) -> AsyncBoundEvent[P, S, Request[R], None, R]: ...
+
+    @overload
+    def bind[**P, S: Any](
+        self, event: EventConfig[P, S, PubSub]
+    ) -> AsyncBoundEvent[P, S, PubSub, None, None]: ...
+
+    def bind(self, event: _AnyEventConfig) -> AsyncBoundEvent[Any, Any, Any, None, Any]:
         """Return an ``AsyncBoundEvent`` pre-populated with this bus's emit and ``config=None``."""
         return abind(self.emit, event, config=None, serializer=None)
+
+    @overload
+    async def emit[**P, S: Any, R](
+        self,
+        payload: S,
+        event: EventConfig[P, S, Request[R]],
+        config: None = None,
+        *,
+        serializer: Callable[[S], Any] | None = None,
+    ) -> R: ...
+
+    @overload
+    async def emit[**P, S: Any](
+        self,
+        payload: S,
+        event: EventConfig[P, S, PubSub],
+        config: None = None,
+        *,
+        serializer: Callable[[S], Any] | None = None,
+    ) -> None: ...
 
     async def emit(
         self,
@@ -62,25 +104,58 @@ class AsyncDirectBus:
         config: None = None,
         *,
         serializer: Callable[..., Any] | None = None,
-    ) -> None:
+    ) -> Any:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
 
         Each emission runs inside its own ``Envelope``, or a child of the
         currently active one, enabling correlation across nested emissions.
 
+        Pub/sub events fan out to every registered handler concurrently;
+        handler exceptions are collected into an ``ExceptionGroup``.  Request
+        events dispatch to exactly one responder, await its reply, and
+        propagate its exceptions directly.
+
         Args:
             payload:    The constructed payload instance to dispatch.
             event:      The ``EventConfig`` used as the handler lookup key.
             config:     Unused; ``AsyncDirectBus`` requires no routing config.
-            serializer: Unused; ``DirectBus`` requires no serializer.
+            serializer: Unused; ``AsyncDirectBus`` requires no serializer.
+
+        Returns:
+            The responder's reply for request events; ``None`` for pub/sub.
+
+        Raises:
+            NoResponderError:        When a request event has no registered
+                                     responder.
+            MultipleRespondersError: When a request event has more than one
+                                     registered responder.
 
         """
         if self._use_envelope:
             with Envelope.scope():
-                await self.dispatch(payload, config=event)
-        else:
-            await self.dispatch(payload, config=event)
+                return await self._dispatch(payload, event)
+        return await self._dispatch(payload, event)
+
+    async def _dispatch(self, payload: Any, event: _AnyEventConfig) -> Any:
+        if is_request(event):
+            return await self._dispatch_request(payload, event)
+        await self.dispatch(payload, config=event)
+        return None
+
+    async def _dispatch_request(self, payload: Any, event: _AnyEventConfig) -> Any:
+        responders = self._handlers.get(event)
+        if not responders:
+            raise NoResponderError(f"no responder registered for request event '{event.name}'")
+        if len(responders) > 1:
+            raise MultipleRespondersError(
+                f"request event '{event.name}' has {len(responders)} responders;"
+                " exactly one is required"
+            )
+        (responder,) = responders
+        if responder.is_async:
+            return await responder(payload)
+        return responder(payload)
 
     @overload
     def handle[**P, R](

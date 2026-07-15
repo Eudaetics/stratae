@@ -17,11 +17,19 @@ DirectBus:
 - A handler that removes a registration during dispatch does not prevent
   other handlers on the same emission from running.
 
+DirectBus (request events):
+- emit returns the responder's reply.
+- A BoundEvent for a request event returns the reply when called.
+- emit raises NoResponderError when no responder is registered.
+- emit raises MultipleRespondersError when several responders are registered.
+- A responder's exception propagates directly, not as an ExceptionGroup.
+
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
 - A handler that emits an event receives a child envelope.
 - The envelope is cleaned up after dispatch completes.
+- A request reply is returned when envelope tracking is enabled.
 """
 
 from typing import Any
@@ -32,7 +40,8 @@ import pytest
 from stratae.events.adapters.direct import DirectBus
 from stratae.events.bound import BoundEvent
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, PubSub
+from stratae.events.event import EventConfig, PubSub, Request
+from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.protocols import Consumer, EmitCallable, Producer
 
 
@@ -47,6 +56,19 @@ class _TaskCreated:
 
 
 _task_created = EventConfig(_TaskCreated, PubSub)
+
+
+class _BookQuery:
+    def __init__(self, query: str) -> None:
+        self.query = query
+
+
+class _BookResult:
+    def __init__(self, title: str) -> None:
+        self.title = title
+
+
+_find_book = EventConfig(_BookQuery, Request[_BookResult])
 
 
 @pytest.fixture
@@ -355,6 +377,94 @@ def test_handler_removing_registration_during_dispatch_does_not_break_other_hand
         handler.assert_called_once_with(payload)
 
 
+def test_request_emit_returns_responder_reply(bus: DirectBus):
+    """
+    ``emit`` should return the responder's reply for a request event.
+
+    Given: A responder registered to a request EventConfig
+    When: emit is called with that EventConfig
+    Then: The responder's return value should be returned
+    """
+    # Arrange
+    reply = _BookResult("Dune")
+    bus.handle(_find_book, Mock(return_value=reply))
+    payload = _BookQuery("dune")
+
+    # Act
+    result = bus.emit(payload, _find_book)
+
+    # Assert
+    assert result is reply
+
+
+def test_bound_request_event_returns_reply(bus: DirectBus):
+    """
+    Calling a BoundEvent for a request event should return the responder's reply.
+
+    Given: A responder registered to a request EventConfig bound via bus.bind
+    When: The BoundEvent is called
+    Then: The responder's return value should be returned
+    """
+    # Arrange
+    reply = _BookResult("Dune")
+    find_book = bus.bind(_find_book)
+    bus.handle(find_book.event, Mock(return_value=reply))
+
+    # Act
+    result = find_book(query="dune")
+
+    # Assert
+    assert result is reply
+
+
+def test_request_emit_raises_without_responder(bus: DirectBus):
+    """
+    ``emit`` should raise NoResponderError when a request event has no responder.
+
+    Given: A request EventConfig with no registered responder
+    When: emit is called with that EventConfig
+    Then: A NoResponderError should be raised
+    """
+    with pytest.raises(NoResponderError):
+        bus.emit(_BookQuery("dune"), _find_book)
+
+
+def test_request_emit_raises_with_multiple_responders(bus: DirectBus):
+    """
+    ``emit`` should raise MultipleRespondersError when several responders are registered.
+
+    Given: Two responders registered to a request EventConfig
+    When: emit is called with that EventConfig
+    Then: A MultipleRespondersError should be raised
+    """
+    # Arrange
+    bus.handle(_find_book, Mock(return_value=_BookResult("first")))
+    bus.handle(_find_book, Mock(return_value=_BookResult("second")))
+
+    # Act / Assert
+    with pytest.raises(MultipleRespondersError):
+        bus.emit(_BookQuery("dune"), _find_book)
+
+
+def test_request_responder_exception_propagates_directly(bus: DirectBus):
+    """
+    A responder's exception should propagate to the emitter unwrapped.
+
+    Given: A responder that raises, registered to a request EventConfig
+    When: emit is called with that EventConfig
+    Then: The responder's exception should be raised directly, not as an ExceptionGroup
+    """
+    # Arrange
+    error = ValueError("boom")
+    bus.handle(_find_book, Mock(side_effect=error))
+
+    # Act / Assert
+    with pytest.raises(ValueError) as exc_info:
+        bus.emit(_BookQuery("dune"), _find_book)
+
+    assert exc_info.value is error
+
+
 def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: DirectBus):
     """
     Handlers should be able to access a valid Envelope during dispatch.
@@ -467,3 +577,22 @@ def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: DirectBus):
 
     # Assert
     assert Envelope.current() is None
+
+
+def test_request_reply_returned_with_envelope(bus_with_envelope: DirectBus):
+    """
+    A request event should return its reply when envelope tracking is enabled.
+
+    Given: A responder registered to a request EventConfig on an envelope-tracking bus
+    When: emit is called with that EventConfig
+    Then: The responder's return value should be returned
+    """
+    # Arrange
+    reply = _BookResult("Dune")
+    bus_with_envelope.handle(_find_book, Mock(return_value=reply))
+
+    # Act
+    result = bus_with_envelope.emit(_BookQuery("dune"), _find_book)
+
+    # Assert
+    assert result is reply
