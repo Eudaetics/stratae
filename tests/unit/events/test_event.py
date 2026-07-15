@@ -23,6 +23,16 @@ AsyncEventConfig:
 PubSub:
 - Is a subclass of EventType.
 
+Request:
+- Is a subclass of EventType.
+- EventConfig accepts a subscripted Request discriminant.
+- EventConfig raises TypeError for a bare Request discriminant.
+- The event decorator accepts a subscripted Request discriminant.
+
+reply_type:
+- Returns the type Request was subscripted with.
+- Raises TypeError when the discriminant is not a subscripted Request.
+
 event decorator:
 - Returns an EventConfig instance.
 - The returned EventConfig stores the decorated class as its factory.
@@ -35,10 +45,19 @@ event decorator:
 """
 
 import asyncio
+from typing import cast
 
 import pytest
 
-from stratae.events.event import AsyncEventConfig, EventConfig, EventType, PubSub, event
+from stratae.events.event import (
+    AsyncEventConfig,
+    EventConfig,
+    EventType,
+    PubSub,
+    Request,
+    event,
+    reply_type,
+)
 
 
 def test_event_stores_schema_and_event_type() -> None:
@@ -72,6 +91,134 @@ def test_pubsub_is_subclass_of_event_type() -> None:
     Then: PubSub should be a subclass of EventType
     """
     assert issubclass(PubSub, EventType)
+
+
+def test_request_is_subclass_of_event_type() -> None:
+    """
+    Test that Request is a subclass of EventType.
+
+    Given: Request and EventType
+    When: The class hierarchy is inspected
+    Then: Request should be a subclass of EventType
+    """
+    assert issubclass(Request, EventType)
+
+
+def test_eventconfig_accepts_subscripted_request() -> None:
+    """
+    Test that EventConfig stores a subscripted Request discriminant.
+
+    Given: A payload class and a Request discriminant subscripted with a reply type
+    When: An EventConfig is created
+    Then: event_type should equal the subscripted discriminant
+    """
+
+    # Arrange
+    class _BookFound:
+        def __init__(self, title: str) -> None:
+            self.title = title
+
+    class _FindBook:
+        def __init__(self, query: str) -> None:
+            self.query = query
+
+    # Act
+    ev = EventConfig(_FindBook, Request[_BookFound])
+
+    # Assert
+    assert ev.event_type == Request[_BookFound]
+
+
+def test_eventconfig_raises_for_bare_request() -> None:
+    """
+    Test that EventConfig rejects an unsubscripted Request discriminant.
+
+    Given: A payload class and the bare Request class
+    When: An EventConfig is created
+    Then: A TypeError should be raised
+    """
+
+    # Arrange
+    class _FindBook:
+        def __init__(self, query: str) -> None:
+            self.query = query
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        EventConfig(_FindBook, Request)
+
+
+def test_event_decorator_accepts_subscripted_request() -> None:
+    """
+    Test that the event decorator accepts a subscripted Request discriminant.
+
+    Given: A payload class decorated with @event(Request[...])
+    When: The decorator is applied
+    Then: The EventConfig should store the subscripted discriminant
+    """
+
+    # Arrange
+    class _BookFound:
+        def __init__(self, title: str) -> None:
+            self.title = title
+
+    # Act
+    @event(Request[_BookFound])
+    class _FindBook:
+        def __init__(self, query: str) -> None:
+            self.query = query
+
+    # Assert
+    assert isinstance(_FindBook, EventConfig)
+    assert _FindBook.event_type == Request[_BookFound]
+
+
+def test_reply_type_returns_subscripted_reply() -> None:
+    """
+    Test that reply_type recovers the type Request was subscripted with.
+
+    Given: An EventConfig with a Request discriminant subscripted with a reply type
+    When: reply_type is called with the event
+    Then: The result should be the reply type class
+    """
+
+    # Arrange
+    class _BookFound:
+        def __init__(self, title: str) -> None:
+            self.title = title
+
+    @event(Request[_BookFound])
+    class _FindBook:
+        def __init__(self, query: str) -> None:
+            self.query = query
+
+    # Act
+    recovered = reply_type(_FindBook)
+
+    # Assert
+    assert recovered is _BookFound
+
+
+def test_reply_type_raises_for_non_request_discriminant() -> None:
+    """
+    Test that reply_type rejects an event whose discriminant is not a Request.
+
+    Given: A PubSub EventConfig cast to a request event type
+    When: reply_type is called with the event
+    Then: A TypeError should be raised
+    """
+
+    # Arrange
+    class _OrderPlaced:
+        def __init__(self, order_id: int) -> None:
+            self.order_id = order_id
+
+    ev = EventConfig(_OrderPlaced, PubSub)
+    mistyped = cast(EventConfig[[int], _OrderPlaced, Request[object]], ev)
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        reply_type(mistyped)
 
 
 def test_event_decorator_returns_event_instance() -> None:
