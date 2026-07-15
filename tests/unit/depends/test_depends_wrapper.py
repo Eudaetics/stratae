@@ -1,25 +1,23 @@
 """Test suite for the DependsWrapper class in the dependency injection module."""
 
-import asyncio
-from functools import wraps
-from inspect import unwrap
-from typing import Any, Callable
+from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from stratae.depends import DependsWrapper
+from stratae.depends.exceptions import DependencyNotFoundError
 
 
 def test_depends_wrapper_initialization():
     """
-    Verify that DependsWrapper can be initialized with a dependency.
+    DependsWrapper is initialized with a dependency.
 
     Given: a dependency,
     When: DependsWrapper is initialized with that dependency,
     Then: it should store the dependency correctly.
     """
-
     # Arrange
-    def sample_dependency():
-        return "sample"
+    sample_dependency = Mock()
 
     # Act
     depends = DependsWrapper(sample_dependency)
@@ -30,17 +28,14 @@ def test_depends_wrapper_initialization():
 
 def test_depends_wrapper_call():
     """
-    Verify that DependsWrapper can be called as a function.
+    DependsWrapper provides the result of the wrapped dependency.
 
     Given: a DependsWrapper instance,
     When: it is called as a function,
     Then: it should return the result of the dependency.
     """
-
     # Arrange
-    def sample_dependency():
-        return "sample"
-
+    sample_dependency = Mock(return_value="sample")
     depends = DependsWrapper(sample_dependency)
 
     # Act
@@ -52,7 +47,7 @@ def test_depends_wrapper_call():
 
 def test_depends_wrapper_with_lambda():
     """
-    Verify that DependsWrapper can be initialized with a lambda function.
+    DependsWrapper is initialized with a lambda function.
 
     Given: a lambda function as a dependency,
     When: DependsWrapper is initialized with it,
@@ -70,17 +65,14 @@ def test_depends_wrapper_with_lambda():
 
 def test_sync_depends_is_async():
     """
-    Verify the is_async property on a DependsWrapper is False.
+    is_async is False for a synchronous dependency.
 
     Given: a DependsWrapper instance,
     When: its is_async property is accessed,
     Then: it should return False.
     """
-
     # Arrange
-    def sample_dependency():
-        return "sample"
-
+    sample_dependency = Mock()
     depends = DependsWrapper(sample_dependency)
 
     # Act
@@ -92,18 +84,14 @@ def test_sync_depends_is_async():
 
 def test_async_depends_is_async():
     """
-    Verify the is_async property on an ADependsWrapper is True.
+    is_async is True for an asynchronous dependency.
 
-    Given: an ADependsWrapper instance,
+    Given: a DependsWrapper instance wrapping an async dependency,
     When: its is_async property is accessed,
     Then: it should return True.
     """
-
     # Arrange
-    async def sample_dependency():
-        await asyncio.sleep(0)
-        return "sample"
-
+    sample_dependency = AsyncMock()
     depends = DependsWrapper(sample_dependency)
 
     # Act
@@ -115,22 +103,18 @@ def test_async_depends_is_async():
 
 async def test_depends_wrapper_call_with_coroutine():
     """
-    Verify that DependsWrapper can handle coroutine dependencies.
+    Awaiting provide returns the coroutine dependency's result.
 
     Given: a coroutine dependency,
     When: DependsWrapper is called,
     Then: it should return the result of the coroutine.
     """
-
     # Arrange
-    async def sample_dependency():
-        await asyncio.sleep(0)
-        return "sample"
-
+    sample_dependency = AsyncMock(return_value="sample")
     depends = DependsWrapper(sample_dependency)
 
     # Act
-    result = await depends.aprovide()
+    result = await depends.provide()
 
     # Assert
     assert result == "sample"
@@ -138,20 +122,14 @@ async def test_depends_wrapper_call_with_coroutine():
 
 def test_depends_wrapper_call_multiple_times():
     """
-    Verify that DependsWrapper can be called multiple times.
+    DependsWrapper can be called multiple times, returning each result in turn.
 
     Given: a DependsWrapper instance,
     When: it is called multiple times,
     Then: it should return the correct result each time.
     """
     # Arrange
-    call_count = 0
-
-    def sample_dependency():
-        nonlocal call_count
-        call_count += 1
-        return f"sample {call_count}"
-
+    sample_dependency = Mock(side_effect=["sample 1", "sample 2", "sample 3"])
     depends = DependsWrapper(sample_dependency)
 
     # Act & Assert
@@ -165,133 +143,251 @@ def test_depends_wrapper_call_multiple_times():
     assert result3 == "sample 3"
 
 
-def test_depends_wrapper_outermost_fixing():
+def test_create_returns_same_instance_for_same_dependency():
     """
-    Verify that DependsWrapper fixes the outermost dependency.
+    DependsWrapper returns the same instance for the same dependency.
 
-    Given: a DependsWrapper instance with a wrapped dependency,
-    When: it is called,
-    Then: it should use the outermost version of the dependency.
+    Given: a dependency already wrapped via DependsWrapper.create,
+    When: DependsWrapper.create is called again with the same dependency,
+    Then: it should return the exact same DependsWrapper instance.
     """
-
     # Arrange
-    def wrapper(func: Callable[[], str]) -> Callable[[], str]:
-        @wraps(func)
-        def gen_wrapper() -> str:
-            return f"{func()} wrapped"
-
-        original = unwrap(func)
-        original.__outermost__ = gen_wrapper
-        return gen_wrapper
-
-    def dependency() -> str:
-        return "inner"
-
-    depends = DependsWrapper(dependency)
-    dependency = wrapper(dependency)
+    sample_dependency = Mock()
 
     # Act
-    result = depends.provide()
+    first = DependsWrapper(sample_dependency)
+    second = DependsWrapper(sample_dependency)
 
     # Assert
-    assert result == "inner wrapped"
+    assert first is second
 
 
-def test_depends_wrapper_without_outermost():
+def test_create_returns_different_instance_for_different_dependency():
     """
-    Verify that DependsWrapper works correctly when there is no outermost dependency.
+    DependsWrapper returns distinct instances for distinct dependencies.
 
-    Given: a DependsWrapper instance with a normal dependency,
-    When: it is called,
-    Then: it should return the result of the original dependency.
+    Given: two different dependencies,
+    When: DependsWrapper.create is called with each,
+    Then: it should return two distinct DependsWrapper instances.
     """
-
     # Arrange
-    def wrapper(func: Callable[[], str]) -> Callable[[], str]:
-        @wraps(func)
-        def gen_wrapper() -> str:
-            return f"{func()} wrapped"
-
-        return gen_wrapper
-
-    def dependency() -> str:
-        return "normal"
-
-    depends = DependsWrapper(dependency)
-    dependency = wrapper(dependency)
+    first_dependency = Mock()
+    second_dependency = Mock()
 
     # Act
-    result = depends.provide()
-    wrapped_result = dependency()
+    first = DependsWrapper(first_dependency)
+    second = DependsWrapper(second_dependency)
 
     # Assert
-    assert result == "normal"
-    assert wrapped_result == "normal wrapped"
+    assert first is not second
 
 
-async def test_depends_wrapper_async_outermost_fixing():
+def test_create_wraps_the_given_dependency():
     """
-    Verify that DependsWrapper fixes the outermost async dependency.
+    DependsWrapper wraps the given dependency.
 
-    Given: a DependsWrapper instance with a wrapped async dependency,
-    When: it is called,
-    Then: it should use the outermost version of the async dependency.
+    Given: a dependency,
+    When: DependsWrapper.create is called with it,
+    Then: the resulting instance's dependency should be the one given.
     """
-
     # Arrange
-    def wrapper(func: Callable[[], Any]) -> Callable[[], Any]:
-        @wraps(func)
-        async def gen_wrapper() -> str:
-            inner = await func()
-            return f"{inner} wrapped"
-
-        original = unwrap(func)
-        original.__outermost__ = gen_wrapper
-        return gen_wrapper
-
-    async def dependency() -> str:
-        await asyncio.sleep(0)
-        return "inner"
-
-    depends = DependsWrapper(dependency)
-    dependency = wrapper(dependency)
+    sample_dependency = Mock()
 
     # Act
-    result = await depends.aprovide()
+    depends = DependsWrapper(sample_dependency)
 
     # Assert
-    assert result == "inner wrapped"
+    assert depends.dependency == sample_dependency
 
 
-async def test_depends_wrapper_async_without_outermost():
+def test_update_dependency():
     """
-    Verify that DependsWrapper works correctly when there is no outermost async dependency.
+    Updating a dependency replaces both dependency and provide.
 
-    Given: a DependsWrapper instance with a normal async dependency,
-    When: it is called,
-    Then: it should return the result of the original async dependency.
+    Given: a DependsWrapper instance with no active override,
+    When: update is called with a new dependency,
+    Then: both dependency and provide should reflect the new dependency.
     """
-
     # Arrange
-    def wrapper(func: Callable[[], Any]) -> Callable[[], Any]:
-        @wraps(func)
-        async def gen_wrapper() -> str:
-            inner = await func()
-            return f"{inner} wrapped"
+    original_dependency = Mock()
+    updated_dependency = Mock()
 
-        return gen_wrapper
-
-    async def dependency() -> str:
-        await asyncio.sleep(0)
-        return "normal"
-
-    depends = DependsWrapper(dependency)
-    dependency = wrapper(dependency)
+    depends = DependsWrapper(original_dependency)
 
     # Act
-    result = await depends.aprovide()
-    wrapped_result = await dependency()
+    depends.update(updated_dependency)
 
     # Assert
-    assert result == "normal"
-    assert wrapped_result == "normal wrapped"
+    assert depends.dependency == updated_dependency
+    assert depends.provide == updated_dependency
+
+
+def test_update_dependency_during_override():
+    """
+    Updating during an active override leaves provide untouched.
+
+    Given: a DependsWrapper instance with an active override,
+    When: update is called with a new dependency,
+    Then: dependency should update but provide should be left untouched.
+    """
+    # Arrange
+    original_dependency = Mock()
+    updated_dependency = Mock()
+
+    depends = DependsWrapper(original_dependency)
+    depends.override_count = 1
+
+    # Act
+    depends.update(updated_dependency)
+
+    # Assert
+    assert depends.dependency == updated_dependency
+    assert depends.provide == original_dependency
+
+
+def test_returns_same_instance_after_update():
+    """
+    DependsWrapper singleton identity survives an update.
+
+    Given: a DependsWrapper instance that has been updated to a new dependency,
+    When: DependsWrapper is constructed again with the original dependency,
+    Then: it should return the same instance as before the update.
+    """
+    # Arrange
+    original_dependency = Mock()
+    updated_dependency = Mock()
+
+    depends = DependsWrapper(original_dependency)
+
+    # Act
+    depends.update(updated_dependency)
+    same = DependsWrapper(original_dependency)
+
+    # Assert
+    assert same is depends
+
+
+def test_find_with_dependency():
+    """
+    Find returns the wrapper for a registered dependency.
+
+    Given: a dependency wrapped via DependsWrapper,
+    When: find is called with that dependency,
+    Then: it should return the associated DependsWrapper instance.
+    """
+    # Arrange
+    sample_dependency = Mock()
+    depends = DependsWrapper(sample_dependency)
+
+    # Act
+    found = DependsWrapper.find(sample_dependency)
+
+    # Assert
+    assert found is depends
+
+
+def test_find_invalid_dependency():
+    """
+    Find raises for an unregistered dependency.
+
+    Given: a function that has never been wrapped via DependsWrapper,
+    When: find is called with that function,
+    Then: it should raise DependencyNotFoundError.
+    """
+    # Arrange
+    unregistered_dependency = Mock()
+
+    # Act & Assert
+    with pytest.raises(DependencyNotFoundError):
+        DependsWrapper.find(unregistered_dependency)
+
+
+def test_find_after_update():
+    """
+    Find still resolves the wrapper after an update.
+
+    Given: a DependsWrapper that has been updated to a new dependency,
+    When: find is called with the original dependency,
+    Then: it should return the same DependsWrapper instance.
+    """
+    # Arrange
+    original_dependency = Mock()
+    updated_dependency = Mock()
+
+    depends = DependsWrapper(original_dependency)
+
+    # Act
+    depends.update(updated_dependency)
+    found = DependsWrapper.find(original_dependency)
+
+    # Assert
+    assert found is depends
+
+
+def test_provide_override_unset():
+    """
+    provide_override falls back to the dependency when unset.
+
+    Given: a DependsWrapper instance with no override set,
+    When: provide_override is called,
+    Then: it should return the result of calling the dependency.
+    """
+    # Arrange
+    sample_dependency = Mock(return_value="sample")
+    depends = DependsWrapper(sample_dependency)
+
+    # Act
+    result = depends.provide_override()
+
+    # Assert
+    assert result == "sample"
+
+
+def test_provide_override_set():
+    """
+    provide_override returns the override value when set.
+
+    Given: a DependsWrapper instance with an override value set,
+    When: provide_override is called,
+    Then: it should return the override value instead of calling the dependency.
+    """
+    # Arrange
+    sample_dependency = Mock()
+    depends = DependsWrapper(sample_dependency)
+    token = depends.override.set("overridden")
+
+    try:
+        # Act
+        result = depends.provide_override()
+
+        # Assert
+        assert result == "overridden"
+    finally:
+        depends.override.reset(token)
+
+
+def test_provide_override_nested():
+    """
+    provide_override resolves and restores correctly across nested overrides.
+
+    Given: a DependsWrapper instance with an override set inside another override,
+    When: provide_override is called at each nesting level,
+    Then: it should return the innermost value while nested, and fall back to
+    the outer value and then the dependency as each override is reset.
+    """
+    # Arrange
+    sample_dependency = Mock(return_value="sample")
+    depends = DependsWrapper(sample_dependency)
+
+    # Act & Assert
+    outer_token = depends.override.set("outer")
+    assert depends.provide_override() == "outer"
+
+    inner_token = depends.override.set("inner")
+    assert depends.provide_override() == "inner"
+
+    depends.override.reset(inner_token)
+    assert depends.provide_override() == "outer"
+
+    depends.override.reset(outer_token)
+    assert depends.provide_override() == "sample"

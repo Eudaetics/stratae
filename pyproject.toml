@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stratae"
 description = "A toolkit of composable tools for dependency injection, lifecycle management, and more."
-version = "0.0.1a1"
+version = "0.0.1a3"
 readme = "readme.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
@@ -19,6 +19,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 dependencies = []
 
@@ -41,9 +42,8 @@ test = [
     "pytest-cov>=6.1.1",
     "pytest-mock>=3.14.1",
 ]
-asgi = [
-    "httpx>=0.28.1",
-    "fastapi>=0.100.0"
+msgspec = [
+    "msgspec>=0.21.0"
 ]
 
 [tool.setuptools.packages.find]
@@ -82,7 +82,8 @@ addopts = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
-    "asgi: ASGI framework integration tests (requires fastapi, httpx)",
+    "fastapi: FastAPI integration smoke tests (requires fastapi, httpx)",
+    "msgspec: msgspec integration tests (requires msgspec)",
 ]
 
 [tool.coverage.run]
@@ -109,8 +110,27 @@ test = "pytest"
 radon-cc = "radon cc stratae -n B"
 radon-mi = "radon mi stratae -n B"
 
+[tool.poe.tasks.no-cover-check]
+shell = "! grep -rn --include='*.py' 'pragma: no cover' stratae"
+
+[tool.poe.tasks.type-ignore-check]
+shell = "! grep -rn --include='*.py' 'type: ignore' stratae"
+
+[tool.poe.tasks.pyright-ignore-check]
+shell = "! grep -rn --include='*.py' 'pyright: ignore' stratae"
+
 [tool.poe.tasks.check]
-sequence = ["format", "lint", "typecheck", "test", "radon-cc", "radon-mi"]
+sequence = [
+    "format",
+    "lint",
+    "typecheck",
+    "test",
+    "no-cover-check",
+    "type-ignore-check",
+    "pyright-ignore-check",
+    "radon-cc",
+    "radon-mi",
+]
 
 [tool.pyright]
 include = ["stratae", "tests"]

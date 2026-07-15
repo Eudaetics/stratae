@@ -1,16 +1,16 @@
-"""Test suite for verifying active_scopes method of the Lifecycle class."""
+"""
+Test suite for BaseLifecycle.active_scopes, exercised via Lifecycle.
 
-from __future__ import annotations
+active_scopes is inherited unchanged by AsyncLifecycle, so testing it through Lifecycle
+covers both - there is no separate async test module for this.
+"""
 
-from typing import TYPE_CHECKING
+from typing import Sequence
 
-if TYPE_CHECKING:
-    from typing import Sequence
-
-    from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle import Lifecycle
 
 
-def test_active_scopes_empty(async_lifecycle: AsyncLifecycle):
+def test_active_scopes_empty(lifecycle: Lifecycle):
     """
     Test that active_scopes returns an empty list when no scopes are pushed.
 
@@ -19,13 +19,13 @@ def test_active_scopes_empty(async_lifecycle: AsyncLifecycle):
     Then: An empty list should be returned
     """
     # Act (Arrange is done via fixture)
-    active = async_lifecycle.active_scopes()
+    active = lifecycle.active_scopes()
 
     # Assert
     assert active == []
 
 
-def test_active_scopes_with_pushed_scopes(scopes: Sequence[str], async_lifecycle: AsyncLifecycle):
+def test_active_scopes_with_pushed_scopes(scopes: Sequence[str], lifecycle: Lifecycle):
     """
     Test that active_scopes returns the correct list of pushed scopes.
 
@@ -34,17 +34,17 @@ def test_active_scopes_with_pushed_scopes(scopes: Sequence[str], async_lifecycle
     Then: A list of the pushed scopes should be returned in order
     """
     # Arrange
-    async_lifecycle.push(scopes[0])
-    async_lifecycle.push(scopes[1])
+    lifecycle.push(scopes[0])
+    lifecycle.push(scopes[1])
 
     # Act
-    active = async_lifecycle.active_scopes()
+    active = lifecycle.active_scopes()
 
     # Assert
     assert active == [scopes[0], scopes[1]]
 
 
-async def test_active_scopes_after_pop(scopes: Sequence[str], async_lifecycle: AsyncLifecycle):
+def test_active_scopes_after_pop(scopes: Sequence[str], lifecycle: Lifecycle):
     """
     Test that active_scopes reflects the correct scopes after popping a scope.
 
@@ -53,23 +53,19 @@ async def test_active_scopes_after_pop(scopes: Sequence[str], async_lifecycle: A
     Then: A list of the remaining pushed scopes should be returned in order
     """
     # Arrange
-    t1 = async_lifecycle.push(scopes[0])
-    t2 = async_lifecycle.push(scopes[1])
-    t3 = async_lifecycle.push(scopes[2])
+    lifecycle.push(scopes[0])
+    lifecycle.push(scopes[1])
+    t2 = lifecycle.push(scopes[2])
 
     # Act
-    await async_lifecycle.pop(t3)
-    active = async_lifecycle.active_scopes()
+    lifecycle.pop(t2)
+    active = lifecycle.active_scopes()
 
     # Assert
     assert active == [scopes[0], scopes[1]]
-    await async_lifecycle.pop(t2)
-    await async_lifecycle.pop(t1)
 
 
-async def test_active_scopes_after_popping_all(
-    scopes: Sequence[str], async_lifecycle: AsyncLifecycle
-):
+def test_active_scopes_after_popping_all(scopes: Sequence[str], lifecycle: Lifecycle):
     """
     Test that active_scopes returns an empty list after popping all scopes.
 
@@ -78,13 +74,13 @@ async def test_active_scopes_after_popping_all(
     Then: An empty list should be returned
     """
     # Arrange
-    t1 = async_lifecycle.push(scopes[0])
-    t2 = async_lifecycle.push(scopes[1])
+    t0 = lifecycle.push(scopes[0])
+    t1 = lifecycle.push(scopes[1])
 
     # Act
-    await async_lifecycle.pop(t1)
-    await async_lifecycle.pop(t2)
-    active = async_lifecycle.active_scopes()
+    lifecycle.pop(t1)
+    lifecycle.pop(t0)
+    active = lifecycle.active_scopes()
 
     # Assert
     assert active == []

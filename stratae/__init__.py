@@ -6,17 +6,17 @@ lifecycle management, and context variables. Built on Python's native features,
 it works anywhere: APIs, CLIs, workers, and tests.
 
 Quick example:
-    >>> from stratae.depends import Depends, inject
-    >>> from stratae.lifecycle import Lifecycle
+    >>> from stratae.depends import Depends, Injected, inject
+    >>> from stratae.lifecycle import Lifecycle, Scope
     >>>
-    >>> lifecycle = Lifecycle(['application', 'request'])
+    >>> lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
     >>>
     >>> @lifecycle.cache('application')
     >>> def get_database():
     ...     return Database(url="postgresql://...")
     >>>
     >>> @inject
-    >>> def create_user(name: str, db = Depends(get_database)):
+    >>> def create_user(name: str, db: Injected[Database, Depends(get_database)]):
     ...     return db.users.create(name=name)
     >>>
     >>> with lifecycle.start('application'):

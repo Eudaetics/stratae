@@ -2,7 +2,7 @@
 
 from typing import Awaitable, Callable
 
-from stratae.lifecycle import AsyncLifecycle
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 # Redefine types for ASGI applications
 type Scope = dict[str, object]
@@ -21,6 +21,8 @@ class RequestLifecycleMiddleware:
 
     Works with any ASGI framework (FastAPI, Starlette, Quart, etc.).
     """
+
+    __slots__ = ("app", "_lifecycle", "_scope")
 
     def __init__(self, app: ASGI3Application, lifecycle: AsyncLifecycle, scope: str):
         """Initialize the RequestLifecycleMiddleware."""

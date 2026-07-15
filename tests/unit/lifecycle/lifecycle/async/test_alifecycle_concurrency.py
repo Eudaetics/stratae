@@ -11,7 +11,8 @@ This module contains asynchronous tests to ensure that:
 import asyncio
 from typing import Any
 
-from stratae.lifecycle import AsyncLifecycle, async_managed
+from stratae.lifecycle import async_resource
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 async def test_concurrent_cache_isolation(async_lifecycle: AsyncLifecycle):
@@ -145,7 +146,7 @@ async def test_concurrent_resource_management(async_lifecycle: AsyncLifecycle):
     lock = asyncio.Lock()
 
     @async_lifecycle.cache("request")
-    @async_managed
+    @async_resource
     async def resource_generator():
         """Simulate a resource with setup and teardown."""
         nonlocal init_count, cleanup
@@ -210,7 +211,7 @@ async def test_concurrent_resource_management_nested_scopes(async_lifecycle: Asy
     app_cleanup: list[asyncio.Task[Any]] = []
 
     @async_lifecycle.cache("application")
-    @async_managed
+    @async_resource
     async def app_resource_generator():
         """Simulate a resource with setup and teardown."""
         nonlocal app_count, app_cleanup
@@ -225,7 +226,7 @@ async def test_concurrent_resource_management_nested_scopes(async_lifecycle: Asy
                 app_cleanup.append(task)
 
     @async_lifecycle.cache("session")
-    @async_managed
+    @async_resource
     async def resource_generator():
         """Simulate a resource with setup and teardown."""
         nonlocal init_count, cleanup

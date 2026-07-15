@@ -7,8 +7,9 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.context import Context
-from stratae.depends import Depends, inject
-from stratae.lifecycle import AsyncLifecycle, async_managed
+from stratae.depends import Depends, Injected, inject
+from stratae.lifecycle import async_resource
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):
@@ -29,8 +30,8 @@ async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
-    async def get_resource(db: SimpleObject = Depends(lambda: SimpleObject())):
+    @async_resource
+    async def get_resource(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
             mock_side_effect()
@@ -68,8 +69,8 @@ async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
-    async def get_app_resource(resource: SimpleObject = Depends(lambda: SimpleObject())):
+    @async_resource
+    async def get_app_resource(resource: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield resource
             mock_side_effect()
@@ -78,8 +79,10 @@ async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle
 
     @async_lifecycle.cache("request")
     @inject
-    @async_managed
-    async def get_request_resource(resource: SimpleObject = Depends(lambda: SimpleObject())):
+    @async_resource
+    async def get_request_resource(
+        resource: Injected[SimpleObject, Depends(lambda: SimpleObject())],
+    ):
         try:
             yield resource
         finally:
@@ -122,7 +125,7 @@ async def test_lifecycle_inject_async_with_exception(async_lifecycle: AsyncLifec
 
     @async_lifecycle.cache("application")
     @inject
-    async def get_resource(_: SimpleObject = Depends(lambda: SimpleObject())):
+    async def get_resource(_: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         raise ValueError("Simulated exception")
 
     # Act / Assert
@@ -148,8 +151,8 @@ async def test_lifecycle_inject_async_gen_with_exception(async_lifecycle: AsyncL
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
-    async def get_resource(db: SimpleObject = Depends(lambda: SimpleObject())):
+    @async_resource
+    async def get_resource(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
         finally:
@@ -182,9 +185,9 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecyc
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
+    @async_resource
     async def get_one(
-        db: SimpleObject = Depends(SimpleObject),
+        db: Injected[SimpleObject, Depends(SimpleObject)],
     ) -> AsyncGenerator[SimpleObject, None]:
         try:
             await asyncio.sleep(0)
@@ -196,9 +199,9 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecyc
 
     @async_lifecycle.cache("application")
     @inject
-    @async_managed
+    @async_resource
     async def get_two(
-        db: SimpleObject = Depends(SimpleObject),
+        db: Injected[SimpleObject, Depends(SimpleObject)],
     ) -> AsyncGenerator[SimpleObject, None]:
         try:
             await asyncio.sleep(0)
@@ -239,7 +242,7 @@ async def test_async_lifecycle_outer_cache_and_context_change(async_lifecycle: A
 
     @async_lifecycle.cache("application")
     @inject
-    async def get_value(x: int = Depends(lambda: mock.call_count)) -> int:
+    async def get_value(x: Injected[int, Depends(lambda: mock.call_count)]) -> int:
         mock()
         return x + 1
 
@@ -269,7 +272,7 @@ async def test_async_lifecycle_outer_cache_inject_change_with_custom_key(
 
     @async_lifecycle.cache("application", cache_key=lambda: mock.call_count)
     @inject
-    async def get_value(x: int = Depends(lambda: mock.call_count)) -> int:
+    async def get_value(x: Injected[int, Depends(lambda: mock.call_count)]) -> int:
         mock()
         return x + 1
 
@@ -298,7 +301,7 @@ async def test_async_lifecycle_inner_cache_inject(async_lifecycle: AsyncLifecycl
 
     @inject
     @async_lifecycle.cache("application")
-    async def get_value(x: int = Depends(x)) -> int:
+    async def get_value(x: Injected[int, Depends(x)]) -> int:
         counter()
         return x * 2
 

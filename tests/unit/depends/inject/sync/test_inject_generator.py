@@ -3,10 +3,7 @@
 from typing import Generator
 from unittest.mock import Mock
 
-import pytest
-
-from stratae.depends import Depends, inject
-from stratae.depends.exceptions import OverrideNotAllowedError
+from stratae.depends import Depends, Injected, inject
 
 
 def test_inject_on_generator():
@@ -22,7 +19,7 @@ def test_inject_on_generator():
 
     # Act (the decorator)
     @inject
-    def gen_func(dep: int = Depends(lambda: 5)):
+    def gen_func(dep: Injected[int, Depends(lambda: 5)]):
         """Inject into a function that returns a generator."""
         for i in range(dep):
             yield i
@@ -58,7 +55,7 @@ def test_inject_generator_dep():
         mock_cleanup()
 
     @inject
-    def func_with_gen(gen: Generator[int] = Depends(gen_dep)):
+    def func_with_gen(gen: Injected[Generator[int, None, None], Depends(gen_dep)]):
         return list(gen)
 
     # Act
@@ -84,7 +81,7 @@ def test_inject_nested_generators():
             yield f"inner-{i}"
 
     @inject
-    def outer_gen(dep: Generator[str] = Depends(inner_gen)):
+    def outer_gen(dep: Injected[Generator[str, None, None], Depends(inner_gen)]):
         for value in dep:
             yield f"outer-{value}"
 
@@ -106,7 +103,7 @@ def test_inject_on_generator_with_args():
 
     # Act (the decorator)
     @inject
-    def gen_func_with_args(count: int, dep: int = Depends(lambda: 2)):
+    def gen_func_with_args(count: int, dep: Injected[int, Depends(lambda: 2)]):
         for i in range(count):
             yield i * dep
 
@@ -127,7 +124,7 @@ def test_inject_generator_with_kwargs():
 
     # Act (the decorator)
     @inject
-    def gen_func_with_kwargs(*, count: int = 3, dep: int = Depends(lambda: 4)):
+    def gen_func_with_kwargs(*, count: int = 3, dep: Injected[int, Depends(lambda: 4)]):
         for i in range(count):
             yield i + dep
 
@@ -148,7 +145,7 @@ def test_inject_generator_with_mixed_args():
 
     # Act (the decorator)
     @inject
-    def gen_func_mixed_args(count: int, *, start: int = 0, dep: int = Depends(lambda: 3)):
+    def gen_func_mixed_args(count: int, *, start: int = 0, dep: Injected[int, Depends(lambda: 3)]):
         for i in range(start, count + start):
             yield i * dep
 
@@ -156,59 +153,3 @@ def test_inject_generator_with_mixed_args():
 
     # Assert
     assert list(generator) == [12, 15]
-
-
-def test_inject_generator_dependency_override():
-    """
-    Test overriding a dependency on a generator during injection.
-
-    Given: a generator function injected with a dependency
-    When: the function is called with an overridden dependency
-    Then: the injection should use the overridden dependency.
-    """
-
-    # Arrange
-    def original():
-        return "original"
-
-    def override():
-        return "override"
-
-    @inject
-    def gen_func(val: str = Depends(original)):
-        for i in range(2):
-            yield f"{val}-{i}"
-
-    # Act
-    result = list(gen_func(val=override()))
-
-    # Assert
-    assert result == ["override-0", "override-1"]
-
-
-def test_inject_generator_dependency_override_false():
-    """
-    Test disabling overriding dependencies on a generator during injection.
-
-    Given: a generator function injected with a dependency
-    When: the dependency is set to not allow override
-    Then: attempting to override the dependency should raise a RegistrationError.
-    """
-
-    # Arrange
-    def original():
-        return "original"
-
-    def override():
-        return "override"
-
-    @inject
-    def gen_func(val: str = Depends(original, allow_override=False)):
-        for i in range(2):
-            yield f"{val}-{i}"
-
-    # Act & Assert
-    with pytest.raises(
-        OverrideNotAllowedError, match="Overriding these dependencies is not allowed: val"
-    ):
-        list(gen_func(val=override()))

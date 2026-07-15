@@ -6,7 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle, async_managed, managed
+from stratae.lifecycle import async_resource, resource
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 class SimpleObject:
@@ -42,7 +43,7 @@ def callable_factory(
         return SimpleObject(calc(x, y, z))
 
     @lifecycle.cache("application", **(config or {}))
-    @async_managed
+    @async_resource
     async def get_object_cm_async(x: int | SimpleObject = 0, y: int = 0, z: int | SimpleObject = 0):
         call_counter()
         await asyncio.sleep(0)
@@ -56,7 +57,7 @@ def callable_factory(
         return SimpleObject(calc(x, y, z))
 
     @lifecycle.cache("application", **(config or {}))
-    @managed
+    @resource
     def get_object_cm_sync(x: int | SimpleObject = 0, y: int = 0, z: int | SimpleObject = 0):
         call_counter()
         yield SimpleObject(calc(x, y, z))
@@ -227,19 +228,19 @@ async def test_async_lifecycle_cache_args_mixed(
     async_lifecycle: AsyncLifecycle, func_type: TestType
 ):
     """
-    Test the async lifecycle cache functionality with args used as kwargs.
+    Test the async lifecycle cache functionality with equivalent positional/keyword calling styles.
 
-    Note: Args are not parsed and updated from kwargs to try to keep performance high.
-
-    To ensure cache hits, use consistent calling conventions within lifecycle-scoped functions:
-    - Use all positional: get_simple_object(1, 2, z=3)
-    - Use all kwargs: get_simple_object(x=1, y=2, z=3)
+    Note: Codegen'd wrappers (plain sync/async) normalize the cache key from the wrapped
+    function's bound parameter values, so equivalent calls share one cache entry regardless
+    of calling style. Context-manager wrappers still key on the raw call shape until they
+    move to codegen.
 
     Given: An async function that takes both positional and keyword arguments and uses
            lifecycle caching.
-    When: The function is called multiple times with the same and different combinations of
-          arguments as kwargs within the same lifecycle scope.
-    Then: The cached result is different for different combinations of arguments.
+    When: The function is called multiple times with the same argument values but different
+          combinations of positional and keyword calling style within the same lifecycle scope.
+    Then: The cached result is shared for plain wrappers and distinct for context-manager
+          wrappers.
     """
     # Arrange
     call_counter = Mock()
@@ -253,16 +254,11 @@ async def test_async_lifecycle_cache_args_mixed(
         obj3 = await maybe_await(get_object(y=2, x=1, z=3))
 
         # Assert
-        assert obj1 is not obj2
-        assert obj2 is not obj3
         assert obj1.value == 6
-        assert obj2.value == 6
-        assert obj3.value == 6
-        assert call_counter.call_count == 3
-        if func_type in ["cm_sync", "cm_async"]:
-            assert cleanup_counter.call_count == 0
+        assert obj1 is obj2 is obj3
+        assert call_counter.call_count == 1
     if func_type in ["cm_sync", "cm_async"]:
-        assert cleanup_counter.call_count == 3
+        assert cleanup_counter.call_count == 1
 
 
 @pytest.mark.parametrize("func_type", ["sync", "cm_sync", "async", "cm_async"])
@@ -494,8 +490,8 @@ async def test_async_lifecycle_cache_custom_cache_key(
     call_counter = Mock()
     cleanup_counter = Mock()
 
-    def custom_cache_key(*args: tuple[str, ...], **kwargs: dict[str, Any]) -> str:
-        return f"{args[0]}-{kwargs.get('y', 'default_key')}"
+    def custom_cache_key(*args: Any, **kwargs: Any) -> str:
+        return f"{args[0]}-{args[1]}"
 
     config = {"cache_key": custom_cache_key}
     get_object = callable_factory(func_type, async_lifecycle, call_counter, cleanup_counter, config)

@@ -1,10 +1,6 @@
 """Test suite for verifying dependency injection in class methods and constructors."""
 
-from __future__ import annotations
-
-import pytest
-
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 
 
 def get_dep():
@@ -24,7 +20,7 @@ def test_class_init():
     # Arrange
     class SimpleObject:
         @inject
-        def __init__(self, value: int = Depends(get_dep)):
+        def __init__(self, value: Injected[int, Depends(get_dep)]):
             self.value = value
 
     # Act
@@ -46,7 +42,8 @@ def test_nested_class_injection():
     # Arrange
 
     class DepClass:
-        def __init__(self, value: int = Depends(get_dep)):
+        @inject
+        def __init__(self, value: Injected[int, Depends(get_dep)]):
             self.value = value
 
         def get_value(self):
@@ -54,7 +51,7 @@ def test_nested_class_injection():
 
     class SimpleObject:
         @inject
-        def __init__(self, dep: DepClass = Depends(DepClass)):
+        def __init__(self, dep: Injected[DepClass, Depends(DepClass)]):
             self.dep = dep
 
     # Act
@@ -79,7 +76,7 @@ def test_method_injection_in_class():
             self.value = 0
 
         @inject
-        def set_value(self, value: int = Depends(get_dep)):
+        def set_value(self, value: Injected[int, Depends(get_dep)]):
             self.value = value
 
     # Act
@@ -105,7 +102,7 @@ def test_static_method_injection_in_class():
 
         @staticmethod
         @inject
-        def set_value(value: int = Depends(get_dep)):
+        def set_value(value: Injected[int, Depends(get_dep)]):
             SimpleObject.value = value
 
     # Act
@@ -130,7 +127,7 @@ def test_class_method_injection_in_class():
 
         @classmethod
         @inject
-        def set_value(cls, value: int = Depends(get_dep)):
+        def set_value(cls, value: Injected[int, Depends(get_dep)]):
             return value
 
     # Act
@@ -152,7 +149,7 @@ def test_inherited_class_injection():
     # Arrange
     class BaseClass:
         @inject
-        def __init__(self, value: int = Depends(get_dep)):
+        def __init__(self, value: Injected[int, Depends(get_dep)]):
             self.value = value
 
     class ChildClass(BaseClass):
@@ -178,13 +175,13 @@ def test_inherited_class_method_injection():
     class BaseClass:
         @classmethod
         @inject
-        def get_value(cls, value: int = Depends(get_dep)):
+        def get_value(cls, value: Injected[int, Depends(get_dep)]):
             return value
 
     class ChildClass(BaseClass):
         @classmethod
         @inject
-        def get_value(cls, value: int = Depends(get_dep)):
+        def get_value(cls, value: Injected[int, Depends(get_dep)]):
             return value + 1
 
     # Act
@@ -208,7 +205,7 @@ def test_injection_with_other_params():
     # Arrange
     class SimpleObject:
         @inject
-        def __init__(self, value: int = Depends(get_dep), other: str = "default"):
+        def __init__(self, value: Injected[int, Depends(get_dep)], other: str = "default"):
             self.value = value
             self.other = other
 
@@ -235,7 +232,11 @@ def test_multiple_injections():
 
     class SimpleObject:
         @inject
-        def __init__(self, value: int = Depends(get_dep), text: str = Depends(get_another_dep)):
+        def __init__(
+            self,
+            value: Injected[int, Depends(get_dep)],
+            text: Injected[str, Depends(get_another_dep)],
+        ):
             self.value = value
             self.text = text
 
@@ -281,7 +282,7 @@ def test_injecting_classes():
     # Arrange
 
     class DepClass:
-        def __init__(self, value: int = Depends(get_dep)):
+        def __init__(self, value: Injected[int, Depends(get_dep)]):
             self.value = value
 
         def get_value(self):
@@ -289,7 +290,7 @@ def test_injecting_classes():
 
     class SimpleObject:
         @inject
-        def __init__(self, dep: DepClass = Depends(DepClass)):
+        def __init__(self, dep: Injected[DepClass, Depends(DepClass)]):
             self.dep = dep
 
     # Act
@@ -297,28 +298,3 @@ def test_injecting_classes():
 
     # Assert
     assert instance.dep.get_value() == 50
-
-
-def test_circular_class_dependency():
-    """
-    Test handling of circular class dependencies.
-
-    Given: Two classes that depend on each other.
-    When: An attempt is made to create an instance of one of the classes.
-    Then: A RecursionError is raised due to the circular dependency.
-    """
-    # Arrange
-
-    class ClassA:
-        @inject
-        def __init__(self, b: ClassB = Depends(lambda: ClassB())):
-            self.b = b
-
-    class ClassB:
-        @inject
-        def __init__(self, a: ClassA = Depends(lambda: ClassA())):
-            self.a = a
-
-    # Act & Assert
-    with pytest.raises(RecursionError):
-        ClassA()

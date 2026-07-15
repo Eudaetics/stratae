@@ -4,22 +4,29 @@ from typing import Sequence
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle, Lifecycle
+from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 @pytest.fixture
 def scopes():
-    """Provide a list of lifecycle scopes for testing."""
+    """Provide a list of lifecycle scope names for testing."""
     yield ["application", "session", "request"]
 
 
 @pytest.fixture
-def lifecycle(scopes: Sequence[str]):
-    """Provide a Lifecycle instance for testing."""
-    yield Lifecycle(scopes)
+def scope_objs():
+    """Provide a list of scope objects."""
+    yield [Scope("application", "shared"), Scope("session", "context"), Scope("request", "context")]
 
 
 @pytest.fixture
-async def async_lifecycle(scopes: Sequence[str]):
-    """Provide an AsyncLifecycle instance for testing."""
-    yield AsyncLifecycle(scopes)
+def lifecycle(scope_objs: Sequence[Scope]):
+    """Provide a Lifecycle instance with shared-isolation scopes for testing."""
+    yield Lifecycle(scope_objs)
+
+
+@pytest.fixture
+async def async_lifecycle(scope_objs: Sequence[Scope]):
+    """Provide an AsyncLifecycle instance with context-isolation scopes for testing."""
+    yield AsyncLifecycle(scope_objs)
