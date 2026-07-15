@@ -23,6 +23,7 @@ DirectBus (request events):
 - emit raises NoResponderError when no responder is registered.
 - emit raises MultipleRespondersError when several responders are registered.
 - A responder's exception propagates directly, not as an ExceptionGroup.
+- A responder may be registered via the decorator form of handle.
 
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -463,6 +464,28 @@ def test_request_responder_exception_propagates_directly(bus: DirectBus):
         bus.emit(_BookQuery("dune"), _find_book)
 
     assert exc_info.value is error
+
+
+def test_request_responder_registered_via_decorator(bus: DirectBus):
+    """
+    A responder registered via the decorator form of handle should serve requests.
+
+    Given: A responder registered with @bus.handle on a request EventConfig
+    When: emit is called with that EventConfig
+    Then: The responder's return value should be returned
+    """
+    # Arrange
+    reply = _BookResult("Dune")
+
+    @bus.handle(_find_book)
+    def _(_: _BookQuery) -> _BookResult:
+        return reply
+
+    # Act
+    result = bus.emit(_BookQuery("dune"), _find_book)
+
+    # Assert
+    assert result is reply
 
 
 def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: DirectBus):

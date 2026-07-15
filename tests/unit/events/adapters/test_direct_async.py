@@ -25,6 +25,7 @@ AsyncDirectBus (request events):
 - emit raises NoResponderError when no responder is registered.
 - emit raises MultipleRespondersError when several responders are registered.
 - A responder's exception propagates directly, not as an ExceptionGroup.
+- An async responder may be registered via the decorator form of handle.
 
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -491,6 +492,28 @@ async def test_request_responder_exception_propagates_directly(bus: AsyncDirectB
         await bus.emit(_BookQuery("dune"), _find_book)
 
     assert exc_info.value is error
+
+
+async def test_request_responder_registered_via_decorator(bus: AsyncDirectBus):
+    """
+    An async responder registered via the decorator form of handle should serve requests.
+
+    Given: An async responder registered with @bus.handle on a request EventConfig
+    When: emit is awaited with that EventConfig
+    Then: The responder's resolved return value should be returned
+    """
+    # Arrange
+    reply = _BookResult("Dune")
+
+    @bus.handle(_find_book)
+    async def _(_: _BookQuery) -> _BookResult:
+        return reply
+
+    # Act
+    result = await bus.emit(_BookQuery("dune"), _find_book)
+
+    # Assert
+    assert result is reply
 
 
 async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: AsyncDirectBus):

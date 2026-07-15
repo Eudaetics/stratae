@@ -1,13 +1,24 @@
 """Direct, in-process asynchronous event bus."""
 
 import asyncio
-from typing import Any, Callable, overload
+from typing import Any, Awaitable, Callable, Protocol, overload
 
-from stratae.events.adapters._base import AnyEventConfig, BaseDirectBus
+from stratae.events.adapters._base import AnyEventConfig, BaseDirectBus, HandlerDecorator
 from stratae.events.bound import AsyncBoundEvent, abind
 from stratae.events.envelope import Envelope
 from stratae.events.event import EventConfig, PubSub, Request, is_request
 from stratae.events.handler import Handler
+
+
+class _AsyncResponderDecorator[S: Any, R](Protocol):
+    """Decorator form of ``handle`` for request events: registers and returns the ``Handler``."""
+
+    @overload
+    def __call__(
+        self, fn: Callable[[S], Awaitable[R]]
+    ) -> Handler[[S], AnyEventConfig, Awaitable[R]]: ...
+    @overload
+    def __call__(self, fn: Callable[[S], R]) -> Handler[[S], AnyEventConfig, R]: ...
 
 
 class AsyncDirectBus(BaseDirectBus):
@@ -131,6 +142,72 @@ class AsyncDirectBus(BaseDirectBus):
             with Envelope.scope():
                 return await self._dispatch(payload, event)
         return await self._dispatch(payload, event)
+
+    @overload
+    def handle[**P, S: Any, R](
+        self,
+        config: EventConfig[P, S, Request[R]],
+        fn: Callable[[S], Awaitable[R]],
+    ) -> Handler[[S], AnyEventConfig, Awaitable[R]]: ...
+
+    @overload
+    def handle[**P, S: Any, R](
+        self,
+        config: EventConfig[P, S, Request[R]],
+        fn: Callable[[S], R],
+    ) -> Handler[[S], AnyEventConfig, R]: ...
+
+    @overload
+    def handle[**P, S: Any, R](
+        self,
+        config: EventConfig[P, S, Request[R]],
+        fn: None = None,
+    ) -> _AsyncResponderDecorator[S, R]: ...
+
+    @overload
+    def handle[**P, S: Any, R](
+        self,
+        config: EventConfig[P, S, PubSub],
+        fn: Callable[[S], R],
+    ) -> Handler[[S], AnyEventConfig, R]: ...
+
+    @overload
+    def handle[**P, S: Any](
+        self,
+        config: EventConfig[P, S, PubSub],
+        fn: None = None,
+    ) -> HandlerDecorator[S]: ...
+
+    def handle(
+        self,
+        config: AnyEventConfig,
+        fn: Callable[..., Any] | None = None,
+    ) -> Any:
+        """
+        Register a handler for a config, as a decorator or direct call.
+
+        For request events the callable is the responder: it accepts the
+        event's payload and must return the event's reply type, either
+        directly or as an awaitable that resolves to it.  For pub/sub events
+        the callable accepts the payload and its return value is ignored.
+
+        Returns the ``Handler`` instance in both forms so callers can pass it
+        to ``remove`` later.
+
+        Args:
+            config: The ``EventConfig`` used as the handler routing key.
+            fn:     When supplied, registers ``fn`` directly and returns its
+                    ``Handler``.  When omitted, returns a decorator that
+                    registers and returns the ``Handler``.
+
+        """
+        if fn is not None:
+            return self._register(config, fn)
+
+        def decorator(f: Callable[..., Any]) -> Handler[..., AnyEventConfig, Any]:
+            return self._register(config, f)
+
+        return decorator
 
     async def _dispatch(self, payload: Any, event: AnyEventConfig) -> Any:
         if is_request(event):

@@ -2,10 +2,11 @@
 
 from typing import Any, Callable, overload
 
-from stratae.events.adapters._base import AnyEventConfig, BaseDirectBus
+from stratae.events.adapters._base import AnyEventConfig, BaseDirectBus, HandlerDecorator
 from stratae.events.bound import BoundEvent, bind
 from stratae.events.envelope import Envelope
 from stratae.events.event import EventConfig, PubSub, Request, is_request
+from stratae.events.handler import Handler
 
 
 class DirectBus(BaseDirectBus):
@@ -125,6 +126,66 @@ class DirectBus(BaseDirectBus):
 
         """
         return self._dispatch(payload, event)
+
+    @overload
+    def handle[**P, S: Any, R](
+        self,
+        config: EventConfig[P, S, Request[R]],
+        fn: Callable[[S], R],
+    ) -> Handler[[S], AnyEventConfig, R]: ...
+
+    @overload
+    def handle[**P, S: Any, R](
+        self,
+        config: EventConfig[P, S, Request[R]],
+        fn: None = None,
+    ) -> Callable[[Callable[[S], R]], Handler[[S], AnyEventConfig, R]]: ...
+
+    @overload
+    def handle[**P, S: Any, R](
+        self,
+        config: EventConfig[P, S, PubSub],
+        fn: Callable[[S], R],
+    ) -> Handler[[S], AnyEventConfig, R]: ...
+
+    @overload
+    def handle[**P, S: Any](
+        self,
+        config: EventConfig[P, S, PubSub],
+        fn: None = None,
+    ) -> HandlerDecorator[S]: ...
+
+    def handle(
+        self,
+        config: AnyEventConfig,
+        fn: Callable[..., Any] | None = None,
+    ) -> Any:
+        """
+        Register a handler for a config, as a decorator or direct call.
+
+        For request events the callable is the responder: it accepts the
+        event's payload and must return the event's reply type.  Async
+        responders are rejected for request events on this synchronous bus.
+        For pub/sub events the callable accepts the payload and its return
+        value is ignored.
+
+        Returns the ``Handler`` instance in both forms so callers can pass it
+        to ``remove`` later.
+
+        Args:
+            config: The ``EventConfig`` used as the handler routing key.
+            fn:     When supplied, registers ``fn`` directly and returns its
+                    ``Handler``.  When omitted, returns a decorator that
+                    registers and returns the ``Handler``.
+
+        """
+        if fn is not None:
+            return self._register(config, fn)
+
+        def decorator(f: Callable[..., Any]) -> Handler[..., AnyEventConfig, Any]:
+            return self._register(config, f)
+
+        return decorator
 
     def _dispatch_plain(self, payload: Any, event: AnyEventConfig) -> Any:
         if is_request(event):
