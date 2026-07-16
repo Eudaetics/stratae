@@ -19,7 +19,10 @@ RabbitMQPublisher:
 - emit declares an exchange_type-carrying config's exchange once, before
   its first publish.
 - emit declares no exchange for configs without an exchange_type.
-- emit publishes the config's AMQP properties with each message.
+- emit publishes the config's AMQP properties with each message, without
+  mutating the config's properties object.
+- emit stamps envelope ids onto every message as x- headers and native
+  fields, chaining a child of the active envelope scope.
 """
 
 from unittest.mock import AsyncMock
@@ -29,6 +32,12 @@ from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import AsyncBoundEvent
+from stratae.events.envelope import (
+    CAUSATION_ID_HEADER,
+    CORRELATION_ID_HEADER,
+    MESSAGE_ID_HEADER,
+    Envelope,
+)
 from stratae.events.event import EventConfig, PubSub
 from stratae.events.exceptions import NotConnectedError
 from stratae.integrations.events.rabbitmq import RabbitMQConfig, RabbitMQPublisher
@@ -173,9 +182,10 @@ async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, chann
         await publisher.emit(payload, _order_placed, _config)
 
     # Assert
-    channel.basic_publish.assert_awaited_once_with(
-        pack(payload), exchange="events", routing_key="order.placed", properties=None
-    )
+    call = channel.basic_publish.await_args
+    assert call.args[0] == pack(payload)
+    assert call.kwargs["exchange"] == "events"
+    assert call.kwargs["routing_key"] == "order.placed"
 
 
 async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel: AsyncMock):
@@ -196,9 +206,10 @@ async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel
         await publisher.emit(_OrderPlaced(7), _order_placed, _config, serializer=to_bytes)
 
     # Assert
-    channel.basic_publish.assert_awaited_once_with(
-        b"custom", exchange="events", routing_key="order.placed", properties=None
-    )
+    call = channel.basic_publish.await_args
+    assert call.args[0] == b"custom"
+    assert call.kwargs["exchange"] == "events"
+    assert call.kwargs["routing_key"] == "order.placed"
 
 
 async def test_emit_declares_exchange_once(publisher: RabbitMQPublisher, channel: AsyncMock):
@@ -244,23 +255,49 @@ async def test_emit_publishes_with_properties(publisher: RabbitMQPublisher, chan
     """
     ``emit`` should publish the config's AMQP properties with the message.
 
-    Given: A connected publisher and a config carrying properties
+    Given: A connected publisher and a config carrying properties and headers
     When: emit is awaited
-    Then: The properties should pass through to basic_publish
+    Then: The published properties should keep the config's values alongside
+          the envelope stamp, and the config's object should not be mutated
     """
     # Arrange
-    payload = _OrderPlaced(7)
-    properties = Basic.Properties(delivery_mode=2)
+    properties = Basic.Properties(delivery_mode=2, headers={"custom": "v"})
     config = RabbitMQConfig("events", "order.placed", properties=properties)
 
     # Act
     async with publisher:
-        await publisher.emit(payload, _order_placed, config)
+        await publisher.emit(_OrderPlaced(7), _order_placed, config)
 
     # Assert
-    channel.basic_publish.assert_awaited_once_with(
-        pack(payload), exchange="events", routing_key="order.placed", properties=properties
-    )
+    sent = channel.basic_publish.await_args.kwargs["properties"]
+    assert sent.delivery_mode == 2
+    assert sent.headers["custom"] == "v"
+    assert MESSAGE_ID_HEADER in sent.headers
+    assert properties.headers == {"custom": "v"}
+
+
+async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    ``emit`` should stamp a child of the active envelope onto the message.
+
+    Given: A connected publisher inside an envelope scope
+    When: emit is awaited
+    Then: The message should carry x- headers and native fields for a child
+          envelope — same correlation chain, caused by the active envelope
+    """
+    # Act
+    with Envelope.scope() as envelope:
+        async with publisher:
+            await publisher.emit(_OrderPlaced(7), _order_placed, _config)
+
+    # Assert
+    sent = channel.basic_publish.await_args.kwargs["properties"]
+    assert sent.headers[CORRELATION_ID_HEADER] == str(envelope.correlation_id)
+    assert sent.headers[CAUSATION_ID_HEADER] == str(envelope.message_id)
+    assert sent.headers[MESSAGE_ID_HEADER] != str(envelope.message_id)
+    assert sent.message_id == sent.headers[MESSAGE_ID_HEADER]
+    assert sent.correlation_id == str(envelope.correlation_id)
+    assert sent.timestamp is not None
 
 
 def test_bind_returns_async_bound_event(publisher: RabbitMQPublisher):
@@ -293,6 +330,7 @@ async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: Asyn
         await order_placed(order_id=7)
 
     # Assert
-    channel.basic_publish.assert_awaited_once_with(
-        pack(_OrderPlaced(7)), exchange="events", routing_key="order.placed", properties=None
-    )
+    call = channel.basic_publish.await_args
+    assert call.args[0] == pack(_OrderPlaced(7))
+    assert call.kwargs["exchange"] == "events"
+    assert call.kwargs["routing_key"] == "order.placed"

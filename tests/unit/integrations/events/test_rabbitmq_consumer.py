@@ -36,6 +36,12 @@ RabbitMQConsumer:
 - An iterable binding key binds the queue once per key.
 - Explicit declaration flags and arguments override the inferred queue
   defaults.
+- Handlers run inside the delivered message's envelope scope.
+- Messages without envelope headers still scope a fresh envelope.
+- Native AMQP property fields rebuild the envelope when x- headers are
+  absent.
+- Malformed envelope headers log a warning and scope a fresh envelope
+  without blocking the handler.
 """
 
 import asyncio
@@ -45,6 +51,7 @@ from unittest.mock import AsyncMock
 import pytest
 from pytest_mock import MockerFixture
 
+from stratae.events.envelope import CORRELATION_ID_HEADER, MESSAGE_ID_HEADER, Envelope
 from stratae.events.event import EventConfig, PubSub
 from stratae.events.handler import Handler
 from stratae.integrations.events.rabbitmq import RabbitMQConsumeConfig, RabbitMQConsumer
@@ -61,11 +68,15 @@ _order_placed = EventConfig(_OrderPlaced, PubSub)
 _config = RabbitMQConsumeConfig("orders")
 
 
-def _message(body: bytes) -> AsyncMock:
-    """Return a mock DeliveredMessage carrying the body."""
+def _message(body: bytes, headers: dict[str, Any] | None = None) -> AsyncMock:
+    """Return a mock DeliveredMessage carrying the body and headers."""
     message = AsyncMock()
     message.body = body
     message.delivery_tag = 11
+    message.header.properties.headers = headers
+    message.header.properties.message_id = None
+    message.header.properties.correlation_id = None
+    message.header.properties.timestamp = None
     return message
 
 
@@ -662,3 +673,109 @@ async def test_declaration_flags_override_inference(consumer: RabbitMQConsumer, 
             auto_delete=True,
             arguments={"x-message-ttl": 1000},
         )
+
+
+async def test_handler_runs_in_delivered_envelope_scope(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    The handler should observe the delivered message's envelope as current.
+
+    Given: A message carrying envelope headers
+    When: The registered callback receives it
+    Then: Envelope.current() inside the handler should carry those ids
+    """
+    # Arrange
+    seen: list[Envelope | None] = []
+    consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
+    envelope = Envelope()
+    message = _message(b'{"order_id": 7}', headers=envelope.to_headers())
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert seen[0] is not None
+    assert seen[0].message_id == envelope.message_id
+    assert seen[0].correlation_id == envelope.correlation_id
+
+
+async def test_handler_scopes_fresh_envelope_without_headers(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A message without envelope headers should still scope a fresh envelope.
+
+    Given: A message carrying no envelope headers
+    When: The registered callback receives it
+    Then: Envelope.current() inside the handler should be a new envelope
+    """
+    # Arrange
+    seen: list[Envelope | None] = []
+    consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
+    message = _message(b'{"order_id": 7}')
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert seen[0] is not None
+    assert seen[0].causation_id is None
+
+
+async def test_native_properties_rebuild_envelope(consumer: RabbitMQConsumer, channel: AsyncMock):
+    """
+    Native AMQP fields should rebuild the envelope when x- headers are absent.
+
+    Given: A message carrying native message_id, correlation_id, and
+           timestamp fields but no x- headers
+    When: The registered callback receives it
+    Then: The handler's current envelope should carry the native values
+    """
+    # Arrange
+    seen: list[Envelope | None] = []
+    consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
+    envelope = Envelope()
+    message = _message(b'{"order_id": 7}')
+    message.header.properties.message_id = str(envelope.message_id)
+    message.header.properties.correlation_id = str(envelope.correlation_id)
+    message.header.properties.timestamp = envelope.timestamp
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert seen[0] is not None
+    assert seen[0].message_id == envelope.message_id
+    assert seen[0].correlation_id == envelope.correlation_id
+    assert seen[0].timestamp == envelope.timestamp
+
+
+async def test_malformed_envelope_headers_log_and_scope_fresh(
+    consumer: RabbitMQConsumer, channel: AsyncMock, caplog: pytest.LogCaptureFixture
+):
+    """
+    Malformed envelope headers should be surfaced without blocking handling.
+
+    Given: A message whose envelope headers are not valid UUIDs
+    When: The registered callback receives it
+    Then: A warning should be logged, the handler should run inside a
+          fresh envelope, and the message should be acked
+    """
+    # Arrange
+    seen: list[Envelope | None] = []
+    consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
+    headers = {MESSAGE_ID_HEADER: "junk", CORRELATION_ID_HEADER: "junk"}
+    message = _message(b'{"order_id": 7}', headers=headers)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert seen[0] is not None
+    assert "unparseable envelope headers" in caplog.text
+    message.channel.basic_ack.assert_awaited_once_with(11)

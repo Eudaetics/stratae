@@ -4,11 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from copy import copy
 from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Protocol, overload
 
 from aiormq import connect
+from pamqp.commands import Basic
 
 from stratae.events.bound import AsyncBoundEvent, abind
+from stratae.events.envelope import (
+    CORRELATION_ID_HEADER,
+    MESSAGE_ID_HEADER,
+    TIMESTAMP_HEADER,
+    Envelope,
+)
 from stratae.events.event import EventConfig, PubSub
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.handler import Handler
@@ -16,13 +24,38 @@ from stratae.serde import Unpacker, pack, unpack_json
 
 if TYPE_CHECKING:
     from aiormq.abc import AbstractChannel, AbstractConnection, DeliveredMessage
-    from pamqp.commands import Basic
 
 _log = logging.getLogger(__name__)
 
 _NOT_CONNECTED = "publisher is not connected; open it with 'async with' before emitting"
 
 _NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
+
+
+def _stamp(properties: Basic.Properties | None) -> Basic.Properties:
+    current = Envelope.current()
+    envelope = current.child() if current is not None else Envelope()
+    stamped = copy(properties) if properties is not None else Basic.Properties()
+    stamped.headers = (stamped.headers or {}) | envelope.to_headers()
+    stamped.message_id = str(envelope.message_id)
+    stamped.correlation_id = str(envelope.correlation_id)
+    stamped.timestamp = envelope.timestamp
+    return stamped
+
+
+def _envelope_from(message: DeliveredMessage) -> Envelope | None:
+    properties = message.header.properties
+    native = {
+        MESSAGE_ID_HEADER: properties.message_id,
+        CORRELATION_ID_HEADER: properties.correlation_id,
+        TIMESTAMP_HEADER: properties.timestamp and properties.timestamp.isoformat(),
+    }
+    headers = native | dict(properties.headers or {})
+    try:
+        return Envelope.from_headers(headers)
+    except ValueError:
+        _log.warning("unparseable envelope headers; scoping a fresh envelope: %r", headers)
+        return None
 
 
 class RabbitMQConfig:
@@ -170,7 +203,7 @@ class RabbitMQPublisher:
             body,
             exchange=config.exchange,
             routing_key=config.routing_key,
-            properties=config.properties,
+            properties=_stamp(config.properties),
         )
 
 
@@ -500,10 +533,11 @@ class RabbitMQConsumer:
         async def on_message(message: DeliveredMessage) -> None:
             try:
                 payload = self._deserialize(registration, message.body)
-                if registration.handler.is_async:
-                    await registration.handler(payload)
-                else:
-                    registration.handler(payload)
+                with Envelope.scope(_envelope_from(message)):
+                    if registration.handler.is_async:
+                        await registration.handler(payload)
+                    else:
+                        registration.handler(payload)
             except Exception:
                 _log.exception(
                     "handler for event '%s' failed; message nacked without requeue",

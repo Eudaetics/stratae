@@ -2,10 +2,16 @@
 
 import asyncio
 from datetime import timezone
+from uuid import uuid4
 
 import pytest
 
-from stratae.events.envelope import Envelope
+from stratae.events.envelope import (
+    CAUSATION_ID_HEADER,
+    CORRELATION_ID_HEADER,
+    MESSAGE_ID_HEADER,
+    Envelope,
+)
 
 
 def test_envelope_default_fields():
@@ -110,6 +116,87 @@ def test_child_has_distinct_message_id():
 
     # Assert
     assert child.message_id != parent.message_id
+
+
+def test_headers_round_trip():
+    """
+    from_headers reconstructs the envelope to_headers serialized.
+
+    Given: An envelope with a causation id.
+    When: It is serialized to headers and rebuilt.
+    Then: All fields survive the round trip.
+    """
+    # Arrange
+    envelope = Envelope(causation_id=uuid4())
+
+    # Act
+    rebuilt = Envelope.from_headers(envelope.to_headers())
+
+    # Assert
+    assert rebuilt is not None
+    assert rebuilt.message_id == envelope.message_id
+    assert rebuilt.correlation_id == envelope.correlation_id
+    assert rebuilt.causation_id == envelope.causation_id
+    assert rebuilt.timestamp == envelope.timestamp
+
+
+def test_to_headers_omits_absent_causation():
+    """
+    A root envelope serializes without a causation header.
+
+    Given: An envelope with no causation id.
+    When: It is serialized to headers.
+    Then: The causation header is absent.
+    """
+    # Act
+    headers = Envelope().to_headers()
+
+    # Assert
+    assert CAUSATION_ID_HEADER not in headers
+
+
+def test_from_headers_without_ids_returns_none():
+    """
+    Headers lacking the identifying pair cannot rebuild an envelope.
+
+    Given: Headers missing the message or correlation id.
+    When: from_headers is called.
+    Then: None is returned.
+    """
+    # Act & Assert
+    assert Envelope.from_headers({}) is None
+    assert Envelope.from_headers({MESSAGE_ID_HEADER: str(uuid4())}) is None
+
+
+def test_from_headers_with_none_valued_ids_returns_none():
+    """
+    Ids present as None values read as absent, not as corruption.
+
+    Given: Headers whose identifying keys exist but hold None.
+    When: from_headers is called.
+    Then: None is returned without raising.
+    """
+    # Arrange
+    headers = {MESSAGE_ID_HEADER: None, CORRELATION_ID_HEADER: None}
+
+    # Act & Assert
+    assert Envelope.from_headers(headers) is None
+
+
+def test_from_headers_with_invalid_ids_raises():
+    """
+    Unparseable ids raise rather than silently dropping the trace.
+
+    Given: Headers whose message id is not a UUID.
+    When: from_headers is called.
+    Then: ValueError is raised.
+    """
+    # Arrange
+    headers = {MESSAGE_ID_HEADER: "not-a-uuid", CORRELATION_ID_HEADER: str(uuid4())}
+
+    # Act & Assert
+    with pytest.raises(ValueError, match="badly formed"):
+        Envelope.from_headers(headers)
 
 
 def test_current_returns_none_outside_context():
