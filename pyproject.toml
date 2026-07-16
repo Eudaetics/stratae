@@ -80,13 +80,16 @@ addopts = [
     "--cov=stratae/",
     "--cov-report=html:coverage/cov.html",
     "--no-cov-on-fail",
-    "--cov-fail-under=100"
+    "--cov-fail-under=100",
+    "-m",
+    "not rabbitmq",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "fastapi: FastAPI integration smoke tests (requires fastapi, httpx)",
     "msgspec: msgspec integration tests (requires msgspec)",
+    "rabbitmq: RabbitMQ integration tests (requires aiormq, msgspec, and a live broker)",
 ]
 
 [tool.coverage.run]
@@ -110,6 +113,7 @@ format = "ruff format ."
 lint = "ruff check --fix ."
 typecheck = "pyright"
 test = "pytest"
+test-rabbitmq = "pytest -m rabbitmq --no-cov"
 radon-cc = "radon cc stratae -n B"
 radon-mi = "radon mi stratae -n B"
 
