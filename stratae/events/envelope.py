@@ -15,6 +15,16 @@ CAUSATION_ID_HEADER = "x-causation-id"
 TIMESTAMP_HEADER = "x-timestamp"
 
 
+def _uuid(value: object | None) -> UUID | None:
+    """Parse an optional header value as a UUID."""
+    return None if value is None else UUID(str(value))
+
+
+def _when(value: object | None) -> datetime:
+    """Parse an optional header timestamp, defaulting to the current time."""
+    return datetime.now(timezone.utc) if value is None else datetime.fromisoformat(str(value))
+
+
 @dataclass(frozen=True)
 class Envelope:
     """Message envelope for tracking events."""
@@ -90,13 +100,3 @@ class Envelope:
 
 
 _current: ContextVar[Envelope] = ContextVar("_current_envelope")
-
-
-def _uuid(value: object | None) -> UUID | None:
-    """Parse an optional header value as a UUID."""
-    return None if value is None else UUID(str(value))
-
-
-def _when(value: object | None) -> datetime:
-    """Parse an optional header timestamp, defaulting to the current time."""
-    return datetime.now(timezone.utc) if value is None else datetime.fromisoformat(str(value))
