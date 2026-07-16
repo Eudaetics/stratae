@@ -35,7 +35,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev,test,asgi,msgspec]"
+        run: pip install -e ".[dev,test,asgi,msgspec,rabbitmq]"
 
       - name: Format check
         run: ruff format --check .
@@ -57,3 +57,30 @@ jobs:
 
       - name: No pyright ignores
         run: "! grep -rn --include='*.py' 'pyright: ignore' stratae"
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      rabbitmq:
+        image: rabbitmq:4
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s
+          --health-timeout 10s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[test,msgspec,rabbitmq]"
+
+      - name: Integration test
+        run: pytest -m rabbitmq --no-cov

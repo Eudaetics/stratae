@@ -27,6 +27,7 @@ repos:
     hooks:
       - id: pyright
         additional_dependencies:
+          - aiormq
           - fastapi
           - msgspec
         exclude: ^tests/

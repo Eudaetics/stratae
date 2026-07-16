@@ -47,7 +47,6 @@ class AsyncDirectBus(BaseDirectBus):
     Example::
 
         bus = AsyncDirectBus()
-
         order_placed = EventConfig(OrderPlaced, PubSub)
         place_order = bus.bind(order_placed)
 

@@ -2,6 +2,6 @@
 
 from stratae.serde.encoder import encode
 from stratae.serde.packer import pack
-from stratae.serde.unpacker import Unpacker
+from stratae.serde.unpacker import Unpacker, unpack_json
 
-__all__ = ["Unpacker", "encode", "pack"]
+__all__ = ["Unpacker", "encode", "pack", "unpack_json"]

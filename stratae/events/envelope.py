@@ -6,8 +6,23 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Generator
+from typing import Generator, Mapping
 from uuid import UUID, uuid4
+
+MESSAGE_ID_HEADER = "x-message-id"
+CORRELATION_ID_HEADER = "x-correlation-id"
+CAUSATION_ID_HEADER = "x-causation-id"
+TIMESTAMP_HEADER = "x-timestamp"
+
+
+def _uuid(value: object | None) -> UUID | None:
+    """Parse an optional header value as a UUID."""
+    return None if value is None else UUID(str(value))
+
+
+def _when(value: object | None) -> datetime:
+    """Parse an optional header timestamp, defaulting to the current time."""
+    return datetime.now(timezone.utc) if value is None else datetime.fromisoformat(str(value))
 
 
 @dataclass(frozen=True)
@@ -24,6 +39,38 @@ class Envelope:
         return Envelope(
             correlation_id=self.correlation_id,
             causation_id=self.message_id,
+        )
+
+    def to_headers(self) -> dict[str, str]:
+        """Serialize the envelope as portable ``x-`` message headers."""
+        headers = {
+            MESSAGE_ID_HEADER: str(self.message_id),
+            CORRELATION_ID_HEADER: str(self.correlation_id),
+            TIMESTAMP_HEADER: self.timestamp.isoformat(),
+        }
+        if self.causation_id is not None:
+            headers[CAUSATION_ID_HEADER] = str(self.causation_id)
+        return headers
+
+    @classmethod
+    def from_headers(cls, headers: Mapping[str, object]) -> Envelope:
+        """
+        Rebuild an envelope from message headers.
+
+        Fields absent from the headers are minted fresh, so a partial
+        set — e.g. a foreign message carrying only a message id — keeps
+        what it declares and defaults the rest.
+
+        Raises:
+            ValueError: When a header is present but unparseable —
+                corruption worth surfacing, unlike absence.
+
+        """
+        return cls(
+            message_id=_uuid(headers.get(MESSAGE_ID_HEADER)) or uuid4(),
+            correlation_id=_uuid(headers.get(CORRELATION_ID_HEADER)) or uuid4(),
+            causation_id=_uuid(headers.get(CAUSATION_ID_HEADER)),
+            timestamp=_when(headers.get(TIMESTAMP_HEADER)),
         )
 
     @staticmethod

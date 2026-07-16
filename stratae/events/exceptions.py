@@ -11,3 +11,7 @@ class NoResponderError(EventDispatchError, LookupError):
 
 class MultipleRespondersError(EventDispatchError, LookupError):
     """Raised when a request event is emitted with more than one registered responder."""
+
+
+class NotConnectedError(EventDispatchError):
+    """Raised when emitting through an adapter whose connection is not open."""

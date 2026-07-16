@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stratae"
 description = "A toolkit of composable tools for dependency injection, lifecycle management, and more."
-version = "0.1.0"
+version = "0.1.0b1"
 readme = "readme.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
@@ -45,6 +45,9 @@ test = [
 msgspec = [
     "msgspec>=0.21.0"
 ]
+rabbitmq = [
+    "aiormq>=6.8.0"
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -77,13 +80,16 @@ addopts = [
     "--cov=stratae/",
     "--cov-report=html:coverage/cov.html",
     "--no-cov-on-fail",
-    "--cov-fail-under=100"
+    "--cov-fail-under=100",
+    "-m",
+    "not rabbitmq",
 ]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "fastapi: FastAPI integration smoke tests (requires fastapi, httpx)",
     "msgspec: msgspec integration tests (requires msgspec)",
+    "rabbitmq: RabbitMQ integration tests (requires aiormq, msgspec, and a live broker)",
 ]
 
 [tool.coverage.run]
@@ -107,6 +113,7 @@ format = "ruff format ."
 lint = "ruff check --fix ."
 typecheck = "pyright"
 test = "pytest"
+test-rabbitmq = "pytest -m rabbitmq --no-cov"
 radon-cc = "radon cc stratae -n B"
 radon-mi = "radon mi stratae -n B"
 
