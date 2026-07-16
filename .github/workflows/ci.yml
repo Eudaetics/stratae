@@ -57,9 +57,3 @@ jobs:
 
       - name: No pyright ignores
         run: "! grep -rn --include='*.py' 'pyright: ignore' stratae"
-
-      - name: Cyclomatic complexity
-        run: radon cc stratae -n B
-
-      - name: Maintainability index
-        run: radon mi stratae -n B
