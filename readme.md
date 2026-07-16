@@ -11,7 +11,7 @@ pip install stratae
 ## Quick Start
 
 ```python
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 from stratae.lifecycle import Lifecycle, Scope
 
 lifecycle = Lifecycle([Scope("application", "shared")])
@@ -41,7 +41,7 @@ with lifecycle.start('application'):
 Dependency injection in Stratae uses familiar decorator syntax that works with callables. Use this to send values, objects, or anything into a function.
 
 ```python
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 
 def get_config():
     return {"env": "dev", "mode": "strict"}
@@ -97,6 +97,7 @@ Stratae uses context variables for setting values that are needed deep in depend
 
 ```python
 from stratae.context import Context
+from stratae.depends import Depends, Injected, inject
 
 lifecycle = Lifecycle([Scope('request', 'shared')])
 user_id = Context[int]("user_id")
@@ -181,7 +182,7 @@ quote = bus.emit(PriceOrder(42), price_order)  # typed as Quote
 Stratae is fully async compatible. Injection natively works with sync or async functions. Lifecycle offers versions for sync and async handling of resources.
 
 ```python
-from stratae.depends import Depends, inject
+from stratae.depends import Depends, Injected, inject
 from stratae.lifecycle import AsyncLifecycle, Scope
 
 lifecycle = AsyncLifecycle([Scope('application', 'shared'), Scope('request', 'context')])
@@ -266,6 +267,7 @@ The design of Stratae means integrating with other tools or frameworks is typica
 
 ```python
 from fastapi import FastAPI
+from stratae.depends import Depends, Injected, inject
 from stratae.integrations import RequestLifecycleMiddleware
 from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
 
@@ -293,9 +295,9 @@ async def get_session():
 @app.post('/users')
 @inject
 async def post_user(
-    name: str
+    name: str,
     # Using Stratae Depends
-    db: Injected[Session, Depends(get_session)]
+    db: Injected[Session, Depends(get_session)],
 ):
     await db.users.create(name=name)
 ```
