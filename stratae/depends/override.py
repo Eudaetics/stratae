@@ -5,6 +5,8 @@ from typing import Any, Callable
 
 from stratae.depends import DependsWrapper
 
+_OverrideMap = dict[Callable[..., Any], Any]
+
 
 class _ReusableAwaitable:
     __slots__ = ("value",)
@@ -35,7 +37,7 @@ class _Override:
                 _ReusableAwaitable(self.value) if self.dep.is_async else self.value
             )
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: object) -> None:
         with self.dep.lock:
             self.dep.override.reset(self.token)
             self.dep.override_count -= 1
@@ -43,7 +45,37 @@ class _Override:
                 self.dep.provide = self.dep.dependency
 
 
-def override(func: Callable[..., Any], value: Any):
-    """Override a value for a dependency."""
-    dep = DependsWrapper.find(func)
-    return _Override(dep, value)
+class _Overrides:
+    __slots__ = ("_items",)
+
+    def __init__(self, mapping: _OverrideMap) -> None:
+        self._items: list[_Override] = [
+            _Override(DependsWrapper.find(func), value) for func, value in mapping.items()
+        ]
+
+    def __enter__(self) -> None:
+        entered: list[_Override] = []
+        try:
+            for o in self._items:
+                o.__enter__()
+                entered.append(o)
+        except BaseException:
+            for o in reversed(entered):
+                o.__exit__()
+            raise
+
+    def __exit__(self, *_: object) -> None:
+        for o in self._items:
+            o.__exit__()
+
+
+def override(func: Callable[..., Any], value: Any) -> _Override:
+    """Override a single dependency value."""
+    return _Override(DependsWrapper.find(func), value)
+
+
+def overrides(mapping: _OverrideMap) -> _Overrides:
+    """Override multiple dependency values simultaneously."""
+    if not mapping:
+        raise ValueError("overrides() requires at least one entry.")
+    return _Overrides(mapping)

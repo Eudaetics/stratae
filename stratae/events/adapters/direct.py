@@ -1,5 +1,6 @@
 """Direct, in-process synchronous event bus."""
 
+from inspect import iscoroutinefunction
 from typing import Any, Callable, overload
 
 from stratae.events.adapters._base import AnyEventConfig, BaseDirectBus, HandlerDecorator
@@ -7,6 +8,11 @@ from stratae.events.bound import BoundEvent, bind
 from stratae.events.envelope import Envelope
 from stratae.events.event import EventConfig, PubSub, Request, is_request
 from stratae.events.handler import Handler
+
+_ASYNC_HANDLER_REJECTED = (
+    "DirectBus dispatches synchronously and cannot await async handlers;"
+    " register them on AsyncDirectBus instead"
+)
 
 
 class DirectBus(BaseDirectBus):
@@ -24,7 +30,8 @@ class DirectBus(BaseDirectBus):
     ``None``.  Request events block until the registered responder returns
     and emit returns its reply; a request event must have exactly one
     responder at emit time, otherwise ``NoResponderError`` or
-    ``MultipleRespondersError`` is raised.
+    ``MultipleRespondersError`` is raised.  Handlers must be synchronous
+    callables; registering an async handler raises ``TypeError``.
 
     Args:
         use_envelope: When ``True``, each emission opens a scoped
@@ -36,16 +43,18 @@ class DirectBus(BaseDirectBus):
 
         bus = DirectBus()
 
-        create_book = bind(bus.emit, event(PubSub)(Book), config=None)
+        book_created = EventConfig(Book, PubSub)
+        create_book = bus.bind(book_created)
 
-        @bus.handle(create_book.event)
+        @bus.handle(book_created)
         def save_book(book: Book) -> None: ...
 
         create_book(title="Dune", author="Herbert")
 
-        find_book = bus.bind(event(Request[Book])(BookQuery))
+        book_requested = EventConfig(BookQuery, Request[Book])
+        find_book = bus.bind(book_requested)
 
-        @bus.handle(find_book.event)
+        @bus.handle(book_requested)
         def lookup(query: BookQuery) -> Book: ...
 
         book = find_book(title="Dune")
@@ -164,10 +173,10 @@ class DirectBus(BaseDirectBus):
         Register a handler for a config, as a decorator or direct call.
 
         For request events the callable is the responder: it accepts the
-        event's payload and must return the event's reply type.  Async
-        responders are rejected for request events on this synchronous bus.
-        For pub/sub events the callable accepts the payload and its return
-        value is ignored.
+        event's payload and must return the event's reply type.  For pub/sub
+        events the callable accepts the payload and its return value is
+        ignored.  Async callables are rejected with ``TypeError`` on this
+        synchronous bus; register them on ``AsyncDirectBus`` instead.
 
         Returns the ``Handler`` instance in both forms so callers can pass it
         to ``remove`` later.
@@ -186,6 +195,13 @@ class DirectBus(BaseDirectBus):
             return self._register(config, f)
 
         return decorator
+
+    def _register[**P, R](
+        self, config: AnyEventConfig, fn: Callable[P, R]
+    ) -> Handler[P, AnyEventConfig, R]:
+        if iscoroutinefunction(fn):
+            raise TypeError(_ASYNC_HANDLER_REJECTED)
+        return super()._register(config, fn)
 
     def _dispatch_plain(self, payload: Any, event: AnyEventConfig) -> Any:
         if is_request(event):

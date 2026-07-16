@@ -9,6 +9,8 @@ DirectBus:
 - All handlers registered on a channel receive the payload.
 - Handlers on different channels are isolated from each other.
 - handle returns a Handler.
+- Async handlers are rejected with TypeError at registration, in both the
+  direct and decorator forms of handle.
 - remove removes a handler; subsequent emits do not invoke it.
 - The same callable may be registered multiple times independently.
 - emit dispatches the payload to all registered handlers.
@@ -209,6 +211,41 @@ def test_handle_returns_handler(bus: DirectBus):
     handle = bus.handle(emit.event, fn)
 
     assert handle.call is fn
+
+
+def test_async_handler_rejected_at_registration(bus: DirectBus):
+    """
+    Registering an async handler directly should raise TypeError.
+
+    Given: An async callable
+    When: handle is called with it and an EventConfig
+    Then: A TypeError should be raised
+    """
+
+    # Arrange
+    async def handler(_: _TaskCreated) -> None: ...
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        bus.handle(_task_created, handler)
+
+
+def test_async_handler_rejected_in_decorator_form(bus: DirectBus):
+    """
+    The decorator form of handle should reject an async handler.
+
+    Given: A decorator produced by handle without a callable
+    When: The decorator is applied to an async callable
+    Then: A TypeError should be raised
+    """
+    # Arrange
+    decorator = bus.handle(_task_created)
+
+    async def handler(_: _TaskCreated) -> None: ...
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        decorator(handler)
 
 
 def test_remove_prevents_further_dispatch(bus: DirectBus):
