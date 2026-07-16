@@ -2,6 +2,6 @@
 
 from stratae.serde.encoder import encode
 from stratae.serde.packer import pack
-from stratae.serde.unpacker import Unpacker, unpack
+from stratae.serde.unpacker import Unpacker
 
-__all__ = ["Unpacker", "encode", "pack", "unpack"]
+__all__ = ["Unpacker", "encode", "pack"]
