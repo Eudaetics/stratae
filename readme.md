@@ -1,6 +1,6 @@
 # Stratae
 
-Stratae is a set of individual tools for Python 3.12+. It currently covers dependency injection, lifecycle-scoped caching and cleanup, and typed events. Each tool works on its own: use lifecycle management without injection, or dependency injection by itself.
+Stratae is a set of developer tools for Python 3.12+. It currently covers dependency injection, lifecycle-scoped caching and cleanup, and events. Each tool works on its own: use lifecycle management without injection, or dependency injection by itself.
 
 These tools work anywhere instead of being tied to a particular framework. A function decorated with @inject is still an ordinary function: callable directly, importable, or wired into a web framework or worker. The same holds for @lifecycle.cache.
 
@@ -82,13 +82,14 @@ with lifecycle.start('application'):
         # Session is created at first call and cached automatically
         # All get_session calls in this request will return the same session
         db = get_session()
+        assert db is get_session()
         db.users.create_user('John')
     with lifecycle.start('request'):
         # New request, new session
         db = get_session()
 ```
 
-Each `Scope` also takes a `storage` option (`"dense"`, the default, or `"sparse"`) that controls how cached slots are allocated. Dense indexes slots by position and is cheapest per access; sparse allocates lazily and resets only the slots touched during an activation. Dense wins for scopes with few registered functions or where most get used per activation; sparse pulls ahead for scopes registering many functions where a given activation only touches a handful (e.g. a large API's per-resource caches).
+Each `Scope` also takes a `storage` option (`"dense"`, the default, or `"sparse"`) that controls how cached slots are allocated. Dense indexes slots by position and is cheapest per access; sparse allocates lazily and resets only the slots touched during an activation. Dense wins for scopes with few registered functions or where most cached functions get used per activation; sparse pulls ahead for scopes registering many functions where a given activation only touches a handful of the cached functions.
 
 ### Context Variables
 
@@ -275,21 +276,20 @@ lifecycle = AsyncLifecycle([Scope('request', 'context')])
 # Add the middleware that starts a lifecycle request
 app.add_middleware(RequestLifecycleMiddleware, lifecycle, 'request')
 
-# Everything that needs the session will get the same session
+# Every FastAPI request will now get the same session within that request
 @lifecycle.cache('request')
 @async_resource
 async def get_session():
     session = AsyncSession()
     try:
         yield session
-        session.commit()
+        await session.commit()
     except:
         session.rollback()
         raise
     finally:
         session.close()
 
-# Every request will get a new session
 @app.post('/users')
 @inject
 async def post_user(
@@ -300,10 +300,6 @@ async def post_user(
     await db.users.create(name=name)
 ```
 
-## Documentation
-
-More detailed documentation will be published soon.
-
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
@@ -312,7 +308,7 @@ Before contributing, please:
 
 1. Check for open issues or open a new issue to start a discussion
 2. Fork the repository on GitHub
-3. Install development dependencies with `pip install -e ".[dev]"`
+3. Install development dependencies with `pip install -e ".[dev,test]"`
 4. Run pre-commit hooks with `pre-commit install`
 5. Make your changes following the project's coding style
 6. Write tests that cover your changes
