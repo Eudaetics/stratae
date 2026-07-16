@@ -1,6 +1,7 @@
 """Byte-decoding entrypoint for deserializing whole payloads."""
 
-from typing import Protocol
+import json
+from typing import Any, Protocol
 
 
 class Unpacker(Protocol):
@@ -25,3 +26,22 @@ class Unpacker(Protocol):
 
         """
         ...
+
+
+def unpack_json[S](data: bytes, /, *, type: type[S]) -> S:
+    """
+    Deserialize JSON bytes by constructing ``type`` from keyword arguments.
+
+    The default ``Unpacker`` — the inverse of ``pack``'s default — covering
+    plain keyword-constructible classes and dataclasses.
+
+    Args:
+        data: The raw JSON bytes to decode.
+        type: The type to reconstruct.
+
+    Returns:
+        The reconstructed ``type`` instance.
+
+    """
+    fields: dict[str, Any] = json.loads(data)
+    return type(**fields)

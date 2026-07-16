@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Protocol, overload
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Protocol, overload
 
 from aiormq import connect
 
@@ -12,32 +12,49 @@ from stratae.events.bound import AsyncBoundEvent, abind
 from stratae.events.event import EventConfig, PubSub
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.handler import Handler
-from stratae.serde import Unpacker, pack, unpack
+from stratae.serde import Unpacker, pack, unpack_json
 
 if TYPE_CHECKING:
     from aiormq.abc import AbstractChannel, AbstractConnection, DeliveredMessage
+    from pamqp.commands import Basic
 
 _log = logging.getLogger(__name__)
 
 _NOT_CONNECTED = "publisher is not connected; open it with 'async with' before emitting"
 
+_NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
+
 
 class RabbitMQConfig:
     """Routing config for a RabbitMQ publish binding."""
 
-    __slots__ = ("exchange", "routing_key")
+    __slots__ = ("exchange", "exchange_type", "properties", "routing_key")
 
-    def __init__(self, exchange: str, routing_key: str) -> None:
+    def __init__(
+        self,
+        exchange: str,
+        routing_key: str,
+        *,
+        exchange_type: str | None = None,
+        properties: Basic.Properties | None = None,
+    ) -> None:
         """
         Bind routing config for a single publish target.
 
         Args:
-            exchange:    The RabbitMQ exchange to publish to.
-            routing_key: The routing key for the message.
+            exchange:      The RabbitMQ exchange to publish to.
+            routing_key:   The routing key for the message.
+            exchange_type: When given, the publisher declares the exchange
+                           with this type before first publishing to it.
+            properties:    AMQP message properties published with every
+                           message, e.g. ``Basic.Properties(delivery_mode=2)``
+                           for persistent messages.
 
         """
         self.exchange = exchange
         self.routing_key = routing_key
+        self.exchange_type = exchange_type
+        self.properties = properties
 
 
 class RabbitMQPublisher:
@@ -46,7 +63,9 @@ class RabbitMQPublisher:
 
     Manages a single connection and channel for the lifetime of the context.
     Payloads are serialized with the binding's serializer when one is given,
-    falling back to ``stratae.serde.pack``.
+    falling back to the adapter-wide ``serializer`` (default
+    ``stratae.serde.pack``).  A config carrying an ``exchange_type`` has its
+    exchange declared before its first publish.
 
     Example::
 
@@ -59,17 +78,21 @@ class RabbitMQPublisher:
 
     """
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, serializer: Callable[[Any], bytes] = pack) -> None:
         """
         Initialise the publisher with a RabbitMQ connection URL.
 
         Args:
-            url: AMQP connection URL, e.g. ``"amqp://guest:guest@localhost/"``.
+            url:        AMQP connection URL, e.g. ``"amqp://guest:guest@localhost/"``.
+            serializer: Encodes payloads to bytes for every binding that does
+                        not supply its own.  Defaults to ``stratae.serde.pack``.
 
         """
         self._url = url
+        self._serializer = serializer
         self._connection: AbstractConnection | None = None
         self._channel: AbstractChannel | None = None
+        self._declared: set[str] = set()
 
     async def __aenter__(self) -> RabbitMQPublisher:
         """
@@ -89,6 +112,7 @@ class RabbitMQPublisher:
             await self._connection.close()
             self._connection = None
             self._channel = None
+            self._declared.clear()
 
     def bind[**P, S: Any](
         self,
@@ -104,7 +128,8 @@ class RabbitMQPublisher:
             event:      The ``EventConfig`` whose factory constructs the payload.
             config:     The exchange and routing key to publish to.
             serializer: Encodes the payload to bytes before publishing.
-                        Defaults to ``stratae.serde.pack``.
+                        Overrides the adapter's ``serializer`` for this
+                        binding only.
 
         """
         return abind(self.emit, event, config=config, serializer=serializer)
@@ -126,7 +151,8 @@ class RabbitMQPublisher:
                         adapter-uniform emit signatures, not used for routing.
             config:     The exchange and routing key to publish to.
             serializer: Encodes the payload to bytes before publishing.
-                        Defaults to ``stratae.serde.pack``.
+                        Overrides the adapter's ``serializer`` for this
+                        call only.
 
         Raises:
             NotConnectedError: When the publisher's connection is not open.
@@ -134,26 +160,88 @@ class RabbitMQPublisher:
         """
         if self._channel is None:
             raise NotConnectedError(_NOT_CONNECTED)
-        body = serializer(payload) if serializer is not None else pack(payload)
+        if config.exchange_type is not None and config.exchange not in self._declared:
+            await self._channel.exchange_declare(
+                config.exchange, exchange_type=config.exchange_type
+            )
+            self._declared.add(config.exchange)
+        body = serializer(payload) if serializer is not None else self._serializer(payload)
         await self._channel.basic_publish(
-            body, exchange=config.exchange, routing_key=config.routing_key
+            body,
+            exchange=config.exchange,
+            routing_key=config.routing_key,
+            properties=config.properties,
         )
 
 
 class RabbitMQConsumeConfig:
     """Routing config for a RabbitMQ consume binding."""
 
-    __slots__ = ("queue",)
+    __slots__ = (
+        "arguments",
+        "auto_delete",
+        "binding_keys",
+        "durable",
+        "exchange",
+        "exchange_type",
+        "exclusive",
+        "queue",
+    )
 
-    def __init__(self, queue: str) -> None:
+    def __init__(
+        self,
+        queue: str | None = None,
+        *,
+        exchange: str | None = None,
+        binding_key: str | Iterable[str] = "",
+        exchange_type: str = "fanout",
+        durable: bool | None = None,
+        exclusive: bool | None = None,
+        auto_delete: bool | None = None,
+        arguments: dict[str, Any] | None = None,
+    ) -> None:
         """
         Bind routing config for a single consume source.
 
+        A ``queue`` alone is declared durable and consumed, competing with
+        that queue's other consumers.  Supplying an ``exchange`` switches the
+        registration into subscriber mode: the adapter declares the exchange
+        and a queue, binds them once per ``binding_key``, and consumes the
+        declared queue — server-named, exclusive, and auto-deleted when
+        ``queue`` is omitted, durable when it is named.  The ``durable``,
+        ``exclusive``, and ``auto_delete`` flags override those inferred
+        defaults when given.
+
         Args:
-            queue: The RabbitMQ queue to consume from.
+            queue:         The RabbitMQ queue to consume from.  When omitted,
+                           a private server-named queue is declared instead.
+            exchange:      The exchange to bind the queue to; enables
+                           subscriber mode.
+            binding_key:   The routing key pattern for the binding — one, or
+                           an iterable to bind the queue several times.
+            exchange_type: The type the exchange is declared with.
+            durable:       Overrides the inferred queue durability.
+            exclusive:     Overrides the inferred queue exclusivity.
+            auto_delete:   Overrides the inferred queue auto-delete flag.
+            arguments:     Optional arguments for the queue declaration,
+                           e.g. message TTL or a dead-letter exchange.
+
+        Raises:
+            ValueError: When neither ``queue`` nor ``exchange`` is given.
 
         """
+        if queue is None and exchange is None:
+            raise ValueError(_NO_CONSUME_TARGET)
         self.queue = queue
+        self.exchange = exchange
+        self.binding_keys: tuple[str, ...] = (
+            (binding_key,) if isinstance(binding_key, str) else tuple(binding_key)
+        )
+        self.exchange_type = exchange_type
+        self.durable = durable
+        self.exclusive = exclusive
+        self.auto_delete = auto_delete
+        self.arguments = arguments
 
 
 class _Registration:
@@ -165,7 +253,7 @@ class _Registration:
         self,
         event: EventConfig[Any, Any, PubSub],
         handler: Handler[[Any], RabbitMQConsumeConfig, Any],
-        deserializer: Callable[[bytes], Any] | None,
+        deserializer: Unpacker | None,
     ) -> None:
         self.event = event
         self.handler = handler
@@ -188,14 +276,18 @@ class RabbitMQConsumer:
     registrations made while connected start consuming immediately.  Each
     registration is its own AMQP consumer: two handlers on the same queue
     compete for messages round-robin rather than fanning out.  Fan-out
-    topology belongs to the broker — one queue per consumer, each bound to
-    the same exchange.
+    comes from topology: a config with an ``exchange`` declares and binds
+    its own queue — a private server-named one when unnamed, a durable one
+    when named — so each such registration sees every message the exchange
+    routes to it.
 
-    Message bodies are decoded with the consumer's type-directed
-    ``deserializer`` (default ``stratae.serde.unpack``) against each event's
-    ``payload_type``, so plain classes, dataclasses, msgspec structs, and
-    the like each take their registered decode path; a per-registration
-    ``deserializer`` overrides it.  Sync and async handlers are both
+    Message bodies are decoded with the consumer's ``deserializer`` — an
+    ``Unpacker`` called as ``deserializer(body, type=payload_type)`` with
+    each event's ``payload_type``.  The default, ``stratae.serde.unpack_json``,
+    decodes JSON and constructs the type from keyword arguments; pass a
+    compatible decoder such as ``msgspec.json.decode`` to swap the format
+    adapter-wide, and a per-registration ``deserializer`` overrides it for
+    one queue.  Sync and async handlers are both
     supported.  A message is acked after its handler returns.  When
     deserialization or handling raises, the message is nacked without
     requeue and the exception is logged — this keeps poison messages from
@@ -215,19 +307,30 @@ class RabbitMQConsumer:
 
     """
 
-    def __init__(self, url: str, deserializer: Unpacker = unpack) -> None:
+    def __init__(
+        self,
+        url: str,
+        deserializer: Unpacker = unpack_json,
+        prefetch_count: int | None = None,
+    ) -> None:
         """
         Initialise the consumer with a RabbitMQ connection URL.
 
         Args:
-            url:          AMQP connection URL, e.g. ``"amqp://guest:guest@localhost/"``.
-            deserializer: Type-directed deserializer decoding message bodies
-                          into each event's ``payload_type``.  Defaults to
-                          ``stratae.serde.unpack``.
+            url:            AMQP connection URL, e.g. ``"amqp://guest:guest@localhost/"``.
+            deserializer:   Decodes message bodies into each event's
+                            ``payload_type``, called as
+                            ``deserializer(body, type=payload_type)``.
+                            Defaults to ``stratae.serde.unpack_json``.
+            prefetch_count: Channel QoS: the number of unacked messages the
+                            broker delivers ahead.  ``1`` gives fair dispatch
+                            between competing consumers; ``None`` sets no
+                            QoS, matching the broker's unlimited default.
 
         """
         self._url = url
         self._deserializer = deserializer
+        self._prefetch_count = prefetch_count
         self._connection: AbstractConnection | None = None
         self._channel: AbstractChannel | None = None
         self._registrations: dict[Handler[[Any], RabbitMQConsumeConfig, Any], _Registration] = {}
@@ -243,6 +346,8 @@ class RabbitMQConsumer:
         """
         self._connection = await connect(self._url)
         channel = await self._connection.channel()
+        if self._prefetch_count is not None:
+            await channel.basic_qos(prefetch_count=self._prefetch_count)
         self._channel = channel
         for registration in self._registrations.values():
             await self._start(channel, registration)
@@ -266,7 +371,7 @@ class RabbitMQConsumer:
         fn: Callable[[S], R],
         *,
         config: RabbitMQConsumeConfig,
-        deserializer: Callable[[bytes], S] | None = None,
+        deserializer: Unpacker | None = None,
     ) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
 
     @overload
@@ -276,7 +381,7 @@ class RabbitMQConsumer:
         fn: None = None,
         *,
         config: RabbitMQConsumeConfig,
-        deserializer: Callable[[bytes], S] | None = None,
+        deserializer: Unpacker | None = None,
     ) -> _ConsumeDecorator[S]: ...
 
     def handle(
@@ -285,7 +390,7 @@ class RabbitMQConsumer:
         fn: Callable[[Any], Any] | None = None,
         *,
         config: RabbitMQConsumeConfig,
-        deserializer: Callable[[bytes], Any] | None = None,
+        deserializer: Unpacker | None = None,
     ) -> Handler[[Any], RabbitMQConsumeConfig, Any] | _ConsumeDecorator[Any]:
         """
         Register a handler consuming a queue for an event, as a decorator or direct call.
@@ -302,8 +407,8 @@ class RabbitMQConsumer:
                           registers and returns the ``Handler``.
             config:       The queue to consume from.
             deserializer: Decodes a message body into the event's payload.
-                          Overrides the consumer's type-directed deserializer
-                          for this registration only.
+                          Overrides the consumer's ``deserializer`` for this
+                          registration only.
 
         """
         if fn is not None:
@@ -337,7 +442,7 @@ class RabbitMQConsumer:
         event: EventConfig[Any, Any, PubSub],
         fn: Callable[[Any], Any],
         config: RabbitMQConsumeConfig,
-        deserializer: Callable[[bytes], Any] | None,
+        deserializer: Unpacker | None,
     ) -> Handler[[Any], RabbitMQConsumeConfig, Any]:
         handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(fn, config)
         registration = _Registration(event, handler, deserializer)
@@ -350,13 +455,32 @@ class RabbitMQConsumer:
         return handler
 
     async def _start(self, channel: AbstractChannel, registration: _Registration) -> None:
-        ok = await channel.basic_consume(
-            registration.handler.config.queue, self._on_message(registration)
-        )
+        queue = await self._declare(channel, registration.handler.config)
+        ok = await channel.basic_consume(queue, self._on_message(registration))
         registration.consumer_tag = ok.consumer_tag
         if registration.handler not in self._registrations and ok.consumer_tag is not None:
             registration.consumer_tag = None
             await channel.basic_cancel(ok.consumer_tag)
+
+    def _queue_declare_setup(self, channel: AbstractChannel, config: RabbitMQConsumeConfig):
+        named = config.queue is not None
+        return channel.queue_declare(
+            config.queue or "",
+            durable=named if config.durable is None else config.durable,
+            exclusive=(not named) if config.exclusive is None else config.exclusive,
+            auto_delete=(not named) if config.auto_delete is None else config.auto_delete,
+            arguments=config.arguments,
+        )
+
+    async def _declare(self, channel: AbstractChannel, config: RabbitMQConsumeConfig) -> str:
+        declared = await self._queue_declare_setup(channel, config)
+        queue = config.queue or declared.queue or ""
+        if config.exchange is None:
+            return queue
+        await channel.exchange_declare(config.exchange, exchange_type=config.exchange_type)
+        for binding_key in config.binding_keys:
+            await channel.queue_bind(queue, config.exchange, routing_key=binding_key)
+        return queue
 
     def _discard_start(self, task: asyncio.Task[None]) -> None:
         self._starting.discard(task)
@@ -367,9 +491,8 @@ class RabbitMQConsumer:
             _log.error("failed to start AMQP consumer", exc_info=exc)
 
     def _deserialize(self, registration: _Registration, body: bytes) -> Any:
-        if registration.deserializer is not None:
-            return registration.deserializer(body)
-        return self._deserializer(registration.event.payload_type, body)
+        unpacker = registration.deserializer or self._deserializer
+        return unpacker(body, type=registration.event.payload_type)
 
     def _on_message(
         self, registration: _Registration

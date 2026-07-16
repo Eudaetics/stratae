@@ -5,6 +5,7 @@ This test suite verifies the following behaviors:
 
 RabbitMQConfig:
 - The exchange and routing_key are stored on initialization.
+- The exchange_type is stored on initialization, defaulting to None.
 
 RabbitMQPublisher:
 - Entering the context opens the connection and allocates a channel.
@@ -15,11 +16,16 @@ RabbitMQPublisher:
 - emit uses the binding's serializer when one is provided.
 - bind returns an AsyncBoundEvent carrying the routing config.
 - Awaiting the AsyncBoundEvent constructs and publishes the payload.
+- emit declares an exchange_type-carrying config's exchange once, before
+  its first publish.
+- emit declares no exchange for configs without an exchange_type.
+- emit publishes the config's AMQP properties with each message.
 """
 
 from unittest.mock import AsyncMock
 
 import pytest
+from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
 from stratae.events.bound import AsyncBoundEvent
@@ -83,6 +89,21 @@ def test_config_stores_exchange_and_routing_key():
 
     assert config.exchange == "events"
     assert config.routing_key == "order.placed"
+
+
+def test_config_stores_exchange_type():
+    """
+    RabbitMQConfig should store its exchange type.
+
+    Given: An exchange type
+    When: A RabbitMQConfig is created with and without one
+    Then: The exchange type should be stored, defaulting to None
+    """
+    declared = RabbitMQConfig("events", "order.placed", exchange_type="fanout")
+    plain = RabbitMQConfig("events", "order.placed")
+
+    assert declared.exchange_type == "fanout"
+    assert plain.exchange_type is None
 
 
 async def test_context_opens_connection_and_channel(
@@ -153,7 +174,7 @@ async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, chann
 
     # Assert
     channel.basic_publish.assert_awaited_once_with(
-        pack(payload), exchange="events", routing_key="order.placed"
+        pack(payload), exchange="events", routing_key="order.placed", properties=None
     )
 
 
@@ -176,7 +197,69 @@ async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel
 
     # Assert
     channel.basic_publish.assert_awaited_once_with(
-        b"custom", exchange="events", routing_key="order.placed"
+        b"custom", exchange="events", routing_key="order.placed", properties=None
+    )
+
+
+async def test_emit_declares_exchange_once(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    ``emit`` should declare an exchange_type-carrying config's exchange once.
+
+    Given: A connected publisher and a config carrying an exchange type
+    When: emit is awaited twice with the config
+    Then: The exchange should be declared once, and both payloads published
+    """
+    # Arrange
+    config = RabbitMQConfig("events", "order.placed", exchange_type="fanout")
+
+    # Act
+    async with publisher:
+        await publisher.emit(_OrderPlaced(1), _order_placed, config)
+        await publisher.emit(_OrderPlaced(2), _order_placed, config)
+
+    # Assert
+    channel.exchange_declare.assert_awaited_once_with("events", exchange_type="fanout")
+    assert channel.basic_publish.await_count == 2
+
+
+async def test_emit_skips_declaration_without_exchange_type(
+    publisher: RabbitMQPublisher, channel: AsyncMock
+):
+    """
+    ``emit`` should not declare exchanges for configs without an exchange type.
+
+    Given: A connected publisher and a config without an exchange type
+    When: emit is awaited
+    Then: No exchange should be declared
+    """
+    # Act
+    async with publisher:
+        await publisher.emit(_OrderPlaced(1), _order_placed, _config)
+
+    # Assert
+    channel.exchange_declare.assert_not_awaited()
+
+
+async def test_emit_publishes_with_properties(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    ``emit`` should publish the config's AMQP properties with the message.
+
+    Given: A connected publisher and a config carrying properties
+    When: emit is awaited
+    Then: The properties should pass through to basic_publish
+    """
+    # Arrange
+    payload = _OrderPlaced(7)
+    properties = Basic.Properties(delivery_mode=2)
+    config = RabbitMQConfig("events", "order.placed", properties=properties)
+
+    # Act
+    async with publisher:
+        await publisher.emit(payload, _order_placed, config)
+
+    # Assert
+    channel.basic_publish.assert_awaited_once_with(
+        pack(payload), exchange="events", routing_key="order.placed", properties=properties
     )
 
 
@@ -211,5 +294,5 @@ async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: Asyn
 
     # Assert
     channel.basic_publish.assert_awaited_once_with(
-        pack(_OrderPlaced(7)), exchange="events", routing_key="order.placed"
+        pack(_OrderPlaced(7)), exchange="events", routing_key="order.placed", properties=None
     )
