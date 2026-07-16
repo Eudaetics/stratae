@@ -155,32 +155,45 @@ def test_to_headers_omits_absent_causation():
     assert CAUSATION_ID_HEADER not in headers
 
 
-def test_from_headers_without_ids_returns_none():
+def test_from_headers_defaults_absent_fields():
     """
-    Headers lacking the identifying pair cannot rebuild an envelope.
+    Fields absent from the headers are minted rather than rejected.
 
-    Given: Headers missing the message or correlation id.
+    Given: Headers carrying only a message id.
     When: from_headers is called.
-    Then: None is returned.
+    Then: The message id is preserved and the rest are defaulted.
     """
-    # Act & Assert
-    assert Envelope.from_headers({}) is None
-    assert Envelope.from_headers({MESSAGE_ID_HEADER: str(uuid4())}) is None
+    # Arrange
+    message_id = uuid4()
+
+    # Act
+    rebuilt = Envelope.from_headers({MESSAGE_ID_HEADER: str(message_id)})
+
+    # Assert
+    assert rebuilt.message_id == message_id
+    assert rebuilt.correlation_id is not None
+    assert rebuilt.causation_id is None
+    assert rebuilt.timestamp.tzinfo == timezone.utc
 
 
-def test_from_headers_with_none_valued_ids_returns_none():
+def test_from_headers_treats_none_values_as_absent():
     """
     Ids present as None values read as absent, not as corruption.
 
     Given: Headers whose identifying keys exist but hold None.
     When: from_headers is called.
-    Then: None is returned without raising.
+    Then: A fresh envelope is minted without raising.
     """
     # Arrange
     headers = {MESSAGE_ID_HEADER: None, CORRELATION_ID_HEADER: None}
 
-    # Act & Assert
-    assert Envelope.from_headers(headers) is None
+    # Act
+    envelope = Envelope.from_headers(headers)
+
+    # Assert
+    assert envelope.message_id is not None
+    assert envelope.correlation_id is not None
+    assert envelope.causation_id is None
 
 
 def test_from_headers_with_invalid_ids_raises():

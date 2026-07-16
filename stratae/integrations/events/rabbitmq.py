@@ -51,6 +51,8 @@ def _envelope_from(message: DeliveredMessage) -> Envelope | None:
         TIMESTAMP_HEADER: properties.timestamp and properties.timestamp.isoformat(),
     }
     headers = native | dict(properties.headers or {})
+    if (headers.get(MESSAGE_ID_HEADER) is None) != (headers.get(CORRELATION_ID_HEADER) is None):
+        _log.info("partial envelope headers; minting the missing id: %r", headers)
     try:
         return Envelope.from_headers(headers)
     except ValueError:

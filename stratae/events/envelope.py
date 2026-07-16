@@ -53,24 +53,22 @@ class Envelope:
         return headers
 
     @classmethod
-    def from_headers(cls, headers: Mapping[str, object]) -> Envelope | None:
+    def from_headers(cls, headers: Mapping[str, object]) -> Envelope:
         """
         Rebuild an envelope from message headers.
 
-        Returns ``None`` when the identifying headers are absent, so
-        transports can fall back to a fresh envelope for untraced
-        messages.
+        Fields absent from the headers are minted fresh, so a partial
+        set — e.g. a foreign message carrying only a message id — keeps
+        what it declares and defaults the rest.
 
         Raises:
-            ValueError: When identifying headers are present but
-                unparseable — corruption worth surfacing, unlike absence.
+            ValueError: When a header is present but unparseable —
+                corruption worth surfacing, unlike absence.
 
         """
-        if headers.get(MESSAGE_ID_HEADER) is None or headers.get(CORRELATION_ID_HEADER) is None:
-            return None
         return cls(
-            message_id=UUID(str(headers[MESSAGE_ID_HEADER])),
-            correlation_id=UUID(str(headers[CORRELATION_ID_HEADER])),
+            message_id=_uuid(headers.get(MESSAGE_ID_HEADER)) or uuid4(),
+            correlation_id=_uuid(headers.get(CORRELATION_ID_HEADER)) or uuid4(),
             causation_id=_uuid(headers.get(CAUSATION_ID_HEADER)),
             timestamp=_when(headers.get(TIMESTAMP_HEADER)),
         )

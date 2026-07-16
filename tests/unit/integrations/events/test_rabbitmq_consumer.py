@@ -42,11 +42,14 @@ RabbitMQConsumer:
   absent.
 - Malformed envelope headers log a warning and scope a fresh envelope
   without blocking the handler.
+- A partial identifying pair is logged before the missing id is minted.
 """
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from pytest_mock import MockerFixture
@@ -779,3 +782,31 @@ async def test_malformed_envelope_headers_log_and_scope_fresh(
     assert seen[0] is not None
     assert "unparseable envelope headers" in caplog.text
     message.channel.basic_ack.assert_awaited_once_with(11)
+
+
+async def test_partial_envelope_headers_log_info(
+    consumer: RabbitMQConsumer, channel: AsyncMock, caplog: pytest.LogCaptureFixture
+):
+    """
+    A lopsided identifying pair should leave evidence before minting.
+
+    Given: A message carrying only a correlation id
+    When: The registered callback receives it
+    Then: An info record should note the partial headers and the handler
+          should continue the delivered correlation chain
+    """
+    # Arrange
+    caplog.set_level(logging.INFO)
+    seen: list[Envelope | None] = []
+    consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
+    correlation_id = uuid4()
+    message = _message(b'{"order_id": 7}', headers={CORRELATION_ID_HEADER: str(correlation_id)})
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert "partial envelope headers" in caplog.text
+    assert seen[0] is not None
+    assert seen[0].correlation_id == correlation_id
