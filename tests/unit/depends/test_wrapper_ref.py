@@ -13,8 +13,7 @@ import weakref
 from typing import Any
 from weakref import ReferenceType
 
-from stratae.depends import Depends, DependsWrapper, inject
-from stratae.depends.inject import Injected
+from stratae.depends import Depends, DependsWrapper, Injected, inject
 
 
 def test_dropped_injection_graph_is_collected():
