@@ -1,8 +1,8 @@
 """Event system: event definitions, bound-event facades, and dispatch protocols."""
 
-from stratae.events.bound import AsyncBoundEvent, BoundEvent, abind, bind
-from stratae.events.envelope import Envelope
-from stratae.events.event import (
+from .bound import AsyncBoundEvent, BoundEvent, abind, bind
+from .envelope import Envelope
+from .event import (
     AsyncEventConfig,
     EventConfig,
     EventType,
@@ -12,13 +12,8 @@ from stratae.events.event import (
     is_request,
     reply_type,
 )
-from stratae.events.exceptions import (
-    EventDispatchError,
-    MultipleRespondersError,
-    NoResponderError,
-)
-from stratae.events.handler import Handler
-from stratae.events.protocols import Consumer, EmitCallable, Producer
+from .handler import Handler
+from .protocols import Consumer, EmitCallable, Producer
 
 __all__ = [
     "AsyncBoundEvent",
@@ -28,11 +23,8 @@ __all__ = [
     "EmitCallable",
     "Envelope",
     "EventConfig",
-    "EventDispatchError",
     "EventType",
     "Handler",
-    "MultipleRespondersError",
-    "NoResponderError",
     "Producer",
     "PubSub",
     "Request",
