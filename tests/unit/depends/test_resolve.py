@@ -8,13 +8,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.depends import Depends
-from stratae.depends._resolver import resolve_function
+from stratae.depends import Depends, Injected
 from stratae.depends.exceptions import (
     CircularDependencyError,
     RegistrationError,
 )
-from stratae.depends.inject import Injected
+from stratae.depends.inject import _resolve_function  # pyright: ignore[reportPrivateUsage]
 
 
 class Dependency:
@@ -57,7 +56,7 @@ def test_resolve_function():
         return dep
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -88,7 +87,7 @@ def test_resolve_function_with_nested_wrapped_dependencies():
     def second_dependency(dep: Injected[int, Depends(first_dependency)]) -> int:
         return dep + 1
 
-    second_dependency = resolve_function(second_dependency)
+    second_dependency = _resolve_function(second_dependency)
 
     def sample_function(
         dep: Injected[int, Depends(second_dependency)],
@@ -98,12 +97,12 @@ def test_resolve_function_with_nested_wrapped_dependencies():
 
     # Act
 
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
     assert resolved_function() == 5
-    assert resolve_function(second_dependency) is second_dependency
+    assert _resolve_function(second_dependency) is second_dependency
 
 
 def test_resolve_function_with_multiple_dependencies():
@@ -123,7 +122,7 @@ def test_resolve_function_with_multiple_dependencies():
         return dep1 + dep2
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -149,7 +148,7 @@ async def test_resolve_function_with_async_dependency():
         return dep.value
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -177,7 +176,7 @@ def test_resolve_sync_function_with_async_dependency():
     with pytest.raises(
         RegistrationError, match="Sync function '.*' cannot have async dependencies"
     ):
-        resolve_function(sync_function)
+        _resolve_function(sync_function)
 
 
 def test_resolve_function_with_dependency_chain():
@@ -200,7 +199,7 @@ def test_resolve_function_with_dependency_chain():
         return dep + non_dep
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -238,7 +237,7 @@ def test_resolve_function_with_chain_and_factory():
         return dep + non_dep + factory
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
     result_1 = resolved_function(2)
     changing_val = 20  # Change the value to see if it affects the result
     result_2 = resolved_function(2)
@@ -283,7 +282,7 @@ def test_resolve_function_with_chain_and_mixed():
         return dep + non_dep + factory
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
     result_1 = resolved_function(2)
     changing_val = 8  # Change the value to see if it affects the result
     result_2 = resolved_function(2)
@@ -317,7 +316,7 @@ def test_resolve_function_with_annotated():
         return f"{dep1}-{dep2}"
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -338,7 +337,7 @@ def test_resolve_function_with_annotated_type():
         return dep
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert resolved_function() == 1
@@ -358,7 +357,7 @@ def test_resolve_function_with_no_dependencies():
         return a + b
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert resolved_function is sample_function
@@ -378,7 +377,7 @@ def test_resolved_function_with_no_dependencies_and_kwargs():
     def sample_function(non_dep1: int, non_dep2: int) -> int:
         return non_dep1 + non_dep2
 
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Act
     result = resolved_function(non_dep1=7, non_dep2=8)
@@ -400,7 +399,7 @@ def test_manual_kwargs_with_no_dependencies():
     def sample_function(a: int, b: int) -> int:
         return a + b
 
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Act
     result = resolved_function(a=5, b=10)
@@ -425,7 +424,7 @@ def test_manual_args_with_partial_dependencies_sync():
     def sample_function(a: int, dep: Injected[int, Depends(dependency)]) -> int:
         return a + dep
 
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Act
     result = resolved_function(3)
@@ -452,7 +451,7 @@ async def test_manual_args_with_partial_dependencies_async():
         await asyncio.sleep(0)
         return a + dep
 
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Act
     result = await resolved_function(3)
@@ -479,7 +478,7 @@ async def test_manual_kwargs_with_partial_dependencies_async():
         await asyncio.sleep(0)
         return a + dep
 
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Act
     result = await resolved_function(a=4)
@@ -507,7 +506,7 @@ def test_resolve_forward_reference():
         return val
 
     # Act
-    resolved_function = resolve_function(test_dep)
+    resolved_function = _resolve_function(test_dep)
     result = resolved_function()
 
     # Assert
@@ -530,7 +529,7 @@ def test_resolve_with_annotated_no_depends():
         return val + 1
 
     # Act
-    resolved_function = resolve_function(test_dep)
+    resolved_function = _resolve_function(test_dep)
 
     # Assert
     assert resolved_function is test_dep
@@ -558,7 +557,7 @@ def test_resolve_with_mixed_annotations():
         return f"{val2}-{val1}"
 
     # Act
-    resolved_function = resolve_function(test_dep)
+    resolved_function = _resolve_function(test_dep)
 
     # Assert
     assert resolved_function(val2="value") == "value-10"
@@ -588,7 +587,7 @@ def test_resolve_type_with_inline_annotation():
         return dep.val + 1
 
     # Act
-    resolved_instance = resolve_function(function_with_dependency)
+    resolved_instance = _resolve_function(function_with_dependency)
 
     # Assert
     assert resolved_instance() == get_dep() + 1
@@ -614,7 +613,7 @@ def test_circular_dependency_detected():
 
     # Act & Assert
     with pytest.raises(CircularDependencyError, match="Circular dependency detected for .*dep1.*"):
-        resolve_function(dep1)
+        _resolve_function(dep1)
 
 
 def test_resolve_function_with_default_on_injected_parameter_raises():
@@ -632,7 +631,7 @@ def test_resolve_function_with_default_on_injected_parameter_raises():
 
     # Act & Assert
     with pytest.raises(RegistrationError, match="Cannot use a default with injected parameter dep"):
-        resolve_function(sample_function)
+        _resolve_function(sample_function)
 
 
 def test_resolve_function_wraps_sync_context_manager():
@@ -653,7 +652,7 @@ def test_resolve_function_wraps_sync_context_manager():
         mock_cleanup()
 
     # Act
-    resolved_function = resolve_function(cm_func)
+    resolved_function = _resolve_function(cm_func)
 
     # Assert
     with resolved_function() as value:
@@ -680,7 +679,7 @@ async def test_resolve_function_wraps_async_context_manager():
         mock_cleanup()
 
     # Act
-    resolved_function = resolve_function(cm_func)
+    resolved_function = _resolve_function(cm_func)
 
     # Assert
     async with resolved_function() as value:
@@ -711,7 +710,7 @@ async def test_resolve_function_wraps_async_context_manager_with_async_dependenc
         mock_cleanup()
 
     # Act
-    resolved_function = resolve_function(cm_func)
+    resolved_function = _resolve_function(cm_func)
     db = asynccontextmanager(resolved_function)
 
     # Assert
@@ -735,7 +734,7 @@ def test_resolve_function_with_var_positional_args():
         return sum(args) + dep
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert resolved_function(1, 2, 3) == 7
@@ -755,7 +754,7 @@ def test_resolve_function_with_var_keyword_kwargs():
         return dep + sum(kwargs.values())
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert resolved_function(a=2, b=3) == 6
@@ -776,7 +775,7 @@ def test_resolve_function_with_var_positional_and_var_keyword():
         return sum(args) + dep + sum(kwargs.values())
 
     # Act
-    resolved_function = resolve_function(sample_function)
+    resolved_function = _resolve_function(sample_function)
 
     # Assert
     assert resolved_function(1, 2, a=3, b=4) == 11
