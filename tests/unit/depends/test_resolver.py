@@ -8,7 +8,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.depends import Depends, Resolver
+from stratae.depends import Depends
+from stratae.depends._resolver import resolve_function
 from stratae.depends.exceptions import (
     CircularDependencyError,
     RegistrationError,
@@ -42,21 +43,6 @@ type DependencyDep = Injected[Dependency, Depends(factory_function)]
 type IntDependency = Injected[int, Depends(get_dep)]
 
 
-def test_initialization():
-    """
-    Verify that Resolver can be initialized without errors.
-
-    Given: an empty Resolver,
-    When: it is created,
-    Then: it should not raise any exceptions.
-    """
-    # Arrange & Act
-    resolver = Resolver()
-
-    # Assert
-    assert isinstance(resolver, Resolver)
-
-
 def test_resolve_function():
     """
     Verify that a function can be resolved with its dependencies.
@@ -65,14 +51,13 @@ def test_resolve_function():
     When: resolve_function is called,
     Then: it should return a resolved function with dependencies injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(dep: Injected[int, Depends(get_dep)]) -> int:
         return dep
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -87,9 +72,8 @@ def test_resolve_function_with_nested_wrapped_dependencies():
     When: resolve_function is called,
     Then: it should return a resolved function resolved once with all dependencies injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def some_wrapper(func: Callable[[int], int]) -> Callable[[Any], Any]:
         @wraps(func)
         def wrapped(*args: Any, **kwargs: Any) -> int:
@@ -104,7 +88,7 @@ def test_resolve_function_with_nested_wrapped_dependencies():
     def second_dependency(dep: Injected[int, Depends(first_dependency)]) -> int:
         return dep + 1
 
-    second_dependency = resolver.resolve_function(second_dependency)
+    second_dependency = resolve_function(second_dependency)
 
     def sample_function(
         dep: Injected[int, Depends(second_dependency)],
@@ -114,12 +98,12 @@ def test_resolve_function_with_nested_wrapped_dependencies():
 
     # Act
 
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
     assert resolved_function() == 5
-    assert resolver.resolve_function(second_dependency) is second_dependency
+    assert resolve_function(second_dependency) is second_dependency
 
 
 def test_resolve_function_with_multiple_dependencies():
@@ -130,9 +114,8 @@ def test_resolve_function_with_multiple_dependencies():
     When: resolve_function is called,
     Then: it should return a resolved function with all dependencies injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(
         dep1: Injected[int, Depends(get_dep)],
         dep2: Injected[int, Depends(get_dep)],
@@ -140,7 +123,7 @@ def test_resolve_function_with_multiple_dependencies():
         return dep1 + dep2
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -155,9 +138,8 @@ async def test_resolve_function_with_async_dependency():
     When: resolve_function is called,
     Then: it should elevate and return a resolved function with the async dependency injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     async def async_dependency() -> Dependency:
         await asyncio.sleep(0)
         return Dependency(3)
@@ -167,7 +149,7 @@ async def test_resolve_function_with_async_dependency():
         return dep.value
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -182,9 +164,8 @@ def test_resolve_sync_function_with_async_dependency():
     When: resolve_function is called,
     Then: it should raise an error.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     async def async_dependency() -> int:
         await asyncio.sleep(0)
         return 3
@@ -196,7 +177,7 @@ def test_resolve_sync_function_with_async_dependency():
     with pytest.raises(
         RegistrationError, match="Sync function '.*' cannot have async dependencies"
     ):
-        resolver.resolve_function(sync_function)
+        resolve_function(sync_function)
 
 
 def test_resolve_function_with_dependency_chain():
@@ -207,9 +188,8 @@ def test_resolve_function_with_dependency_chain():
     When: resolve_function is called,
     Then: it should return a resolved function with all dependencies injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def first_dependency() -> int:
         return 4
 
@@ -220,7 +200,7 @@ def test_resolve_function_with_dependency_chain():
         return dep + non_dep
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -237,9 +217,8 @@ def test_resolve_function_with_chain_and_factory():
     Then: it should return a resolved function with all dependencies injected and factories
             freshly ran.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def factory_function() -> int:
         return 5
 
@@ -259,7 +238,7 @@ def test_resolve_function_with_chain_and_factory():
         return dep + non_dep + factory
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
     result_1 = resolved_function(2)
     changing_val = 20  # Change the value to see if it affects the result
     result_2 = resolved_function(2)
@@ -279,9 +258,8 @@ def test_resolve_function_with_chain_and_mixed():
     Then: it should return a resolved function with all dependencies injected and factories
             freshly ran.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     class Intresolver:
         def __init__(self, value: int = 4):
             self.value = value
@@ -305,7 +283,7 @@ def test_resolve_function_with_chain_and_mixed():
         return dep + non_dep + factory
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
     result_1 = resolved_function(2)
     changing_val = 8  # Change the value to see if it affects the result
     result_2 = resolved_function(2)
@@ -324,9 +302,8 @@ def test_resolve_function_with_annotated():
     When: resolve_function is called,
     Then: it should return a resolved function with all dependencies injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def get_integer() -> int:
         return 7
 
@@ -340,7 +317,7 @@ def test_resolve_function_with_annotated():
         return f"{dep1}-{dep2}"
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert callable(resolved_function)
@@ -355,14 +332,13 @@ def test_resolve_function_with_annotated_type():
     When: resolve_function is called,
     Then: it should return a resolved function with the dependency injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(dep: IntDependency) -> int:
         return dep
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert resolved_function() == 1
@@ -376,14 +352,13 @@ def test_resolve_function_with_no_dependencies():
     When: resolve_function is called,
     Then: it should return the original function unchanged.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(a: int, b: int) -> int:
         return a + b
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert resolved_function is sample_function
@@ -398,13 +373,12 @@ def test_resolved_function_with_no_dependencies_and_kwargs():
     When: resolve_function is called and manual kwargs are provided,
     Then: it should use the manual kwargs.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(non_dep1: int, non_dep2: int) -> int:
         return non_dep1 + non_dep2
 
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Act
     result = resolved_function(non_dep1=7, non_dep2=8)
@@ -421,13 +395,12 @@ def test_manual_kwargs_with_no_dependencies():
     When: resolve_function is called and manual kwargs are provided,
     Then: it should use the manual kwargs without errors.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(a: int, b: int) -> int:
         return a + b
 
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Act
     result = resolved_function(a=5, b=10)
@@ -444,16 +417,15 @@ def test_manual_args_with_partial_dependencies_sync():
     When: resolve_function is called and manual kwargs are provided,
     Then: it should use the manual kwargs and inject the rest of the dependencies.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def dependency() -> int:
         return 7
 
     def sample_function(a: int, dep: Injected[int, Depends(dependency)]) -> int:
         return a + dep
 
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Act
     result = resolved_function(3)
@@ -470,9 +442,8 @@ async def test_manual_args_with_partial_dependencies_async():
     When: resolve_function is called and manual kwargs are provided,
     Then: it should use the manual kwargs and inject the rest of the dependencies.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     async def dependency() -> int:
         await asyncio.sleep(0)
         return 7
@@ -481,7 +452,7 @@ async def test_manual_args_with_partial_dependencies_async():
         await asyncio.sleep(0)
         return a + dep
 
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Act
     result = await resolved_function(3)
@@ -498,9 +469,8 @@ async def test_manual_kwargs_with_partial_dependencies_async():
     When: resolve_function is called and manual kwargs are provided,
     Then: it should use the manual kwargs and inject the rest of the dependencies.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     async def dependency() -> int:
         await asyncio.sleep(0)
         return 8
@@ -509,7 +479,7 @@ async def test_manual_kwargs_with_partial_dependencies_async():
         await asyncio.sleep(0)
         return a + dep
 
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Act
     result = await resolved_function(a=4)
@@ -526,9 +496,8 @@ def test_resolve_forward_reference():
     When: resolve_function is called,
     Then: it should return a resolved function with the forward-referenced type injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def some_dep() -> Dependency:
         """Test dependency that returns SampleType."""
         return Dependency(42)
@@ -538,7 +507,7 @@ def test_resolve_forward_reference():
         return val
 
     # Act
-    resolved_function = resolver.resolve_function(test_dep)
+    resolved_function = resolve_function(test_dep)
     result = resolved_function()
 
     # Assert
@@ -554,15 +523,14 @@ def test_resolve_with_annotated_no_depends():
     When: resolve_function is called,
     Then: it should return the original function unchanged.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def test_dep(val: Annotated[int, "SomeMetadata"]) -> int:
         """Test dependency that uses Annotated int."""
         return val + 1
 
     # Act
-    resolved_function = resolver.resolve_function(test_dep)
+    resolved_function = resolve_function(test_dep)
 
     # Assert
     assert resolved_function is test_dep
@@ -577,9 +545,8 @@ def test_resolve_with_mixed_annotations():
     When: resolve_function is called,
     Then: it should return a resolved function with dependencies injected where applicable.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def get_integer() -> int:
         return 10
 
@@ -591,7 +558,7 @@ def test_resolve_with_mixed_annotations():
         return f"{val2}-{val1}"
 
     # Act
-    resolved_function = resolver.resolve_function(test_dep)
+    resolved_function = resolve_function(test_dep)
 
     # Assert
     assert resolved_function(val2="value") == "value-10"
@@ -605,9 +572,8 @@ def test_resolve_type_with_inline_annotation():
     When: resolve_type is called,
     Then: it should return an instance of the type with dependencies injected.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     class SampleType:
         def __init__(self, val: int):
             self.val = val
@@ -622,7 +588,7 @@ def test_resolve_type_with_inline_annotation():
         return dep.val + 1
 
     # Act
-    resolved_instance = resolver.resolve_function(function_with_dependency)
+    resolved_instance = resolve_function(function_with_dependency)
 
     # Assert
     assert resolved_instance() == get_dep() + 1
@@ -636,9 +602,8 @@ def test_circular_dependency_detected():
     When: resolve_function is called,
     Then: it should raise a CircularDependencyError.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def dep1(dep: int) -> int:
         return dep + 1
 
@@ -649,7 +614,7 @@ def test_circular_dependency_detected():
 
     # Act & Assert
     with pytest.raises(CircularDependencyError, match="Circular dependency detected for .*dep1.*"):
-        resolver.resolve_function(dep1)
+        resolve_function(dep1)
 
 
 def test_resolve_function_with_default_on_injected_parameter_raises():
@@ -660,15 +625,14 @@ def test_resolve_function_with_default_on_injected_parameter_raises():
     When: resolve_function is called,
     Then: it should raise a RegistrationError.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(dep: Injected[int, Depends(get_dep)] = 1) -> int:
         return dep
 
     # Act & Assert
     with pytest.raises(RegistrationError, match="Cannot use a default with injected parameter dep"):
-        resolver.resolve_function(sample_function)
+        resolve_function(sample_function)
 
 
 def test_resolve_function_wraps_sync_context_manager():
@@ -681,7 +645,6 @@ def test_resolve_function_wraps_sync_context_manager():
             with the dependency injected.
     """
     # Arrange
-    resolver = Resolver()
     mock_cleanup = Mock()
 
     @contextmanager
@@ -690,7 +653,7 @@ def test_resolve_function_wraps_sync_context_manager():
         mock_cleanup()
 
     # Act
-    resolved_function = resolver.resolve_function(cm_func)
+    resolved_function = resolve_function(cm_func)
 
     # Assert
     with resolved_function() as value:
@@ -709,7 +672,6 @@ async def test_resolve_function_wraps_async_context_manager():
             with the dependency injected.
     """
     # Arrange
-    resolver = Resolver()
     mock_cleanup = Mock()
 
     @asynccontextmanager
@@ -718,7 +680,7 @@ async def test_resolve_function_wraps_async_context_manager():
         mock_cleanup()
 
     # Act
-    resolved_function = resolver.resolve_function(cm_func)
+    resolved_function = resolve_function(cm_func)
 
     # Assert
     async with resolved_function() as value:
@@ -738,7 +700,6 @@ async def test_resolve_function_wraps_async_context_manager_with_async_dependenc
             manager should behave correctly.
     """
     # Arrange
-    resolver = Resolver()
     mock_cleanup = Mock()
 
     async def async_dependency() -> int:
@@ -750,7 +711,7 @@ async def test_resolve_function_wraps_async_context_manager_with_async_dependenc
         mock_cleanup()
 
     # Act
-    resolved_function = resolver.resolve_function(cm_func)
+    resolved_function = resolve_function(cm_func)
     db = asynccontextmanager(resolved_function)
 
     # Assert
@@ -768,14 +729,13 @@ def test_resolve_function_with_var_positional_args():
     When: resolve_function is called,
     Then: it should return a resolved function that forwards *args and injects the dependency.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(*args: int, dep: Injected[int, Depends(get_dep)]) -> int:
         return sum(args) + dep
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert resolved_function(1, 2, 3) == 7
@@ -789,14 +749,13 @@ def test_resolve_function_with_var_keyword_kwargs():
     When: resolve_function is called,
     Then: it should return a resolved function that forwards **kwargs and injects the dependency.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(dep: Injected[int, Depends(get_dep)], **kwargs: int) -> int:
         return dep + sum(kwargs.values())
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert resolved_function(a=2, b=3) == 6
@@ -811,14 +770,13 @@ def test_resolve_function_with_var_positional_and_var_keyword():
     Then: it should return a resolved function that forwards *args and **kwargs and injects
             the dependency.
     """
-    # Arrange
-    resolver = Resolver()
 
+    # Arrange
     def sample_function(*args: int, dep: Injected[int, Depends(get_dep)], **kwargs: int) -> int:
         return sum(args) + dep + sum(kwargs.values())
 
     # Act
-    resolved_function = resolver.resolve_function(sample_function)
+    resolved_function = resolve_function(sample_function)
 
     # Assert
     assert resolved_function(1, 2, a=3, b=4) == 11
