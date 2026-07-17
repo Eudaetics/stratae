@@ -24,9 +24,15 @@ Quick example:
     ...         user = create_user("Alice")
 
 Modules:
-    cache: Caching protocols and implementations
+    check: Guard checks for controlling behavior
     depends: Dependency injection and resolution
     lifecycle: Scope-based caching and resource management
     context: Context variables with nested scopes
     events: Typed events with pub/sub and request/reply dispatch
+    serde: Serialization and deserialization
+    integrations: Bridges between Stratae modules and third party tools
 """
+
+from . import check, context, depends, events, integrations, lifecycle, serde
+
+__all__ = ["depends", "lifecycle", "context", "events", "check", "integrations", "serde"]
