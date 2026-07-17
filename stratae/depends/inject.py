@@ -8,17 +8,10 @@ This module provides:
 
 from typing import Annotated, Any, Callable, overload
 
-from stratae.depends.resolver import Resolver
-
-_resolver = Resolver()
+from stratae.depends._resolver import resolve_function
 
 Injected = Annotated
 """Alias Annotated for clearer semantics when typing a parameter that will be injected."""
-
-
-def get_resolver() -> Resolver:
-    """Get the global dependency resolver."""
-    return _resolver
 
 
 @overload
@@ -56,7 +49,7 @@ def inject(
     """
 
     def decorator(f: Callable[..., Any]) -> Any:
-        return get_resolver().resolve_function(f)
+        return resolve_function(f)
 
     if sig is not None or func is None:
         return decorator
