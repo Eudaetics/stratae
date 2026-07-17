@@ -1,7 +1,7 @@
 """Dependency Injection Module."""
 
-from stratae.depends.inject import Depends, DependsWrapper, Injected, inject
-from stratae.depends.override import override, overrides
+from .inject import Depends, DependsWrapper, Injected, inject
+from .override import override, overrides
 
 __all__ = [
     "Depends",

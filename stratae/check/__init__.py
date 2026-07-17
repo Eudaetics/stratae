@@ -15,6 +15,6 @@ Example:
 
 """
 
-from stratae.check.require import require
+from .require import require
 
 __all__ = ["require"]

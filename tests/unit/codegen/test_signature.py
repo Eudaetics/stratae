@@ -5,7 +5,8 @@ from typing import Any, Callable
 
 import pytest
 
-from stratae.codegen import InvalidTransitionError, render_parameters
+from stratae.codegen import render_parameters
+from stratae.codegen.exceptions import InvalidTransitionError
 
 
 def _typed_empty(): ...
