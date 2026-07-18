@@ -33,6 +33,6 @@ Modules:
     integrations: Bridges between Stratae modules and third party tools
 """
 
-from . import check, context, depends, events, integrations, lifecycle, serde
+from . import checks, context, depends, events, integrations, lifecycle, serde
 
-__all__ = ["depends", "lifecycle", "context", "events", "check", "integrations", "serde"]
+__all__ = ["depends", "lifecycle", "context", "events", "checks", "integrations", "serde"]
