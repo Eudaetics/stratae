@@ -3,7 +3,7 @@ Unit tests for abind and abind_factory.
 
 This test suite verifies the following behaviors:
 
-abind — direct form:
+abind direct form:
 - Returns an AsyncBoundEvent.
 - The AsyncBoundEvent uses the event's schema as its factory.
 - The AsyncBoundEvent stores the provided config.
@@ -11,7 +11,7 @@ abind — direct form:
 - Calling the AsyncBoundEvent returns the emitter's result.
 - An async factory is awaited before its result is forwarded to the emitter.
 
-abind — decorator form:
+abind decorator form:
 - Returns a callable when no event is provided.
 - Applying the callable to an Event returns an AsyncBoundEvent.
 - The returned AsyncBoundEvent uses the event's schema as its factory.

@@ -8,16 +8,47 @@ can read it back by calling the `Context` instance directly. Because
 letting runtime values (a request's user ID, a feature flag, a connection)
 flow into injected functions without changing their signatures.
 
-Example:
-    from stratae.context import Context
+Examples:
+    Setting and reading a value across nested scopes:
 
-    user_id = Context[int]("user_id")
+    .. code-block:: python
 
-    with user_id.use(123):
-        assert user_id.get() == 123
-        with user_id.use(42):
-            assert user_id() == 42
-        assert user_id() == 123
+        from stratae.context import Context
+
+        user_id = Context[int]("user_id")
+
+        with user_id.use(123):
+            assert user_id.get() == 123
+            with user_id.use(42):
+                assert user_id() == 42
+            assert user_id() == 123
+
+    An A/B test, where the `Context` holds the function to run:
+
+    .. code-block:: python
+
+        from typing import Callable
+
+        from stratae.context import Context
+        from stratae.depends import Depends, Injected, inject
+
+        def classic_checkout() -> str: ...
+        def one_click_checkout() -> str: ...
+
+        checkout_renderer = Context[Callable[[], str]](
+            "checkout_renderer", default=classic_checkout
+        )
+
+        @inject
+        def checkout_page(
+            render: Injected[Callable[[], str], Depends(checkout_renderer)],
+        ) -> str:
+            return render()
+
+        checkout_page()  # control: classic checkout
+
+        with checkout_renderer.use(one_click_checkout):
+            checkout_page()  # experiment group: one-click checkout
 
 """
 

@@ -30,4 +30,4 @@ repos:
           - aiormq
           - fastapi
           - msgspec
-        exclude: ^tests/
+        exclude: ^tests/|^docs

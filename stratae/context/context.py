@@ -3,8 +3,9 @@ Callable, injectable values backed by contextvars.
 
 `Context` wraps a `ContextVar` so a value set at one point in the call
 stack (or in a parent async task) can be read elsewhere without threading
-it through every function signature in between. Because instances are
-callable, a `Context[T]` doubles as a `Depends()` provider.
+it through every function signature in between. `Context` are callable
+using an alias of `get`, meaning  a `Context[T]` doubles as a `Depends()`
+provider.
 """
 
 from contextvars import ContextVar, Token
@@ -56,15 +57,20 @@ class Context[T]:
     passed to `get`/`__call__` overrides the constructor's default for that
     call only.
 
+    Type Parameters:
+        T: Type of the stored value.
+
     Example:
-        user_id = Context[int]("user_id")
+        .. code-block:: python
 
-        @inject
-        def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
-            return fetch_user(uid)
+            user_id = Context[int]("user_id")
 
-        with user_id.use(123):
-            get_current_user()
+            @inject
+            def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
+                return fetch_user(uid)
+
+            with user_id.use(123):
+                get_current_user()
 
     """
 
@@ -81,8 +87,12 @@ class Context[T]:
             name: Name used for the underlying `ContextVar` and in error
                 messages when the context is accessed while unset.
             default: Fallback value used when the variable is unset and no
-                call-specific default is given. Defaults to `_NO_DEFAULT`,
-                meaning there is no fallback and an unset access raises.
+                call-specific default is given. When omitted, there is no
+                fallback and an unset access raises.
+
+        Raises:
+            ValueError: If `IGNORE` is passed as the default; it is only
+                meaningful as a call-specific default to `get`/`__call__`.
 
         """
         if default is IGNORE:
@@ -99,9 +109,18 @@ class Context[T]:
         if given, otherwise to the default set at construction time.
 
         Args:
-            default: Fallback value to use if the variable is unset. Defaults
-                to `_NO_DEFAULT`, meaning fall back to the constructor's
-                default (if any) instead.
+            default: Fallback value to use if the variable is unset. When
+                omitted, falls back to the constructor's default, if any.
+                Pass `IGNORE` to bypass the constructor's default and
+                require a set value.
+
+        Returns:
+            The currently set value if any, otherwise the call-specific
+            default if given, otherwise the constructor default.
+
+        Raises:
+            RuntimeError: If the variable is unset and no default is
+                available.
 
         """
         if default is _NO_DEFAULT:
@@ -114,6 +133,7 @@ class Context[T]:
             ) from lookup_err
 
     __call__ = get
+    """An alias of get. Calling an instance is equivalent to instance.get()"""
 
     def set(self, value: T) -> Token[T]:
         """
@@ -121,6 +141,10 @@ class Context[T]:
 
         Args:
             value: Value to assign to the context variable.
+
+        Returns:
+            A token that can be passed to `reset` to restore the previous
+            state.
 
         """
         return self._var.set(value)
@@ -143,6 +167,11 @@ class Context[T]:
         Args:
             value: Value to set for the duration of the returned context
                 manager.
+
+        Returns:
+            A context manager that sets the value on entry (yielding the
+            value) and restores the previous state on exit. Each call
+            returns a fresh scope, so nested or concurrent uses are safe.
 
         """
         return _ContextScope(self, value)

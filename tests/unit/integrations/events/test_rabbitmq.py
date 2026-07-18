@@ -283,7 +283,7 @@ async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: Async
     Given: A connected publisher inside an envelope scope
     When: emit is awaited
     Then: The message should carry x- headers and native fields for a child
-          envelope — same correlation chain, caused by the active envelope
+          envelope; same correlation chain, caused by the active envelope
     """
     # Act
     with Envelope.scope() as envelope:

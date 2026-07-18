@@ -46,7 +46,7 @@ class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
             event:      The ``EventConfig`` whose factory constructs the payload.
             config:     The adapter-specific routing config for this binding.
             serializer: Encodes payload before dispatch. Format is
-                        adapter-defined (bytes, a JSON string, etc.) — when
+                        adapter-defined (bytes, a JSON string, etc.). When
                         omitted, the emitter falls back to its own default
                         serializer, if any.
 
@@ -106,7 +106,7 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
             event:      The ``EventConfig`` whose factory constructs the payload.
             config:     The adapter-specific routing config for this binding.
             serializer: Encodes payload before dispatch. Format is
-                        adapter-defined (bytes, a JSON string, etc.) — when
+                        adapter-defined (bytes, a JSON string, etc.). When
                         omitted, the emitter falls back to its own default
                         serializer, if any.
 

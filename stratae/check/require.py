@@ -9,8 +9,8 @@ remaining checks and the wrapped function immediately.
 Sync functions only accept sync checks (an async check cannot be awaited
 from inside a sync call), validated eagerly at decoration time so a
 sync/async mismatch fails at import rather than on first request. Async
-functions accept a mix of sync and async checks; sync checks run inline
-and async checks are awaited, in the order given.
+functions accept a mix of sync and async checks. Sync checks run inline
+and async checks are awaited in the order given.
 """
 
 import inspect
@@ -68,16 +68,42 @@ def _wrap_sync[**P, R](fn: Callable[P, R], checks: tuple[_Check, ...]) -> Callab
 
 def require[**P, R](*checks: _Check) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
-    Run zero-arg dependency checks (for side effect / raise-on-failure only) before ``fn``.
+    Run zero-arg guard checks before the decorated function in order.
 
-    Each check is expected to be a fully-resolvable callable (e.g. the inner
-    function returned by something like ``require_role("admin")``), so this
-    never touches injection itself — it only sequences already-resolvable
-    checks ahead of the wrapped call.
+    Each check's return value is discarded; only side effects and raises
+    matter. The first check to raise aborts the remaining checks and the
+    wrapped function. Each function must be zero-arg callable. Use dependency
+    injection, lambdas, or other tools to ensure any function that relies
+    on dynamic behavior can be called without passing in arguments.
+
+    Decorating an async function runs sync checks inline and awaits async
+    checks, in the order given. Decorating a sync function requires all
+    checks to be sync, validated eagerly at decoration time so a mismatch
+    fails at import rather than on first call. With no checks, the
+    function is returned unchanged.
+
+    Type Parameters:
+        P: Parameter specification of the decorated function.
+        R: Return type of the decorated function.
+
+    Args:
+        *checks: Zero-arg callables to run, in order, before each call to
+            the decorated function.
+
+    Returns:
+        A decorator that wraps its target function with the given checks,
+        preserving its signature.
 
     Raises:
-     TypeError: If ``fn`` is sync but a check is async — there is no safe
-       way to await an async check from inside a sync function.
+        TypeError: At decoration time, if the decorated function is sync
+            but a check is async, since there is no safe way to await an
+            async check from inside a sync function.
+
+    Example:
+        .. code-block:: python
+
+            @require(is_admin)
+            def delete_user(user_id: int) -> None: ...
 
     """
 

@@ -1,6 +1,10 @@
 """Sphinx configuration for Stratae documentation."""
 
+import sys
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
 
 project = "Stratae"
 copyright = "2026, Scott Wahl"
@@ -24,9 +28,11 @@ source_suffix = {
 
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
+maximum_signature_line_length = 90
+python_use_unqualified_type_names = True
+
 autodoc2_packages = [
     {"path": "../stratae/check", "module": "stratae.check"},
-    {"path": "../stratae/codegen", "module": "stratae.codegen"},
     {"path": "../stratae/context", "module": "stratae.context"},
     {"path": "../stratae/depends", "module": "stratae.depends"},
     {"path": "../stratae/events", "module": "stratae.events"},
@@ -34,17 +40,35 @@ autodoc2_packages = [
     {"path": "../stratae/lifecycle", "module": "stratae.lifecycle"},
     {"path": "../stratae/serde", "module": "stratae.serde"},
 ]
-autodoc2_render_plugin = "myst"
-autodoc2_hidden_objects = ["private"]
+autodoc2_render_plugin = "renderer.Renderer"
+autodoc2_hidden_objects = ["private", "inherited"]
 autodoc2_hidden_regexes = [
-    r"\.__slots__$",
+    r".*\.__slots__",
+    r".*\.__all__",
 ]
+autodoc2_docstring_parser_regexes = [
+    (r".*", "napoleon"),
+]
+autodoc2_index_template = """API Reference
+=============
+
+This page contains auto-generated API reference documentation.
+
+.. toctree::
+   :titlesonly:
+{% for package in top_level %}
+   {{ package.rsplit(".", 1)[-1] }} <{{ package }}>
+{%- endfor %}
+"""
 
 myst_enable_extensions = [
     "colon_fence",
     "deflist",
 ]
 myst_heading_anchors = 3
+
+html_static_path = ["_static"]
+html_css_files = ["custom.css"]
 
 html_theme = "shibuya"
 html_theme_options = {

@@ -1,17 +1,17 @@
 """
 Decorators for running guard checks before a function.
 
-`require` takes one or more zero-arg callables and runs them, in order,
-before the wrapped function. Their return values are discarded — only
-side effects and raises matter. A raise from any check propagates
-immediately, stopping the remaining checks and the wrapped function.
-
-Sync functions only accept sync checks. Async functions accept a mix of
-sync and async checks.
+`require` takes one or more zero-arg callables and runs them before
+the wrapped function in order. Any returned value is discarded. These
+functions are used for their side effects, and for raising errors.
+A raise from any check propagates immediately, stopping any remaining
+checks as well as not running the wrapped function.
 
 Example:
-    @require(is_admin)
-    def foo(): ...
+    .. code-block:: python
+
+        @require(has_active_session, is_admin)
+        def delete_user(user_id: int) -> None: ...
 
 """
 

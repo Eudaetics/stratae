@@ -15,12 +15,12 @@ class EventType:
 
 
 class PubSub(EventType):
-    """Pub/sub pattern discriminant — fire and forget, no return value."""
+    """Pub/sub pattern discriminant. Fire and forget, no return value."""
 
 
 class Request[Reply](EventType):
     """
-    Request/reply pattern discriminant — emit blocks until a responder returns ``Reply``.
+    Request/reply pattern discriminant. Emit blocks until a responder returns ``Reply``.
 
     Always subscript with the reply type (e.g. ``Request[BookFound]``).
     ``EventConfig`` rejects a bare ``Request`` because the reply type could
@@ -38,8 +38,8 @@ class EventConfig[**P, E: Any, T: EventType]:
     """
     Bus-agnostic event definition binding a payload type to a dispatch pattern.
 
-    An ``Event`` captures what an event IS — the payload schema and the
-    dispatch pattern — independently of any bus or routing config.  It is
+    An ``Event`` captures what an event IS (the payload schema and the
+    dispatch pattern) independently of any bus or routing config.  It is
     the shareable definition that one or more bus bindings can reference.
 
     Type parameters:
@@ -147,7 +147,8 @@ class AsyncEventConfig[**P, E: Any, T: EventType](EventConfig[P, E, T]):
             factory:      An async factory used to construct the payload.
             event_type:   The dispatch pattern discriminant class.
             payload_type: The concrete payload type this event carries.
-                          Required — async factories cannot self-derive it.
+                          Required for async factories since they
+                          cannot self-derive it.
             name:         Human-readable identifier for this event.
                           Defaults to ``factory.__name__``.
 
@@ -284,7 +285,7 @@ def reply_type[**P, S: Any, R](event: EventConfig[P, S, Request[R]]) -> type[R]:
     """
     Recover the reply type from a request event's discriminant.
 
-    Adapters use this to know what a blocking emit resolves to at runtime —
+    Adapters use this to know what a blocking emit resolves to at runtime,
     e.g. to deserialize a reply arriving from the far side of a broker.
 
     Args:

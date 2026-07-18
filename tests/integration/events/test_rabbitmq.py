@@ -131,7 +131,7 @@ async def test_envelope_survives_the_wire(broker: _Broker):
 
     Given: A publish made inside an envelope scope
     When: The consumer's handler runs
-    Then: The current envelope should continue the publisher's chain —
+    Then: The current envelope should continue the publisher's chain;
           same correlation id, caused by the publishing envelope
     """
     # Arrange

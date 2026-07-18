@@ -32,7 +32,7 @@ def unpack_json[S](data: bytes, /, *, type: type[S]) -> S:
     """
     Deserialize JSON bytes by constructing ``type`` from keyword arguments.
 
-    The default ``Unpacker`` — the inverse of ``pack``'s default — covering
+    The default ``Unpacker`` (the inverse of ``pack``'s default) covering
     plain keyword-constructible classes and dataclasses.
 
     Args:

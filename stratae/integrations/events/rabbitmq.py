@@ -242,7 +242,7 @@ class RabbitMQConsumeConfig:
         that queue's other consumers.  Supplying an ``exchange`` switches the
         registration into subscriber mode: the adapter declares the exchange
         and a queue, binds them once per ``binding_key``, and consumes the
-        declared queue — server-named, exclusive, and auto-deleted when
+        declared queue: server-named, exclusive, and auto-deleted when
         ``queue`` is omitted, durable when it is named.  The ``durable``,
         ``exclusive``, and ``auto_delete`` flags override those inferred
         defaults when given.
@@ -252,8 +252,7 @@ class RabbitMQConsumeConfig:
                            a private server-named queue is declared instead.
             exchange:      The exchange to bind the queue to; enables
                            subscriber mode.
-            binding_key:   The routing key pattern for the binding — one, or
-                           an iterable to bind the queue several times.
+            binding_key:   The routing key pattern for the binding.
             exchange_type: The type the exchange is declared with.
             durable:       Overrides the inferred queue durability.
             exclusive:     Overrides the inferred queue exclusivity.
@@ -312,11 +311,11 @@ class RabbitMQConsumer:
     registration is its own AMQP consumer: two handlers on the same queue
     compete for messages round-robin rather than fanning out.  Fan-out
     comes from topology: a config with an ``exchange`` declares and binds
-    its own queue — a private server-named one when unnamed, a durable one
-    when named — so each such registration sees every message the exchange
+    its own queue (a private server-named one when unnamed, a durable one
+    when named) so each such registration sees every message the exchange
     routes to it.
 
-    Message bodies are decoded with the consumer's ``deserializer`` — an
+    Message bodies are decoded with the consumer's ``deserializer``: an
     ``Unpacker`` called as ``deserializer(body, type=payload_type)`` with
     each event's ``payload_type``.  The default, ``stratae.serde.unpack_json``,
     decodes JSON and constructs the type from keyword arguments; pass a
@@ -325,7 +324,7 @@ class RabbitMQConsumer:
     one queue.  Sync and async handlers are both
     supported.  A message is acked after its handler returns.  When
     deserialization or handling raises, the message is nacked without
-    requeue and the exception is logged — this keeps poison messages from
+    requeue and the exception is logged. This keeps poison messages from
     redelivering forever and shields the channel from handler errors, which
     would otherwise escape into aiormq's channel machinery and close it.
 

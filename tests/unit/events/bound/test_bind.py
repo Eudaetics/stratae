@@ -3,7 +3,7 @@ Unit tests for bind and bind_factory.
 
 This test suite verifies the following behaviors:
 
-bind — direct form:
+bind direct form:
 - Returns a BoundEvent.
 - The BoundEvent uses the event's schema as its factory.
 - The BoundEvent stores the provided config.
@@ -11,7 +11,7 @@ bind — direct form:
 - Calling the BoundEvent returns the emitter's result.
 - Raises TypeError when the event's factory is async.
 
-bind — decorator form:
+bind decorator form:
 - Returns a callable when no event is provided.
 - Applying the callable to an Event returns a BoundEvent.
 - The returned BoundEvent uses the event's schema as its factory.

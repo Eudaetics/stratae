@@ -58,12 +58,11 @@ class Envelope:
         Rebuild an envelope from message headers.
 
         Fields absent from the headers are minted fresh, so a partial
-        set — e.g. a foreign message carrying only a message id — keeps
+        set (e.g. a foreign message carrying only a message id) keeps
         what it declares and defaults the rest.
 
         Raises:
-            ValueError: When a header is present but unparseable —
-                corruption worth surfacing, unlike absence.
+            ValueError: When a header is present but unparseable.
 
         """
         return cls(

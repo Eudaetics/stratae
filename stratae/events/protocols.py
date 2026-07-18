@@ -10,8 +10,8 @@ class EmitCallable[**P, S: Any, T: EventType, C: Any, R: Any](Protocol):
     """
     Structural protocol for a single bound emit call.
 
-    Captures the call shape of ``Producer.emit`` — payload, event, and
-    config in, some adapter-defined result out — but parameterized over a
+    Captures the call shape of ``Producer.emit`` (payload, event, and
+    config in, some adapter-defined result out) but parameterized over a
     concrete ``R`` instead of ``Any``, so a specific binding (e.g. a
     ``BoundEvent``'s ``emitter``) can be checked against its own return type.
     """
@@ -66,7 +66,7 @@ class Producer(Protocol):
             event:      The ``Event`` definition being emitted.
             config:     Adapter-specific routing configuration.
             serializer: Encodes ``payload`` before dispatch. Format is
-                        adapter-defined (bytes, a JSON string, etc.) — when
+                        adapter-defined (bytes, a JSON string, etc.). When
                         omitted, the adapter falls back to its own default
                         serializer, if any.
 
@@ -88,8 +88,8 @@ class Consumer(Protocol):
     config key, replacing the former ``subscribe``.  It covers all consumer
     patterns: pub/sub handlers, repliers, RPC responders, etc.
 
-    The internal dispatch mechanism — how a queued message or in-process
-    event actually triggers the registered handlers — is an implementation
+    The internal dispatch mechanism (how a queued message or in-process
+    event actually triggers the registered handlers) is an implementation
     detail of each adapter and is not part of this protocol.
     """
 

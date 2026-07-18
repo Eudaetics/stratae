@@ -1,0 +1,12 @@
+/* Render all API-reference sidebar entries in the code font, so the
+   short-titled submodule links match the code-role page titles. Module
+   page filenames all start with "stratae.", which appears in the href
+   regardless of which directory the link is relative to. The current
+   page's own entry has href="#", so it is matched by its position: a
+   direct child of a list that directly contains module-page links. */
+.globaltoc li:has(> a[href*="stratae."]) > a,
+.globaltoc li:has(> a[href*="stratae."]) > a code,
+.globaltoc ul:has(> li > a[href*="stratae."]) > li > a.current {
+    font-family: var(--sy-f-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    font-size: 0.95em;
+}
