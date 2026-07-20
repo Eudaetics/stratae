@@ -302,45 +302,41 @@ def require[**P, R](
     *checks: _Check, mode: CheckMode = "all"
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
-    Run zero-arg guard checks before the decorated function in order.
+    Run zero-arg guard checks before the decorated function.
 
     Each check's return value is discarded; only side effects and raises
-    matter. The first check to raise aborts the remaining checks and the
-    wrapped function. Each function must be zero-arg callable. Use dependency
-    injection, lambdas, or other tools to ensure any function that relies
-    on dynamic behavior can be called without passing in arguments.
-
-    Decorating an async function runs sync checks inline and awaits async
-    checks, in the order given. Decorating a sync function requires all
-    checks to be sync, validated eagerly at decoration time so a mismatch
-    fails at import rather than on first call. With no checks, the
-    function is returned unchanged.
+    matter. Whether a failing check aborts the wrapped function depends on
+    `mode`: under "all" (the default) the first failure aborts it; under
+    "gather" every check still runs first, but a failure still aborts it;
+    under "any" it's only aborted if every check fails. Each check must be
+    a zero-arg callable. Use dependency injection, lambdas, or other tools
+    to ensure any function that relies on dynamic behavior can be called
+    without passing in arguments.
 
     Sync functions only accept sync checks (an async check cannot be
-    awaited from inside a sync call), validated eagerly at decoration
-    time so a sync/async mismatch fails at import rather than on first
-    request. Async functions accept a mix of sync and async checks. Sync
-    checks run inline and async checks are awaited in the order given.
+    awaited from inside a sync call); this is validated eagerly at
+    decoration time so a sync/async mismatch fails at import rather than
+    on first call. Async functions accept a mix of sync and async checks:
+    sync checks run inline and async checks are awaited, in the order
+    given. With no checks, the function is returned unchanged.
 
     Type Parameters:
         P: Parameter specification of the decorated function.
         R: Return type of the decorated function.
 
     Args:
-        *checks: Zero-arg callables to run, in order, before each call to
-            the decorated function.
+        checks: Zero-argument guard callables to run, in order, before ``fn``.
+        mode: How to handle a failing check. "all" (default) stops at the
+            first failure and propagates its exception, so ``fn`` is never
+            called. "gather" runs every check regardless of earlier
+            failures and raises them together as an :class:`ExceptionGroup`,
+            still short-circuiting ``fn``. "any" proceeds to call ``fn``
+            as soon as any one check succeeds, only short-circuiting it
+            if every check fails.
 
     Returns:
         A decorator that wraps its target function with the given checks,
         preserving its signature.
-
-    Args:
-        checks: Zero-argument guard callables to run, in order, before ``fn``.
-        mode: How to handle a failing check. "raise" (default) stops at
-            the first failure and propagates its exception, so ``fn`` is
-            never called. "gather" runs every check regardless of earlier
-            failures and raises them together as an :class:`ExceptionGroup`,
-            still short-circuiting ``fn``.
 
     Raises:
         TypeError: At decoration time, if the decorated function is sync

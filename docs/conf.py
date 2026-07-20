@@ -38,7 +38,7 @@ autodoc2_packages = [
     {"path": "../stratae/events", "module": "stratae.events"},
     {"path": "../stratae/integrations", "module": "stratae.integrations"},
     {"path": "../stratae/lifecycle", "module": "stratae.lifecycle"},
-    {"path": "../stratae/serde", "module": "stratae.serde"},
+    {"path": "../stratae/serde.py", "module": "stratae.serde"},
 ]
 autodoc2_render_plugin = "renderer.Renderer"
 autodoc2_hidden_objects = ["private", "inherited"]
