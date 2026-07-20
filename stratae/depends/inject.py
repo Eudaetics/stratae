@@ -31,7 +31,7 @@ from stratae.depends._wrappers import (
 from stratae.depends.exceptions import (
     CircularDependencyError,
     DependencyNotFoundError,
-    RegistrationError,
+    InjectionSignatureError,
 )
 
 _UNSET = object()
@@ -224,8 +224,8 @@ def inject(
         A function with no injected parameters is returned unchanged.
 
     Raises:
-        RegistrationError: If an injected parameter has a default value,
-            or a sync function depends on an async provider.
+        InjectionSignatureError: If an injected parameter has a default
+            value, or a sync function depends on an async provider.
         CircularDependencyError: If providers depend on each other in a
             cycle.
 
@@ -303,7 +303,7 @@ def _resolve_parameter(
     if depends is None:
         return None
     elif param.default is not Parameter.empty:
-        raise RegistrationError(f"Cannot use a default with injected parameter {param.name}")
+        raise InjectionSignatureError(f"Cannot use a default with injected parameter {param.name}")
 
     if not depends.resolved:
         depends.update(_resolve_function(depends.dependency, _resolving))
@@ -319,7 +319,9 @@ def _validate_sync_async_constraint(
         return
 
     if any(v.is_async for v in resolved_deps.values()):
-        raise RegistrationError(f"Sync function '{func.__name__}' cannot have async dependencies.")
+        raise InjectionSignatureError(
+            f"Sync function '{func.__name__}' cannot have async dependencies."
+        )
 
 
 def _create_wrapper(

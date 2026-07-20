@@ -11,7 +11,7 @@ import pytest
 from stratae.depends import Depends, Injected
 from stratae.depends.exceptions import (
     CircularDependencyError,
-    RegistrationError,
+    InjectionSignatureError,
 )
 from stratae.depends.inject import _resolve_function  # pyright: ignore[reportPrivateUsage]
 
@@ -174,7 +174,7 @@ def test_resolve_sync_function_with_async_dependency():
 
     # Act & Assert
     with pytest.raises(
-        RegistrationError, match="Sync function '.*' cannot have async dependencies"
+        InjectionSignatureError, match="Sync function '.*' cannot have async dependencies"
     ):
         _resolve_function(sync_function)
 
@@ -618,11 +618,11 @@ def test_circular_dependency_detected():
 
 def test_resolve_function_with_default_on_injected_parameter_raises():
     """
-    Default on an injected parameter raises a RegistrationError.
+    Default on an injected parameter raises an InjectionSignatureError.
 
     Given: a Resolver and a function with an injected parameter that has a default value,
     When: resolve_function is called,
-    Then: it should raise a RegistrationError.
+    Then: it should raise an InjectionSignatureError.
     """
 
     # Arrange
@@ -630,7 +630,9 @@ def test_resolve_function_with_default_on_injected_parameter_raises():
         return dep
 
     # Act & Assert
-    with pytest.raises(RegistrationError, match="Cannot use a default with injected parameter dep"):
+    with pytest.raises(
+        InjectionSignatureError, match="Cannot use a default with injected parameter dep"
+    ):
         _resolve_function(sample_function)
 
 
