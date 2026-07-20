@@ -91,6 +91,23 @@ def override(func: Callable[..., Any], value: Any) -> _Override:
     Raises:
         DependencyNotFoundError: If `func` was never passed to `Depends`.
 
+    Examples:
+        .. code-block:: python
+
+            from stratae.depends import Depends, Injected, inject, override
+
+            def get_db() -> Database:
+                return Database()
+
+            @inject
+            def list_users(db: Injected[Database, Depends(get_db)]) -> list[User]:
+                return db.query(User)
+
+            with override(get_db, FakeDatabase()):
+                list_users()  # db is the fake within this scope
+
+            list_users()  # back to the real database
+
     """
     return _Override(Provider.find(func), value)
 
@@ -111,6 +128,32 @@ def overrides(mapping: _OverrideMap) -> _Overrides:
     Raises:
         ValueError: If `mapping` is empty.
         DependencyNotFoundError: If any key was never passed to `Depends`.
+
+    Examples:
+        .. code-block:: python
+
+            from stratae.depends import Depends, Injected, inject, overrides
+
+            def get_db() -> Database:
+                return Database()
+
+            def get_mailer() -> Mailer:
+                return Mailer()
+
+            @inject
+            def create_user(
+                name: str,
+                db: Injected[Database, Depends(get_db)],
+                mailer: Injected[Mailer, Depends(get_mailer)],
+            ) -> User:
+                user = db.insert(User(name=name))
+                mailer.send_welcome_email(user)
+                return user
+
+            with overrides({get_db: FakeDatabase(), get_mailer: FakeMailer()}):
+                create_user("Ada")  # writes to the fake db, sends no real email
+
+            create_user("Grace")  # back to the real database and mailer
 
     """
     if not mapping:
