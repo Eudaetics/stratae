@@ -28,7 +28,7 @@ from stratae.depends._wrappers import (
 from stratae.depends.exceptions import (
     CircularDependencyError,
     DependencyNotFoundError,
-    RegistrationError,
+    InjectionSignatureError,
 )
 
 _UNSET = object()
@@ -140,10 +140,33 @@ def inject(
     precise signature, pass a stub function via `sig`. The decorated
     function is typed as `sig`, not as the original function:
 
-        def _foo_sig(a: int) -> int: ...
+    Args:
+        func: The function to wrap, when used as a bare ``@inject``.
+        sig: Stub function whose signature is presented to type checkers
+            and IDEs in place of the decorated function's. Has no runtime
+            effect.
+
+    Returns:
+        The wrapped function, or a decorator when called with arguments.
+        A function with no injected parameters is returned unchanged.
+
+    Raises:
+        InjectionSignatureError: If an injected parameter has a default
+            value, or a sync function depends on an async provider.
+        CircularDependencyError: If providers depend on each other in a
+            cycle.
+
+    Example:
+        .. code-block:: python
+
+            def _foo_sig(a: int) -> int: ...
+
+            @inject(sig=_foo_sig)
+            def foo(a: int, b: Injected[int, Depends(get_b)]) -> int: ...
 
         @inject(sig=_foo_sig)
         def foo(a: int, b: Injected[int, Depends(get_b)]) -> int: ...
+
     """
 
     def decorator(f: Callable[..., Any]) -> Any:
@@ -210,7 +233,7 @@ def _resolve_parameter(
     if depends is None:
         return None
     elif param.default is not Parameter.empty:
-        raise RegistrationError(f"Cannot use a default with injected parameter {param.name}")
+        raise InjectionSignatureError(f"Cannot use a default with injected parameter {param.name}")
 
     if not depends.resolved:
         depends.update(_resolve_function(depends.dependency, _resolving))
@@ -226,7 +249,9 @@ def _validate_sync_async_constraint(
         return
 
     if any(v.is_async for v in resolved_deps.values()):
-        raise RegistrationError(f"Sync function '{func.__name__}' cannot have async dependencies.")
+        raise InjectionSignatureError(
+            f"Sync function '{func.__name__}' cannot have async dependencies."
+        )
 
 
 def _create_wrapper(
