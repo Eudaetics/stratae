@@ -2,7 +2,7 @@
 Wrappers for dependency injection in synchronous and asynchronous functions.
 
 Wrapper bodies are generated as source text and compiled rather than written as a
-generic *args/**kwargs shim, so the compiled wrapper's signature, defaults, and
+generic ``*args/**kwargs`` shim, so the compiled wrapper's signature, defaults, and
 annotations exactly match the dependency-free view of the original callable for
 introspection by other tooling.
 """
