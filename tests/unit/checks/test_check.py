@@ -118,6 +118,25 @@ def test_check_any_swallows_errors_if_one_succeeds():
     assert fn.mock_calls == [call.fail(), call.first()]
 
 
+def test_check_any_swallows_errors_if_only_last_succeeds():
+    """
+    `check` returns on first success when errors="any" and swallows errors.
+
+    Given: `check` is called with errors="any",
+    When: Some called checks fail, and only the last check doesn't raise,
+    Then: `check` returns without raising.
+    """
+    # Arrange
+    fn = Mock()
+    fn.fail = Mock(side_effect=ValueError("broken"))
+
+    # Act
+    check(fn.fail, fn.first, mode="any")
+
+    # Assert
+    assert fn.mock_calls == [call.fail(), call.first()]
+
+
 async def test_check_async_runs_all_functions():
     """
     `check_async` should run every function when no function raises.
@@ -212,6 +231,25 @@ async def test_check_async_any_swallows_errors_if_one_succeeds():
 
     # Act
     await check_async(fn.fail, fn.first, fn.second, fn.third, mode="any")
+
+    # Assert
+    assert fn.mock_calls == [call.fail(), call.first()]
+
+
+async def test_check_async_any_swallows_errors_if_only_last_succeeds():
+    """
+    `check_async` returns on first success when errors="any" and swallows errors.
+
+    Given: `check_async` is called with errors="any",
+    When: Some called checks fail, and only the last check doesn't raise,
+    Then: `check_async` returns without raising.
+    """
+    # Arrange
+    fn = Mock()
+    fn.fail = Mock(side_effect=ValueError("broken"))
+
+    # Act
+    await check_async(fn.fail, fn.first, mode="any")
 
     # Assert
     assert fn.mock_calls == [call.fail(), call.first()]
