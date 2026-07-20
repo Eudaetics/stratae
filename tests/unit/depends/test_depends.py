@@ -1,6 +1,7 @@
 """Test suite for the Depends class in the dependency injection module."""
 
-from stratae.depends import Depends, DependsWrapper
+from stratae.depends import Depends
+from stratae.depends._provide import Provider
 
 
 def test_depends_initialization():
@@ -20,7 +21,7 @@ def test_depends_initialization():
     depends_instance = Depends(sample_dependency)
 
     # Assert
-    assert isinstance(depends_instance, DependsWrapper)
+    assert isinstance(depends_instance, Provider)
     assert depends_instance.dependency == sample_dependency
 
 
@@ -43,5 +44,5 @@ def test_depends_with_lambda():
     depends_instance = Depends(sample_lambda)
 
     # Assert
-    assert isinstance(depends_instance, DependsWrapper)
+    assert isinstance(depends_instance, Provider)
     assert depends_instance.dependency == sample_lambda

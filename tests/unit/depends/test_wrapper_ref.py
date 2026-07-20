@@ -3,7 +3,7 @@ Memory tests for the dependency injection registries.
 
 Locally defined injected functions must be collectable once user code drops them: a
 long-running process that defines and injects functions inside handlers would otherwise
-grow the DependsWrapper registry forever. The registry holds its wrappers weakly and the
+grow the Provider registry forever. The registry holds its wrappers weakly and the
 Resolver keeps no state, so the only references to an injection graph are the user's own.
 """
 
@@ -13,23 +13,24 @@ import weakref
 from typing import Any
 from weakref import ReferenceType
 
-from stratae.depends import Depends, DependsWrapper, Injected, inject
+from stratae.depends import Depends, Injected, inject
+from stratae.depends._provide import Provider
 
 
 def test_dropped_injection_graph_is_collected():
     """
     A locally defined injected function is garbage collected once dropped.
 
-    Given: an injected function, its dependency, and the dependency's DependsWrapper,
+    Given: an injected function, its dependency, and the dependency's Provider,
         all defined locally with no surviving user references,
     When: garbage collection runs,
-    Then: the whole graph should be collected, including the registry's DependsWrapper.
+    Then: the whole graph should be collected, including the registry's Provider.
     """
 
     # Arrange
     # The graph is built in a nested call so its frame is gone before collection runs;
     # only these weak references survive into the test frame.
-    def build() -> tuple[ReferenceType[Any], ReferenceType[Any], ReferenceType[DependsWrapper]]:
+    def build() -> tuple[ReferenceType[Any], ReferenceType[Any], ReferenceType[Provider]]:
         def local_dep() -> int:
             return 1
 
@@ -41,7 +42,7 @@ def test_dropped_injection_graph_is_collected():
         return (
             weakref.ref(local_func),
             weakref.ref(local_dep),
-            weakref.ref(DependsWrapper.find(local_dep)),
+            weakref.ref(Provider.find(local_dep)),
         )
 
     wrapper_ref, dep_ref, depends_ref = build()
@@ -72,7 +73,7 @@ def test_live_consumer_keeps_dependency_registered():
 
     Given: an injected function that is still referenced,
     When: garbage collection runs,
-    Then: the dependency's DependsWrapper should survive and remain findable.
+    Then: the dependency's Provider should survive and remain findable.
     """
 
     # Arrange
@@ -83,12 +84,12 @@ def test_live_consumer_keeps_dependency_registered():
     def local_func(dep: Injected[int, Depends(local_dep)]) -> int:
         return dep
 
-    depends_ref = weakref.ref(DependsWrapper.find(local_dep))
+    depends_ref = weakref.ref(Provider.find(local_dep))
 
     # Act
     gc.collect()
 
     # Assert
     assert depends_ref() is not None
-    assert DependsWrapper.find(local_dep) is depends_ref()
+    assert Provider.find(local_dep) is depends_ref()
     assert local_func() == 2
