@@ -1,4 +1,13 @@
-"""Scope activation storage - shared vars, exit stacks, and the UNSET sentinel."""
+"""
+Scope activation storage - shared vars, exit stacks, and the UNSET sentinel.
+
+Each activated scope holds a `SlotStorage` (a list for "dense" scopes, a
+`SlotDict` for "sparse" ones) reachable through a `ScopeVar` - a
+`contextvars.ContextVar` for `isolation="context"` scopes, or a `SharedVar`
+for `isolation="shared"` ones. `build_lifecycle_state` builds one of each,
+plus the per-scope bookkeeping a `Lifecycle`/`AsyncLifecycle` needs, from a
+sequence of `Scope` declarations.
+"""
 
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from contextvars import ContextVar
@@ -16,9 +25,11 @@ class SlotDict(dict[int, Any]):
     __slots__ = ()
 
     def __missing__(self, key: int) -> Any:
+        """Return UNSET for a slot that was never written, without inserting it."""
         return UNSET
 
     def copy(self) -> "SlotDict":
+        """Return a shallow copy, preserving the `__missing__` behavior."""
         return SlotDict(self)
 
 
@@ -88,13 +99,33 @@ class ScopeVarProto[TokenT](Protocol):
     call site - narrowing would cost an isinstance per activation exit.
     """
 
-    def set(self, value: SlotStorage, /) -> TokenT: ...
+    def set(self, value: SlotStorage, /) -> TokenT:
+        """Activate the scope with `value`, returning a token `reset` accepts."""
+        ...
 
-    def reset(self, token: TokenT, /) -> None: ...
+    def reset(self, token: TokenT, /) -> None:
+        """Deactivate the scope, using the token returned by the matching `set`."""
+        ...
 
 
 class LifecycleState(NamedTuple):
-    """Per-scope state a Lifecycle/AsyncLifecycle manager builds once at construction."""
+    """
+    Per-scope state a Lifecycle/AsyncLifecycle manager builds once at construction.
+
+    Args:
+        templates: Each scope's empty-slot template, copied on every
+            activation.
+        scope_vars: Each scope's activation holder - a `ContextVar` for
+            context-isolated scopes, a `SharedVar` for shared ones.
+        contexts: One reusable context-manager instance per shared scope,
+            keyed by scope name; context-isolated scopes are absent here
+            since they need a fresh instance per activation.
+        counters: Per-scope slot counter for sparse-backed scopes, used to
+            mint new slot indices.
+        free_slots: Per-scope stack of released slot indices available for
+            reuse before minting a new one.
+
+    """
 
     templates: dict[str, SlotStorage]
     scope_vars: dict[str, ScopeVar]
@@ -152,6 +183,16 @@ def build_lifecycle_state(
     Both managers derive identical state from their scopes, differing only in which
     context manager class wraps a shared scope's activation - passed in so this stays
     agnostic to sync vs. async.
+
+    Args:
+        scopes: The scopes to build state for, already validated.
+        context_cls: `LifecycleContext` or `AsyncLifecycleContext`,
+            determining which context manager class wraps a shared scope's
+            activation.
+
+    Returns:
+        The `LifecycleState` a `Lifecycle`/`AsyncLifecycle` stores on itself.
+
     """
     templates = _build_templates(scopes)
     scope_vars = _build_scope_vars(scopes)
@@ -197,17 +238,28 @@ async def _aclose_one(
 
 
 class ExitStack:
+    """
+    Sync exit stack for context managers entered by resources within a scope activation.
+
+    Lives in a scope's reserved slot 0, created lazily on first use; `close`
+    unwinds every entered context manager in reverse order when the owning
+    scope deactivates.
+    """
+
     __slots__ = ("_contexts",)
 
     def __init__(self) -> None:
+        """Initialize with no registered context managers."""
         self._contexts: list[AbstractContextManager[Any]] = []
 
     def enter_context[R](self, ctx: AbstractContextManager[R]) -> R:
+        """Enter a context manager and register it for cleanup on close()."""
         result = ctx.__enter__()
         self._contexts.append(ctx)
         return result
 
     def close(self) -> None:
+        """Close every registered context manager, in reverse order, running all of them."""
         exc: Exception | None = None
         while self._contexts:
             exc = _close_one(self._contexts.pop(), exc)
@@ -216,6 +268,14 @@ class ExitStack:
 
 
 class AsyncExitStack:
+    """
+    Async exit stack for context managers entered by resources within a scope activation.
+
+    Lives in a scope's reserved slot 0, created lazily on first use; `aclose`
+    unwinds every entered context manager in reverse order when the owning
+    scope deactivates, awaiting only the async ones.
+    """
+
     __slots__ = ("_contexts",)
 
     def __init__(self) -> None:

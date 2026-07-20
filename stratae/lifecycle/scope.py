@@ -1,4 +1,11 @@
-"""Scope definition for hierarchical lifecycle scoping and cache isolation configuration."""
+"""
+Scope definitions for hierarchical lifecycle scoping and cache isolation.
+
+A `Scope` is a plain configuration value; it performs no caching itself.
+Pass a sequence of them to `Lifecycle`/`AsyncLifecycle`, which builds the
+storage and activation machinery each scope's `isolation` and `storage`
+choices describe.
+"""
 
 from dataclasses import dataclass
 from typing import Literal, get_args
@@ -48,6 +55,17 @@ class Scope:
         touched) and dense pulling ahead above it (~1.5x faster at 1,000 registered / 90
         touched).
 
+    For example::
+
+    ```python
+    from stratae.lifecycle import Lifecycle, Scope
+
+    lifecycle = Lifecycle([
+        Scope("application", isolation="shared"),
+        Scope("request", isolation="context", storage="sparse"),
+    ])
+    ```
+
     """
 
     name: str
@@ -55,7 +73,15 @@ class Scope:
     storage: StorageType = "dense"
 
     def __post_init__(self):
-        """Validate the name, isolation, and storage values are acceptable for scoping."""
+        """
+        Validate the name, isolation, and storage values are acceptable for scoping.
+
+        Raises:
+            LifecycleConfigurationError: If `name` is not a valid Python
+                identifier, or `isolation`/`storage` is not one of their
+                allowed values.
+
+        """
         if not self.name.isidentifier():
             raise LifecycleConfigurationError("All scopes must be valid Python identifiers.")
         if self.isolation not in frozenset(get_args(IsolationType)):

@@ -1,4 +1,12 @@
-"""Wrappers for lifecycle-managed functions and context managers."""
+"""
+Wrappers for lifecycle-managed functions and context managers.
+
+Wrapper bodies are generated as source text and compiled rather than written as a
+generic ``*args/**kwargs`` shim, so the compiled wrapper's signature and defaults
+exactly match the original callable's, and so a cache hit costs one slot read
+instead of a keyed dict lookup whenever the function's result doesn't vary by
+argument values.
+"""
 
 import weakref
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
@@ -275,7 +283,25 @@ def create_sync_wrapper[**P, T](
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, T]:
-    """Create a synchronous wrapper function that caches based on the lifecycle scope."""
+    """
+    Create a synchronous wrapper function that caches based on the lifecycle scope.
+
+    Args:
+        func: The function whose result should be cached.
+        lifecycle: The `Lifecycle` whose scope owns the cached value.
+        scope: Name of the scope the cached value lives in.
+        cache_key: Callable deriving a hashable cache key from `func`'s
+            arguments. When omitted, the key is `func`'s arguments
+            themselves.
+        ignore_params: Cache a single value per scope activation regardless
+            of arguments, instead of keying by argument values.
+
+    Returns:
+        A wrapper matching `func`'s signature that returns the cached value
+        for the current scope activation, computing and storing it on the
+        first call.
+
+    """
     return cast(
         Callable[P, T],
         _create_sync_wrapper_impl(func, lifecycle, scope, cache_key, ignore_params),
@@ -289,7 +315,25 @@ def create_sync_in_async_wrapper[**P, T](
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, T]:
-    """Create a synchronous wrapper function for use within an async lifecycle."""
+    """
+    Create a synchronous wrapper function for use within an async lifecycle.
+
+    Args:
+        func: The function whose result should be cached.
+        lifecycle: The `AsyncLifecycle` whose scope owns the cached value.
+        scope: Name of the scope the cached value lives in.
+        cache_key: Callable deriving a hashable cache key from `func`'s
+            arguments. When omitted, the key is `func`'s arguments
+            themselves.
+        ignore_params: Cache a single value per scope activation regardless
+            of arguments, instead of keying by argument values.
+
+    Returns:
+        A wrapper matching `func`'s signature that returns the cached value
+        for the current scope activation, computing and storing it on the
+        first call.
+
+    """
     return cast(
         Callable[P, T],
         _create_sync_wrapper_impl(func, lifecycle, scope, cache_key, ignore_params),
@@ -303,7 +347,26 @@ def create_async_wrapper[**P, T](
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, Awaitable[T]]:
-    """Create an asynchronous wrapper function that caches based on the lifecycle scope."""
+    """
+    Create an asynchronous wrapper function that caches based on the lifecycle scope.
+
+    Args:
+        func: The async function, or async generator, whose result should
+            be cached.
+        lifecycle: The `AsyncLifecycle` whose scope owns the cached value.
+        scope: Name of the scope the cached value lives in.
+        cache_key: Callable deriving a hashable cache key from `func`'s
+            arguments. When omitted, the key is `func`'s arguments
+            themselves.
+        ignore_params: Cache a single value per scope activation regardless
+            of arguments, instead of keying by argument values.
+
+    Returns:
+        An async wrapper matching `func`'s signature that returns the
+        cached value for the current scope activation, computing and
+        storing it on the first call.
+
+    """
     params = list(signature(func).parameters.values())
     slot = lifecycle.allocate_slot(scope)
 
@@ -408,6 +471,31 @@ def create_synccm_wrapper[**P, T](
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, T]:
+    """
+    Create a wrapper that enters a sync context manager and caches its yielded value.
+
+    Used for functions decorated with `resource`: the underlying context
+    manager is entered once per cache key and registered with the scope's
+    exit stack, so it is exited when the owning scope deactivates rather
+    than when the wrapper returns.
+
+    Args:
+        func: The context-manager-returning function to wrap.
+        lifecycle: The `Lifecycle`/`AsyncLifecycle` whose scope owns the
+            cached value and exit stack.
+        scope: Name of the scope the cached value and exit stack live in.
+        cache_key: Callable deriving a hashable cache key from `func`'s
+            arguments. When omitted, the key is `func`'s arguments
+            themselves.
+        ignore_params: Cache a single value per scope activation regardless
+            of arguments, instead of keying by argument values.
+
+    Returns:
+        A wrapper matching `func`'s signature that returns the entered
+        value for the current scope activation, entering the context
+        manager on the first call.
+
+    """
     return cast(
         Callable[P, T],
         _create_cm_wrapper_impl(
@@ -429,6 +517,31 @@ def create_asynccm_wrapper[**P, T](
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, Awaitable[T]]:
+    """
+    Create a wrapper that enters an async context manager and caches its yielded value.
+
+    Used for functions decorated with `async_resource`: the underlying
+    context manager is entered once per cache key and registered with the
+    scope's exit stack, so it is exited when the owning scope deactivates
+    rather than when the wrapper returns.
+
+    Args:
+        func: The async-context-manager-returning function to wrap.
+        lifecycle: The `AsyncLifecycle` whose scope owns the cached value
+            and exit stack.
+        scope: Name of the scope the cached value and exit stack live in.
+        cache_key: Callable deriving a hashable cache key from `func`'s
+            arguments. When omitted, the key is `func`'s arguments
+            themselves.
+        ignore_params: Cache a single value per scope activation regardless
+            of arguments, instead of keying by argument values.
+
+    Returns:
+        An async wrapper matching `func`'s signature that returns the
+        entered value for the current scope activation, entering the
+        context manager on the first call.
+
+    """
     return cast(
         Callable[P, Awaitable[T]],
         _create_cm_wrapper_impl(

@@ -1,3 +1,13 @@
+"""
+Decorator objects returned by `Lifecycle.cache`/`AsyncLifecycle.cache`.
+
+`CacheDecorator` and `AsyncCacheDecorator` inspect the decorated function
+to pick the matching codegen'd wrapper from `stratae.lifecycle._wrappers`:
+a plain function, a `resource`/`async_resource`-tagged context manager, or
+(for `AsyncCacheDecorator`) a sync function used from within an async
+lifecycle.
+"""
+
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from inspect import iscoroutinefunction, unwrap
 from typing import (
@@ -45,7 +55,13 @@ def _is_auto_async_cm[**P, T, U](
 
 
 class CacheDecorator:
-    """Decorator class to set the lifecycle scope for caching function results."""
+    """
+    Decorator object returned by `Lifecycle.cache`; caches a function within a scope.
+
+    Returned by `Lifecycle.cache(scope)`, not constructed directly. Applying
+    it to a function returns a wrapper whose result is cached for the
+    lifetime of the named scope's activation.
+    """
 
     __slots__ = ("_scope", "_lifecycle", "_cache_key", "_ignore_params")
 
@@ -56,7 +72,20 @@ class CacheDecorator:
         cache_key: Callable[..., Hashable] | None = None,
         ignore_params: bool = False,
     ) -> None:
-        """Initialize the ScopeDecorator with a specific lifecycle scope."""
+        """
+        Initialize the CacheDecorator with a specific lifecycle scope.
+
+        Args:
+            scope: Name of the scope the cached value should live in.
+            lifecycle: The `Lifecycle` owning that scope.
+            cache_key: Callable deriving a hashable cache key from the
+                decorated function's arguments. When omitted, the key is
+                the arguments themselves.
+            ignore_params: Cache a single value per scope activation
+                regardless of arguments, instead of keying by argument
+                values.
+
+        """
         self._scope = scope
         self._lifecycle = lifecycle
         self._cache_key = cache_key
@@ -72,7 +101,19 @@ class CacheDecorator:
         self,
         func: Callable[P, T | AbstractContextManager[T]],
     ) -> Callable[P, T]:
-        """Decorate a function to set its lifecycle scope for caching."""
+        """
+        Wrap `func` so its result is cached for the lifetime of the scope's activation.
+
+        Args:
+            func: The function to cache. A `resource`-tagged context
+                manager function is entered automatically, with its yielded
+                value cached in place of the context manager itself.
+
+        Returns:
+            A wrapper matching `func`'s signature, minus context-manager
+            entry for a `resource`-tagged `func`.
+
+        """
 
         def add_scope_to_func(
             f: Callable[P, T | AbstractContextManager[T]],
@@ -92,7 +133,15 @@ class CacheDecorator:
 
 
 class AsyncCacheDecorator:
-    """Asynchronous decorator class to set the lifecycle scope for caching function results."""
+    """
+    Decorator object returned by `AsyncLifecycle.cache`; caches a function within a scope.
+
+    Returned by `AsyncLifecycle.cache(scope)`, not constructed directly.
+    Applying it to a function returns a wrapper whose result is cached for
+    the lifetime of the named scope's activation. Accepts sync functions,
+    async functions, and `resource`/`async_resource`-tagged context
+    managers of either flavor.
+    """
 
     __slots__ = ("_scope", "_lifecycle", "_cache_key", "_ignore_params")
 
@@ -103,6 +152,20 @@ class AsyncCacheDecorator:
         cache_key: Callable[..., Hashable] | None = None,
         ignore_params: bool = False,
     ) -> None:
+        """
+        Initialize the AsyncCacheDecorator with a specific lifecycle scope.
+
+        Args:
+            scope: Name of the scope the cached value should live in.
+            lifecycle: The `AsyncLifecycle` owning that scope.
+            cache_key: Callable deriving a hashable cache key from the
+                decorated function's arguments. When omitted, the key is
+                the arguments themselves.
+            ignore_params: Cache a single value per scope activation
+                regardless of arguments, instead of keying by argument
+                values.
+
+        """
         self._scope = scope
         self._lifecycle = lifecycle
         self._cache_key = cache_key
@@ -128,7 +191,22 @@ class AsyncCacheDecorator:
             P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T
         ],
     ) -> Callable[P, Awaitable[T] | T]:
-        """Decorate a function to set its lifecycle scope for caching."""
+        """
+        Wrap `func` so its result is cached for the lifetime of the scope's activation.
+
+        Args:
+            func: The function to cache - sync, async, or a
+                `resource`/`async_resource`-tagged context manager function
+                of either flavor. A tagged function is entered
+                automatically, with its yielded value cached in place of
+                the context manager itself.
+
+        Returns:
+            A wrapper matching `func`'s signature, minus context-manager
+            entry for a tagged `func`. Async unless `func` is a plain sync
+            function.
+
+        """
 
         def add_scope_to_func(
             f: Callable[

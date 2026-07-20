@@ -46,14 +46,12 @@ autodoc2_hidden_regexes = [
     r".*\.__slots__",
     r".*\.__all__",
 ]
-autodoc2_docstring_parser_regexes = [
-    (r".*", "napoleon"),
-]
 autodoc2_index_template = None
 
 myst_enable_extensions = [
     "colon_fence",
     "deflist",
+    "fieldlist",
 ]
 myst_heading_anchors = 3
 

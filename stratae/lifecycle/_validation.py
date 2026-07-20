@@ -7,7 +7,18 @@ from stratae.lifecycle.scope import Scope
 
 
 def validate_config(scopes: Sequence[Scope]) -> None:
-    """Validate scopes for a lifecycle configuration."""
+    """
+    Validate scopes for a lifecycle configuration.
+
+    Args:
+        scopes: The scopes a `Lifecycle`/`AsyncLifecycle` is being
+            constructed with.
+
+    Raises:
+        LifecycleConfigurationError: If `scopes` is empty, or two scopes
+            share the same name.
+
+    """
     if not scopes:
         raise LifecycleConfigurationError("At least one scope must be defined.")
     if len({scope.name for scope in scopes}) != len(scopes):

@@ -1,4 +1,11 @@
-"""Context managers for lifecycle scope activations."""
+"""
+Context managers for lifecycle scope activations, returned by `start`.
+
+`LifecycleContext` and `AsyncLifecycleContext` are the objects
+`BaseLifecycle.start` hands back for use as ``with``/``async with`` blocks;
+entering activates the scope's slot storage, exiting deactivates it and
+closes any exit stack the activation created.
+"""
 
 from typing import Any
 
@@ -9,7 +16,8 @@ class LifecycleContext:
     """
     Context manager for a scope activation on a sync Lifecycle.
 
-    Works for both isolations through the ScopeVarProto interface, which pairs set with
+    Returned by `Lifecycle.start`, not constructed directly. Works for both
+    isolations through the ScopeVarProto interface, which pairs set with
     reset so exit needs no narrowing: shared scopes reuse one instance per scope (their
     activations don't nest), context-isolated scopes get a fresh instance per start().
     Deliberately not generic over the token type - a Generic base taxes per-activation
@@ -21,7 +29,16 @@ class LifecycleContext:
     token: Any
 
     def __init__(self, var: ScopeVarProto[Any], template: SlotStorage) -> None:
-        """Initialize with the scope's var and all-UNSET slot template pre-resolved."""
+        """
+        Initialize with the scope's var and all-UNSET slot template pre-resolved.
+
+        Args:
+            var: The scope's activation holder - a `ContextVar` for a
+                context-isolated scope, a `SharedVar` for a shared one.
+            template: The scope's empty-slot template, copied fresh on
+                each `__enter__`.
+
+        """
         self._var = var
         self._template = template
 
@@ -43,7 +60,8 @@ class AsyncLifecycleContext:
     """
     Async context manager for a scope activation on an AsyncLifecycle.
 
-    Works for both isolations through the ScopeVarProto interface, which pairs set with
+    Returned by `AsyncLifecycle.start`, not constructed directly. Works for both
+    isolations through the ScopeVarProto interface, which pairs set with
     reset so exit needs no narrowing: shared scopes reuse one instance per scope (their
     activations don't nest), context-isolated scopes get a fresh instance per start().
     Deliberately not generic over the token type - a Generic base taxes per-activation
@@ -55,7 +73,16 @@ class AsyncLifecycleContext:
     token: Any
 
     def __init__(self, var: ScopeVarProto[Any], template: SlotStorage) -> None:
-        """Initialize with the scope's var and all-UNSET slot template pre-resolved."""
+        """
+        Initialize with the scope's var and all-UNSET slot template pre-resolved.
+
+        Args:
+            var: The scope's activation holder - a `ContextVar` for a
+                context-isolated scope, a `SharedVar` for a shared one.
+            template: The scope's empty-slot template, copied fresh on
+                each `__aenter__`.
+
+        """
         self._var = var
         self._template = template
 
