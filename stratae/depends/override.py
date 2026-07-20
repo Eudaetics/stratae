@@ -10,7 +10,7 @@ hold different overrides for the same provider without interfering.
 from contextvars import Token
 from typing import Any, Callable
 
-from stratae.depends import DependsWrapper
+from stratae.depends._provide import Provider
 
 _OverrideMap = dict[Callable[..., Any], Any]
 
@@ -30,7 +30,7 @@ class _ReusableAwaitable:
 class _Override:
     __slots__ = ("dep", "value", "token")
 
-    def __init__(self, dep: DependsWrapper, value: Any):
+    def __init__(self, dep: Provider, value: Any):
         self.dep = dep
         self.value = value
         self.token: Token[Any]
@@ -57,7 +57,7 @@ class _Overrides:
 
     def __init__(self, mapping: _OverrideMap) -> None:
         self._items: list[_Override] = [
-            _Override(DependsWrapper.find(func), value) for func, value in mapping.items()
+            _Override(Provider.find(func), value) for func, value in mapping.items()
         ]
 
     def __enter__(self) -> None:
@@ -92,7 +92,7 @@ def override(func: Callable[..., Any], value: Any) -> _Override:
         DependencyNotFoundError: If `func` was never passed to `Depends`.
 
     """
-    return _Override(DependsWrapper.find(func), value)
+    return _Override(Provider.find(func), value)
 
 
 def overrides(mapping: _OverrideMap) -> _Overrides:

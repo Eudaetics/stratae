@@ -38,12 +38,11 @@ Example:
 
 """
 
-from .inject import Depends, DependsWrapper, Injected, inject
+from .inject import Depends, Injected, inject
 from .override import override, overrides
 
 __all__ = [
     "Depends",
-    "DependsWrapper",
     "override",
     "overrides",
     "Injected",
