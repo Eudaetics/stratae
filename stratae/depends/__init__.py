@@ -1,11 +1,15 @@
 """
 Dependency injection via annotated parameters and the `inject` decorator.
 
-Mark a parameter with `Injected[T, Depends(provider)]` and decorate the
-function with `inject`: the parameter is resolved by calling its provider
+Mark a parameter with `Annotated[T, Depends(provider)]` and decorate the
+function with `inject`. The parameter is resolved by calling its provider
 at call time, and callers no longer pass it. Providers are plain
 callables and may declare injected parameters of their own, resolved
-recursively when the using function is decorated.
+recursively when the injected function is decorated.
+
+`Injected` is provided as an alias of `Annotated` to highlight injected
+parameters. Using that alias is not required. Defining a shared Annotated
+type is supported, such as`type UserDep = Annotated[User, Depends(get_user)]`.
 
 Sync functions may only depend on sync providers, validated at
 decoration time. Async functions may mix sync and async providers.
