@@ -7,6 +7,8 @@ from functools import singledispatch
 from typing import Any, Protocol
 from uuid import UUID
 
+__all__ = ["encode", "pack", "Unpacker", "unpack_json"]
+
 
 @singledispatch
 def encode(obj: object) -> Any:
@@ -24,17 +26,17 @@ def encode(obj: object) -> Any:
 
 
 @encode.register
-def _(obj: UUID) -> str:
+def encode_uuid(obj: UUID) -> str:
     return str(obj)
 
 
 @encode.register
-def _(obj: datetime) -> str:
+def encode_datetime(obj: datetime) -> str:
     return obj.isoformat()
 
 
 @encode.register
-def _(obj: Decimal) -> str:
+def encode_decimal(obj: Decimal) -> str:
     return str(obj)
 
 
