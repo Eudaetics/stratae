@@ -49,17 +49,7 @@ autodoc2_hidden_regexes = [
 autodoc2_docstring_parser_regexes = [
     (r".*", "napoleon"),
 ]
-autodoc2_index_template = """API Reference
-=============
-
-This page contains auto-generated API reference documentation.
-
-.. toctree::
-   :titlesonly:
-{% for package in top_level %}
-   {{ package.rsplit(".", 1)[-1] }} <{{ package }}>
-{%- endfor %}
-"""
+autodoc2_index_template = None
 
 myst_enable_extensions = [
     "colon_fence",

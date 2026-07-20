@@ -14,5 +14,5 @@ tutorials/index
 :caption: Reference
 :hidden:
 
-apidocs/index
+api-reference
 ```
