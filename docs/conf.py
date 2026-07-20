@@ -32,7 +32,7 @@ maximum_signature_line_length = 90
 python_use_unqualified_type_names = True
 
 autodoc2_packages = [
-    {"path": "../stratae/check", "module": "stratae.check"},
+    {"path": "../stratae/checks", "module": "stratae.checks"},
     {"path": "../stratae/context", "module": "stratae.context"},
     {"path": "../stratae/depends", "module": "stratae.depends"},
     {"path": "../stratae/events", "module": "stratae.events"},
