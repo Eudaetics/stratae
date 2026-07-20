@@ -39,7 +39,7 @@ from uuid import UUID
 
 
 @singledispatch
-def encode(obj: Any) -> Any:
+def encode(obj: object) -> Any:
     """
     Encode a field value for serialization.
 
@@ -72,10 +72,10 @@ def encode(obj: Any) -> Any:
             encode(Point())  # {'x': 1, 'y': 2}
 
     """
-    if hasattr(obj, "to_dict"):
-        return obj.to_dict()
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+    if to_dict := getattr(obj, "to_dict", None):
+        return to_dict()
+    if model_dump := getattr(obj, "model_dump", None):
+        return model_dump()
     raise TypeError(f"Object of type {type(obj)} is not encodable")
 
 
@@ -98,7 +98,7 @@ def _(obj: Decimal) -> str:
 
 
 @singledispatch
-def pack(obj: Any) -> bytes:
+def pack(obj: object) -> bytes:
     """
     Serialize a payload to bytes.
 
