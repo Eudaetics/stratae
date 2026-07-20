@@ -1,7 +1,7 @@
 """
 Run zero-arg guard checks, either directly or as a decorator.
 
-`check`/`check_async` run a sequence of zero-arg checks that raise on
+`check` and `check_async` run a sequence of zero-arg checks that raise on
 failure. `require` is the decorator form, running checks before a
 wrapped function is called. See each function's docstring for details.
 
@@ -17,7 +17,7 @@ Example:
 
 """
 
-from .check import check, check_async
+from .check import all_of, any_of, check, check_async
 from .require import require
 
-__all__ = ["check", "check_async", "require"]
+__all__ = ["all_of", "any_of", "check", "check_async", "require"]
