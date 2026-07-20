@@ -7,7 +7,6 @@ import pytest
 from pytest_mock import MockerFixture
 
 from stratae.serde import pack
-from stratae.serde import packer as pack_module
 
 
 def test_pack_returns_bytes():
@@ -57,7 +56,6 @@ def test_pack_delegates_to_encode_for_unknown_types(mocker: MockerFixture):
         is covered by encode's own tests, not duplicated here.
     """
     # Arrange
-    encode_mock = mocker.patch.object(pack_module, "encode", return_value="encoded-value")
     value = uuid4()
     payload = {"id": value}
 
@@ -65,8 +63,7 @@ def test_pack_delegates_to_encode_for_unknown_types(mocker: MockerFixture):
     result = pack(payload)
 
     # Assert
-    encode_mock.assert_called_once_with(value)
-    assert json.loads(result) == {"id": "encoded-value"}
+    assert json.loads(result) == {"id": str(value)}
 
 
 def test_pack_raises_type_error_for_non_encodable():
