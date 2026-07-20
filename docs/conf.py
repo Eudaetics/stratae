@@ -33,7 +33,7 @@ python_use_unqualified_type_names = True
 
 autodoc2_packages = [
     {"path": "../stratae/checks.py", "module": "stratae.checks"},
-    {"path": "../stratae/context", "module": "stratae.context"},
+    {"path": "../stratae/context.py", "module": "stratae.context"},
     {"path": "../stratae/depends", "module": "stratae.depends"},
     {"path": "../stratae/events", "module": "stratae.events"},
     {"path": "../stratae/integrations", "module": "stratae.integrations"},
