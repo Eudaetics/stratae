@@ -7,7 +7,7 @@ from typing import Annotated, Any, Callable
 import pytest
 
 from stratae.depends import Depends, Injected, inject
-from stratae.depends.exceptions import RegistrationError
+from stratae.depends.exceptions import InjectionSignatureError
 
 
 async def async_dep() -> int:
@@ -145,7 +145,7 @@ def test_inject_sync_async_nested_error():
 
     Given: a sync function with an async dependency,
     When: the function is decorated with @inject,
-    Then: it should raise a RegistrationError.
+    Then: it should raise an InjectionSignatureError.
     """
 
     # Arrange
@@ -168,7 +168,7 @@ def test_inject_sync_async_nested_error():
 
     # Act and Assert
     with pytest.raises(
-        RegistrationError, match="Sync function '.*' cannot have async dependencies."
+        InjectionSignatureError, match="Sync function '.*' cannot have async dependencies."
     ):
 
         @inject
@@ -378,7 +378,7 @@ async def test_behavior_with_annotated_and_default_async():
 
     Given: a function with Annotated dependencies with defaults,
     When: the function is decorated with @inject,
-    Then: A RegistrationError should be raised.
+    Then: A InjectionSignatureError should be raised.
     """
 
     # Arrange
@@ -388,7 +388,9 @@ async def test_behavior_with_annotated_and_default_async():
         return 42
 
     # Act & Assert
-    with pytest.raises(RegistrationError, match="Cannot use a default with injected parameter val"):
+    with pytest.raises(
+        InjectionSignatureError, match="Cannot use a default with injected parameter val"
+    ):
 
         @inject
         async def _(val: Annotated[int, Depends(get_forty_two)] = 10) -> int:
