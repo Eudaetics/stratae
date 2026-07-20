@@ -9,20 +9,14 @@ introspection by other tooling.
 
 from functools import wraps
 from inspect import Parameter, Signature, isclass, markcoroutinefunction, signature
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from stratae.codegen import Writer, render_parameters, wrapper_filename
-
-
-class _DependencyProvider(Protocol):
-    """Shape a wrapper needs from a resolved dependency; avoids importing DependsWrapper."""
-
-    is_async: bool
-    provide: Callable[[], Any]
+from stratae.depends._provide import Provider
 
 
 def _kept_parameters(
-    params: list[Parameter], resolved_deps: dict[str, _DependencyProvider]
+    params: list[Parameter], resolved_deps: dict[str, Provider]
 ) -> list[Parameter]:
     """
     Return func's parameters minus the resolved dependencies.
@@ -33,7 +27,7 @@ def _kept_parameters(
     return [param for param in params if param.name not in resolved_deps]
 
 
-def _render_dependency_source(name: str, dep: _DependencyProvider) -> str:
+def _render_dependency_source(name: str, dep: Provider) -> str:
     """
     Render the source expression that resolves a single dependency by name.
 
@@ -60,9 +54,7 @@ def _render_argument_source(value: Any, param: Parameter):
         return value
 
 
-def _render_call_arguments(
-    params: list[Parameter], resolved_deps: dict[str, _DependencyProvider]
-) -> str:
+def _render_call_arguments(params: list[Parameter], resolved_deps: dict[str, Provider]) -> str:
     """Build the exact call expression baked into the generated wrapper body."""
     args: list[str] = []
     for param in params:
@@ -94,7 +86,7 @@ def _finalize(
     writer: Writer,
     func: Callable[..., Any],
     kept: list[Parameter],
-    resolved_deps: dict[str, _DependencyProvider],
+    resolved_deps: dict[str, Provider],
 ) -> Callable[..., Any]:
     """
     Compile the generated wrapper source and restore its metadata.
@@ -126,7 +118,7 @@ def _finalize(
 
 def _build_wrapper(
     func: Callable[..., Any],
-    resolved_deps: dict[str, _DependencyProvider],
+    resolved_deps: dict[str, Provider],
     is_async: bool,
     write_body: Callable[[Writer, str], None],
 ):
@@ -143,7 +135,7 @@ def _build_wrapper(
 
 
 def create_sync_wrapper(
-    func: Callable[..., Any], resolved_deps: dict[str, _DependencyProvider]
+    func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
     """Create a synchronous wrapper; a plain call needs no await or yield handling."""
     return _build_wrapper(
@@ -152,7 +144,7 @@ def create_sync_wrapper(
 
 
 def create_sync_gen_wrapper(
-    func: Callable[..., Any], resolved_deps: dict[str, _DependencyProvider]
+    func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
     """
     Create a synchronous generator wrapper.
@@ -165,12 +157,12 @@ def create_sync_gen_wrapper(
     )
 
 
-def _has_async_deps(resolved_deps: dict[str, _DependencyProvider]) -> bool:
+def _has_async_deps(resolved_deps: dict[str, Provider]) -> bool:
     return any(dep.is_async for dep in resolved_deps.values())
 
 
 def create_async_wrapper(
-    func: Callable[..., Any], resolved_deps: dict[str, _DependencyProvider]
+    func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
     """
     Create an asynchronous wrapper.
@@ -193,7 +185,7 @@ def _write_async_gen_body(writer: Writer, call: str) -> None:
 
 
 def create_async_gen_wrapper(
-    func: Callable[..., Any], resolved_deps: dict[str, _DependencyProvider]
+    func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
     """
     Create an async generator wrapper; see _write_async_gen_body for why it re-yields items.

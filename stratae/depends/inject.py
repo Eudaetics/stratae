@@ -6,7 +6,6 @@ This module provides:
 - The `inject` decorator for resolving and injecting dependencies into functions.
 """
 
-from contextvars import ContextVar
 from inspect import (
     Parameter,
     Signature,
@@ -15,10 +14,9 @@ from inspect import (
     isgeneratorfunction,
     signature,
 )
-from threading import Lock
-from typing import Annotated, Any, Awaitable, Callable, Hashable, Self, get_origin, overload
-from weakref import WeakValueDictionary
+from typing import Annotated, Any, Awaitable, Callable, get_origin, overload
 
+from stratae.depends._provide import Provider
 from stratae.depends._wrappers import (
     create_async_gen_wrapper,
     create_async_wrapper,
@@ -27,89 +25,24 @@ from stratae.depends._wrappers import (
 )
 from stratae.depends.exceptions import (
     CircularDependencyError,
-    DependencyNotFoundError,
     InjectionSignatureError,
 )
-
-_UNSET = object()
 
 Injected = Annotated
 """Alias Annotated for clearer semantics when typing a parameter that will be injected."""
 
 
-class DependsWrapper:
-    """Class used to wrap the dependency injection."""
-
-    __slots__ = {
-        "dependency",
-        "provide",
-        "is_async",
-        "override",
-        "override_count",
-        "lock",
-        "resolved",
-        "__weakref__",
-    }
-
-    _registry: WeakValueDictionary[Hashable, Self] = WeakValueDictionary()
-    dependency: Callable[[], Any]
-    provide: Callable[[], Any]
-    is_async: bool
-    override: ContextVar[Any]
-    override_count: int
-    lock: Lock
-    resolved: bool
-
-    def __new__(cls, dependency: Callable[..., Any]) -> Self:
-        """Singleton factory for dependency wrappers."""
-        existing = cls._registry.get(dependency)
-        if existing is not None:
-            return existing
-        instance = super().__new__(cls)
-        instance.dependency = dependency
-        instance.provide = dependency
-        instance.is_async = iscoroutinefunction(dependency)
-        instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
-        instance.override_count = 0
-        instance.lock = Lock()
-        instance.resolved = False
-        cls._registry[dependency] = instance
-        return instance
-
-    def provide_override(self):
-        """Return override if set, otherwise evaluate the dependency."""
-        ctx = self.override.get()
-        if ctx is _UNSET:
-            return self.dependency()
-        return ctx
-
-    def update(self, dependency: Callable[..., Any]):
-        """Update the dependency while also correcting the provide."""
-        with self.lock:
-            self.dependency = dependency
-            if self.override_count == 0:
-                self.provide = self.dependency
-
-    @classmethod
-    def find(cls, func: Callable[..., Any]):
-        """Find the associated DependsWrapper for the injected dependency."""
-        try:
-            return cls._registry[func]
-        except KeyError:
-            raise DependencyNotFoundError(f"No Dependency found for {func}") from None
+@overload
+def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> Provider: ...
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> DependsWrapper: ...
+def Depends[**P, R](dependency: Callable[P, R]) -> Provider: ...
 
 
-@overload
-def Depends[**P, R](dependency: Callable[P, R]) -> DependsWrapper: ...
-
-
-def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> DependsWrapper:
+def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:
     """Marker function used to denote a dependency injection."""
-    return DependsWrapper(dependency=dependency)
+    return Provider(dependency=dependency)
 
 
 @overload
@@ -190,15 +123,13 @@ def _resolve_function[**P, R](
         raise CircularDependencyError(f"Circular dependency detected for {func}.")
 
     _resolving.add(func)
-    resolved_deps: dict[str, DependsWrapper] = _resolve_parameters(signature(func), _resolving)
+    resolved_deps: dict[str, Provider] = _resolve_parameters(signature(func), _resolving)
 
     _validate_sync_async_constraint(func, resolved_deps)
     return _create_wrapper(func, resolved_deps)
 
 
-def _resolve_parameters(
-    sig: Signature, _resolving: set[Callable[..., Any]]
-) -> dict[str, DependsWrapper]:
+def _resolve_parameters(sig: Signature, _resolving: set[Callable[..., Any]]) -> dict[str, Provider]:
     """Resolve a list of parameters."""
     return {
         name: value
@@ -207,10 +138,10 @@ def _resolve_parameters(
     }
 
 
-def _get_annotated_info(annotation: Annotated[Any, ...]) -> DependsWrapper | None:
-    """Extract the DependsWrapper from an Annotated parameter."""
+def _get_annotated_info(annotation: Annotated[Any, ...]) -> Provider | None:
+    """Extract the Provider from an Annotated parameter."""
     depends_wrapper = next(
-        (x for x in reversed(annotation.__metadata__) if isinstance(x, DependsWrapper)),
+        (x for x in reversed(annotation.__metadata__) if isinstance(x, Provider)),
         None,
     )
     return depends_wrapper
@@ -221,9 +152,7 @@ def _unwrap_type(annotation: Any) -> Any:
     return getattr(annotation, "__value__", annotation)
 
 
-def _resolve_parameter(
-    param: Parameter, _resolving: set[Callable[..., Any]]
-) -> DependsWrapper | None:
+def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., Any]]) -> Provider | None:
     """Resolve a single parameter to its dependency, if it has one."""
     annotation = _unwrap_type(param.annotation)
     if get_origin(annotation) is not Annotated:
@@ -242,7 +171,7 @@ def _resolve_parameter(
 
 
 def _validate_sync_async_constraint(
-    func: Callable[..., Any], resolved_deps: dict[str, DependsWrapper]
+    func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> None:
     """Check if a function has async dependencies."""
     if iscoroutinefunction(func) or isasyncgenfunction(func):
@@ -256,7 +185,7 @@ def _validate_sync_async_constraint(
 
 def _create_wrapper(
     func: Callable[..., Any],
-    resolved_deps: dict[str, DependsWrapper],
+    resolved_deps: dict[str, Provider],
 ) -> Callable[..., Any]:
     """Create a wrapper function that injects resolved dependencies."""
     if not resolved_deps:
