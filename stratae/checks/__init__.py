@@ -1,20 +1,23 @@
 """
-Decorators for running guard checks before a function.
+Run zero-arg guard checks, either directly or as a decorator.
 
-`require` takes one or more zero-arg callables and runs them, in order,
-before the wrapped function. Their return values are discarded — only
-side effects and raises matter. A raise from any check propagates
-immediately, stopping the remaining checks and the wrapped function.
-
-Sync functions only accept sync checks. Async functions accept a mix of
-sync and async checks.
+`check`/`check_async` run a sequence of zero-arg checks that raise on
+failure. `require` is the decorator form, running checks before a
+wrapped function is called. See each function's docstring for details.
 
 Example:
-    @require(is_admin)
-    def foo(): ...
+    Run checks directly::
+
+        check(is_authenticated, is_admin)
+
+    Or as a decorator, running the same checks before the call::
+
+        @require(is_authenticated, is_admin)
+        def delete_user(user_id: int) -> None: ...
 
 """
 
+from .check import check, check_async
 from .require import require
 
-__all__ = ["require"]
+__all__ = ["check", "check_async", "require"]
