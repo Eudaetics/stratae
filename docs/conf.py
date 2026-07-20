@@ -7,8 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 project = "Stratae"
-copyright = "2026, Scott Wahl"
-author = "Scott Wahl"
+copyright = "© 2026, Eudaetics"
+author = "Eudaetics"
 
 try:
     release = version("stratae")
