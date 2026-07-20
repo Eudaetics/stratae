@@ -83,19 +83,34 @@ def encode(obj: object) -> Any:
 
 @encode.register
 def encode_uuid(obj: UUID) -> str:
-    """Encode a `UUID` as its string representation."""
+    """
+    Encode a `UUID` as its string representation.
+
+    Pre-registered as a common helper. If this doesn't match your
+    requirements, overwrite it with ``@encode.register``.
+    """
     return str(obj)
 
 
 @encode.register
 def encode_datetime(obj: datetime) -> str:
-    """Encode a `datetime` as an ISO 8601 string."""
+    """
+    Encode a `datetime` as an ISO 8601 string.
+
+    Pre-registered as a common helper. If this doesn't match your
+    requirements, overwrite it with ``@encode.register``.
+    """
     return obj.isoformat()
 
 
 @encode.register
 def encode_decimal(obj: Decimal) -> str:
-    """Encode a `Decimal` as its string form."""
+    """
+    Encode a `Decimal` as its string form.
+
+    Pre-registered as a common helper. If this doesn't match your
+    requirements, overwrite it with ``@encode.register``.
+    """
     return str(obj)
 
 
