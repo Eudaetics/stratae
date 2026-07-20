@@ -32,4 +32,4 @@ with lifecycle.start('application'):
     print(f"Created user: {user['name']}")
 ```
 
-From here, see the [API reference](../apidocs/index) for the full surface of `stratae.depends` and `stratae.lifecycle`.
+From here, see the [API reference](../api-reference) for the full surface of `stratae.depends` and `stratae.lifecycle`.
