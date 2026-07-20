@@ -17,11 +17,15 @@ Examples:
 
         user_id = Context[int]("user_id")
 
-        with user_id.use(123):
-            assert user_id.get() == 123
-            with user_id.use(42):
-                assert user_id() == 42
-            assert user_id() == 123
+        with user_id.use(42):  # the support agent's own account
+            assert user_id() == 42
+
+            # "View as customer" temporarily impersonates the customer
+            # to reproduce a bug, then reverts to the agent's session.
+            with user_id.use(7):
+                assert user_id() == 7
+
+            assert user_id() == 42  # back to the agent's own session
 
     An A/B test, where the `Context` holds the function to run:
 
@@ -32,23 +36,23 @@ Examples:
         from stratae.context import Context
         from stratae.depends import Depends, Injected, inject
 
-        def classic_checkout() -> str: ...
-        def one_click_checkout() -> str: ...
+        def train_baseline_model() -> str: ...
+        def train_challenger_model() -> str: ...
 
-        checkout_renderer = Context[Callable[[], str]](
-            "checkout_renderer", default=classic_checkout
+        model_trainer = Context[Callable[[], str]](
+            "model_trainer", default=train_baseline_model
         )
 
         @inject
-        def checkout_page(
-            render: Injected[Callable[[], str], Depends(checkout_renderer)],
+        def run_training(
+            train: Injected[Callable[[], str], Depends(model_trainer)],
         ) -> str:
-            return render()
+            return train()
 
-        checkout_page()  # control: classic checkout
+        run_training()  # control: baseline model
 
-        with checkout_renderer.use(one_click_checkout):
-            checkout_page()  # experiment group: one-click checkout
+        with model_trainer.use(train_challenger_model):
+            run_training()  # experiment group: challenger model
 
 """
 
