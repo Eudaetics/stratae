@@ -9,17 +9,15 @@ from uuid import UUID
 
 
 @singledispatch
-def encode(obj: Any) -> Any:
+def encode(obj: object) -> Any:
     """
     Encode a field value for serialization.
 
     Checks for common serialization methods before raising. Register
     additional types via ``@encode.register``.
     """
-    if hasattr(obj, "to_dict"):
-        return obj.to_dict()
-    if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+    if fn := getattr(obj, "to_dict", None) or getattr(obj, "model_dump", None):
+        return fn()
     raise TypeError(f"Object of type {type(obj)} is not encodable")
 
 
@@ -39,7 +37,7 @@ def _(obj: Decimal) -> str:
 
 
 @singledispatch
-def pack(obj: Any) -> bytes:
+def pack(obj: object) -> bytes:
     """
     Serialize a payload to bytes.
 
