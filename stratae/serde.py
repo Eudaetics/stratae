@@ -16,8 +16,10 @@ def encode(obj: object) -> Any:
     Checks for common serialization methods before raising. Register
     additional types via ``@encode.register``.
     """
-    if fn := getattr(obj, "to_dict", None) or getattr(obj, "model_dump", None):
-        return fn()
+    if to_dict := getattr(obj, "to_dict", None):
+        return to_dict()
+    if model_dump := getattr(obj, "model_dump", None):
+        return model_dump()
     raise TypeError(f"Object of type {type(obj)} is not encodable")
 
 
