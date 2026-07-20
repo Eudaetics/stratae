@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-from stratae.check import require
+from stratae.checks import require
 
 
 def test_require_sync_check_runs_before_sync_function():
