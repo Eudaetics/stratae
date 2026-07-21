@@ -116,6 +116,9 @@ exclude_lines = [
     "if TYPE_CHECKING:"
 ]
 
+[tool.poe]
+executor = {type = "simple"}
+
 [tool.poe.tasks]
 format = "ruff format ."
 lint = "ruff check --fix ."

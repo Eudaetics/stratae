@@ -1,40 +1,53 @@
 """
 Stratae: Composable tools for building applications in Python.
 
-Stratae provides lightweight, high-performance tools for dependency injection,
-lifecycle management, and context variables. Built on Python's native features,
-it works anywhere: APIs, CLIs, workers, and tests.
+Stratae provides lightweight, high-performance building blocks for composing
+applications: dependency injection, lifecycle-scoped caching and cleanup,
+guard checks, typed events, context variables, and serialization. Built on
+Python's native features, it works anywhere: APIs, CLIs, workers, and tests.
 
-```python
+```{code-block} python
+:caption: Cache a database connection
+
+import pytest
 from stratae.depends import Depends, Injected, inject
 from stratae.lifecycle import Lifecycle, Scope
 
+class Database:
+    def __init__(self, url: str):
+        self.url = url
+        self.users: set[str] = set()
+
+    def create_user(self, name: str) -> str:
+        self.users.add(name)
+        return name
+
 lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "shared")])
 
-
 @lifecycle.cache("application")
-def get_database():
-    return Database(url="postgresql://...")
-
+def get_database() -> Database:
+    return Database(url="postgresql://localhost/app")
 
 @inject
 def create_user(name: str, db: Injected[Database, Depends(get_database)]):
-    return db.users.create(name=name)
+    return db.create_user(name)
 
+@inject
+def get_user(name: str, db: Injected[Database, Depends(get_database)]) -> str:
+    assert name in db.users, f"no such user: {name}"
+    return name
 
 with lifecycle.start("application"):
     with lifecycle.start("request"):
         user = create_user("Alice")
-```
+    assert get_user("Alice") == "Alice"
 
-Modules:
-    check: Guard checks for controlling behavior
-    depends: Dependency injection and resolution
-    lifecycle: Scope-based caching and resource management
-    context: Context variables with nested scopes
-    events: Typed events with pub/sub and request/reply dispatch
-    serde: Serialization and deserialization
-    integrations: Bridges between Stratae modules and third party tools
+    with pytest.raises(AssertionError, match="no such user"):
+        get_user("Bob")
+
+with lifecycle.start("application"), pytest.raises(AssertionError, match="no such user"):
+    get_user("Alice")
+```
 """
 
 from . import checks, context, depends, events, integrations, lifecycle, serde

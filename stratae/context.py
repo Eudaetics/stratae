@@ -33,7 +33,6 @@ with user_id.use(42):  # the support agent's own account
 :caption: An A/B test, where the Context holds the function to run
 
 from typing import Callable
-
 from stratae.context import Context
 from stratae.depends import Depends, Injected, inject
 
@@ -61,9 +60,13 @@ with model_trainer.use(train_challenger_model):
 On Python 3.14+, `contextvars.Token` itself supports the context manager
 protocol, so {py:func}`Context.set` alone gives the same ergonomics as
 {py:func}`Context.use`:
-
+<!--- skip: next if(__import__("sys").version_info < (3, 14), "needs Python 3.14+") -->
 ```{code-block} python
 :caption: Using set() directly as a context manager (Python 3.14+)
+
+from stratae.context import Context
+
+user_id = Context[int]("user_id")
 
 with user_id.set(99):
     assert user_id() == 99
@@ -101,6 +104,7 @@ level default.
 ```{code-block} python
 :caption: Forcing a real user in a security-sensitive path, bypassing the guest default
 
+import pytest
 from stratae.context import IGNORE, Context
 
 current_user = Context[str]("current_user", default="guest")
@@ -112,6 +116,9 @@ def delete_account():
     # silently falling back to "guest" here would be a bug, not a convenience.
     actor = current_user(IGNORE)
     ...
+
+with pytest.raises(LookupError):
+    delete_account()
 ```
 
 """
@@ -158,14 +165,19 @@ class Context[T]:
     ```{rubric} Example:
     ```
     ```{code-block} python
+    :caption: Injecting the current user's ID via a Context provider
+
+    from stratae.context import Context
+    from stratae.depends import Depends, Injected, inject
+
     user_id = Context[int]("user_id")
 
     @inject
-    def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
-        return fetch_user(uid)
+    def get_current_user_id(uid: Injected[int, Depends(user_id)]) -> int:
+        return uid
 
     with user_id.use(123):
-        get_current_user()
+        assert get_current_user_id() == 123
     ```
 
     """
