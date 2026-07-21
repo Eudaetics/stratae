@@ -3,13 +3,13 @@ Run collections of zero-argument checks, raising or gathering their failures.
 
 A check is any zero-argument callable that raises on failure and returns
 normally on success. {py:func}`check` runs a sequence of sync checks, raising
-`TypeError` if any check returns an awaitable; `check_async` runs a
+`TypeError` if any check returns an awaitable; {py:func}`check_async` runs a
 sequence that may mix sync and async checks, awaiting the async ones.
-`require` is the decorator form, running checks before a wrapped function
-is called.
+{py:func}`require` is the decorator form, running checks before a wrapped
+function is called.
 
-Both `check` and `check_async` accept a `mode` keyword controlling failure
-handling:
+Both {py:func}`check` and {py:func}`check_async` accept a `mode` keyword
+controlling failure handling:
 
 * `"all"` (default): stop at the first failing check and propagate its
   exception.
@@ -18,7 +18,27 @@ handling:
 * `"any"`: return immediately on first successful check, ignoring errors
   from earlier checks.
 
-See {py:func}`check`, {py:func}`check_async`, and {py:func}`require` for examples.
+
+```{rubric} Example:
+```
+```{code-block} python
+:caption: Reject account deletion if the user is not an admin
+
+user = {"id": 1, "is_admin": False}
+
+def is_admin():
+    assert user["is_admin"]
+
+@require(is_admin)
+def delete_account(account_id: int):
+    # Code in here only runs if the require checks do not raise
+    ...
+
+delete_account(24) # Will abort for the above user since it fails the check
+```
+See {py:func}`check`, {py:func}`check_async`, and {py:func}`require` for
+additional examples.
+
 """
 
 import inspect
@@ -32,7 +52,7 @@ _Check = Callable[[], Any]
 
 
 def _settle(exc: Exception, mode: CheckMode, exceptions: list[Exception]):
-    """Append to the exception list if errors="gather"."""
+    """Append to the exception list if mode="gather" or "any", else immediately raise."""
     if mode == "all":
         raise exc
     exceptions.append(exc)
@@ -59,16 +79,18 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
         at the end. "any" returns immediately upon first successful
         check, swallowing errors from any preceding check.
     :raises Exception: The exception raised by the first failing check, when
-        errors is "raise".
+        mode is "all".
     :raises TypeError: A check returned an awaitable instead of running
         synchronously. Checks earlier in the sequence have already
         run by this point.
     :raises ExceptionGroup: All exceptions raised by failing checks, when
-        errors is "gather", or "any" when all checks fail.
+        mode is "gather", or "any" when all checks fail.
 
-    Example: validate a batch of form fields, stopping at the first failure:
+    ```{rubric} Examples:
+    ```
+    ```{code-block} python
+    :caption: Validate a batch of form fields, stopping at the first failure
 
-    ```python
     username = "sam"
     email = "not-an-email"
 
@@ -82,16 +104,16 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
     # raises AssertionError: email must contain '@'
     ```
 
-    Collect every failing validation instead of stopping at the first:
+    ```{code-block} python
+    :caption: Collect every failing validation instead of stopping at the first
 
-    ```python
-    check(check_username_not_empty, check_email_has_at_sign, errors="gather")
+    check(check_username_not_empty, check_email_has_at_sign, mode="gather")
     # raises ExceptionGroup: Failures in check (1 sub-exception)
     ```
 
-    Succeed as soon as any one of several equivalent checks passes:
+    ```{code-block} python
+    :caption: Succeed as soon as any one of several equivalent checks passes
 
-    ```python
     def check_is_admin():
         assert user.is_admin, "not an admin"
 
@@ -128,13 +150,15 @@ async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
         at the end. "any" returns immediately upon first successful
         check, swallowing errors from any preceding check.
     :raises Exception: The exception raised by the first failing check, when
-        errors is "all".
+        mode is "all".
     :raises ExceptionGroup: All exceptions raised by failing checks, when
-        errors is "gather", or "any" when all checks fail.
+        mode is "gather", or "any" when all checks fail.
 
-    Example: mix a local format check with a remote uniqueness check:
+    ```{rubric} Examples:
+    ```
+    ```{code-block} python
+    :caption: Mix a local format check with a remote uniqueness check
 
-    ```python
     username = "sam"
 
     def check_username_not_empty():
@@ -146,9 +170,9 @@ async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
     await check_async(check_username_not_empty, check_username_available)
     ```
 
-    Try a fast local check before falling back to a slower remote one:
+    ```{code-block} python
+    :caption: Try a fast local check before falling back to a slower remote one
 
-    ```python
     def check_in_local_cache():
         assert username in local_cache, "not cached locally"
 
@@ -178,11 +202,7 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
 
     Lets an "any" group nest inside an "all" group (or another "any"
     group), so boolean requirements like `(is_admin or is_owner) and
-    not_pending` can be expressed directly:
-
-    ```python
-    check(any_of(is_admin, is_owner), not_pending)
-    ```
+    not_pending` can be expressed directly.
 
     If any of `checks` is an async function, the returned check is async
     too, and can only be run through {py:func}`check_async` (directly, or
@@ -197,7 +217,8 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
         their failures if none do. Async if any of `checks` is async,
         sync otherwise.
 
-    Example:
+    ```{rubric} Example:
+    ```
     ```python
     check(any_of(is_admin, is_owner), not_pending)
     ```
@@ -222,12 +243,7 @@ def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
 
     Lets an "all" group nest inside an "any" group (or another "all"
     group), so boolean requirements like `is_super_admin or (is_manager
-    and manages_target_user)` can be expressed as a single check inside
-    an outer "any":
-
-    ```python
-    check(is_super_admin, all_of(is_manager, manages_target_user), mode="any")
-    ```
+    and manages_target_user)` can be expressed within a check.
 
     If any of `checks` is an async function, the returned check is async
     too, and can only be run through {py:func}`check_async` (directly, or
@@ -241,7 +257,8 @@ def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
         of `checks` succeeds, and raises the first failure otherwise.
         Async if any of `checks` is async, sync otherwise.
 
-    Example:
+    ```{rubric} Example:
+    ```
     ```python
     check(is_super_admin, all_of(is_manager, manages_target_user), mode="any")
     ```
@@ -334,7 +351,8 @@ def require[**P, R](
         but a check is async, since there is no safe way to await an
         async check from inside a sync function.
 
-    Example:
+    ```{rubric} Example:
+    ```
     ```python
     @require(is_admin)
     def delete_user(user_id: int) -> None: ...

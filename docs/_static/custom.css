@@ -10,3 +10,15 @@
     font-family: var(--sy-f-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
     font-size: 0.95em;
 }
+
+/* Field-list headers (PARAMETERS, RAISES, ...) render smaller than their
+   surrounding body text by default; bump them back up to match, and size
+   the "Example(s)" rubrics the same so both read as the same kind of
+   section. */
+dt.sig + dd > dl.field-list > dt,
+p.rubric {
+    text-transform: uppercase;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--yue-c-bold);
+}
