@@ -1,42 +1,64 @@
 """
 Core dependency injection module.
 
-`Depends` marks a callable as the provider for an injected parameter.
-Wrapping a callable in `Depends` registers it as a `Provider`, the
-singleton that tracks that provider's resolution and override state;
-passing the same callable twice returns the same `Provider`, so every
-injection site sharing a provider shares one registration. `Injected` is
-provided as an alias of `Annotated` to make injected parameters easier to
-spot in a signature, but using it is not required since `Depends` also
-works directly inside `Annotated`.
+{py:func}`Depends` marks a callable as the provider for an injected
+parameter. Wrapping a callable in {py:func}`Depends` registers it as a
+{py:class}`Provider <stratae.depends._provide.Provider>`, the singleton
+that tracks that provider's resolution and override state. Passing the
+same callable twice returns the same
+{py:class}`Provider <stratae.depends._provide.Provider>`. Every
+injection site sharing a provider shares one registration.
+{py:data}`Injected` is provided as an alias of `Annotated` to make
+injected parameters easier to spot in a signature, but using it is not
+required since {py:func}`Depends` also works directly inside `Annotated`.
 
-The `inject` decorator inspects a function's signature at decoration
-time, finds parameters annotated with `Depends`, and wraps the function
-so that those parameters are resolved by calling their providers at call
-time rather than being passed in by the caller. Providers may themselves
-declare injected parameters, which are resolved recursively when the
-using function is decorated. Sync functions may only depend on sync
-providers, which is validated at decoration time; async functions may
-mix sync and async providers. Generator and async generator functions are
-supported as well, with their providers' lifecycles tied to the
-generator's.
+The {py:func}`inject` decorator inspects a function's signature at
+decoration time, finds parameters annotated with {py:func}`Depends`, and
+wraps the function. The wrapped function's parameters are resolved by calling
+their providers at call time rather than being passed in by the caller.
+Providers may themselves declare injected parameters, which are resolved
+recursively when the using function is decorated. Sync functions may only
+depend on sync providers, which is validated at decoration time, raising
+{py:exc}`InjectionSignatureError <stratae.depends.exceptions.InjectionSignatureError>`.
+Async functions may mix sync and async providers.
 
-Example:
-    .. code-block:: python
+```{note}
+This module only handles wiring: calling a provider and passing its
+result to whatever declared it as a dependency. A provider runs again on
+every call unless it caches its own result. For singleton or
+scoped values (computed once per request, once per process, etc.),
+layer this with {py:mod}`stratae.lifecycle`: decorate the provider with
+{py:meth}`Lifecycle.cache <stratae.lifecycle.lifecycle.Lifecycle.cache>`
+(or its {py:class}`AsyncLifecycle <stratae.lifecycle.lifecycle.AsyncLifecycle>`
+counterpart) so it is computed once per scope activation, then pass that
+cached provider to {py:func}`Depends` as usual.
+```
 
-        from stratae.depends.inject import Depends, Injected, inject
+```{rubric} Example:
+```
+```{code-block} python
+:caption: Injecting a database dependency into a function that queries it
 
+from typing import Annotated
+from stratae.depends.inject import Depends, inject
 
-        def get_db() -> Database:
-            return Database()
+class Database:
+    def query(self, table: str) -> list[str]:
+        return [f"row from {table}"]
 
+def get_db() -> Database:
+    return Database()
 
-        @inject
-        def list_users(db: Injected[Database, Depends(get_db)]) -> list[User]:
-            return db.query(User)
+type DatabaseDep = Annotated[Database, Depends(get_db)]
 
+@inject
+def list_users(db: DatabaseDep) -> list[str]:
+    return db.query("users")
 
-        list_users()  # db resolved by calling get_db()
+assert list_users() == ["row from users"]  # db resolved by calling get_db()
+```
+
+See {py:func}`Depends` and {py:func}`inject` for additional examples.
 
 """
 
@@ -63,33 +85,44 @@ from stratae.depends.exceptions import (
 )
 
 Injected = Annotated
-"""Alias Annotated for clearer semantics when typing a parameter that will be injected."""
+"""Alias `Annotated` for clearer semantics when typing a parameter that will be injected."""
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> Provider: ...
+def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> Provider: ...  # noqa: S1542
 
 
 @overload
-def Depends[**P, R](dependency: Callable[P, R]) -> Provider: ...
+def Depends[**P, R](dependency: Callable[P, R]) -> Provider: ...  # noqa: S1542
 
 
-def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:
+def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:  # noqa: S1542
     """
     Mark a callable as the provider for an injected parameter.
 
-    Used inside an annotation, e.g. ``Injected[int, Depends(get_value)]``
-    or ``Annotated[int, Depends(get_value)]``. Passing the same callable
-    twice returns the same wrapper, so every injection site of a
-    provider shares one registration.
+    Used inside an annotation, e.g. `Injected[int, Depends(get_value)]`
+    or `Annotated[int, Depends(get_value)]`. Passing the same callable
+    twice returns the same {py:class}`Provider <stratae.depends._provide.Provider>`,
+    so every injection site of a provider shares one registration.
 
-    Args:
-        dependency: Callable invoked to produce the parameter's value.
-            It may declare injected parameters of its own, resolved
-            recursively when the using function is decorated.
+    :param dependency: Callable invoked to produce the parameter's value. It
+        may declare injected parameters of its own, resolved recursively
+        when the using function is decorated.
+    :returns: The {py:class}`Provider <stratae.depends._provide.Provider>`
+        registered for the callable.
 
-    Returns:
-        The `Provider` registered for the callable.
+    ```{rubric} Example:
+    ```
+    ```{code-block} python
+    :caption: Registering the same provider twice returns the same Provider
+
+    from stratae.depends.inject import Depends
+
+    def get_value() -> int:
+        return 42
+
+    assert Depends(get_value) is Depends(get_value)
+    ```
 
     """
     return Provider(dependency=dependency)
@@ -113,47 +146,73 @@ def inject(
     sig: Callable[..., Any] | None = None,
 ) -> Any:
     """
-    Resolve a function's `Injected` parameters and strip them from calls.
+    Resolve a function's Injected parameters and strip them from calls.
 
-    Each parameter annotated ``Injected[T, Depends(provider)]`` is filled
-    by its provider when the function is called; callers do not pass it.
-    The dependency graph, including providers' own injected parameters,
-    is resolved once at decoration time.
+    Each parameter annotated `Injected[T, Depends(provider)]` is filled by
+    its provider when the function is called; callers do not pass it. The
+    dependency graph, including providers' own injected parameters, is
+    resolved once at decoration time.
 
     By default the decorated function is typed as `Callable[..., R]`; its
     parameters are not preserved. Injected parameters are stripped at
     resolution time and there's no way to describe that generically. The
-    sig option is provided as a fallback to correct the signature for use
-    in type checking and IDE support. To give the decorated function a
-    precise signature, pass a stub function via `sig`. The decorated
+    `sig` option is provided as a fallback to correct the signature for
+    use in type checking and IDE support. To give the decorated function
+    a precise signature, pass a stub function via `sig`. The decorated
     function is typed as `sig`, not as the original function. It is
     recommended to create type stubs instead, although this is provided
     as a fallback.
 
-    Args:
-        func: The function to wrap, when used as a bare ``@inject``.
-        sig: Stub function whose signature is presented to type checkers
-            and IDEs in place of the decorated function's. Has no runtime
-            effect.
+    :param func: The function to wrap, when used as a bare `@inject`.
+    :param sig: Stub function whose signature is presented to type checkers
+        and IDEs in place of the decorated function's. Has no runtime
+        effect.
+    :returns: The wrapped function, or a decorator when called with
+        arguments. A function with no injected parameters is returned
+        unchanged.
+    :raises InjectionSignatureError: An injected parameter has a default
+        value, or a sync function depends on an async provider.
+    :raises CircularDependencyError: Providers depend on each other in a
+        cycle.
 
-    Returns:
-        The wrapped function, or a decorator when called with arguments.
-        A function with no injected parameters is returned unchanged.
+    ```{rubric} Examples:
+    ```
+    ```{code-block} python
+    :caption: Decorating a function with a bare @inject
 
-    Raises:
-        InjectionSignatureError: If an injected parameter has a default
-            value, or a sync function depends on an async provider.
-        CircularDependencyError: If providers depend on each other in a
-            cycle.
+    from stratae.depends.inject import Depends, Injected, inject
 
-    Example:
-        .. code-block:: python
+    def get_tax_rate() -> float:
+        return 0.08
 
-            def _foo_sig(a: int) -> int: ...
+    @inject
+    def total_with_tax(
+        subtotal: float, tax_rate: Injected[float, Depends(get_tax_rate)]
+    ) -> float:
+        return subtotal * (1 + tax_rate)
 
+    assert total_with_tax(100) == 108.0  # tax_rate resolved by calling get_tax_rate()
+    ```
 
-            @inject(sig=_foo_sig)
-            def foo(a: int, b: Injected[int, Depends(get_b)]) -> int: ...
+    ```{code-block} python
+    :caption: Correcting the decorated signature seen by type checkers with sig
+
+    from stratae.depends.inject import Depends, Injected, inject
+
+    def get_tax_rate() -> float:
+        return 0.08
+
+    def _total_with_tax_sig(subtotal: float) -> float: ...
+
+    @inject(sig=_total_with_tax_sig)
+    def total_with_tax(
+        subtotal: float, tax_rate: Injected[float, Depends(get_tax_rate)]
+    ) -> float:
+        return subtotal * (1 + tax_rate)
+
+    assert total_with_tax(100) == 108.0
+    # Pylance shows (function) def total_with_tax(subtotal: float) -> float
+    ```
 
     """
 

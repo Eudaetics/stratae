@@ -1,10 +1,41 @@
 """
 Context managers for temporarily replacing injected dependency values.
 
-`override` swaps a single provider's value and `overrides` swaps several
-at once. Both are used as context managers; the previous state is
-restored on exit. Overrides are context-local, so concurrent tasks can
-hold different overrides for the same provider without interfering.
+{py:func}`override` swaps a single provider's value and {py:func}`overrides`
+swaps several at once. Both return context managers and the previous state is
+restored on exit. Overrides are stored per
+{py:class}`Provider <stratae.depends._provide.Provider>` in context-local
+state, so concurrent tasks can hold different overrides for the same
+provider without interfering.
+
+```{rubric} Example:
+```
+```{code-block} python
+:caption: Swap a database provider for a fake within a scope
+
+from stratae.depends import Depends, Injected, inject, override
+
+class Database:
+    def __init__(self, name: str):
+        self.name = name
+
+def get_db() -> Database:
+    return Database("production")
+
+@inject
+def get_db_name(db: Injected[Database, Depends(get_db)]) -> str:
+    return db.name
+
+assert get_db_name() == "production"  # db resolved by calling get_db()
+
+with override(get_db, Database("test")):
+    assert get_db_name() == "test"  # db is the fake within this scope
+
+assert get_db_name() == "production"
+```
+
+See {py:func}`override` and {py:func}`overrides` for additional examples.
+
 """
 
 from contextvars import Token
@@ -22,7 +53,7 @@ class _ReusableAwaitable:
         self.value = value
 
     def __await__(self):
-        if False:
+        if False:  # noqa: S5797
             yield
         return self.value
 
@@ -80,36 +111,35 @@ def override(func: Callable[..., Any], value: Any) -> _Override:
     """
     Temporarily replace a single dependency's value within a scope.
 
-    Args:
-        func: The provider callable that was passed to `Depends`.
-        value: Value injected in place of calling the provider. Used
-            as-is; it is not called, even if the provider is async.
+    :param func: The provider callable that was passed to
+        {py:func}`Depends <stratae.depends.inject.Depends>`.
+    :param value: Value injected in place of calling the provider. Used
+        as-is; it is not called, even if the provider is async.
+    :returns: A context manager holding the override between entry and exit.
+    :raises DependencyNotFoundError: If `func` was never passed to
+        {py:func}`Depends <stratae.depends.inject.Depends>`.
 
-    Returns:
-        A context manager holding the override between entry and exit.
+    ```{rubric} Example:
+    ```
+    ```{code-block} python
+    :caption: Force a feature flag on for a single test
 
-    Raises:
-        DependencyNotFoundError: If `func` was never passed to `Depends`.
+    from stratae.depends import Depends, Injected, inject, override
 
-    Examples:
-        .. code-block:: python
+    def is_beta_enabled() -> bool:
+        return False
 
-            from stratae.depends import Depends, Injected, inject, override
+    @inject
+    def get_banner(enabled: Injected[bool, Depends(is_beta_enabled)]) -> str:
+        return "Beta banner" if enabled else "No banner"
 
+    assert get_banner() == "No banner"
 
-            def get_db() -> Database:
-                return Database()
+    with override(is_beta_enabled, True):
+        assert get_banner() == "Beta banner"  # flag forced on within this scope
 
-
-            @inject
-            def list_users(db: Injected[Database, Depends(get_db)]) -> list[User]:
-                return db.query(User)
-
-
-            with override(get_db, FakeDatabase()):
-                list_users()  # db is the fake within this scope
-
-            list_users()  # back to the real database
+    assert get_banner() == "No banner"
+    ```
 
     """
     return _Override(Provider.find(func), value)
@@ -119,48 +149,52 @@ def overrides(mapping: _OverrideMap) -> _Overrides:
     """
     Temporarily replace several dependencies' values within one scope.
 
-    Args:
-        mapping: Map of provider callables, as passed to `Depends`, to
-            their replacement values.
+    :param mapping: Map of provider callables, as passed to
+        {py:func}`Depends <stratae.depends.inject.Depends>`, to their
+        replacement values.
+    :returns: A context manager applying every override on entry and
+        restoring the previous state on exit. If applying one override
+        fails, those already applied are unwound before the error
+        propagates.
+    :raises ValueError: If `mapping` is empty.
+    :raises DependencyNotFoundError: If any key was never passed to
+        {py:func}`Depends <stratae.depends.inject.Depends>`.
 
-    Returns:
-        A context manager applying every override on entry and restoring
-        the previous state on exit. If applying one override fails, those
-        already applied are unwound before the error propagates.
+    ```{rubric} Example:
+    ```
+    ```{code-block} python
+    :caption: Swap both a database and mailer provider for fakes within one scope
 
-    Raises:
-        ValueError: If `mapping` is empty.
-        DependencyNotFoundError: If any key was never passed to `Depends`.
+    from stratae.depends import Depends, Injected, inject, overrides
 
-    Examples:
-        .. code-block:: python
+    class Database:
+        def __init__(self, name: str):
+            self.name = name
 
-            from stratae.depends import Depends, Injected, inject, overrides
+    class Mailer:
+        def __init__(self, name: str):
+            self.name = name
 
+    def get_db() -> Database:
+        return Database("production")
 
-            def get_db() -> Database:
-                return Database()
+    def get_mailer() -> Mailer:
+        return Mailer("production")
 
+    @inject
+    def get_names(
+        db: Injected[Database, Depends(get_db)],
+        mailer: Injected[Mailer, Depends(get_mailer)],
+    ) -> tuple[str, str]:
+        return db.name, mailer.name
 
-            def get_mailer() -> Mailer:
-                return Mailer()
+    assert get_names() == ("production", "production")
 
+    with overrides({get_db: Database("test"), get_mailer: Mailer("test")}):
+        assert get_names() == ("test", "test")  # both are fakes within this scope
 
-            @inject
-            def create_user(
-                name: str,
-                db: Injected[Database, Depends(get_db)],
-                mailer: Injected[Mailer, Depends(get_mailer)],
-            ) -> User:
-                user = db.insert(User(name=name))
-                mailer.send_welcome_email(user)
-                return user
-
-
-            with overrides({get_db: FakeDatabase(), get_mailer: FakeMailer()}):
-                create_user("Ada")  # writes to the fake db, sends no real email
-
-            create_user("Grace")  # back to the real database and mailer
+    assert get_names() == ("production", "production")
+    ```
 
     """
     if not mapping:
