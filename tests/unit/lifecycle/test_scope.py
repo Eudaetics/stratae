@@ -7,7 +7,7 @@ from stratae.lifecycle import Scope
 
 def test_scope_init():
     """
-    Verify that Scope can be constructed with positional args.
+    Construct Scope with positional args.
 
     Given: a name and isolation level,
     When: Scope is constructed positionally,
@@ -25,9 +25,28 @@ def test_scope_init():
     assert scope.isolation == isolation
 
 
+def test_scope_init_defaults():
+    """
+    Scope should default to context and dense options.
+
+    Given: only a name,
+    When: Scope is constructed without isolation or storage,
+    Then: it should default isolation to "context" and storage to "dense".
+    """
+    # Arrange
+    name = "request"
+
+    # Act
+    scope = Scope(name)
+
+    # Assert
+    assert scope.isolation == "context"
+    assert scope.storage == "dense"
+
+
 def test_scope_keyword_init():
     """
-    Verify that Scope fields can be assigned via keyword arguments.
+    Assign Scope fields via keyword arguments.
 
     Given: a name and isolation level,
     When: Scope is constructed using keyword arguments,
@@ -48,7 +67,7 @@ def test_scope_keyword_init():
 @pytest.mark.parametrize("invalid_name", ["app-1", "request scope", "123scope", "scope!"])
 def test_scope_init_with_non_identifier_name(invalid_name: str):
     """
-    Verify that constructing a Scope with a non-identifier name raises an error.
+    Constructing a Scope with a non-identifier name raises an error.
 
     Given: a scope name that is not a valid Python identifier,
     When: a Scope is constructed with that name,
@@ -61,7 +80,7 @@ def test_scope_init_with_non_identifier_name(invalid_name: str):
 
 def test_scope_init_with_invalid_isolation():
     """
-    Verify that constructing a Scope with an invalid isolation raises an error.
+    Constructing a Scope with an invalid isolation raises an error.
 
     Given: an isolation value that is neither "shared" nor "context",
     When: a Scope is constructed with that isolation,
@@ -74,7 +93,7 @@ def test_scope_init_with_invalid_isolation():
 
 def test_scope_init_with_invalid_storage():
     """
-    Verify that constructing a Scope with an invalid storage raises an error.
+    Constructing a Scope with an invalid storage raises an error.
 
     Given: a storage value that is neither "dense" nor "sparse",
     When: a Scope is constructed with that storage,

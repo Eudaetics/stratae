@@ -71,7 +71,7 @@ class Scope:
     """
 
     name: str
-    isolation: IsolationType
+    isolation: IsolationType = "context"
     storage: StorageType = "dense"
 
     def __post_init__(self):
