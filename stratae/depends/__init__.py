@@ -24,12 +24,15 @@ Example:
 
         from stratae.depends import Depends, Injected, inject, override
 
+
         def get_db() -> Database:
             return Database()
+
 
         @inject
         def list_users(db: Injected[Database, Depends(get_db)]) -> list[User]:
             return db.query(User)
+
 
         list_users()  # db resolved by calling get_db()
 

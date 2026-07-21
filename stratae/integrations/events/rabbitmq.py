@@ -333,8 +333,10 @@ class RabbitMQConsumer:
         order_placed = EventConfig(OrderPlaced, PubSub)
         consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
 
+
         @consumer.handle(order_placed, config=RabbitMQConsumeConfig("orders"))
         def on_order(payload: OrderPlaced) -> None: ...
+
 
         async with consumer:
             ...  # consumes in the background until the context exits

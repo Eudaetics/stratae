@@ -43,6 +43,7 @@ def resource[**P, T](func: Callable[P, Generator[T, None, None]]):
 
     lifecycle = Lifecycle([Scope("request", "context")])
 
+
     @lifecycle.cache("request")
     @resource
     def get_session():
@@ -79,6 +80,7 @@ def async_resource[**P, T](func: Callable[P, AsyncGenerator[T, None]]):
     from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
 
     lifecycle = AsyncLifecycle([Scope("request", "context")])
+
 
     @lifecycle.cache("request")
     @async_resource

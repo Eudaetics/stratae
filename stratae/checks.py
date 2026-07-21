@@ -24,18 +24,25 @@ controlling failure handling:
 ```{code-block} python
 :caption: Reject account deletion if the user is not an admin
 
-user = {"id": 1, "is_admin": False}
+from types import SimpleNamespace
+import pytest
+from stratae.checks import require
+
+user = SimpleNamespace(id=1, is_admin=False)
 
 def is_admin():
-    assert user["is_admin"]
+    assert user.is_admin
 
 @require(is_admin)
 def delete_account(account_id: int):
     # Code in here only runs if the require checks do not raise
-    ...
+    print("Deleting Account")
 
-delete_account(24) # Will abort for the above user since it fails the check
+with pytest.raises(AssertionError):
+    delete_account(24)  # Will abort for the above user since it fails the check
+
 ```
+
 See {py:func}`check`, {py:func}`check_async`, and {py:func}`require` for
 additional examples.
 
@@ -89,7 +96,10 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
     ```{rubric} Examples:
     ```
     ```{code-block} python
-    :caption: Validate a batch of form fields, stopping at the first failure
+    :caption: Validate a batch of form fields
+
+    import pytest
+    from stratae.checks import check
 
     username = "sam"
     email = "not-an-email"
@@ -100,19 +110,24 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
     def check_email_has_at_sign():
         assert "@" in email, "email must contain '@'"
 
-    check(check_username_not_empty, check_email_has_at_sign)
-    # raises AssertionError: email must contain '@'
-    ```
+    with pytest.raises(AssertionError, match="email must contain '@'"):
+        check(check_username_not_empty, check_email_has_at_sign)
 
-    ```{code-block} python
-    :caption: Collect every failing validation instead of stopping at the first
+    # Use gather to collect all errors instead of just one
+    username = ""
+    with pytest.raises(ExceptionGroup, match="Failures in check"):
+        check(check_username_not_empty, check_email_has_at_sign, mode="gather")
 
-    check(check_username_not_empty, check_email_has_at_sign, mode="gather")
-    # raises ExceptionGroup: Failures in check (1 sub-exception)
     ```
 
     ```{code-block} python
     :caption: Succeed as soon as any one of several equivalent checks passes
+
+    from types import SimpleNamespace
+    from stratae.checks import check
+
+    user = SimpleNamespace(id=1, is_admin=False)
+    resource = SimpleNamespace(owner_id=1)
 
     def check_is_admin():
         assert user.is_admin, "not an admin"
@@ -121,7 +136,7 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
         assert resource.owner_id == user.id, "not the owner"
 
     check(check_is_admin, check_owns_resource, mode="any")
-    # passes if either check succeeds; raises ExceptionGroup only if both fail
+    # passes: not an admin, but owns the resource
     ```
     """
     exceptions: list[Exception] = []
@@ -159,28 +174,58 @@ async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
     ```{code-block} python
     :caption: Mix a local format check with a remote uniqueness check
 
+    import asyncio
+    import pytest
+    from stratae.checks import check_async
+
+    users = {"jane", "john", "sam"}
     username = "sam"
 
     def check_username_not_empty():
         assert username.strip(), "username must not be empty"
 
-    async def check_username_available():
-        assert not await is_username_taken(username)
+    async def is_username_taken(username: str):
+        return username in users
 
-    await check_async(check_username_not_empty, check_username_available)
+    async def check_username_available():
+        assert not await is_username_taken(username), "username taken"
+
+    async def main():
+        await check_async(check_username_not_empty, check_username_available)
+
+    with pytest.raises(AssertionError, match="username taken"):
+        asyncio.run(main())
     ```
 
     ```{code-block} python
     :caption: Try a fast local check before falling back to a slower remote one
 
+    import asyncio
+    from stratae.checks import check_async
+
+    class RemoteStore:
+        users = {"jane", "john", "sam"}
+
+        async def exists(self, username: str):
+            return username in self.users
+
+    store = RemoteStore()
+    username = "sam"
+
+
     def check_in_local_cache():
+        local_cache = {"john"}
         assert username in local_cache, "not cached locally"
 
     async def check_in_remote_store():
-        assert await remote_store.exists(username), "not found remotely"
+        assert await store.exists(username), "not found remotely"
 
-    await check_async(check_in_local_cache, check_in_remote_store, mode="any")
-    # passes if either succeeds; raises ExceptionGroup only if both fail
+    async def main():
+        await check_async(check_in_local_cache, check_in_remote_store, mode="any")
+
+    # Does not raise since "sam" is found in the remote store
+    asyncio.run(main())
+
     ```
     """
     exceptions: list[Exception] = []
@@ -219,8 +264,26 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
 
     ```{rubric} Example:
     ```
-    ```python
+    ```{code-block} python
+    :caption: Require ownership permission as well as a resource status check
+
+    from types import SimpleNamespace
+    from stratae.checks import any_of, check
+
+    user = SimpleNamespace(id=1, is_admin=False)
+    resource = SimpleNamespace(owner_id=1, status="active")
+
+    def is_admin():
+        assert user.is_admin, "not an admin"
+
+    def is_owner():
+        assert resource.owner_id == user.id, "not the owner"
+
+    def not_pending():
+        assert resource.status != "pending", "resource is pending"
+
     check(any_of(is_admin, is_owner), not_pending)
+    # passes: not an admin, but owns the resource, and it's not pending
     ```
 
     """
@@ -259,8 +322,26 @@ def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
 
     ```{rubric} Example:
     ```
-    ```python
+    ```{code-block} python
+    :caption: Superuser is allowed, but others need multiple permission checks
+
+    from types import SimpleNamespace
+    from stratae.checks import all_of, check
+
+    user = SimpleNamespace(id=1, is_super_admin=False, is_manager=True)
+    target_user = SimpleNamespace(id=2, manager_id=1)
+
+    def is_super_admin():
+        assert user.is_super_admin, "not a super admin"
+
+    def is_manager():
+        assert user.is_manager, "not a manager"
+
+    def manages_target_user():
+        assert target_user.manager_id == user.id, "does not manage this user"
+
     check(is_super_admin, all_of(is_manager, manages_target_user), mode="any")
+    # passes: not a super admin, but is a manager who manages the target user
     ```
 
     """
@@ -353,9 +434,27 @@ def require[**P, R](
 
     ```{rubric} Example:
     ```
-    ```python
-    @require(is_admin)
-    def delete_user(user_id: int) -> None: ...
+    ```{code-block} python
+    :caption: Allow deletion if the user is an admin or the resource owner (mode="any")
+
+    from types import SimpleNamespace
+    from stratae.checks import require
+
+    user = SimpleNamespace(id=1, is_admin=False)
+    resource = SimpleNamespace(owner_id=1)
+
+    def is_admin():
+        assert user.is_admin, "not an admin"
+
+    def is_owner():
+        assert resource.owner_id == user.id, "not the owner"
+
+    @require(is_admin, is_owner, mode="any")
+    def delete_resource(resource_id: int) -> None:
+        print("Deleting resource")
+
+    delete_resource(resource.owner_id)
+    # runs: not an admin, but owns the resource
     ```
 
     """

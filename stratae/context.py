@@ -1,59 +1,78 @@
 """
 Callable, injectable values backed by contextvars.
 
-`Context` wraps a `contextvars.ContextVar`: set a value once with `.set()`
-or `with ctx.use(value):`, and any code running within that section
-can read it back by calling the `Context` instance directly. Because
-`Context` instances are callable, they work as `Depends()` providers,
+{py:class}`Context` wraps a `contextvars.ContextVar` inside a callable.
+Set a value once with {py:func}`Context.set` or {py:func}`Context.use`,
+and any code running within that section can read it back by calling the
+{py:class}`Context` instance directly. Because {py:class}`Context`
+instances are callable, they work as {py:func}`Depends <stratae.depends.inject.Depends>` providers,
 letting runtime values (a request's user ID, a feature flag, a connection)
 flow into injected functions without changing their signatures.
 
-Examples:
-    Setting and reading a value across nested scopes:
+```{rubric} Examples:
+```
+```{code-block} python
+:caption: Setting and reading a value across nested scopes
 
-    .. code-block:: python
+from stratae.context import Context
 
-        from stratae.context import Context
+user_id = Context[int]("user_id")
 
-        user_id = Context[int]("user_id")
+with user_id.use(42):  # the support agent's own account
+    assert user_id() == 42
 
-        with user_id.use(42):  # the support agent's own account
-            assert user_id() == 42
+    # "View as customer" temporarily impersonates the customer
+    # to reproduce a bug, then reverts to the agent's session.
+    with user_id.use(7):
+        assert user_id() == 7
 
-            # "View as customer" temporarily impersonates the customer
-            # to reproduce a bug, then reverts to the agent's session.
-            with user_id.use(7):
-                assert user_id() == 7
+    assert user_id() == 42  # back to the agent's own session
+```
 
-            assert user_id() == 42  # back to the agent's own session
+```{code-block} python
+:caption: An A/B test, where the Context holds the function to run
 
-    An A/B test, where the `Context` holds the function to run:
+from typing import Callable
 
-    .. code-block:: python
+from stratae.context import Context
+from stratae.depends import Depends, Injected, inject
 
-        from typing import Callable
+def train_baseline_model() -> str: ...
+def train_challenger_model() -> str: ...
 
-        from stratae.context import Context
-        from stratae.depends import Depends, Injected, inject
+model_trainer = Context[Callable[[], str]](
+    "model_trainer", default=train_baseline_model
+)
 
-        def train_baseline_model() -> str: ...
-        def train_challenger_model() -> str: ...
+@inject
+def run_training(
+    train: Injected[Callable[[], str], Depends(model_trainer)],
+) -> str:
+    return train()
 
-        model_trainer = Context[Callable[[], str]](
-            "model_trainer", default=train_baseline_model
-        )
+run_training()  # control: baseline model
 
-        @inject
-        def run_training(
-            train: Injected[Callable[[], str], Depends(model_trainer)],
-        ) -> str:
-            return train()
+with model_trainer.use(train_challenger_model):
+    run_training()  # experiment group: challenger model
+```
 
-        run_training()  # control: baseline model
 
-        with model_trainer.use(train_challenger_model):
-            run_training()  # experiment group: challenger model
+````{note}
+On Python 3.14+, `contextvars.Token` itself supports the context manager
+protocol, so {py:func}`Context.set` alone gives the same ergonomics as
+{py:func}`Context.use`:
 
+```{code-block} python
+:caption: Using set() directly as a context manager (Python 3.14+)
+
+with user_id.set(99):
+    assert user_id() == 99
+```
+
+On earlier versions, {py:func}`Context.set` returns a plain token that
+cannot be used as a context manager; use {py:func}`Context.use` instead,
+which provides that behavior on any supported Python version.
+````
 """
 
 from contextvars import ContextVar, Token
@@ -65,17 +84,48 @@ class _NoDefault:
 
 _NO_DEFAULT = _NoDefault()
 IGNORE = _NoDefault()
-"""Sentinel passed as a 'default' to skip the constructor default and require a set value."""
+"""
+Sentinel passed as a 'default' to skip the constructor default and require a set value.
+
+{py:class}`Context` uses similar default behavior as defined in
+[`ContextVar`](https://docs.python.org/3/library/contextvars.html#contextvars.ContextVar.get).
+If there is no value set in the current context, then {py:func}`Context.get` returns first
+the default provided to {py:func}`Context.get`, then the constructor level default, and
+finally raises a LookupError.
+The `IGNORE` sentinel provides a third option. If the {py:func}`Context.get` is called with
+`IGNORE`, then it will raise a LookupError if no value is set and ignore the constructor
+level default.
+
+```{rubric} Example:
+```
+```{code-block} python
+:caption: Forcing a real user in a security-sensitive path, bypassing the guest default
+
+from stratae.context import IGNORE, Context
+
+current_user = Context[str]("current_user", default="guest")
+
+current_user()  # "guest", falls back to the constructor default
+
+def delete_account():
+    # Refuse to run unless a real user was explicitly set for this request;
+    # silently falling back to "guest" here would be a bug, not a convenience.
+    actor = current_user(IGNORE)
+    ...
+```
+
+"""
 
 
 class _ContextScope[T]:
     """
     Stateful context manager for a single context value.
 
-    Returned by `Context.use`. Each call to `use` creates a new instance, so
-    nested or concurrent (e.g. across async tasks) scopes on the same
-    `Context` each track their own token rather than overwriting shared
-    state on the `Context` itself.
+    Returned by {py:func}`Context.use`. Each call to {py:func}`Context.use`
+    creates a new instance, so nested or concurrent (e.g. across async
+    tasks) scopes on the same {py:class}`Context` each track their own
+    token rather than overwriting shared state on the {py:class}`Context`
+    itself.
     """
 
     __slots__ = ("_provider", "_value", "_token")
@@ -101,24 +151,22 @@ class Context[T]:
     A named, settable value backed by a ContextVar, usable as a Depends() provider.
 
     Accepts an optional default at construction, used whenever the value is
-    unset and no default is given to that particular `get`/call. A default
-    passed to `get`/`__call__` overrides the constructor's default for that
-    call only.
+    unset and no default is given to that particular {py:func}`Context.get`
+    call. A default passed to {py:func}`Context.get`/`__call__` overrides
+    the constructor's default for that call only.
 
-    Type Parameters:
-        T: Type of the stored value.
+    ```{rubric} Example:
+    ```
+    ```{code-block} python
+    user_id = Context[int]("user_id")
 
-    Example:
-        .. code-block:: python
+    @inject
+    def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
+        return fetch_user(uid)
 
-            user_id = Context[int]("user_id")
-
-            @inject
-            def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
-                return fetch_user(uid)
-
-            with user_id.use(123):
-                get_current_user()
+    with user_id.use(123):
+        get_current_user()
+    ```
 
     """
 
@@ -129,18 +177,15 @@ class Context[T]:
         Initialize the context with a name and an optional fallback default.
 
         The constructor-level default is used whenever the variable is unset
-        and no call-specific default is given to `__call__`/`get`.
+        and no call-specific default is given to `__call__`/{py:func}`Context.get`.
 
-        Args:
-            name: Name used for the underlying `ContextVar` and in error
-                messages when the context is accessed while unset.
-            default: Fallback value used when the variable is unset and no
-                call-specific default is given. When omitted, there is no
-                fallback and an unset access raises.
-
-        Raises:
-            ValueError: If `IGNORE` is passed as the default; it is only
-                meaningful as a call-specific default to `get`/`__call__`.
+        :param name: Name used for the underlying `ContextVar` and in error
+            messages when the context is accessed while unset.
+        :param default: Fallback value used when the variable is unset and no
+            call-specific default is given. When omitted, there is no
+            fallback and an unset access raises.
+        :raises ValueError: If `IGNORE` is passed as the default; it is only
+            meaningful as a call-specific default to {py:func}`Context.get`/`__call__`.
 
         """
         if default is IGNORE:
@@ -156,19 +201,14 @@ class Context[T]:
         Equivalent to calling the context directly. Falls back to `default`
         if given, otherwise to the default set at construction time.
 
-        Args:
-            default: Fallback value to use if the variable is unset. When
-                omitted, falls back to the constructor's default, if any.
-                Pass `IGNORE` to bypass the constructor's default and
-                require a set value.
-
-        Returns:
-            The currently set value if any, otherwise the call-specific
+        :param default: Fallback value to use if the variable is unset. When
+            omitted, falls back to the constructor's default, if any.
+            Pass `IGNORE` to bypass the constructor's default and
+            require a set value.
+        :returns: The currently set value if any, otherwise the call-specific
             default if given, otherwise the constructor default.
-
-        Raises:
-            RuntimeError: If the variable is unset and no default is
-                available.
+        :raises RuntimeError: If the variable is unset and no default is
+            available.
 
         """
         if default is _NO_DEFAULT:
@@ -181,18 +221,15 @@ class Context[T]:
             ) from lookup_err
 
     __call__ = get
-    """An alias of get. Calling an instance is equivalent to instance.get()"""
+    """An alias of {py:func}`Context.get`. Calling an instance is equivalent to instance.get()"""
 
     def set(self, value: T) -> Token[T]:
         """
         Set the context value.
 
-        Args:
-            value: Value to assign to the context variable.
-
-        Returns:
-            A token that can be passed to `reset` to restore the previous
-            state.
+        :param value: Value to assign to the context variable.
+        :returns: A token that can be passed to {py:func}`Context.reset` to
+            restore the previous state.
 
         """
         return self._var.set(value)
@@ -201,9 +238,8 @@ class Context[T]:
         """
         Reset the context value to a previous state.
 
-        Args:
-            token: Token returned by a prior call to `set`, identifying the
-                state to restore.
+        :param token: Token returned by a prior call to {py:func}`Context.set`,
+            identifying the state to restore.
 
         """
         self._var.reset(token)
@@ -212,13 +248,10 @@ class Context[T]:
         """
         Create a context scope for the given value.
 
-        Args:
-            value: Value to set for the duration of the returned context
-                manager.
-
-        Returns:
-            A context manager that sets the value on entry (yielding the
-            value) and restores the previous state on exit. Each call
+        :param value: Value to set for the duration of the returned context
+            manager.
+        :returns: A context manager that sets the value on entry (yielding
+            the value) and restores the previous state on exit. Each call
             returns a fresh scope, so nested or concurrent uses are safe.
 
         """

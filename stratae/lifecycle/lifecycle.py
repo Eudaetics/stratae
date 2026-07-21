@@ -20,9 +20,11 @@ from stratae.lifecycle import Lifecycle, Scope, resource
 
 lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "context")])
 
+
 @lifecycle.cache("application")
 def get_database_connection() -> Connection:
     return create_connection()  # cached for the application scope
+
 
 @lifecycle.cache("request")
 @resource
@@ -32,6 +34,7 @@ def get_request_session():
         yield session  # cached for the request scope
     finally:
         session.close()
+
 
 with lifecycle.start("application"):
     with lifecycle.start("request"):

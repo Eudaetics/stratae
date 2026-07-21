@@ -30,4 +30,4 @@ repos:
           - aiormq
           - fastapi
           - msgspec
-        exclude: ^tests/|^docs
+        exclude: ^tests/|^docs|conftest.py

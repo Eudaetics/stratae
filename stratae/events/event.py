@@ -307,6 +307,7 @@ def reply_type[**P, S: Any, R](event: EventConfig[P, S, Request[R]]) -> type[R]:
             def __init__(self, query: str) -> None:
                 self.query = query
 
+
         reply_type(FindBook)  # BookFound
 
     """

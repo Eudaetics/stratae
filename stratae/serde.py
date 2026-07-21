@@ -19,10 +19,12 @@ Examples:
 
         from stratae.serde import pack, unpack_json
 
+
         @dataclass
         class Widget:
             id: UUID
             name: str
+
 
         widget = Widget(id=uuid4(), name="sprocket")
         data = pack(widget)  # b'{"id": "...", "name": "sprocket"}'
@@ -67,9 +69,11 @@ def encode(obj: object) -> Any:
 
             encode(uuid4())  # '3fa85f64-5717-4562-b3fc-2c963f66afa6'
 
+
             class Point:
                 def to_dict(self):
                     return {"x": 1, "y": 2}
+
 
             encode(Point())  # {'x': 1, 'y': 2}
 
@@ -195,10 +199,12 @@ def unpack_json[S](data: bytes, /, *, type: type[S]) -> S:
 
             from stratae.serde import unpack_json
 
+
             @dataclass
             class Point:
                 x: int
                 y: int
+
 
             unpack_json(b'{"x": 1, "y": 2}', type=Point)  # Point(x=1, y=2)
 

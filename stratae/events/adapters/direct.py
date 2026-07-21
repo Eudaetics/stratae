@@ -46,16 +46,20 @@ class DirectBus(BaseDirectBus):
         book_created = EventConfig(Book, PubSub)
         create_book = bus.bind(book_created)
 
+
         @bus.handle(book_created)
         def save_book(book: Book) -> None: ...
+
 
         create_book(title="Dune", author="Herbert")
 
         book_requested = EventConfig(BookQuery, Request[Book])
         find_book = bus.bind(book_requested)
 
+
         @bus.handle(book_requested)
         def lookup(query: BookQuery) -> Book: ...
+
 
         book = find_book(title="Dune")
 

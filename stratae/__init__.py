@@ -9,18 +9,21 @@ it works anywhere: APIs, CLIs, workers, and tests.
 from stratae.depends import Depends, Injected, inject
 from stratae.lifecycle import Lifecycle, Scope
 
-lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
+lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "shared")])
 
-@lifecycle.cache('application')
+
+@lifecycle.cache("application")
 def get_database():
     return Database(url="postgresql://...")
+
 
 @inject
 def create_user(name: str, db: Injected[Database, Depends(get_database)]):
     return db.users.create(name=name)
 
-with lifecycle.start('application'):
-    with lifecycle.start('request'):
+
+with lifecycle.start("application"):
+    with lifecycle.start("request"):
         user = create_user("Alice")
 ```
 

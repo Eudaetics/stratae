@@ -26,12 +26,15 @@ Example:
 
         from stratae.depends.inject import Depends, Injected, inject
 
+
         def get_db() -> Database:
             return Database()
+
 
         @inject
         def list_users(db: Injected[Database, Depends(get_db)]) -> list[User]:
             return db.query(User)
+
 
         list_users()  # db resolved by calling get_db()
 
@@ -147,6 +150,7 @@ def inject(
         .. code-block:: python
 
             def _foo_sig(a: int) -> int: ...
+
 
             @inject(sig=_foo_sig)
             def foo(a: int, b: Injected[int, Depends(get_b)]) -> int: ...

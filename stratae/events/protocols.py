@@ -101,6 +101,7 @@ class Consumer(Protocol):
 
             bus.handle(emit_order, on_order)
 
+
             @bus.handle(emit_order)
             def on_order(payload: OrderPlaced) -> None: ...
 

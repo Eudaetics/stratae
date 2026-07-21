@@ -60,10 +60,12 @@ class Scope:
     ```python
     from stratae.lifecycle import Lifecycle, Scope
 
-    lifecycle = Lifecycle([
-        Scope("application", isolation="shared"),
-        Scope("request", isolation="context", storage="sparse"),
-    ])
+    lifecycle = Lifecycle(
+        [
+            Scope("application", isolation="shared"),
+            Scope("request", isolation="context", storage="sparse"),
+        ]
+    )
     ```
 
     """

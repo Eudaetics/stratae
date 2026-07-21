@@ -28,6 +28,7 @@ from stratae.lifecycle import Lifecycle, Scope, resource
 
 lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "context")])
 
+
 @lifecycle.cache("application")
 @resource
 def get_db():
@@ -36,6 +37,7 @@ def get_db():
         yield conn
     finally:
         conn.close()
+
 
 with lifecycle.start("application"):
     with lifecycle.start("request"):
