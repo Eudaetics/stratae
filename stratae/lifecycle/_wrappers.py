@@ -146,14 +146,25 @@ def _write_resolve_first_read(writer: Writer, lifecycle: Any, scope: str, read: 
     writer.write(read)
 
 
-def _build_namespace(func: Callable[..., Any], lifecycle: Any, scope: str) -> dict[str, Any]:
+def _is_shared_scope(lifecycle: Any, scope: str) -> bool:
+    """Whether scope's activation holder is a SharedVar, needing lock-guarded slot access."""
+    return isinstance(lifecycle._vars[scope], SharedVar)
+
+
+def _build_namespace(
+    func: Callable[..., Any], lifecycle: Any, scope: str, is_async: bool = False
+) -> dict[str, Any]:
     """Build the namespace bindings every codegen'd wrapper compiles against."""
-    return {
+    var = lifecycle._vars[scope]
+    namespace = {
         "__func__": func,
         "__lifecycle__": lifecycle,
         "__UNSET__": UNSET,
-        "__var__": lifecycle._vars[scope],
+        "__var__": var,
     }
+    if isinstance(var, SharedVar):
+        namespace["__lock__"] = var.async_lock if is_async else var.lock
+    return namespace
 
 
 def _write_slot_guard(writer: Writer, slot: int, lifecycle: Any, scope: str) -> None:
@@ -182,12 +193,78 @@ def _write_keyed_cache_guard(writer: Writer, slot: int, lifecycle: Any, scope: s
         writer.write(f"__slots__[{slot}] = __cache__")
 
 
-def _write_slot_body(writer: Writer, slot: int, lifecycle: Any, scope: str, call: str) -> None:
+def _write_locked_slot_common(
+    writer: Writer, slot: int, is_async: bool, write_compute: Callable[[], None]
+) -> None:
+    """
+    Write a shared scope's double-checked-locked slot miss.
+
+    Only reached once the lock-free fast-path read outside already saw UNSET; re-reads the
+    slot after acquiring the lock in case another caller already filled it while this one
+    was waiting, since only then is the miss still real. write_compute writes the result
+    into __value__ - a plain call for a slot-eligible function, a context-manager entry
+    for a resource - the caller supplies it since that part differs.
+    """
+    writer.write(f"{'async with' if is_async else 'with'} __lock__:")
+    with writer.block():
+        writer.write(f"__value__ = __slots__[{slot}]")
+        writer.write("if __value__ is __UNSET__:")
+        with writer.block():
+            write_compute()
+            writer.write(f"__slots__[{slot}] = __value__")
+
+
+def _write_locked_keyed_common(
+    writer: Writer,
+    slot: int,
+    lifecycle: Any,
+    scope: str,
+    cache_key: Callable[..., Hashable] | None,
+    params: list[Parameter],
+    is_async: bool,
+    write_compute: Callable[[], None],
+) -> None:
+    """
+    Write a shared scope's keyed cache access with double-checked locking.
+
+    Unlike the non-shared path, the dict's lazy creation moves inside the lock too: two
+    concurrent callers can each see the slot as UNSET and each build a fresh dict,
+    silently discarding whichever's inserts came first, so only the hit check stays
+    lock-free outside the lock. write_compute writes the result into __value__.
+    """
+    _write_resolve_first_read(writer, lifecycle, scope, f"__cache__ = __slots__[{slot}]")
+    _write_key(writer, cache_key, params)
+    writer.write("if __cache__ is not __UNSET__ and __ck__ in __cache__:")
+    with writer.block():
+        writer.write("return __cache__[__ck__]")
+    writer.write(f"{'async with' if is_async else 'with'} __lock__:")
+    with writer.block():
+        writer.write(f"__cache__ = __slots__[{slot}]")
+        writer.write("if __cache__ is __UNSET__:")
+        with writer.block():
+            writer.write("__cache__ = {}")
+            writer.write(f"__slots__[{slot}] = __cache__")
+        writer.write("if __ck__ in __cache__:")
+        with writer.block():
+            writer.write("return __cache__[__ck__]")
+        write_compute()
+        writer.write("__cache__[__ck__] = __value__")
+        writer.write("return __value__")
+
+
+def _write_slot_body(
+    writer: Writer, slot: int, lifecycle: Any, scope: str, call: str, is_async: bool = False
+) -> None:
     """Write the whole body of a slot-eligible wrapper around the rendered call expression."""
     _write_slot_guard(writer, slot, lifecycle, scope)
     with writer.block():
-        writer.write(f"__value__ = {call}")
-        writer.write(f"__slots__[{slot}] = __value__")
+        if _is_shared_scope(lifecycle, scope):
+            _write_locked_slot_common(
+                writer, slot, is_async, lambda: writer.write(f"__value__ = {call}")
+            )
+        else:
+            writer.write(f"__value__ = {call}")
+            writer.write(f"__slots__[{slot}] = __value__")
     writer.write("return __value__")
 
 
@@ -199,8 +276,21 @@ def _write_keyed_body(
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
     call: str,
+    is_async: bool = False,
 ) -> None:
     """Write the whole body of a keyed wrapper around the rendered call expression."""
+    if _is_shared_scope(lifecycle, scope):
+        _write_locked_keyed_common(
+            writer,
+            slot,
+            lifecycle,
+            scope,
+            cache_key,
+            params,
+            is_async,
+            lambda: writer.write(f"__value__ = {call}"),
+        )
+        return
     _write_keyed_cache_guard(writer, slot, lifecycle, scope)
     _write_key(writer, cache_key, params)
     _write_cache_check(writer)
@@ -375,11 +465,13 @@ def create_async_wrapper[**P, T](
     with writer.block():
         call = f"await __func__({_render_forward_arguments(params)})"
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, lifecycle, scope, call)
+            _write_slot_body(writer, slot, lifecycle, scope, call, is_async=True)
         else:
-            _write_keyed_body(writer, slot, lifecycle, scope, cache_key, params, call)
+            _write_keyed_body(
+                writer, slot, lifecycle, scope, cache_key, params, call, is_async=True
+            )
 
-    namespace = _build_namespace(func, lifecycle, scope)
+    namespace = _build_namespace(func, lifecycle, scope, is_async=True)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = cast(Callable[P, Awaitable[T]], _finalize(writer, func, params, namespace))
@@ -402,15 +494,28 @@ def _write_resolve_exit_stack(writer: Writer) -> None:
 
 
 def _write_cm_slot_body(
-    writer: Writer, slot: int, lifecycle: Any, scope: str, params: list[Parameter], enter_expr: str
+    writer: Writer,
+    slot: int,
+    lifecycle: Any,
+    scope: str,
+    params: list[Parameter],
+    enter_expr: str,
+    is_async: bool = False,
 ) -> None:
     """Write the whole body of a slot-eligible context-manager wrapper."""
-    _write_slot_guard(writer, slot, lifecycle, scope)
-    with writer.block():
+
+    def write_enter() -> None:
         writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
         _write_resolve_exit_stack(writer)
         writer.write(f"__value__ = {enter_expr}")
-        writer.write(f"__slots__[{slot}] = __value__")
+
+    _write_slot_guard(writer, slot, lifecycle, scope)
+    with writer.block():
+        if _is_shared_scope(lifecycle, scope):
+            _write_locked_slot_common(writer, slot, is_async, write_enter)
+        else:
+            write_enter()
+            writer.write(f"__slots__[{slot}] = __value__")
     writer.write("return __value__")
 
 
@@ -422,14 +527,24 @@ def _write_cm_keyed_body(
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
     enter_expr: str,
+    is_async: bool = False,
 ) -> None:
     """Write the whole body of a keyed context-manager wrapper."""
+
+    def write_enter() -> None:
+        writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
+        _write_resolve_exit_stack(writer)
+        writer.write(f"__value__ = {enter_expr}")
+
+    if _is_shared_scope(lifecycle, scope):
+        _write_locked_keyed_common(
+            writer, slot, lifecycle, scope, cache_key, params, is_async, write_enter
+        )
+        return
     _write_keyed_cache_guard(writer, slot, lifecycle, scope)
     _write_key(writer, cache_key, params)
     _write_cache_check(writer)
-    writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-    _write_resolve_exit_stack(writer)
-    writer.write(f"__value__ = {enter_expr}")
+    write_enter()
     _write_cache_store(writer)
 
 
@@ -451,11 +566,13 @@ def _create_cm_wrapper_impl(
     writer.write(f"{def_kw} wrapper({render_parameters(params)}):")
     with writer.block():
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_cm_slot_body(writer, slot, lifecycle, scope, params, enter_expr)
+            _write_cm_slot_body(writer, slot, lifecycle, scope, params, enter_expr, is_async)
         else:
-            _write_cm_keyed_body(writer, slot, lifecycle, scope, cache_key, params, enter_expr)
+            _write_cm_keyed_body(
+                writer, slot, lifecycle, scope, cache_key, params, enter_expr, is_async
+            )
 
-    namespace = _build_namespace(func, lifecycle, scope)
+    namespace = _build_namespace(func, lifecycle, scope, is_async=is_async)
     namespace["__stack_type__"] = lifecycle.exit_stack_type()
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key

@@ -9,10 +9,12 @@ plus the per-scope bookkeeping a `Lifecycle`/`AsyncLifecycle` needs, from a
 sequence of `Scope` declarations.
 """
 
+import threading
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from contextvars import ContextVar
 from typing import Any, Callable, NamedTuple, Protocol, Sequence
 
+from stratae.lifecycle._async_lock import AsyncRLock
 from stratae.lifecycle.scope import Scope
 
 UNSET: Any = object()
@@ -55,14 +57,24 @@ class SharedVar:
     read the attribute directly - and UNSET there marks the scope inactive. set() always
     hands back the same token: shared activations don't nest, so deactivation clears the
     storage rather than restoring a prior value.
+
+    A shared scope's slots can be read and written by concurrent callers while the scope
+    is active - that's the point of "shared" - so a slot's first computation needs a lock
+    to stay cached-once: lock for sync-flavored cached functions in this scope, async_lock
+    for async ones. A given slot is only ever touched by one flavor, so one pair of locks
+    per scope is enough. Both are reentrant, since a cached function's own computation can
+    call another cached function in the same scope (e.g. a dependency chain), which would
+    otherwise deadlock the same thread/task against its own lock.
     """
 
-    __slots__ = ("name", "storage", "_token")
+    __slots__ = ("name", "storage", "_token", "lock", "async_lock")
 
     def __init__(self, name: str) -> None:
         self.name = name
         self.storage: SlotStorage = UNSET
         self._token = SharedToken(self)
+        self.lock = threading.RLock()
+        self.async_lock = AsyncRLock()
 
     def get(self, default: Any = _MISSING) -> SlotStorage:
         """Return the live storage, or default when inactive, else raise LookupError."""
