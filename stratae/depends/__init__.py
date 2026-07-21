@@ -45,7 +45,7 @@ def get_db_name(db: Injected[Database, Depends(get_db)]) -> str:
 assert get_db_name() == "production"  # db resolved by calling get_db()
 
 with override(get_db, Database("test")):
-    assert get_db_name() == "test"  # db is the fake within this scope
+    assert get_db_name() == "test"  # db is the test within this scope
 
 assert get_db_name() == "production"
 ```

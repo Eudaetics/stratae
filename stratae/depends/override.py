@@ -29,7 +29,7 @@ def get_db_name(db: Injected[Database, Depends(get_db)]) -> str:
 assert get_db_name() == "production"  # db resolved by calling get_db()
 
 with override(get_db, Database("test")):
-    assert get_db_name() == "test"  # db is the fake within this scope
+    assert get_db_name() == "test"  # db is the test within this scope
 
 assert get_db_name() == "production"
 ```
@@ -191,7 +191,7 @@ def overrides(mapping: _OverrideMap) -> _Overrides:
     assert get_names() == ("production", "production")
 
     with overrides({get_db: Database("test"), get_mailer: Mailer("test")}):
-        assert get_names() == ("test", "test")  # both are fakes within this scope
+        assert get_names() == ("test", "test")  # both are test mocks within this scope
 
     assert get_names() == ("production", "production")
     ```
