@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 import pytest
 
-from stratae.events.handler import Handler
+from stratae.events import Handler
 
 
 def _sync_handler(payload: int) -> int:

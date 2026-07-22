@@ -54,9 +54,14 @@ from uuid import uuid4
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.envelope import CORRELATION_ID_HEADER, MESSAGE_ID_HEADER, Envelope
-from stratae.events.event import EventConfig, PubSub
-from stratae.events.handler import Handler
+from stratae.events import (
+    CORRELATION_ID_HEADER,
+    MESSAGE_ID_HEADER,
+    Envelope,
+    EventConfig,
+    Handler,
+    PubSub,
+)
 from stratae.integrations.events.rabbitmq import RabbitMQConsumeConfig, RabbitMQConsumer
 
 _URL = "amqp://guest:guest@localhost/"

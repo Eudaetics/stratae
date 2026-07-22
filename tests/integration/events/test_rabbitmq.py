@@ -30,8 +30,7 @@ import pytest
 from aiormq import connect
 from aiormq.abc import AbstractChannel
 
-from stratae.events import EventConfig, PubSub
-from stratae.events.envelope import Envelope
+from stratae.events import Envelope, EventConfig, PubSub
 from stratae.integrations.events.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,

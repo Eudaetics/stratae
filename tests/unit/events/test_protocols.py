@@ -13,8 +13,7 @@ Consumer:
 
 from typing import Any, Callable
 
-from stratae.events.event import EventConfig, EventType
-from stratae.events.protocols import Consumer, EmitCallable, Producer
+from stratae.events import Consumer, EmitCallable, EventConfig, EventType, Producer
 
 
 class _SyncProducer:
