@@ -310,7 +310,7 @@ Before contributing, please:
 
 1. Check for open issues or open a new issue to start a discussion
 2. Fork the repository on GitHub
-3. Install development dependencies with `pip install -e ".[dev,test]"`
+3. Install development dependencies with `uv sync --extra dev --extra test` (or, without uv, `pip install -e ".[dev,test]"`)
 4. Run pre-commit hooks with `pre-commit install`
 5. Make your changes following the project's coding style
 6. Write tests that cover your changes
