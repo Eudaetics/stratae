@@ -59,6 +59,21 @@ assert session is not session_again  # each request gets its own session
 assert session.closed  # closed automatically once its "request" activation ended
 ```
 
+```{note}
+Cache keying behaves like `functools.lru_cache`: unless `ignore_params` is set, a
+function that takes parameters gets one cached value per distinct set of
+arguments (or per `cache_key` result), not one cached value for the whole scope
+activation. Calling it again with different arguments computes and caches a
+separate value rather than reusing the first one.
+```
+
+```{tip}
+If you know a function's result won't actually vary within a scope activation,
+even though it still accepts parameters, pass `ignore_params=True`. That caches
+the value directly in the function's slot instead of a keyed dict, trading
+per-argument caching for a single, faster slot lookup.
+```
+
 See {py:class}`BaseLifecycle`, {py:class}`Lifecycle`, and {py:class}`AsyncLifecycle` for
 additional examples.
 """
@@ -579,20 +594,8 @@ class Lifecycle(BaseLifecycle[LifecycleContext, ExitStack]):
         :returns: A decorator, applied to the function whose result should be cached.
         :raises ValueError: If both `cache_key` and `ignore_params` are given.
 
-        ```{note}
-        Cache keying behaves like `functools.lru_cache`: unless `ignore_params` is set, a
-        function that takes parameters gets one cached value per distinct set of
-        arguments (or per `cache_key` result), not one cached value for the whole scope
-        activation. Calling it again with different arguments computes and caches a
-        separate value rather than reusing the first one.
-        ```
-
-        ```{tip}
-        If you know a function's result won't actually vary within a scope activation,
-        even though it still accepts parameters, pass `ignore_params=True`. That caches
-        the value directly in the function's slot instead of a keyed dict, trading
-        per-argument caching for a single, faster slot lookup.
-        ```
+        See the module docstring for cache-keying semantics and when to use
+        `ignore_params`.
 
         ```{rubric} Example:
         ```
@@ -747,20 +750,8 @@ class AsyncLifecycle(BaseLifecycle[AsyncLifecycleContext, AsyncExitStack]):
         :returns: A decorator, applied to the function whose result should be cached.
         :raises ValueError: If both `cache_key` and `ignore_params` are given.
 
-        ```{note}
-        Cache keying behaves like `functools.lru_cache`: unless `ignore_params` is set, a
-        function that takes parameters gets one cached value per distinct set of
-        arguments (or per `cache_key` result), not one cached value for the whole scope
-        activation. Calling it again with different arguments computes and caches a
-        separate value rather than reusing the first one.
-        ```
-
-        ```{tip}
-        If you know a function's result won't actually vary within a scope activation,
-        even though it still accepts parameters, pass `ignore_params=True`. That caches
-        the value directly in the function's slot instead of a keyed dict, trading
-        per-argument caching for a single, faster slot lookup.
-        ```
+        See the module docstring for cache-keying semantics and when to use
+        `ignore_params`.
 
         ```{rubric} Example:
         ```
