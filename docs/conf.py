@@ -19,6 +19,7 @@ version = release
 extensions = [
     "myst_parser",
     "autodoc2",
+    "sphinx_design",
 ]
 
 source_suffix = {
@@ -58,7 +59,7 @@ myst_heading_anchors = 3
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 
-html_theme = "shibuya"
+html_theme = "pydata_sphinx_theme"
 html_theme_options = {
     "github_url": "https://github.com/Eudaetics/stratae",
 }
