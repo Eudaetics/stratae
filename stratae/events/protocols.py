@@ -8,29 +8,6 @@ satisfies the protocol, sync or async, without inheriting from it.
 parameterized over a concrete return type `R`, so a specific binding — e.g. a
 {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`'s `emitter` — can be
 checked against its own return type instead of `Any`.
-
-```{rubric} Example:
-```
-```{code-block} python
-:caption: Checking that a bus satisfies Producer and Consumer structurally
-
-from stratae.events import Consumer, Producer
-
-class MinimalBus:
-    def emit(self, payload, event, config, *, serializer=None):
-        return None
-
-    def handle(self, config, fn=None):
-        return fn
-
-bus = MinimalBus()
-assert isinstance(bus, Producer)
-assert isinstance(bus, Consumer)
-```
-
-See {py:class}`EmitCallable`, {py:class}`Producer`, and {py:class}`Consumer`
-for additional examples.
-
 """
 
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -48,33 +25,6 @@ class EmitCallable[**P, S: Any, T: EventType, C: Any, R: Any](Protocol):
     concrete `R` instead of `Any`, though. That lets a specific binding —
     e.g. a {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`'s
     `emitter` — be checked against its own return type.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Binding a plain function as an emitter typed via EmitCallable
-
-    from typing import Any, Callable
-    from stratae.events import EmitCallable, EventConfig, PubSub, event
-
-    class OrderPlaced:
-        def __init__(self, order_id: int) -> None:
-            self.order_id = order_id
-
-    def emit_order(
-        payload: OrderPlaced,
-        event: EventConfig[..., OrderPlaced, PubSub],
-        config: Any,
-        *,
-        serializer: Callable[[OrderPlaced], Any] | None = None,
-    ) -> int:
-        return payload.order_id
-
-    order_placed = event(OrderPlaced, PubSub)
-    emitter: EmitCallable = emit_order
-    assert emitter(OrderPlaced(order_id=42), order_placed, None) == 42
-    ```
-
     """
 
     def __call__(
@@ -107,32 +57,6 @@ class Producer(Protocol):
     whether sync or async. {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`
     calls `emit` when invoked. Adapters implement it to perform the actual
     dispatch.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Checking that an in-process bus satisfies the Producer protocol
-
-    from stratae.events import DirectBus, Producer, PubSub, event
-
-    class OrderPlaced:
-        def __init__(self, order_id: int) -> None:
-            self.order_id = order_id
-
-    order_placed = event(OrderPlaced, PubSub)
-    bus = DirectBus()
-    assert isinstance(bus, Producer)
-
-    received: list[int] = []
-
-    @bus.handle(order_placed)
-    def on_order_placed(order: OrderPlaced) -> None:
-        received.append(order.order_id)
-
-    bus.emit(OrderPlaced(order_id=42), order_placed, None)
-    assert received == [42]
-    ```
-
     """
 
     def emit[**P, S: Any, T: EventType](
@@ -174,32 +98,6 @@ class Consumer(Protocol):
     adapter and isn't part of this protocol. That includes how a queued
     message, or an in-process event, actually triggers the registered
     handlers.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Registering a handler for a pub/sub event via handle
-
-    from stratae.events import Consumer, DirectBus, PubSub, event
-
-    class LogMessage:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    log_message = event(LogMessage, PubSub)
-    bus = DirectBus()
-    assert isinstance(bus, Consumer)
-
-    logged: list[str] = []
-
-    @bus.handle(log_message)
-    def write_to_log(entry: LogMessage) -> None:
-        logged.append(entry.text)
-
-    bus.emit(LogMessage(text="hello"), log_message, None)
-    assert logged == ["hello"]
-    ```
-
     """
 
     def handle(self, config: Any, fn: Callable[[Any], Any] | None = None) -> Any:
