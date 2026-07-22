@@ -49,7 +49,7 @@ from typing import cast
 
 import pytest
 
-from stratae.events.event import (
+from stratae.events import (
     AsyncEventConfig,
     EventConfig,
     EventType,

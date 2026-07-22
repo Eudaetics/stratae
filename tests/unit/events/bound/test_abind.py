@@ -23,8 +23,7 @@ import asyncio
 from typing import Any
 from unittest.mock import Mock, create_autospec
 
-from stratae.events.bound import AsyncBoundEvent, abind
-from stratae.events.event import EventConfig, PubSub
+from stratae.events import AsyncBoundEvent, EventConfig, PubSub, abind
 
 
 async def _async_emit(

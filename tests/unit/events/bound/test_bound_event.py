@@ -15,9 +15,7 @@ from unittest.mock import Mock, create_autospec
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.bound import BoundEvent
-from stratae.events.event import EventConfig, PubSub
-from stratae.events.protocols import EmitCallable
+from stratae.events import BoundEvent, EmitCallable, EventConfig, PubSub
 
 
 class _OrderCreated:

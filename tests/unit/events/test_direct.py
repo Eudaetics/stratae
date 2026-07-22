@@ -40,12 +40,18 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.events.adapters.direct import DirectBus
-from stratae.events.bound import BoundEvent
-from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, PubSub, Request
+from stratae.events import (
+    BoundEvent,
+    Consumer,
+    DirectBus,
+    EmitCallable,
+    Envelope,
+    EventConfig,
+    Producer,
+    PubSub,
+    Request,
+)
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
-from stratae.events.protocols import Consumer, EmitCallable, Producer
 
 
 class _TaskCreated:

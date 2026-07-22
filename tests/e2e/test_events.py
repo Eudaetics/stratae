@@ -5,8 +5,7 @@ from typing import Any
 import pytest
 
 from stratae.depends import Depends, Injected, inject
-from stratae.events import EventConfig, PubSub, Request
-from stratae.events.adapters import DirectBus
+from stratae.events import DirectBus, EventConfig, PubSub, Request
 from stratae.lifecycle import Lifecycle, Scope
 
 
