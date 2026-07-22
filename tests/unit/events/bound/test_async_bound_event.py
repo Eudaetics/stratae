@@ -17,8 +17,7 @@ from unittest.mock import Mock, create_autospec
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events.bound import AsyncBoundEvent
-from stratae.events.event import EventConfig, PubSub
+from stratae.events import AsyncBoundEvent, EventConfig, PubSub
 
 
 async def _async_emit(

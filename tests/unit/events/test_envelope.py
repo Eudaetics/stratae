@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from stratae.events.envelope import (
+from stratae.events import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,

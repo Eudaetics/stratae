@@ -31,14 +31,15 @@ import pytest
 from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
-from stratae.events.bound import AsyncBoundEvent
-from stratae.events.envelope import (
+from stratae.events import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
+    AsyncBoundEvent,
     Envelope,
+    EventConfig,
+    PubSub,
 )
-from stratae.events.event import EventConfig, PubSub
 from stratae.events.exceptions import NotConnectedError
 from stratae.integrations.events.rabbitmq import RabbitMQConfig, RabbitMQPublisher
 from stratae.serde import pack
