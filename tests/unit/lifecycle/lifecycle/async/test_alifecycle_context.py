@@ -16,7 +16,7 @@ Tests:
 
 from typing import Sequence
 
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle
 
 
 async def test_async_context_lifecycle(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):

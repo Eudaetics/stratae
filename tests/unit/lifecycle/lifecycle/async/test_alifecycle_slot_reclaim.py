@@ -10,8 +10,7 @@ genuinely separate code from the sync path.
 import gc
 from unittest.mock import Mock, call
 
-from stratae.lifecycle import Scope
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, Scope
 
 
 class SimpleObject:

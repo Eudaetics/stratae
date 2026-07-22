@@ -19,8 +19,7 @@ the reply type from one.
 ```{code-block} python
 :caption: A create-user request whose responder logs a pub/sub event as a side effect
 
-from stratae.events.direct import DirectBus
-from stratae.events.event import PubSub, Request, event
+from stratae.events import DirectBus, PubSub, Request, event
 
 class LogMessage:
     def __init__(self, text: str) -> None:
@@ -133,7 +132,7 @@ class EventConfig[**P, E: Any, T: EventType]:
     ```{code-block} python
     :caption: Binding a plain payload class to a pub/sub dispatch pattern
 
-    from stratae.events.event import EventConfig, PubSub
+    from stratae.events import EventConfig, PubSub
 
     class LogMessage:
         def __init__(self, text: str) -> None:
@@ -211,7 +210,7 @@ class AsyncEventConfig[**P, E: Any, T: EventType](EventConfig[P, E, T]):
     :caption: Binding an async payload factory to a pub/sub dispatch pattern
 
     import asyncio
-    from stratae.events.event import AsyncEventConfig, PubSub
+    from stratae.events import AsyncEventConfig, PubSub
 
     class LogMessage:
         def __init__(self, text: str) -> None:
@@ -328,8 +327,7 @@ def event[**P, E: Any, T: EventType](
     ```{code-block} python
     :caption: Defining a pub/sub event and emitting it through a bus
 
-    from stratae.events.direct import DirectBus
-    from stratae.events.event import PubSub, event
+    from stratae.events import DirectBus, PubSub, event
 
     class OrderPlaced:
         def __init__(self, order_id: int) -> None:
@@ -369,7 +367,7 @@ def is_request[**P, S: Any, T: EventType](event: EventConfig[P, S, T]) -> bool:
     ```{code-block} python
     :caption: Distinguishing a request/reply event from a pub/sub event
 
-    from stratae.events.event import PubSub, Request, event, is_request
+    from stratae.events import PubSub, Request, event, is_request
 
     class OrderPlaced:
         def __init__(self, order_id: int) -> None:
@@ -416,7 +414,7 @@ def reply_type[**P, S: Any, R](event: EventConfig[P, S, Request[R]]) -> type[R]:
     ```{code-block} python
     :caption: Recovering a request event's reply type at runtime
 
-    from stratae.events.event import Request, event, reply_type
+    from stratae.events import Request, event, reply_type
 
     class FindBook:
         def __init__(self, query: str) -> None:

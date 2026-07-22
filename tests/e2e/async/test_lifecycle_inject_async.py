@@ -8,8 +8,7 @@ import pytest
 
 from stratae.context import Context
 from stratae.depends import Depends, Injected, inject
-from stratae.lifecycle import async_resource
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, async_resource
 
 
 async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):

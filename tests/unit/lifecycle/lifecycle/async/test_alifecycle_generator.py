@@ -22,8 +22,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import async_resource
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, async_resource
 
 
 async def test_generator_async(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):

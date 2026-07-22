@@ -10,7 +10,7 @@ from stratae.integrations.lifecycle.asgi import (
     RequestLifecycleMiddleware,
     Scope,
 )
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle
 
 
 async def _receive() -> dict[str, object]:

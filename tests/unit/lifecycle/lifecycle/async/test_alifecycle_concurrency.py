@@ -11,8 +11,7 @@ This module contains asynchronous tests to ensure that:
 import asyncio
 from typing import Any
 
-from stratae.lifecycle import async_resource
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, async_resource
 
 
 async def test_concurrent_cache_isolation(async_lifecycle: AsyncLifecycle):

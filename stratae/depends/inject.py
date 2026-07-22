@@ -40,7 +40,7 @@ cached provider to {py:func}`Depends` as usual.
 :caption: Injecting a database dependency into a function that queries it
 
 from typing import Annotated
-from stratae.depends.inject import Depends, inject
+from stratae.depends import Depends, inject
 
 class Database:
     def query(self, table: str) -> list[str]:
@@ -116,7 +116,7 @@ def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:  # n
     ```{code-block} python
     :caption: Registering the same provider twice returns the same Provider
 
-    from stratae.depends.inject import Depends
+    from stratae.depends import Depends
 
     def get_value() -> int:
         return 42
@@ -180,7 +180,7 @@ def inject(
     ```{code-block} python
     :caption: Decorating a function with a bare @inject
 
-    from stratae.depends.inject import Depends, Injected, inject
+    from stratae.depends import Depends, Injected, inject
 
     def get_tax_rate() -> float:
         return 0.08
@@ -197,7 +197,7 @@ def inject(
     ```{code-block} python
     :caption: Correcting the decorated signature seen by type checkers with sig
 
-    from stratae.depends.inject import Depends, Injected, inject
+    from stratae.depends import Depends, Injected, inject
 
     def get_tax_rate() -> float:
         return 0.08

@@ -11,9 +11,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle import resource
+from stratae.lifecycle import AsyncLifecycle, resource
 from stratae.lifecycle.exceptions import ScopeActivationError
-from stratae.lifecycle.lifecycle import AsyncLifecycle
 
 
 async def test_apop_most_recent_scope(async_lifecycle: AsyncLifecycle, scopes: Sequence[str]):

@@ -2,8 +2,7 @@
 
 import asyncio
 
-from stratae.lifecycle import async_resource
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, async_resource
 
 
 async def test_shared_scope_slot_eligible_computed_once_under_task_contention(

@@ -5,7 +5,12 @@ from collections import defaultdict
 from inspect import iscoroutinefunction
 from typing import Any, Awaitable, Callable, Protocol, overload
 
-from stratae.events.bound import AsyncBoundEvent, BoundEvent, abind, bind
+from stratae.events.bound import (
+    AsyncBoundEvent,
+    BoundEvent,
+    abind,
+    bind,
+)
 from stratae.events.envelope import Envelope
 from stratae.events.event import EventConfig, PubSub, Request, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError

@@ -10,16 +10,18 @@ from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Protocol, 
 from aiormq import connect
 from pamqp.commands import Basic
 
-from stratae.events.bound import AsyncBoundEvent, abind
-from stratae.events.envelope import (
+from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     TIMESTAMP_HEADER,
+    AsyncBoundEvent,
     Envelope,
+    EventConfig,
+    Handler,
+    PubSub,
+    abind,
 )
-from stratae.events.event import EventConfig, PubSub
 from stratae.events.exceptions import NotConnectedError
-from stratae.events.handler import Handler
 from stratae.serde import Unpacker, pack, unpack_json
 
 if TYPE_CHECKING:

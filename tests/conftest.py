@@ -4,8 +4,7 @@ from typing import Sequence
 
 import pytest
 
-from stratae.lifecycle import Lifecycle, Scope
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle, Lifecycle, Scope
 
 
 @pytest.fixture

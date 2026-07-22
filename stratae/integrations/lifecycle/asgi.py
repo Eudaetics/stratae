@@ -2,7 +2,7 @@
 
 from typing import Awaitable, Callable
 
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncLifecycle
 
 # Redefine types for ASGI applications
 type Scope = dict[str, object]
