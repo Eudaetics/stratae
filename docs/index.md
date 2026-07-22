@@ -6,7 +6,15 @@ Stratae is a set of developer tools for Python 3.12+. It covers dependency injec
 :maxdepth: 2
 :caption: Guides
 
-tutorials/index
+introduction
+getting-started
+dependency-injection
+lifecycle
+events
+context
+checks
+serde
+integrations/index
 ```
 
 ```{toctree}
