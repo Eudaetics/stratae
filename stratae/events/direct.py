@@ -180,9 +180,9 @@ class DirectBus(BaseDirectBus):
         self,
         payload: Any,
         event: _AnyEventConfig,
-        config: None = None,
+        config: None = None,  # noqa: S1172
         *,
-        serializer: Callable[..., Any] | None = None,
+        serializer: Callable[..., Any] | None = None,  # noqa: S1172
     ) -> Any:
         """
         Dispatch the payload to registered handlers, opening an envelope scope if configured.
@@ -389,9 +389,9 @@ class AsyncDirectBus(BaseDirectBus):
         self,
         payload: Any,
         event: _AnyEventConfig,
-        config: None = None,
+        config: None = None,  # noqa: S1172
         *,
-        serializer: Callable[..., Any] | None = None,
+        serializer: Callable[..., Any] | None = None,  # noqa: S1172
     ) -> Any:
         """
         Open a scoped envelope and dispatch the payload to registered handlers.
