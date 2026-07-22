@@ -13,52 +13,6 @@ its result is cached for the lifetime of that scope's active activation. A
 entered automatically when cached. Its yielded value is cached in place of the context
 manager itself.
 
-```{rubric} Example:
-```
-```{code-block} python
-:caption: Reuse one database connection app-wide, and one session per incoming request
-
-import sqlite3
-from stratae.lifecycle import Lifecycle, Scope, resource
-
-lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "context")])
-
-@lifecycle.cache("application")
-def get_database_connection() -> sqlite3.Connection:
-    return sqlite3.connect(":memory:")  # cached for the application scope
-
-class RequestSession:
-    def __init__(self, user_id: int):
-        self.user_id = user_id
-        self.closed = False
-
-    def close(self):
-        self.closed = True
-
-@lifecycle.cache("request")
-@resource
-def get_session():
-    session = RequestSession(user_id=42)
-    try:
-        yield session  # cached for the request scope
-    finally:
-        session.close()
-
-with lifecycle.start("application"):
-    with lifecycle.start("request"):
-        connection = get_database_connection()
-        session = get_session()
-        assert not session.closed
-
-    with lifecycle.start("request"):
-        connection_again = get_database_connection()
-        session_again = get_session()
-
-assert connection is connection_again  # one connection, reused across every request
-assert session is not session_again  # each request gets its own session
-assert session.closed  # closed automatically once its "request" activation ended
-```
-
 ```{note}
 Cache keying behaves like `functools.lru_cache`: unless `ignore_params` is set, a
 function that takes parameters gets one cached value per distinct set of
@@ -110,30 +64,8 @@ class BaseLifecycle[
     """
     Shared scope and slot mechanics behind Lifecycle and AsyncLifecycle.
 
-    Generic over `ContextT` (the scope context manager type {py:func}`BaseLifecycle.start`
-    returns: `LifecycleContext` or `AsyncLifecycleContext`) and `StackT` (the exit stack
-    type {py:func}`BaseLifecycle.get_exit_stack` returns: `ExitStack` or `AsyncExitStack`).
-    Those type parameters keep `start()` and `get_exit_stack()` typed to a concrete
-    subclass's sync/async flavor, while every other scope/slot mechanic lives here once.
-    {py:class}`Lifecycle` and {py:class}`AsyncLifecycle` only need to pin
-    `_context_cls`/`_exit_stack_cls` and add `pop()`/`cache()`. Those differ in ways
-    (async-ness, decorator class) generics can't paper over.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Lifecycle and AsyncLifecycle share push/pop/start/active_scopes via BaseLifecycle
-
-    from stratae.lifecycle import Lifecycle, Scope
-
-    lifecycle = Lifecycle([Scope("request")])
-
-    with lifecycle.start("request"):
-        assert lifecycle.active_scopes() == ["request"]
-
-    assert lifecycle.is_empty()
-    ```
-
+    See {py:class}`Lifecycle` and {py:class}`AsyncLifecycle` for the concrete, usable
+    classes and their examples.
     """
 
     __slots__ = (
@@ -250,20 +182,6 @@ class BaseLifecycle[
         :returns: `True` if no scope declared on this lifecycle currently has an active
             activation in the calling context.
 
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: A freshly constructed lifecycle has no active scopes
-
-        from stratae.lifecycle import Lifecycle, Scope
-
-        lifecycle = Lifecycle([Scope("request")])
-        assert lifecycle.is_empty()
-
-        with lifecycle.start("request"):
-            assert not lifecycle.is_empty()
-        ```
-
         """
         return all(var.get(UNSET) is UNSET for var in self._vars.values())
 
@@ -336,40 +254,13 @@ class BaseLifecycle[
         """
         Allocate a dedicated slot for a cached function - a value directly, or a dict entry.
 
-        Every scope draws from its free-slot stack first, if it isn't empty (see
-        {py:func}`BaseLifecycle.release_slot`), before minting a new index.
-
-        Dense-backed scopes that do mint a new index grow their template by one slot and
-        index by position. They also grow the currently visible activation's copy in
-        place, if one exists - the shared copy, or the calling context's (copies living in
-        other execution contexts are unreachable). That's why a slot allocated
-        mid-activation is visible without waiting for the next
-        {py:func}`BaseLifecycle.push`.
-
-        Sparse-backed scopes hand out the next int key from a per-scope counter instead.
-        `SlotDict.__missing__` means the key needn't exist anywhere until first written.
+        Internal to the cache decorators; not meant to be called directly.
 
         :param scope: Name of the scope to allocate a slot in.
         :returns: The allocated slot's index/key, to be passed to
             {py:func}`BaseLifecycle.release_slot` once the owning wrapper is garbage
             collected.
         :raises ScopeNotFoundError: If `scope` was not declared on this lifecycle.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: A released slot is handed back out before a new one is minted
-
-        from stratae.lifecycle import Lifecycle, Scope
-
-        lifecycle = Lifecycle([Scope("request", "context")])
-
-        first = lifecycle.allocate_slot("request")
-        lifecycle.release_slot("request", first)
-        second = lifecycle.allocate_slot("request")
-
-        assert second == first  # reused from the free pool
-        ```
 
         """
         try:
@@ -398,24 +289,6 @@ class BaseLifecycle[
         :param scope: Name of the scope the slot was allocated in.
         :param slot: The slot index/key returned by {py:func}`BaseLifecycle.allocate_slot`.
 
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: Released slots are reused most-recently-released first
-
-        from stratae.lifecycle import Lifecycle, Scope
-
-        lifecycle = Lifecycle([Scope("request", "context")])
-        first = lifecycle.allocate_slot("request")
-        second = lifecycle.allocate_slot("request")
-
-        lifecycle.release_slot("request", first)
-        lifecycle.release_slot("request", second)
-
-        assert lifecycle.allocate_slot("request") == second
-        assert lifecycle.allocate_slot("request") == first
-        ```
-
         """
         active = self._vars[scope].get(UNSET)
         if isinstance(active, list):
@@ -427,9 +300,6 @@ class BaseLifecycle[
     def get_slots(self, scope: str) -> SlotStorage:
         """
         Get the scope's slot storage - slot 0 is reserved for the exit stack.
-
-        An unknown scope's `KeyError` is a `LookupError` too. One `except` distinguishes
-        the two failures through `_scope_error`.
 
         :param scope: Name of the scope whose slot storage to fetch.
         :returns: The scope's live slot storage for the current activation.
@@ -469,19 +339,6 @@ class BaseLifecycle[
 
         :returns: `ExitStack` for a {py:class}`Lifecycle`, `AsyncExitStack` for an
             {py:class}`AsyncLifecycle`.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: A sync Lifecycle reports ExitStack as its exit stack type
-
-        from stratae.lifecycle import Lifecycle, Scope
-        from stratae.lifecycle._scope import ExitStack
-
-        lifecycle = Lifecycle([Scope("request", "context")])
-        assert lifecycle.exit_stack_type() is ExitStack
-        ```
-
         """
         return self._exit_stack_cls
 
@@ -531,10 +388,6 @@ class Lifecycle(BaseLifecycle[LifecycleContext, ExitStack]):
     def pop(self, token: Token[SlotStorage] | SharedToken) -> None:
         """
         Pop the lifecycle scope activation identified by the token returned from push.
-
-        Under LIFO push/pop discipline, `get()` always returns the token's own activation.
-        A reused or cross-context `ContextVar` token surfaces `contextvars`' own error from
-        `reset()`. A shared scope's token simply clears its var.
 
         :param token: The token returned by the matching {py:func}`BaseLifecycle.push` call.
         :raises ScopeActivationError: If the scope identified by `token` is not currently
@@ -679,11 +532,6 @@ class AsyncLifecycle(BaseLifecycle[AsyncLifecycleContext, AsyncExitStack]):
     async def pop(self, token: Token[SlotStorage] | SharedToken) -> None:
         """
         Asynchronously pop the scope activation identified by the token returned from push.
-
-        Under LIFO push/pop discipline, `get()` always returns the token's own activation.
-        A reused or cross-context `ContextVar` token surfaces `contextvars`' own error from
-        `reset()`. A shared scope's token simply clears its var. This only awaits when the
-        activation actually created an exit stack.
 
         :param token: The token returned by the matching {py:func}`BaseLifecycle.push` call.
         :raises ScopeActivationError: If the scope identified by `token` is not currently
