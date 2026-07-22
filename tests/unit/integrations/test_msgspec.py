@@ -7,7 +7,7 @@ import msgspec
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.integrations.serde import msgspec as msgspec_integration
+from stratae.integrations import msgspec as msgspec_integration
 from stratae.serde import pack
 
 

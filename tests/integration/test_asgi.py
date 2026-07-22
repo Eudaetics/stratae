@@ -4,7 +4,7 @@ from typing import Sequence
 
 import pytest
 
-from stratae.integrations.lifecycle.asgi import (
+from stratae.integrations.asgi import (
     ASGIReceiveCallable,
     ASGISendCallable,
     RequestLifecycleMiddleware,

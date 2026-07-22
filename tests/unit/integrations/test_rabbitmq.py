@@ -41,7 +41,7 @@ from stratae.events import (
     PubSub,
 )
 from stratae.events.exceptions import NotConnectedError
-from stratae.integrations.events.rabbitmq import RabbitMQConfig, RabbitMQPublisher
+from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
 from stratae.serde import pack
 
 _URL = "amqp://guest:guest@localhost/"
@@ -77,7 +77,7 @@ def connection(channel: AsyncMock) -> AsyncMock:
 def connect_mock(mocker: MockerFixture, connection: AsyncMock) -> AsyncMock:
     """Patch aiormq's connect in the adapter module and return the mock."""
     mock = AsyncMock(return_value=connection)
-    mocker.patch("stratae.integrations.events.rabbitmq.connect", mock)
+    mocker.patch("stratae.integrations.rabbitmq.connect", mock)
     return mock
 
 

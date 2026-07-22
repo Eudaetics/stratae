@@ -41,6 +41,6 @@ class NotConnectedError(EventDispatchError):
     Exception raised when emitting through an adapter whose connection is not open.
 
     Raised by event bus adapters, such as
-    {py:class}`RabbitMQPublisher <stratae.integrations.events.rabbitmq.RabbitMQPublisher>`,
+    {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.RabbitMQPublisher>`,
     when asked to publish before their underlying connection has been opened.
     """

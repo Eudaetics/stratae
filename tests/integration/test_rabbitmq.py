@@ -31,7 +31,7 @@ from aiormq import connect
 from aiormq.abc import AbstractChannel
 
 from stratae.events import Envelope, EventConfig, PubSub
-from stratae.integrations.events.rabbitmq import (
+from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
     RabbitMQConsumer,

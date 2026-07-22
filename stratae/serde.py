@@ -8,7 +8,7 @@ datetimes, Decimals, or objects exposing `to_dict`/`model_dump`).
 deserializer shaped like `msgspec.json.decode(data, type=T)`, with
 {py:func}`unpack_json` as the default, dependency-free implementation.
 Register additional types with `@encode.register` or `@pack.register` as
-needed; see {py:mod}`stratae.integrations.serde.msgspec` for a faster `pack`
+needed; see {py:mod}`stratae.integrations.msgspec` for a faster `pack`
 registered for `msgspec.Struct` payloads.
 
 ```{rubric} Example:
@@ -183,7 +183,7 @@ def pack(obj: object) -> bytes:
     Falls back to `json.dumps`, using {py:func}`encode` as the field-level
     hook for types not natively serializable by `json`. Register faster or
     format-specific paths for particular payload types via `@pack.register`;
-    see {py:mod}`stratae.integrations.serde.msgspec` for a registered path
+    see {py:mod}`stratae.integrations.msgspec` for a registered path
     that uses `msgspec.json.encode` for `msgspec.Struct` payloads.
 
     :param obj: The payload to serialize.
