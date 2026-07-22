@@ -1,21 +1,13 @@
 """
-Unit tests for abind and abind_factory.
+Unit tests for abind.
 
 This test suite verifies the following behaviors:
 
-abind direct form:
 - Returns an AsyncBoundEvent.
 - The AsyncBoundEvent uses the event's schema as its factory.
 - The AsyncBoundEvent stores the provided config.
 - Calling the AsyncBoundEvent constructs the schema and awaits the emitter.
 - Calling the AsyncBoundEvent returns the emitter's result.
-- An async factory is awaited before its result is forwarded to the emitter.
-
-abind decorator form:
-- Returns a callable when no event is provided.
-- Applying the callable to an Event returns an AsyncBoundEvent.
-- The returned AsyncBoundEvent uses the event's schema as its factory.
-- The returned AsyncBoundEvent stores the provided config.
 - An async factory is awaited before its result is forwarded to the emitter.
 """
 
@@ -40,9 +32,6 @@ class _OrderCreated:
         if not isinstance(other, _OrderCreated):
             return False
         return self.order_id == other.order_id and self.status == other.status
-
-
-# region: Abind Direct
 
 
 def test_abind_direct_returns_async_bound_event() -> None:
@@ -214,151 +203,3 @@ async def test_abind_direct_awaits_async_factory_then_awaits_emitter() -> None:
 
     # Assert
     emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
-
-
-# endregion
-
-# region: Abind Decorator
-
-
-def test_abind_decorator_form_returns_callable() -> None:
-    """
-    Abind without an event returns a callable decorator.
-
-    Given: An async emitter and a config, but no event
-    When: abind is called
-    Then: The result should be callable
-    """
-    # Act
-    emitter = create_autospec(_async_emit)
-    result = abind(emitter, config=None)
-
-    # Assert
-    assert callable(result)
-
-
-def test_abind_decorator_form_applied_to_event_returns_async_bound_event() -> None:
-    """
-    The decorator returned by abind produces an AsyncBoundEvent when applied to an Event.
-
-    Given: A decorator returned by abind and an Event
-    When: The decorator is applied to the Event
-    Then: The result should be an AsyncBoundEvent instance
-    """
-    # Arrange
-    emitter = create_autospec(_async_emit)
-    ev = EventConfig(_OrderCreated, PubSub)
-
-    # Act
-    result = abind(emitter, config=None)(ev)
-
-    # Assert
-    assert isinstance(result, AsyncBoundEvent)
-
-
-def test_abind_decorator_form_uses_event_schema_as_factory() -> None:
-    """
-    The AsyncBoundEvent produced by the abind decorator uses the event's schema as its factory.
-
-    Given: A decorator returned by abind applied to an Event
-    When: The AsyncBoundEvent is produced
-    Then: Its factory should be the event's schema class
-    """
-    # Arrange
-    emitter = create_autospec(_async_emit)
-    ev = EventConfig(_OrderCreated, PubSub)
-
-    # Act
-    result = abind(emitter, config=None)(ev)
-
-    # Assert
-    assert result.event.factory is _OrderCreated
-
-
-def test_abind_decorator_form_stores_config() -> None:
-    """
-    The AsyncBoundEvent produced by the abind decorator stores the provided config.
-
-    Given: A distinct config object passed to abind
-    When: The decorator is applied to an Event
-    Then: The AsyncBoundEvent's config should reference the same object
-    """
-    # Arrange
-    emitter = create_autospec(_async_emit)
-    ev = EventConfig(_OrderCreated, PubSub)
-    config = object()
-
-    # Act
-    result = abind(emitter, config=config)(ev)
-
-    # Assert
-    assert result.config is config
-
-
-def test_abind_decorator_form_stores_serializer() -> None:
-    """
-    The AsyncBoundEvent produced by the abind decorator stores the provided serializer.
-
-    Given: A serializer callable passed to abind
-    When: The decorator is applied to an Event
-    Then: The AsyncBoundEvent's serializer should reference the same callable
-    """
-    # Arrange
-    emitter = create_autospec(_async_emit)
-    ev = EventConfig(_OrderCreated, PubSub)
-    serializer = Mock()
-
-    # Act
-    result = abind(emitter, config=None, serializer=serializer)(ev)
-
-    # Assert
-    assert result.serializer is serializer
-
-
-async def test_abind_decorator_form_forwards_serializer_to_emitter() -> None:
-    """
-    Calling an AsyncBoundEvent produced by the abind decorator forwards the serializer.
-
-    Given: An AsyncBoundEvent produced by the abind decorator with a serializer
-    When: The AsyncBoundEvent is called
-    Then: The emitter should receive that same serializer
-    """
-    # Arrange
-    emitter = create_autospec(_async_emit)
-    ev = EventConfig(_OrderCreated, PubSub)
-    serializer = Mock()
-    bound = abind(emitter, config=None, serializer=serializer)(ev)
-
-    # Act
-    await bound(1, "pending")
-
-    # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
-
-
-async def test_abind_decorator_awaits_async_factory_then_awaits_emitter() -> None:
-    """
-    The decorator form of abind with an async factory awaits the factory before the emitter.
-
-    Given: An EventConfig whose factory is a coroutine function
-    When: The decorator returned by abind is applied and the result is called
-    Then: The emitter should receive the resolved payload, not the coroutine
-    """
-    # Arrange
-    emitter = create_autospec(_async_emit)
-
-    async def _async_factory(order_id: int, status: str) -> _OrderCreated:
-        await asyncio.sleep(0)
-        return _OrderCreated(order_id, status)
-
-    ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
-    bound = abind(emitter, config=None)(ev)
-
-    # Act
-    await bound(1, "pending")
-
-    # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
-
-
-# endregion

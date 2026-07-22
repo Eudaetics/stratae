@@ -1,8 +1,53 @@
-"""Bound event facades for synchronous and asynchronous bus bindings."""
+"""
+Callable facades that bind an event definition to a concrete emitter and routing config.
+
+{py:func}`bind` and {py:func}`abind` attach a sync or async emitter,
+respectively, along with adapter-specific routing config, to an
+{py:class}`EventConfig <stratae.events.event.EventConfig>`. Each returns a
+{py:class}`BoundEvent` or {py:class}`AsyncBoundEvent`.
+
+A bound event is a callable facade. Calling it constructs the event's
+payload via its factory and forwards the payload, along with itself, to
+the emitter, returning whatever the emitter produces.
+{py:class}`BoundEvent` requires a sync factory, since there's no way to
+await one from inside its synchronous `__call__`. {py:class}`AsyncBoundEvent`
+accepts either a sync or async factory, and awaits its `__call__` either
+way.
+
+```{rubric} Example:
+```
+```{code-block} python
+:caption: Binding a sync emitter to a pub/sub event and dispatching it
+
+from stratae.events.bound import bind
+from stratae.events.event import EventConfig, PubSub
+
+class OrderPlaced:
+    def __init__(self, order_id: int) -> None:
+        self.order_id = order_id
+
+order_placed = EventConfig(OrderPlaced, PubSub)
+
+dispatched: list[OrderPlaced] = []
+
+def emit(payload, event, config, *, serializer=None):
+    dispatched.append(payload)
+    return None
+
+place_order = bind(emit, order_placed, config=None)
+place_order(order_id=42)
+
+assert dispatched[0].order_id == 42
+```
+
+See {py:func}`bind`, {py:func}`abind`, {py:class}`BoundEvent`, and
+{py:class}`AsyncBoundEvent` for additional examples.
+
+"""
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol, cast, overload
+from typing import Any, Awaitable, Callable, cast
 
 from stratae.events._typeguards import is_async_factory, is_sync_factory
 from stratae.events.event import EventConfig, EventType
@@ -13,18 +58,42 @@ _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outsi
 
 class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     """
-    Binds an ``EventConfig`` to a synchronous emitter with routing config.
+    Bind an EventConfig to a synchronous emitter with routing config.
 
-    A ``BoundEvent`` acts as a callable facade: invoking it constructs a
-    payload via the event's factory and forwards the payload and itself to
-    ``emitter``, returning whatever the emitter produces.
+    A `BoundEvent` acts as a callable facade: invoking it constructs a
+    payload via the event's factory and forwards the payload and itself
+    to `emitter`, returning whatever `emitter` produces. Requires a sync
+    factory, since there's no way to await an async one from inside a
+    sync `__call__`; use {py:class}`AsyncBoundEvent` for an async
+    factory. `RoutingConfig` is the adapter-specific config attached at
+    construction time.
 
-    Type parameters:
-        P:             The parameter specification of the bound event's ``__call__`` signature.
-        S:             The payload type produced by the event's factory.
-        T:             The ``EventType`` discriminant of the bound event.
-        RoutingConfig: The adapter-specific routing config type.
-        Resp:          The return type produced by the emitter.
+    ```{rubric} Example:
+    ```
+    ```{code-block} python
+    :caption: Binding a sync emitter directly to an EventConfig
+
+    from stratae.events.bound import BoundEvent
+    from stratae.events.event import EventConfig, PubSub
+
+    class LogMessage:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    log_message = EventConfig(LogMessage, PubSub)
+
+    dispatched: list[LogMessage] = []
+
+    def emit(payload, event, config, *, serializer=None):
+        dispatched.append(payload)
+        return None
+
+    log = BoundEvent(emit, log_message, config=None)
+    log(text="hello")
+
+    assert dispatched[0].text == "hello"
+    ```
+
     """
 
     __slots__ = ("emitter", "event", "config", "serializer", "_factory")
@@ -40,15 +109,18 @@ class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
         """
         Bind an event and emitter with routing config.
 
-        Args:
-            emitter:    A callable that receives the constructed payload and this
-                        ``BoundEvent``, and returns ``Resp``.
-            event:      The ``EventConfig`` whose factory constructs the payload.
-            config:     The adapter-specific routing config for this binding.
-            serializer: Encodes payload before dispatch. Format is
-                        adapter-defined (bytes, a JSON string, etc.). When
-                        omitted, the emitter falls back to its own default
-                        serializer, if any.
+        :param emitter: A callable that receives the constructed payload and
+            this `BoundEvent`, and returns `Resp`.
+        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+            whose factory constructs the payload.
+        :param config: The adapter-specific routing config for this binding.
+        :param serializer: Encodes the payload before dispatch. Format is
+            adapter-defined (bytes, a JSON string, etc.). When omitted,
+            the emitter falls back to its own default serializer, if
+            any.
+        :raises TypeError: If `event`'s factory is async. A `BoundEvent`
+            requires a sync factory since it cannot await one from
+            inside its sync `__call__`.
 
         """
         if not is_sync_factory(event.factory):
@@ -63,8 +135,7 @@ class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
         """
         Construct the payload and forward it to the emitter.
 
-        Returns:
-            Whatever ``self.emitter`` returns.
+        :returns: Whatever `self.emitter` returns.
 
         """
         return self.emitter(
@@ -74,16 +145,46 @@ class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
 
 class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     """
-    Binds an ``EventConfig`` to an asynchronous emitter with routing config.
+    Bind an EventConfig to an asynchronous emitter with routing config.
 
-    An ``AsyncBoundEvent`` acts as a callable facade: invoking it calls ``factory``
-    with the supplied arguments to construct the payload, forwards it and itself
-    to ``emitter``, and awaits the resulting coroutine.
+    An `AsyncBoundEvent` acts as a callable facade: invoking it calls the
+    event's factory to construct the payload, forwards the payload and
+    itself to `emitter`, and awaits the result. Accepts either a sync or
+    async factory; an async factory is awaited before its payload is
+    forwarded to `emitter`. Use {py:class}`BoundEvent` for a synchronous
+    emitter.
 
-    Type parameters:
-        P:             The parameter specification of the bound event's ``__call__`` signature.
-        RoutingConfig: The adapter-specific routing config type.
-        Resp:          The type that the emitter's coroutine resolves to.
+    ```{rubric} Example:
+    ```
+    ```{code-block} python
+    :caption: Binding an async emitter with an async payload factory
+
+    import asyncio
+    from stratae.events.bound import AsyncBoundEvent
+    from stratae.events.event import AsyncEventConfig, PubSub
+
+    class LogMessage:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    async def make_log_message(text: str) -> LogMessage:
+        await asyncio.sleep(0)
+        return LogMessage(text=text)
+
+    log_message = AsyncEventConfig(make_log_message, PubSub, payload_type=LogMessage)
+
+    dispatched: list[LogMessage] = []
+
+    async def emit(payload, event, config, *, serializer=None):
+        dispatched.append(payload)
+        return None
+
+    log = AsyncBoundEvent(emit, log_message, config=None)
+    asyncio.run(log(text="hello"))
+
+    assert dispatched[0].text == "hello"
+    ```
+
     """
 
     __slots__ = ("event", "emitter", "config", "serializer", "_sync_factory", "_async_factory")
@@ -99,16 +200,17 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
         """
         Bind a factory and async emitter with routing config.
 
-        Args:
-            emitter:    A coroutine callable that receives the constructed payload
-                        and this ``AsyncBoundEvent``, and returns an awaitable
-                        resolving to ``Resp``.
-            event:      The ``EventConfig`` whose factory constructs the payload.
-            config:     The adapter-specific routing config for this binding.
-            serializer: Encodes payload before dispatch. Format is
-                        adapter-defined (bytes, a JSON string, etc.). When
-                        omitted, the emitter falls back to its own default
-                        serializer, if any.
+        :param emitter: A coroutine callable that receives the constructed
+            payload and this `AsyncBoundEvent`, and returns an awaitable
+            resolving to `Resp`.
+        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+            whose factory constructs the payload. May have a sync or
+            async factory.
+        :param config: The adapter-specific routing config for this binding.
+        :param serializer: Encodes the payload before dispatch. Format is
+            adapter-defined (bytes, a JSON string, etc.). When omitted,
+            the emitter falls back to its own default serializer, if
+            any.
 
         """
         self.event = event
@@ -123,10 +225,12 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Resp:
         """
-        Construct the schema instance, forward it to the emitter, and await the result.
+        Construct the payload, forward it to the emitter, and await the result.
 
-        Returns:
-            The resolved value of ``self.emitter``'s coroutine.
+        Awaits the factory first when `event`'s factory is async, then
+        awaits `self.emitter`'s coroutine.
+
+        :returns: The resolved value of `self.emitter`'s coroutine.
 
         """
         if self._async_factory is not None:
@@ -136,97 +240,107 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
         return await self.emitter(payload, self.event, self.config, serializer=self.serializer)
 
 
-class _BindDecorator[C, R](Protocol):
-    """Decorator form of ``bind``: takes an ``EventConfig``, returns a ``BoundEvent``."""
-
-    def __call__[**P, S: Any, T: EventType](
-        self, event: EventConfig[P, S, T]
-    ) -> BoundEvent[P, S, T, C, R]:
-        """Bind the emitter and config to ``event``, returning a ``BoundEvent``."""
-        ...
-
-
-@overload
 def bind[**P, S: Any, T: EventType, C, R](
     emitter: EmitCallable[P, S, T, C, R],
     event: EventConfig[P, S, T],
     *,
     config: C,
     serializer: Callable[[S], Any] | None = None,
-) -> BoundEvent[P, S, T, C, R]: ...
+) -> BoundEvent[P, S, T, C, R]:
+    """
+    Bind a sync emitter to an event, returning a BoundEvent.
 
+    :param emitter: A callable that receives the constructed payload and the
+        resulting {py:class}`BoundEvent`, and returns `R`.
+    :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+        to bind.
+    :param config: The adapter-specific routing config for this binding.
+    :param serializer: Encodes the payload before dispatch. Format is
+        adapter-defined (bytes, a JSON string, etc.). When omitted, the
+        emitter falls back to its own default serializer, if any.
+    :returns: A {py:class}`BoundEvent` wrapping `emitter` and `event`.
+    :raises TypeError: If `event`'s factory is async.
 
-@overload
-def bind[**P, S: Any, T: EventType, C, R](
-    emitter: EmitCallable[P, S, T, C, R], *, config: C, serializer: Callable[[S], Any] | None = None
-) -> _BindDecorator[C, R]: ...
+    ```{rubric} Example:
+    ```
+    ```{code-block} python
+    :caption: Binding an emitter directly to an EventConfig
 
+    from stratae.events.bound import bind
+    from stratae.events.event import EventConfig, PubSub
 
-def bind[**P, S: Any, T: EventType, C, R](
-    emitter: EmitCallable[P, S, T, C, R],
-    event: EventConfig[P, S, T] | None = None,
-    *,
-    config: C,
-    serializer: Callable[[S], Any] | None = None,
-) -> BoundEvent[P, S, T, C, R] | Callable[[EventConfig[P, S, T]], BoundEvent[P, S, T, C, R]]:
-    """Bind an emitter to an ``EventConfig``, returning a ``BoundEvent`` or a decorator."""
-    if event is None:
+    class LogMessage:
+        def __init__(self, text: str) -> None:
+            self.text = text
 
-        def decorator(evt: EventConfig[P, S, T]) -> BoundEvent[P, S, T, C, R]:
-            if not is_sync_factory(evt.factory):
-                raise TypeError(_SYNC_FACTORY_REQUIRED)
-            return BoundEvent(emitter, evt, config=config, serializer=serializer)
+    log_message = EventConfig(LogMessage, PubSub)
 
-        return decorator
+    dispatched: list[LogMessage] = []
+
+    def emit(payload, event, config, *, serializer=None):
+        dispatched.append(payload)
+        return None
+
+    log = bind(emit, log_message, config=None)
+    log(text="hello")
+
+    assert dispatched[0].text == "hello"
+    ```
+
+    """
     if not is_sync_factory(event.factory):
         raise TypeError(_SYNC_FACTORY_REQUIRED)
     return BoundEvent(emitter, event, config=config, serializer=serializer)
 
 
-class _ABindDecorator[C, R](Protocol):
-    """Return type of the decorator form of ``abind``: async emitter+config awaiting an Event."""
-
-    def __call__[**P, S: Any, T: EventType](
-        self, event: EventConfig[P, S, T]
-    ) -> AsyncBoundEvent[P, S, T, C, R]:
-        """Bind the async emitter and config to ``event``, returning an ``AsyncBoundEvent``."""
-        ...
-
-
-@overload
 def abind[**P, S: Any, T: EventType, C, R](
     emitter: EmitCallable[P, S, T, C, Awaitable[R]],
     event: EventConfig[P, S, T],
     *,
     config: C,
     serializer: Callable[[S], Any] | None = None,
-) -> AsyncBoundEvent[P, S, T, C, R]: ...
+) -> AsyncBoundEvent[P, S, T, C, R]:
+    """
+    Bind an async emitter to an event, returning an AsyncBoundEvent.
 
+    :param emitter: A coroutine callable that receives the constructed
+        payload and the resulting {py:class}`AsyncBoundEvent`, and
+        returns an awaitable resolving to `R`.
+    :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+        to bind. May have a sync or async factory; either way
+        `AsyncBoundEvent.__call__` awaits it.
+    :param config: The adapter-specific routing config for this binding.
+    :param serializer: Encodes the payload before dispatch. Format is
+        adapter-defined (bytes, a JSON string, etc.). When omitted, the
+        emitter falls back to its own default serializer, if any.
+    :returns: An {py:class}`AsyncBoundEvent` wrapping `emitter` and `event`.
 
-@overload
-def abind[**P, S: Any, T: EventType, C, R](
-    emitter: EmitCallable[P, S, T, C, Awaitable[R]],
-    *,
-    config: C,
-    serializer: Callable[[S], Any] | None = None,
-) -> _ABindDecorator[C, R]: ...
+    ```{rubric} Example:
+    ```
+    ```{code-block} python
+    :caption: Binding an async emitter to a pub/sub event
 
+    import asyncio
+    from stratae.events.bound import abind
+    from stratae.events.event import EventConfig, PubSub
 
-def abind[**P, S: Any, T: EventType, C, R](
-    emitter: EmitCallable[P, S, T, C, Awaitable[R]],
-    event: EventConfig[P, S, T] | None = None,
-    *,
-    config: C,
-    serializer: Callable[[S], Any] | None = None,
-) -> (
-    AsyncBoundEvent[P, S, T, C, R]
-    | Callable[[EventConfig[P, S, T]], AsyncBoundEvent[P, S, T, C, R]]
-):
-    """Bind an async emitter to an event, returning an ``AsyncBoundEvent`` or a decorator."""
-    if event is None:
+    class OrderPlaced:
+        def __init__(self, order_id: int) -> None:
+            self.order_id = order_id
 
-        def decorator(evt: EventConfig[P, S, T]) -> AsyncBoundEvent[P, S, T, C, R]:
-            return AsyncBoundEvent(emitter, evt, config=config, serializer=serializer)
+    order_placed = EventConfig(OrderPlaced, PubSub)
 
-        return decorator
+    dispatched: list[OrderPlaced] = []
+
+    async def emit(payload, event, config, *, serializer=None):
+        dispatched.append(payload)
+        return None
+
+    place_order = abind(emit, order_placed, config=None)
+    asyncio.run(place_order(order_id=42))
+
+    assert dispatched[0].order_id == 42
+    ```
+
+    """
     return AsyncBoundEvent(emitter, event, config=config, serializer=serializer)
