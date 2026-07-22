@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol, cast, get_args, get_origin, overload
+from typing import Any, Awaitable, Callable, cast, get_args, get_origin, overload
 
 from stratae.events._typeguards import is_async_factory, is_class_factory
 
@@ -47,25 +47,21 @@ class EventConfig[**P, E: Any, T: EventType]:
         T: The ``EventType`` discriminant describing the dispatch pattern.
 
     Note:
-        Using a generic class directly as ``factory`` (e.g.
-        ``class Wrapped[T]: ...``) is discouraged. ``payload_type`` only
-        declares the resulting payload type; it cannot retroactively
-        constrain the factory's own constructor signature, so a bare generic
-        factory's argument types may end up unchecked even when
-        ``payload_type`` looks precise. A generic payload is also harder to
-        deserialize on the far side of a real bus without already knowing
-        ``T`` from elsewhere. It's still possible to use one this way and
-        have it work. The type checker just won't catch as much for you.
-        Where practical, prefer a concrete intermediary factory function
-        instead (e.g. ``def make_order_page(items: list[OrderPlaced]) ->
-        Page[OrderPlaced]: ...``) and pass that as ``factory``.
+        ``payload_type`` is just an explicit declaration — it doesn't
+        retroactively type-check ``factory``'s own parameters. If
+        ``factory`` is a generic class (e.g. ``class Wrapped[T]: ...``),
+        subscript it at the call site instead (``event(Wrapped[OrderPlaced],
+        PubSub)``) so its constructor is fully checked; passing the bare
+        class with ``payload_type=Wrapped[OrderPlaced]`` leaves any
+        parameter typed with ``T`` unchecked.
 
     Example::
 
-        @event(PubSub)
         class OrderPlaced:
             def __init__(self, order_id: int) -> None:
                 self.order_id = order_id
+
+        order_placed = event(OrderPlaced, PubSub)
 
     """
 
@@ -164,102 +160,79 @@ class AsyncEventConfig[**P, E: Any, T: EventType](EventConfig[P, E, T]):
         return self._async_factory
 
 
-class _EventDecorator[T: EventType](Protocol):
-    """Return type of ``event()`` when ``payload_type`` is not given."""
-
-    def __call__[**P, E: Any](self, schema: Callable[P, E]) -> EventConfig[P, E, T]: ...
-
-
-class _EventDecoratorWithPayload[E: Any, T: EventType](Protocol):
-    """Return type of ``event()`` when ``payload_type`` is given."""
-
-    @overload
-    def __call__[**P](self, schema: Callable[P, E]) -> EventConfig[P, E, T]: ...
-    @overload
-    def __call__[**P](self, schema: Callable[P, Awaitable[E]]) -> AsyncEventConfig[P, E, T]: ...
-
-
 @overload
-def event[T: EventType](
+def event[**P, E: Any, T: EventType](
+    factory: Callable[P, E],
     event_type: type[T],
     *,
     name: str | None = None,
-) -> _EventDecorator[T]: ...
+) -> EventConfig[P, E, T]: ...
 
 
 @overload
-def event[E: Any, T: EventType](
+def event[**P, E: Any, T: EventType](
+    factory: Callable[P, Awaitable[E]],
     event_type: type[T],
     *,
     name: str | None = None,
     payload_type: type[E],
-) -> _EventDecoratorWithPayload[E, T]: ...
+) -> AsyncEventConfig[P, E, T]: ...
 
 
-def event[E: Any, T: EventType](
+@overload
+def event[**P, E: Any, T: EventType](
+    factory: Callable[P, E],
+    event_type: type[T],
+    *,
+    name: str | None = None,
+    payload_type: type[E],
+) -> EventConfig[P, E, T]: ...
+
+
+def event[**P, E: Any, T: EventType](
+    factory: Callable[P, E] | Callable[P, Awaitable[E]],
     event_type: type[T],
     *,
     name: str | None = None,
     payload_type: type[E] | None = None,
-) -> _EventDecorator[T] | _EventDecoratorWithPayload[E, T]:
+) -> EventConfig[P, E, T] | AsyncEventConfig[P, E, T]:
     """
-    Wrap a class as an ``Event``.
+    Define an ``Event`` binding a factory to a dispatch pattern.
 
     Args:
+        factory:      A factory used to construct the payload.
         event_type:   The dispatch pattern discriminant class.
         name:         Human-readable identifier for this event.
-                      Defaults to the decorated callable's ``__name__``.
+                      Defaults to ``factory.__name__``.
         payload_type: The concrete payload type this event carries.
-                      Derived from the decorated callable when it is itself a
+                      Derived from ``factory`` when ``factory`` is itself a
                       class; must be provided explicitly otherwise.
 
     Returns:
-        A decorator that accepts a class and returns an
-        ``Event`` binding it to ``event_type``.
+        An ``EventConfig`` (or ``AsyncEventConfig``, for an async factory)
+        binding ``factory`` to ``event_type``.
 
     Note:
-        Using a generic class directly as the decorated factory (e.g.
-        ``class Wrapped[T]: ...``) is discouraged. ``payload_type`` only
-        declares the resulting payload type; it cannot retroactively
-        constrain the factory's own constructor signature, so a bare generic
-        factory's argument types may end up unchecked even when
-        ``payload_type`` looks precise. A generic payload is also harder to
-        deserialize on the far side of a real bus without already knowing
-        ``T`` from elsewhere. It's still possible to use one this way and
-        have it work. The type checker just won't catch as much for you.
-        Where practical, prefer a concrete intermediary factory function
-        instead (e.g. ``def make_order_page(items: list[OrderPlaced]) ->
-        Page[OrderPlaced]: ...``) and decorate or register that.
+        ``payload_type`` is just an explicit declaration — it doesn't
+        retroactively type-check ``factory``'s own parameters. If
+        ``factory`` is a generic class (e.g. ``class Wrapped[T]: ...``),
+        subscript it at the call site instead (``event(Wrapped[OrderPlaced],
+        PubSub)``) so its constructor is fully checked; passing the bare
+        class with ``payload_type=Wrapped[OrderPlaced]`` leaves any
+        parameter typed with ``T`` unchecked.
 
     Example::
 
-        @event(PubSub)
         class OrderPlaced:
             def __init__(self, order_id: int) -> None:
                 self.order_id = order_id
 
+        order_placed = event(OrderPlaced, PubSub)
+
     """
-    if payload_type is not None:
-
-        @overload
-        def decorator_with_payload[**P](schema: Callable[P, E]) -> EventConfig[P, E, T]: ...
-        @overload
-        def decorator_with_payload[**P](
-            schema: Callable[P, Awaitable[E]],
-        ) -> AsyncEventConfig[P, E, T]: ...
-        def decorator_with_payload[**P](
-            schema: Callable[P, E] | Callable[P, Awaitable[E]],
-        ) -> EventConfig[P, E, T]:
-            if is_async_factory(schema):
-                return AsyncEventConfig(schema, event_type, name=name, payload_type=payload_type)
-            return EventConfig(schema, event_type, name=name, payload_type=payload_type)
-
-        return decorator_with_payload
-
-    def decorator[**P, S: Any](schema: Callable[P, S]) -> EventConfig[P, S, T]:
-        return EventConfig(schema, event_type, name=name, payload_type=None)
-
-    return decorator
+    if is_async_factory(factory):
+        return AsyncEventConfig(factory, event_type, name=name, payload_type=payload_type)
+    return EventConfig(factory, event_type, name=name, payload_type=payload_type)
 
 
 def is_request[**P, S: Any, T: EventType](event: EventConfig[P, S, T]) -> bool:
