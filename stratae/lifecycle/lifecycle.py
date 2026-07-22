@@ -64,7 +64,9 @@ Cache keying behaves like `functools.lru_cache`: unless `ignore_params` is set, 
 function that takes parameters gets one cached value per distinct set of
 arguments (or per `cache_key` result), not one cached value for the whole scope
 activation. Calling it again with different arguments computes and caches a
-separate value rather than reusing the first one.
+separate value rather than reusing the first one. A function that takes no
+parameters has only one possible argument set, so it always uses the same fast
+slot path as `ignore_params=True`.
 ```
 
 ```{tip}

@@ -15,7 +15,7 @@ class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     """
     Binds an ``EventConfig`` to a synchronous emitter with routing config.
 
-    A ``BoundEvent`` acts as a callable façade: invoking it constructs a
+    A ``BoundEvent`` acts as a callable facade: invoking it constructs a
     payload via the event's factory and forwards the payload and itself to
     ``emitter``, returning whatever the emitter produces.
 
@@ -76,7 +76,7 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     """
     Binds an ``EventConfig`` to an asynchronous emitter with routing config.
 
-    An ``AsyncBoundEvent`` acts as a callable façade: invoking it calls ``factory``
+    An ``AsyncBoundEvent`` acts as a callable facade: invoking it calls ``factory``
     with the supplied arguments to construct the payload, forwards it and itself
     to ``emitter``, and awaits the resulting coroutine.
 
