@@ -1,5 +1,5 @@
 """
-Unit tests for Event, EventType, PubSub, and the event decorator.
+Unit tests for Event, EventType, PubSub, and the event() factory function.
 
 This test suite verifies the following behaviors:
 
@@ -27,19 +27,19 @@ Request:
 - Is a subclass of EventType.
 - EventConfig accepts a subscripted Request discriminant.
 - EventConfig raises TypeError for a bare Request discriminant.
-- The event decorator accepts a subscripted Request discriminant.
+- event() accepts a subscripted Request discriminant.
 
 reply_type:
 - Returns the type Request was subscripted with.
 - Raises TypeError when the discriminant is not a subscripted Request.
 
-event decorator:
+event:
 - Returns an EventConfig instance.
-- The returned EventConfig stores the decorated class as its factory.
+- The returned EventConfig stores the supplied factory.
 - The returned EventConfig stores the supplied event_type.
-- payload_type is derived from the decorated class when not provided.
+- payload_type is derived from the supplied class when not provided.
 - payload_type accepts an explicit value for factory functions.
-- name defaults to the decorated callable's __name__ when not provided.
+- name defaults to the factory's __name__ when not provided.
 - name accepts an explicit override.
 - Returns an AsyncEventConfig when an async factory is supplied with payload_type.
 """
@@ -148,12 +148,12 @@ def test_eventconfig_raises_for_bare_request() -> None:
         EventConfig(_FindBook, Request)
 
 
-def test_event_decorator_accepts_subscripted_request() -> None:
+def test_event_accepts_subscripted_request() -> None:
     """
-    Test that the event decorator accepts a subscripted Request discriminant.
+    Test that event() accepts a subscripted Request discriminant.
 
-    Given: A payload class decorated with @event(Request[...])
-    When: The decorator is applied
+    Given: A payload class and a Request discriminant subscripted with a reply type
+    When: event() is called
     Then: The EventConfig should store the subscripted discriminant
     """
 
@@ -162,15 +162,16 @@ def test_event_decorator_accepts_subscripted_request() -> None:
         def __init__(self, title: str) -> None:
             self.title = title
 
-    # Act
-    @event(Request[_BookFound])
     class _FindBook:
         def __init__(self, query: str) -> None:
             self.query = query
 
+    # Act
+    find_book = event(_FindBook, Request[_BookFound])
+
     # Assert
-    assert isinstance(_FindBook, EventConfig)
-    assert _FindBook.event_type == Request[_BookFound]
+    assert isinstance(find_book, EventConfig)
+    assert find_book.event_type == Request[_BookFound]
 
 
 def test_reply_type_returns_subscripted_reply() -> None:
@@ -187,13 +188,14 @@ def test_reply_type_returns_subscripted_reply() -> None:
         def __init__(self, title: str) -> None:
             self.title = title
 
-    @event(Request[_BookFound])
     class _FindBook:
         def __init__(self, query: str) -> None:
             self.query = query
 
+    find_book = event(_FindBook, Request[_BookFound])
+
     # Act
-    recovered = reply_type(_FindBook)
+    recovered = reply_type(find_book)
 
     # Assert
     assert recovered is _BookFound
@@ -221,32 +223,13 @@ def test_reply_type_raises_for_non_request_discriminant() -> None:
         reply_type(mistyped)
 
 
-def test_event_decorator_returns_event_instance() -> None:
+def test_event_returns_event_instance() -> None:
     """
-    Test that the event decorator returns an Event instance.
+    Test that event() returns an EventConfig instance.
 
-    Given: A class decorated with @event
-    When: The decorator is applied
-    Then: The result should be an Event instance
-    """
-
-    # Arrange / Act
-    @event(PubSub)
-    class _Schema:
-        def __init__(self, value: int) -> None:
-            self.value = value
-
-    # Assert
-    assert isinstance(_Schema, EventConfig)
-
-
-def test_event_decorator_stores_schema() -> None:
-    """
-    Test that the event decorator stores the decorated class as the schema.
-
-    Given: A class decorated with @event
-    When: The decorator is applied
-    Then: The Event's schema should be the decorated class
+    Given: A class and PubSub
+    When: event() is called
+    Then: The result should be an EventConfig instance
     """
 
     # Arrange
@@ -255,18 +238,39 @@ def test_event_decorator_stores_schema() -> None:
             self.value = value
 
     # Act
-    decorated = event(PubSub)(_Schema)
+    created = event(_Schema, PubSub)
 
     # Assert
-    assert decorated.factory is _Schema
+    assert isinstance(created, EventConfig)
 
 
-def test_event_decorator_stores_event_type() -> None:
+def test_event_stores_schema() -> None:
     """
-    Test that the event decorator stores the supplied event_type.
+    Test that event() stores the supplied class as the factory.
 
-    Given: A class decorated with @event(PubSub)
-    When: The decorator is applied
+    Given: A class
+    When: event() is called
+    Then: The EventConfig's factory should be the supplied class
+    """
+
+    # Arrange
+    class _Schema:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+    # Act
+    created = event(_Schema, PubSub)
+
+    # Assert
+    assert created.factory is _Schema
+
+
+def test_event_stores_event_type() -> None:
+    """
+    Test that event() stores the supplied event_type.
+
+    Given: A class and PubSub
+    When: event() is called
     Then: The Event's event_type should be PubSub
     """
 
@@ -276,18 +280,18 @@ def test_event_decorator_stores_event_type() -> None:
             self.value = value
 
     # Act
-    decorated = event(PubSub)(_Schema)
+    created = event(_Schema, PubSub)
 
     # Assert
-    assert decorated.event_type is PubSub
+    assert created.event_type is PubSub
 
 
-def test_event_decorator_with_factory_stores_explicit_payload_type() -> None:
+def test_event_with_factory_stores_explicit_payload_type() -> None:
     """
-    Test that a factory function decorated with @event stores the explicit payload_type.
+    Test that a factory function passed to event() stores the explicit payload_type.
 
     Given: A class and a factory function returning it
-    When: The factory is decorated with @event specifying payload_type explicitly
+    When: event() is called on the factory with payload_type specified explicitly
     Then: The EventConfig's payload_type should reference the supplied class
     """
 
@@ -296,14 +300,15 @@ def test_event_decorator_with_factory_stores_explicit_payload_type() -> None:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
-    # Act
-    @event(PubSub, payload_type=_OrderPlaced)
     def create_order(order_id: int) -> _OrderPlaced:
         return _OrderPlaced(order_id)
 
+    # Act
+    created = event(create_order, PubSub, payload_type=_OrderPlaced)
+
     # Assert
-    assert create_order.payload_type is _OrderPlaced
-    assert not isinstance(create_order, AsyncEventConfig)
+    assert created.payload_type is _OrderPlaced
+    assert not isinstance(created, AsyncEventConfig)
 
 
 def test_eventconfig_derives_payload_type_from_class_factory() -> None:
@@ -415,13 +420,13 @@ def test_eventconfig_accepts_explicit_name() -> None:
     assert ev.name == "order_placed"
 
 
-def test_event_decorator_derives_payload_type_from_class() -> None:
+def test_event_derives_payload_type_from_class() -> None:
     """
-    Test that the event decorator derives payload_type from the decorated class.
+    Test that event() derives payload_type from the supplied class.
 
-    Given: A class decorated with @event
-    When: The decorator is applied without explicit payload_type
-    Then: The EventConfig's payload_type should reference the decorated class
+    Given: A class
+    When: event() is called without explicit payload_type
+    Then: The EventConfig's payload_type should reference the supplied class
     """
 
     # Arrange
@@ -430,18 +435,18 @@ def test_event_decorator_derives_payload_type_from_class() -> None:
             self.order_id = order_id
 
     # Act
-    decorated = event(PubSub)(_OrderPlaced)
+    created = event(_OrderPlaced, PubSub)
 
     # Assert
-    assert decorated.payload_type is _OrderPlaced
+    assert created.payload_type is _OrderPlaced
 
 
-def test_event_decorator_derives_name_from_class() -> None:
+def test_event_derives_name_from_class() -> None:
     """
-    Test that the event decorator derives name from the decorated class's __name__.
+    Test that event() derives name from the supplied class's __name__.
 
-    Given: A class decorated with @event
-    When: The decorator is applied without explicit name
+    Given: A class
+    When: event() is called without explicit name
     Then: The EventConfig's name should equal the class's __name__
     """
 
@@ -451,18 +456,18 @@ def test_event_decorator_derives_name_from_class() -> None:
             self.order_id = order_id
 
     # Act
-    decorated = event(PubSub)(_OrderPlaced)
+    created = event(_OrderPlaced, PubSub)
 
     # Assert
-    assert decorated.name == "_OrderPlaced"
+    assert created.name == "_OrderPlaced"
 
 
-def test_event_decorator_accepts_explicit_name() -> None:
+def test_event_accepts_explicit_name() -> None:
     """
-    Test that the event decorator passes an explicit name through to EventConfig.
+    Test that event() passes an explicit name through to EventConfig.
 
     Given: A class and an explicit name
-    When: The decorator is applied with name provided
+    When: event() is called with name provided
     Then: The EventConfig's name should equal the supplied string
     """
 
@@ -472,10 +477,10 @@ def test_event_decorator_accepts_explicit_name() -> None:
             self.order_id = order_id
 
     # Act
-    decorated = event(PubSub, name="order_placed")(_OrderPlaced)
+    created = event(_OrderPlaced, PubSub, name="order_placed")
 
     # Assert
-    assert decorated.name == "order_placed"
+    assert created.name == "order_placed"
 
 
 def test_asynceventconfig_is_subclass_of_eventconfig() -> None:
@@ -640,12 +645,12 @@ async def test_asynceventconfig_factory_is_awaitable() -> None:
     assert result.order_id == 1
 
 
-def test_event_decorator_returns_asynceventconfig_for_async_factory() -> None:
+def test_event_returns_asynceventconfig_for_async_factory() -> None:
     """
-    Test that the event decorator returns an AsyncEventConfig when an async factory is supplied.
+    Test that event() returns an AsyncEventConfig when an async factory is supplied.
 
     Given: An async factory function and an explicit payload_type
-    When: The factory is decorated with @event specifying payload_type
+    When: event() is called on the factory with payload_type specified
     Then: The result should be an AsyncEventConfig instance
     """
 
@@ -654,23 +659,24 @@ def test_event_decorator_returns_asynceventconfig_for_async_factory() -> None:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
-    # Act
-    @event(PubSub, payload_type=_OrderPlaced)
     async def create_order(order_id: int) -> _OrderPlaced:
         await asyncio.sleep(0)
         return _OrderPlaced(order_id)
 
+    # Act
+    created = event(create_order, PubSub, payload_type=_OrderPlaced)
+
     # Assert
-    assert isinstance(create_order, AsyncEventConfig)
-    assert create_order.payload_type is _OrderPlaced
+    assert isinstance(created, AsyncEventConfig)
+    assert created.payload_type is _OrderPlaced
 
 
-async def test_event_decorator_async_factory_is_awaitable() -> None:
+async def test_event_async_factory_is_awaitable() -> None:
     """
-    Test that an async factory decorated with @event produces an awaitable factory.
+    Test that an async factory passed to event() produces an awaitable factory.
 
-    Given: An async factory decorated with @event and an explicit payload_type
-    When: factory is called and awaited
+    Given: An async factory and an explicit payload_type
+    When: event() is called on the factory and its factory is called and awaited
     Then: The result should be the expected payload instance
     """
 
@@ -679,13 +685,13 @@ async def test_event_decorator_async_factory_is_awaitable() -> None:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
-    # Act
-    @event(PubSub, payload_type=_OrderPlaced)
     async def create_order(order_id: int) -> _OrderPlaced:
         await asyncio.sleep(0)
         return _OrderPlaced(order_id)
 
-    result = await create_order.factory(1)
+    # Act
+    created = event(create_order, PubSub, payload_type=_OrderPlaced)
+    result = await created.factory(1)
 
     # Assert
     assert result.order_id == 1
