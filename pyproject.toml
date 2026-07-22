@@ -30,11 +30,11 @@ Issues = "https://github.com/Eudaetics/stratae/issues"
 
 [project.optional-dependencies]
 dev = [
-    "poethepoet>=0.35.0",
     "pre-commit>=4.2.0",
     "pyright>=1.1.403",
     "radon>=6.0.1",
     "ruff>=0.12.2",
+    "rust-just>=1.36.0",
 ]
 test = [
     "pytest>=8.4.1",
@@ -114,42 +114,6 @@ exclude_lines = [
     "@(abc\\.)?abstractmethod",
     "^\\s*\\.\\.\\.$",
     "if TYPE_CHECKING:"
-]
-
-[tool.poe]
-executor = {type = "simple"}
-
-[tool.poe.tasks]
-format = "ruff format ."
-lint = "ruff check --fix ."
-typecheck = "pyright"
-test = "pytest"
-test-rabbitmq = "pytest -m rabbitmq --no-cov"
-test-docs = "pytest stratae/ docs/ --ignore=docs/apidocs --no-cov"
-radon-cc = "radon cc stratae -n B"
-radon-mi = "radon mi stratae -n B"
-docs = "sphinx-build -b html docs site"
-
-[tool.poe.tasks.no-cover-check]
-shell = "! grep -rn --include='*.py' 'pragma: no cover' stratae"
-
-[tool.poe.tasks.type-ignore-check]
-shell = "! grep -rn --include='*.py' 'type: ignore' stratae"
-
-[tool.poe.tasks.pyright-ignore-check]
-shell = "! grep -rn --include='*.py' 'pyright: ignore' stratae"
-
-[tool.poe.tasks.check]
-sequence = [
-    "format",
-    "lint",
-    "typecheck",
-    "test",
-    "no-cover-check",
-    "type-ignore-check",
-    "pyright-ignore-check",
-    "radon-cc",
-    "radon-mi",
 ]
 
 [tool.pyright]
