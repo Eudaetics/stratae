@@ -97,7 +97,7 @@ def test_decorate_generator_sync_exception_cleanup(lifecycle: Lifecycle):
             raise ValueError("Test Failure")
 
     # Act & Assert
-    with pytest.raises(ValueError, match="Test Failure"):
+    with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
         with lifecycle.start("application"):
             sample_generator()
             mock_cleanup.assert_not_called()
@@ -131,7 +131,7 @@ def test_decorator_generator_sync_exception_handling(lifecycle: Lifecycle):
             mock_cleanup()
 
     # Act & Assert
-    with pytest.raises(ValueError, match="Test Failure"):
+    with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
         with lifecycle.start("application"):
             sample_generator()
             mock_cleanup.assert_not_called()
@@ -235,7 +235,7 @@ def test_generator_sync_exception_group(lifecycle: Lifecycle):
             mock_cleanup_3()
 
     # Act & Assert
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
         with lifecycle.start("application"):
             generator_one()
             generator_two()
@@ -257,3 +257,176 @@ def test_generator_sync_exception_group(lifecycle: Lifecycle):
     mock_cleanup_1.assert_called_once()
     mock_cleanup_2.assert_called_once()
     mock_cleanup_3.assert_called_once()
+
+
+def test_generator_sees_exception_raised_in_caller_block(lifecycle: Lifecycle):
+    """
+    Test that an exception raised by the caller, not the generator, still reaches it.
+
+    Given: A Lifecycle instance and a decorated generator using try/except around its
+        yield to distinguish success from failure
+    When: Code inside the active scope's with block raises after the resource has
+        already been entered, rather than the generator's own body raising
+    Then: The exception should be delivered to the generator at its yield point, so
+        the except branch runs, and the same exception should still propagate
+    """
+    # Arrange
+    mock_commit = Mock()
+    mock_rollback = Mock()
+
+    class SimpleObject: ...
+
+    @lifecycle.cache("application")
+    @resource
+    def sample_generator():
+        try:
+            yield SimpleObject()
+            mock_commit()
+        except Exception:
+            mock_rollback()
+            raise
+
+    # Act & Assert
+    with pytest.raises(ValueError, match="Caller Failure"):  # noqa: S5778
+        with lifecycle.start("application"):
+            sample_generator()
+            raise ValueError("Caller Failure")
+
+    mock_rollback.assert_called_once()
+    mock_commit.assert_not_called()
+
+
+def test_generator_can_suppress_exception_raised_in_caller_block(lifecycle: Lifecycle):
+    """
+    Test that a generator can suppress an exception raised in the caller's with block.
+
+    Given: A Lifecycle instance and a decorated generator that catches and swallows,
+        rather than re-raising, an exception raised after its yield
+    When: Code inside the active scope's with block raises after the resource has
+        already been entered
+    Then: The exception should be suppressed - the with block should exit normally
+    """
+    # Arrange
+    mock_suppressed = Mock()
+
+    class SimpleObject: ...
+
+    @lifecycle.cache("application")
+    @resource
+    def sample_generator():
+        try:
+            yield SimpleObject()
+        except ValueError:
+            mock_suppressed()
+
+    # Act
+    with lifecycle.start("application"):
+        sample_generator()
+        raise ValueError("Caller Failure")
+
+    # Assert
+    mock_suppressed.assert_called_once()
+
+
+def test_multiple_generators_each_raise_from_callers_exception(lifecycle: Lifecycle):
+    """
+    Test that resources each raising their own exception from the caller's are grouped.
+
+    Given: A Lifecycle instance and two decorated generators, each of which raises its
+        own new exception while handling whatever it's thrown, rather than re-raising
+        it unchanged
+    When: Code inside the active scope's with block raises after both resources have
+        been entered
+    Then: An ExceptionGroup containing the caller's original exception plus each
+        resource's own exception should be raised, chained in close (LIFO) order
+    """
+
+    # Arrange
+    class SimpleObject: ...
+
+    @lifecycle.cache("application")
+    @resource
+    def resource_a():
+        try:
+            yield SimpleObject()
+        except Exception:
+            raise RuntimeError("A Failure") from None
+
+    @lifecycle.cache("application")
+    @resource
+    def resource_b():
+        try:
+            yield SimpleObject()
+        except Exception:
+            raise KeyError("B Failure") from None
+
+    # Act & Assert
+    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+        with lifecycle.start("application"):
+            resource_a()
+            resource_b()
+            raise ValueError("Caller Failure")
+
+    assert len(exceptions.value.exceptions) == 3
+    assert any(
+        isinstance(exc, ValueError) and str(exc) == "Caller Failure"
+        for exc in exceptions.value.exceptions
+    )
+    assert any(
+        isinstance(exc, RuntimeError) and str(exc) == "A Failure"
+        for exc in exceptions.value.exceptions
+    )
+    assert any(
+        isinstance(exc, KeyError) and str(exc) == "'B Failure'"
+        for exc in exceptions.value.exceptions
+    )
+
+
+def test_resource_swallowing_exception_hides_it_from_earlier_resources(lifecycle: Lifecycle):
+    """
+    Test that a resource swallowing the caller's exception hides it from earlier resources.
+
+    Given: A Lifecycle instance and two decorated generators - resource_a entered first,
+        resource_b entered second, where resource_b catches and swallows the caller's
+        exception instead of re-raising it
+    When: Code inside the active scope's with block raises after both resources have
+        been entered
+    Then: resource_b's swallow should run, resource_a should see a clean close (its
+        success path, not its except branch) since it closes after resource_b in LIFO
+        order, and the exception should not propagate out of the with block at all
+    """
+    # Arrange
+    mock_commit_a = Mock()
+    mock_rollback_a = Mock()
+    mock_swallowed_b = Mock()
+
+    class SimpleObject: ...
+
+    @lifecycle.cache("application")
+    @resource
+    def resource_a():
+        try:
+            yield SimpleObject()
+            mock_commit_a()
+        except Exception:
+            mock_rollback_a()
+            raise
+
+    @lifecycle.cache("application")
+    @resource
+    def resource_b():
+        try:
+            yield SimpleObject()
+        except ValueError:
+            mock_swallowed_b()
+
+    # Act
+    with lifecycle.start("application"):
+        resource_a()
+        resource_b()
+        raise ValueError("Caller Failure")
+
+    # Assert
+    mock_swallowed_b.assert_called_once()
+    mock_commit_a.assert_called_once()
+    mock_rollback_a.assert_not_called()

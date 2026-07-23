@@ -1,5 +1,6 @@
 """Context managers for lifecycle scope activations."""
 
+from types import TracebackType
 from typing import Any
 
 from stratae.lifecycle._scope import UNSET, ScopeVarProto, SlotStorage
@@ -31,12 +32,18 @@ class LifecycleContext:
         self.token = self._var.set(slots)
         self._slots = slots
 
-    def __exit__(self, *_) -> None:
-        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
+    def __exit__(
+        self,
+        exc_type: type[Exception] | None,
+        exc: Exception | None,
+        tb: TracebackType | None,
+    ) -> bool | None:
+        """Deactivate the scope, closing its exit stack (if created) with the block's exception."""
         self._var.reset(self.token)
         stack = self._slots[0]
         if stack is not UNSET:
-            stack.close()
+            return stack.close(exc)
+        return None
 
 
 class AsyncLifecycleContext:
@@ -65,9 +72,15 @@ class AsyncLifecycleContext:
         self.token = self._var.set(slots)
         self._slots = slots
 
-    async def __aexit__(self, *_) -> None:
-        """Deactivate the scope, closing its exit stack if one was created (slot 0)."""
+    async def __aexit__(
+        self,
+        exc_type: type[Exception] | None,
+        exc: Exception | None,
+        tb: TracebackType | None,
+    ) -> bool | None:
+        """Deactivate the scope, closing its exit stack (if created) with the block's exception."""
         self._var.reset(self.token)
         stack = self._slots[0]
         if stack is not UNSET:
-            await stack.aclose()
+            return await stack.aclose(exc)
+        return None
