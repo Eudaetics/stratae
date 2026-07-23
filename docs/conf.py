@@ -60,6 +60,7 @@ html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 
 html_theme = "pydata_sphinx_theme"
+html_show_sourcelink = False
 html_theme_options = {
     "github_url": "https://github.com/Eudaetics/stratae",
 }

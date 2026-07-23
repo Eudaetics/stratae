@@ -1,9 +1,4 @@
-/* Render all API-reference sidebar entries in the code font, so the
-   short-titled submodule links match the code-role page titles. Module
-   page filenames all start with "stratae.", which appears in the href
-   regardless of which directory the link is relative to. The current
-   page's own entry has href="#", so it is matched by its position: a
-   direct child of a list that directly contains module-page links. */
+
 .globaltoc li:has(> a[href*="stratae."]) > a,
 .globaltoc li:has(> a[href*="stratae."]) > a code,
 .globaltoc ul:has(> li > a[href*="stratae."]) > li > a.current {
@@ -11,14 +6,64 @@
     font-size: 0.95em;
 }
 
-/* Field-list headers (PARAMETERS, RAISES, ...) render smaller than their
-   surrounding body text by default; bump them back up to match, and size
-   the "Example(s)" rubrics the same so both read as the same kind of
-   section. */
+
 dt.sig + dd > dl.field-list > dt,
 p.rubric {
     text-transform: uppercase;
     font-size: 0.9rem;
     font-weight: 600;
     color: var(--yue-c-bold);
+}
+
+.sd-card {
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sd-card:has(> .sd-stretched-link):hover {
+    transform: translateY(-3px);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.15);
+}
+
+.sd-card-header {
+    font-size: 1.05rem;
+    border-bottom: none;
+}
+
+.sd-card-header .sd-octicon {
+    margin-right: 0.5rem;
+}
+
+.sd-card-header p {
+    margin-bottom: 0;
+}
+
+#stratae > h1:first-child {
+    font-size: 3.25rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin-bottom: 0.6rem;
+}
+
+#stratae > p:first-of-type {
+    font-size: 1.15rem;
+    color: var(--pst-color-text-muted);
+    max-width: 40em;
+}
+
+#stratae .hero-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 2rem;
+}
+
+#stratae .sd-container-fluid {
+    margin-top: 3rem;
+}
+
+#stratae .sd-btn {
+    border-radius: 999px;
+    padding: 0.55rem 1.5rem;
+    font-weight: 600;
+    margin: 0;
 }
