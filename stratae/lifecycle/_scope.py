@@ -219,12 +219,14 @@ class ExitStack:
         self._contexts.append(ctx)
         return result
 
-    def close(self) -> None:
-        exc: Exception | None = None
+    def close(self, exc: Exception | None = None) -> bool:
+        """Close every registered context manager, seeded with the caller's exception, if any."""
+        received = exc is not None
         while self._contexts:
             exc = _close_one(self._contexts.pop(), exc)
         if exc is not None:
             _raise_collected(exc)
+        return received
 
 
 class AsyncExitStack:
@@ -246,9 +248,9 @@ class AsyncExitStack:
         self._contexts.append((True, ctx))
         return result
 
-    async def aclose(self) -> None:
-        """Close every registered context manager, in reverse order, running all of them."""
-        exc: Exception | None = None
+    async def aclose(self, exc: Exception | None = None) -> bool:
+        """Close every registered context manager, seeded with the caller's exception, if any."""
+        received = exc is not None
         while self._contexts:
             is_async, ctx = self._contexts.pop()
             if is_async:
@@ -257,3 +259,4 @@ class AsyncExitStack:
                 exc = _close_one(ctx, exc)
         if exc is not None:
             _raise_collected(exc)
+        return received
