@@ -201,6 +201,10 @@ html[data-theme="dark"] div.admonition {
     background-color: var(--pst-color-surface);
 }
 
+html[data-theme="dark"] code.literal {
+    border-color: var(--color-blue-gray-900);
+}
+
 .globaltoc li:has(> a[href*="stratae."]) > a,
 .globaltoc li:has(> a[href*="stratae."]) > a code,
 .globaltoc ul:has(> li > a[href*="stratae."]) > li > a.current {
@@ -256,7 +260,6 @@ html[data-theme="dark"] .bd-content .sd-card .sd-card-footer {
 #stratae > p:first-of-type {
     font-size: 1.15rem;
     color: var(--pst-color-text-muted);
-    max-width: 40em;
 }
 
 #stratae .hero-buttons {
