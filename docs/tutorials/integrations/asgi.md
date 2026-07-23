@@ -29,4 +29,4 @@ A couple of things worth being deliberate about:
 
 This composes the same way any `stratae.lifecycle` scope does — see the [Lifecycle guide](../lifecycle) for caching semantics, and the [Dependency Injection guide](../dependency-injection) for injecting request-scoped values into handlers alongside route logic.
 
-Full signatures: {doc}`stratae.integrations.asgi API reference <../apidocs/stratae.integrations/stratae.integrations.asgi>`.
+Full signatures: {doc}`stratae.integrations.asgi API reference <../../apidocs/stratae.integrations/stratae.integrations.asgi>`.

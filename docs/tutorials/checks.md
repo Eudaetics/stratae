@@ -69,4 +69,4 @@ async def store_healthy() -> None:
 await check_async(cache_healthy, store_healthy, mode="any")
 ```
 
-Full signatures: {doc}`stratae.checks API reference <apidocs/stratae.checks/stratae.checks>`.
+Full signatures: {doc}`stratae.checks API reference <../apidocs/stratae.checks/stratae.checks>`.

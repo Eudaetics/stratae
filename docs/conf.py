@@ -64,3 +64,6 @@ html_show_sourcelink = False
 html_theme_options = {
     "github_url": "https://github.com/Eudaetics/stratae",
 }
+html_sidebars: dict[str, list[str]] = {
+    "introduction": [],
+}

@@ -66,4 +66,4 @@ If headers are partially present, missing ids are minted and logged at `info`; i
 
 See the [Events guide](../events#correlation-with-envelope) for what `Envelope` is doing conceptually, independent of any transport.
 
-Full signatures: {doc}`stratae.integrations.rabbitmq API reference <../apidocs/stratae.integrations/stratae.integrations.rabbitmq>`.
+Full signatures: {doc}`stratae.integrations.rabbitmq API reference <../../apidocs/stratae.integrations/stratae.integrations.rabbitmq>`.

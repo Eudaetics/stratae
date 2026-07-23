@@ -139,4 +139,4 @@ await create_book(title="Dune", author="Frank Herbert")  # both handlers run, co
 
 `bind`/`BoundEvent` require a sync factory (`TypeError` otherwise, since a sync `__call__` can't await); use `abind`/`AsyncBoundEvent` for async factories. `DirectBus` similarly rejects async handlers outright — register those on `AsyncDirectBus`.
 
-Full signatures and every exported name: {doc}`stratae.events API reference <apidocs/stratae.events/stratae.events>`.
+Full signatures and every exported name: {doc}`stratae.events API reference <../apidocs/stratae.events/stratae.events>`.

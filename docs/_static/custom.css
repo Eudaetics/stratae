@@ -1,8 +1,210 @@
+@import url('https://fonts.googleapis.com/css2?family=Ysabeau+SC:wght@400;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+:root {
+    /* Brand palette */
+    --color-purple-50: oklch(0.967 0.009 292.95);
+    --color-purple-100: oklch(0.922 0.023 291.41);
+    --color-purple-200: oklch(0.847 0.047 290.78);
+    --color-purple-300: oklch(0.78 0.069 291.26);
+    --color-purple-400: oklch(0.705 0.094 290.12);
+    --color-purple-600: oklch(0.555 0.142 288.23);
+    --color-purple-700: oklch(0.488 0.157 287.6);
+    --color-purple-800: oklch(0.408 0.138 287.09);
+    --color-purple-900: oklch(0.293 0.1 287.3);
+    --color-purple-950: oklch(0.24 0.081 286.73);
+
+    --color-blue-gray-50: oklch(0.966 0.005 247.84);
+    --color-blue-gray-100: oklch(0.96 0.012 264.54);
+    --color-blue-gray-200: oklch(0.862 0.024 262.1);
+    --color-blue-gray-300: oklch(0.792 0.037 261.28);
+    --color-blue-gray-400: oklch(0.585 0.05 258.73);
+    --color-blue-gray-700: oklch(0.516 0.043 257.01);
+    --color-blue-gray-800: oklch(0.446 0.037 257.28);
+    --color-blue-gray-900: oklch(0.31 0.027 257.52);
+    --color-blue-gray-950: oklch(0.17 0.02 257.28);
+
+    --color-warning-100: oklch(0.932 0.04 66.1);
+    --color-warning-300: oklch(0.807 0.146 75.31);
+    --color-warning-400: oklch(0.745 0.135 75.62);
+
+    --color-blue-200: oklch(0.844 0.037 265.12);
+    --color-blue-800: oklch(0.396 0.052 260.15);
+
+    --color-blue-muted-300: oklch(0.733 0.043 257.52);
+    --color-blue-muted-600: oklch(0.482 0.036 258.91);
+
+    --color-success-50: oklch(0.949 0.075 186.64);
+    --color-success-500: oklch(0.59 0.099 186.87);
+    --color-success-600: oklch(0.511 0.086 186.38);
+    --color-success-900: oklch(0.261 0.044 187.48);
+    --color-success-950: oklch(0.22 0.037 185.8);
+
+    --color-warning-50: oklch(0.968 0.02 65.16);
+    --color-warning-500: oklch(0.651 0.118 75.2);
+    --color-warning-600: oklch(0.556 0.101 75.61);
+    --color-warning-900: oklch(0.276 0.05 75.57);
+    --color-warning-950: oklch(0.226 0.041 75.46);
+
+    --color-error-50: oklch(0.966 0.011 10.51);
+    --color-error-600: oklch(0.6 0.178 13.59);
+    --color-error-700: oklch(0.529 0.156 13.63);
+    --color-error-900: oklch(0.323 0.095 13.4);
+    --color-error-950: oklch(0.258 0.077 12.64);
+
+    --color-info-50: oklch(0.984 0.003 247.8);
+    --color-info-400: oklch(0.687 0.057 242.76);
+    --color-info-600: oklch(0.515 0.042 241.37);
+    --color-info-900: oklch(0.266 0.021 240.15);
+    --color-info-950: oklch(0.225 0.018 237.74);
+
+    /* Fonts */
+    --pst-font-family-base: 'Inter', system-ui, sans-serif;
+    --pst-font-family-heading: 'Ysabeau SC', Georgia, serif;
+    --pst-font-family-monospace: 'JetBrains Mono', 'Courier New', monospace;
+
+    /* Sidebar sizes, scaled by the same ~1.1458x as the body copy bump below
+       (originally 0.9rem / 1.1rem / 1.2rem). */
+    --pst-sidebar-font-size: 1.031rem;
+    --pst-sidebar-font-size-mobile: 1.26rem;
+    --pst-sidebar-header-font-size: 1.375rem;
+}
+
+html[data-theme="light"] {
+    --pst-color-primary: var(--color-purple-600);
+    --pst-color-primary-text: var(--color-purple-50);
+    --pst-color-primary-highlight: var(--color-purple-700);
+    --pst-color-primary-highlight-text: var(--color-purple-50);
+    --pst-color-primary-bg: var(--color-purple-100);
+
+    --pst-color-secondary: var(--color-warning-400);
+    --pst-color-secondary-text: var(--color-warning-950);
+    --pst-color-secondary-highlight: var(--color-warning-600);
+    --pst-color-secondary-highlight-text: var(--color-warning-50);
+    --pst-color-secondary-bg: var(--color-warning-100);
+
+    --pst-color-accent: var(--color-purple-600);
+    --pst-color-accent-bg: var(--color-purple-100);
+
+    --pst-color-success: var(--color-success-500);
+    --pst-color-success-text: var(--color-success-50);
+    --pst-color-success-bg: var(--color-success-50);
+
+    --pst-color-warning: var(--color-warning-500);
+    --pst-color-warning-text: var(--color-warning-950);
+    --pst-color-warning-bg: var(--color-warning-50);
+
+    --pst-color-danger: var(--color-error-600);
+    --pst-color-danger-text: var(--color-error-50);
+    --pst-color-danger-bg: var(--color-error-50);
+
+    --pst-color-info: var(--color-info-400);
+    --pst-color-info-text: var(--color-info-950);
+    --pst-color-info-bg: var(--color-info-50);
+
+    --pst-color-background: var(--color-blue-gray-100);
+    --pst-color-on-background: var(--color-blue-gray-50);
+    --pst-color-surface: var(--color-blue-gray-50);
+    --pst-color-on-surface: var(--color-blue-800);
+    --pst-color-text-base: var(--color-blue-800);
+    --pst-color-text-muted: var(--color-blue-muted-600);
+    --pst-color-heading: var(--color-blue-gray-800);
+    --pst-color-border: var(--color-blue-gray-200);
+    --pst-color-border-muted: var(--color-blue-gray-300);
+    --pst-color-inline-code: var(--color-purple-700);
+    --pst-color-link-higher-contrast: var(--color-purple-800);
+    --pst-color-table-row-hover-bg: var(--color-purple-100);
+    --pst-color-target: var(--color-purple-200);
+}
+
+html[data-theme="dark"] {
+    --pst-color-primary: var(--color-purple-400);
+    --pst-color-primary-text: var(--color-purple-950);
+    --pst-color-primary-highlight: var(--color-purple-300);
+    --pst-color-primary-highlight-text: var(--color-purple-950);
+    --pst-color-primary-bg: var(--color-purple-900);
+
+    --pst-color-secondary: var(--color-warning-400);
+    --pst-color-secondary-text: var(--color-warning-950);
+    --pst-color-secondary-highlight: var(--color-warning-300);
+    --pst-color-secondary-highlight-text: var(--color-warning-950);
+    --pst-color-secondary-bg: var(--color-warning-950);
+
+    --pst-color-accent: var(--color-purple-400);
+    --pst-color-accent-bg: var(--color-purple-900);
+
+    --pst-color-success: var(--color-success-600);
+    --pst-color-success-text: var(--color-success-50);
+    --pst-color-success-bg: var(--color-success-900);
+
+    --pst-color-warning: var(--color-warning-600);
+    --pst-color-warning-text: var(--color-warning-50);
+    --pst-color-warning-bg: var(--color-warning-900);
+
+    --pst-color-danger: var(--color-error-700);
+    --pst-color-danger-text: var(--color-error-50);
+    --pst-color-danger-bg: var(--color-error-900);
+
+    --pst-color-info: var(--color-info-600);
+    --pst-color-info-text: var(--color-info-50);
+    --pst-color-info-bg: var(--color-info-900);
+
+    --pst-color-background: var(--color-blue-gray-950);
+    --pst-color-on-background: var(--color-blue-gray-900);
+    --pst-color-surface: oklch(0.22 0.02 257.28);
+    --pst-color-on-surface: var(--color-blue-200);
+    --pst-color-text-base: var(--color-blue-200);
+    --pst-color-text-muted: var(--color-blue-muted-300);
+    --pst-color-heading: var(--color-blue-gray-400);
+    --pst-color-border: var(--color-blue-gray-800);
+    --pst-color-border-muted: var(--color-blue-gray-700);
+    --pst-color-inline-code: var(--color-purple-300);
+    --pst-color-link-higher-contrast: var(--color-purple-300);
+    --pst-color-table-row-hover-bg: var(--color-purple-900);
+    --pst-color-target: var(--color-purple-800);
+}
+
+.bd-header {
+    background-color: var(--color-purple-800) !important;
+}
+
+.bd-header .navbar-brand .title,
+.bd-header ul.navbar-nav > li.nav-item > .nav-link,
+.bd-header .pst-navbar-icon {
+    color: white;
+}
+
+.bd-header .search-button-field,
+.bd-header .search-button-field:hover {
+    background-color: var(--pst-color-surface) !important;
+}
+
+.bd-header .navbar-brand .title {
+    font-size: 1.35rem;
+}
+
+.bd-header ul.navbar-nav > li.nav-item > .nav-link {
+    font-size: 1.05em;
+}
+
+html[data-theme="dark"] .highlight .c,
+html[data-theme="dark"] .highlight .c1,
+html[data-theme="dark"] .highlight .cm,
+html[data-theme="dark"] .highlight .ch,
+html[data-theme="dark"] .highlight .cp,
+html[data-theme="dark"] .highlight .cpf,
+html[data-theme="dark"] .highlight .cs {
+    color: var(--pst-color-text-muted);
+}
+
+html[data-theme="dark"] .admonition,
+html[data-theme="dark"] div.admonition {
+    background-color: var(--pst-color-surface);
+}
 
 .globaltoc li:has(> a[href*="stratae."]) > a,
 .globaltoc li:has(> a[href*="stratae."]) > a code,
 .globaltoc ul:has(> li > a[href*="stratae."]) > li > a.current {
-    font-family: var(--sy-f-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+    font-family: var(--pst-font-family-monospace);
     font-size: 0.95em;
 }
 
@@ -12,11 +214,18 @@ p.rubric {
     text-transform: uppercase;
     font-size: 0.9rem;
     font-weight: 600;
-    color: var(--yue-c-bold);
+    color: var(--pst-color-primary);
 }
 
 .sd-card {
+    border-radius: 0.375rem;
     transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+html[data-theme="dark"] .bd-content .sd-card .sd-card-header,
+html[data-theme="dark"] .bd-content .sd-card .sd-card-body,
+html[data-theme="dark"] .bd-content .sd-card .sd-card-footer {
+    background-color: var(--pst-color-surface);
 }
 
 .sd-card:has(> .sd-stretched-link):hover {
@@ -86,4 +295,9 @@ p.rubric {
     padding: 0.55rem 1.5rem;
     font-weight: 600;
     margin: 0;
+}
+
+#stratae .sd-btn,
+#stratae .sd-btn:hover {
+    text-decoration: none;
 }

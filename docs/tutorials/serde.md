@@ -49,4 +49,4 @@ def _(obj: Money) -> str:
 
 `unpack_json` is just the default implementation of a small structural protocol, `Unpacker` — `__call__(data: bytes, *, type: type[S]) -> S`. It's shaped to match `msgspec.json.decode`'s signature exactly, so a schema-aware decoder like msgspec's can be dropped in as a drop-in replacement anywhere `stratae.serde` expects an `Unpacker`, with no adapter code needed.
 
-Full signatures: {doc}`stratae.serde API reference <apidocs/stratae.serde/stratae.serde>`.
+Full signatures: {doc}`stratae.serde API reference <../apidocs/stratae.serde/stratae.serde>`.

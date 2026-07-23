@@ -16,4 +16,4 @@ Each tool works on its own. You can use `stratae.lifecycle` for scoped caching w
 
 Each guide covers one module end to end: the core concepts, the way its pieces compose in practice, and the mistakes that are easy to make. They build loosely on each other — the dependency injection and lifecycle guides are worth reading before the events guide, since the richest examples combine all three — but each is written to stand alone if you only need one tool.
 
-Start with [Getting Started](getting-started) for a five-minute working example, then read the guides in whatever order matches what you're building. The [API reference](api-reference) has the full signature-level detail for everything covered here.
+Start with [Getting Started](tutorials/getting-started) for a five-minute working example, then read the guides in whatever order matches what you're building. The [API reference](api-reference) has the full signature-level detail for everything covered here.

@@ -19,4 +19,4 @@ from stratae.serde import pack
 place_order = publisher.bind(order_placed, config=config, serializer=pack)
 ```
 
-Full signatures: {doc}`stratae.integrations.msgspec API reference <../apidocs/stratae.integrations/stratae.integrations.msgspec>`.
+Full signatures: {doc}`stratae.integrations.msgspec API reference <../../apidocs/stratae.integrations/stratae.integrations.msgspec>`.

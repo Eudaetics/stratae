@@ -54,4 +54,4 @@ with current_user.use("alice"):
 
 This composes with `.use()`'s scoping directly: swap what a whole DI-resolved call tree sees by changing what's active in the context, without touching any function signature. The same pattern works for swapping *behavior*, not just data — a `Context[Callable[[], str]]` holding a strategy function, temporarily replaced with `.use()` for an A/B test or a feature flag, consumed transparently by every injected function that depends on it.
 
-Full signatures: {doc}`stratae.context API reference <apidocs/stratae.context/stratae.context>`.
+Full signatures: {doc}`stratae.context API reference <../apidocs/stratae.context/stratae.context>`.

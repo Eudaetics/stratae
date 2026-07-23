@@ -138,4 +138,4 @@ Because `"request"` is context-isolated, two concurrent `asyncio` tasks each sta
 
 `ScopeNotFoundError` and `ScopeInactiveError` are deliberately distinct — "never declared" and "declared but not started here" are different bugs.
 
-Full signatures and every exported name: {doc}`stratae.lifecycle API reference <apidocs/stratae.lifecycle/stratae.lifecycle>`.
+Full signatures and every exported name: {doc}`stratae.lifecycle API reference <../apidocs/stratae.lifecycle/stratae.lifecycle>`.

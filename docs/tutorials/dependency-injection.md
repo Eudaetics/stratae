@@ -133,4 +133,4 @@ with overrides({get_database: fake_db, get_config: fake_config}):
 
 All decoration-time errors (`CircularDependencyError`, `InjectionSignatureError`) surface when `@inject` runs — at import time, in practice — rather than on the first call, so a broken dependency graph fails fast.
 
-Full signatures and every exported name: {doc}`stratae.depends API reference <apidocs/stratae.depends/stratae.depends>`.
+Full signatures and every exported name: {doc}`stratae.depends API reference <../apidocs/stratae.depends/stratae.depends>`.

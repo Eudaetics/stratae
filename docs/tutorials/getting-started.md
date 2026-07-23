@@ -32,4 +32,4 @@ with lifecycle.start('application'):
     print(f"Created user: {user['name']}")
 ```
 
-From here, the [Dependency Injection](dependency-injection) and [Lifecycle](lifecycle) guides go deeper into `stratae.depends` and `stratae.lifecycle`; the [API reference](api-reference) has the full signature-level detail.
+From here, the [Dependency Injection](dependency-injection) and [Lifecycle](lifecycle) guides go deeper into `stratae.depends` and `stratae.lifecycle`; the [API reference](../api-reference) has the full signature-level detail.
