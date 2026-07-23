@@ -54,11 +54,31 @@ p.rubric {
     display: flex;
     flex-wrap: wrap;
     gap: 0.75rem;
-    margin-top: 2rem;
+    margin-top: 1.25rem;
 }
 
 #stratae .sd-container-fluid {
-    margin-top: 3rem;
+    margin-top: 1.75rem;
+}
+
+@media (min-width: 768px) {
+    #stratae .hero-buttons {
+        margin-top: 2rem;
+    }
+
+    #stratae .sd-container-fluid {
+        margin-top: 3rem;
+    }
+}
+
+@media (min-width: 1200px) {
+    #stratae .hero-buttons {
+        margin-top: 2.5rem;
+    }
+
+    #stratae .sd-container-fluid {
+        margin-top: 4rem;
+    }
 }
 
 #stratae .sd-btn {

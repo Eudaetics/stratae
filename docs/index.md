@@ -29,7 +29,7 @@ GitHub
 ::::
 
 ::::{grid} 1 2 3 3
-:gutter: 4
+:gutter: 2 3 3 4
 
 :::{grid-item-card}
 :link: dependency-injection.html
