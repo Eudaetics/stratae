@@ -19,25 +19,35 @@ controlling failure handling:
   from earlier checks.
 
 
-````{example} Reject account deletion if the user is not an admin
+````{example} Allow deletion by admins, or by owners of a non-archived resource
 ```{code-block} python
 from types import SimpleNamespace
-from stratae.checks import require
+from stratae.checks import all_of, require
 
-user = SimpleNamespace(id=1, is_admin=False)
+user = SimpleNamespace(id=7, is_admin=False)
+resource = SimpleNamespace(id=101, owner_id=7, archived=True)
 
 def is_admin():
-    assert user.is_admin
+    assert user.is_admin, "not an admin"
 
-@require(is_admin)
-def delete_account(account_id: int):
-    # Code in here only runs if the require checks do not raise
-    print("Deleting Account")
+def is_owner():
+    assert resource.owner_id == user.id, "not the owner"
+
+def not_archived():
+    assert not resource.archived, "resource is archived"
+
+@require(is_admin, all_of(is_owner, not_archived), mode="any")
+def delete_resource(resource_id: int):
+    print(f"Deleting resource: {resource_id}")
 
 try:
-    delete_account(24)  # Will abort for the above user since it fails the check
-except AssertionError:
-    print("Access Denied")
+    delete_resource(resource.id)
+except ExceptionGroup as exc:
+    # Owns the resource but it's archived, and isn't an admin either
+    print("Access denied:", exc.exceptions[-1])
+```
+```{container} example-output
+Access denied: resource is archived
 ```
 ````
 
