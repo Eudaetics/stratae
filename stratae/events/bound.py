@@ -14,10 +14,10 @@ await one from inside its synchronous `__call__`. {py:class}`AsyncBoundEvent`
 accepts either a sync or async factory, and awaits its `__call__` either
 way.
 
-````{example} Grouping bound events under a namespace, like order.create and order.log
+````{example} Binding events to a bus
 ```{code-block} python
 from types import SimpleNamespace
-from stratae.events import DirectBus, PubSub, Request, event
+from stratae.events import DirectBus, PubSub, Request, bind, event
 
 class CreateOrder:
     def __init__(self, order_id: int) -> None:
@@ -37,10 +37,10 @@ order_logged = event(OrderLogged, PubSub)
 bus = DirectBus()
 
 # bind() just returns a plain callable, so a set of related bound events
-# can be grouped under a namespace instead of scattered module-level names.
+# can be grouped under a namespace or module.
 order = SimpleNamespace(
-    create=bus.bind(order_created),
-    log=bus.bind(order_logged),
+    create=bind(bus.emit, order_created, config=None),
+    log=bind(bus.emit, order_logged, config=None),
 )
 
 @bus.handle(order_logged)

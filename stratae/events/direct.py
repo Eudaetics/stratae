@@ -27,11 +27,8 @@ as the routing key, and can open a scoped
 {py:class}`Envelope <stratae.events.envelope.Envelope>` for each emission when
 constructed with `use_envelope=True`.
 
-```{rubric} Example:
-```
+````{example} Sending events over a DirectBus
 ```{code-block} python
-:caption: A catalog that adds books as they're created and answers lookups by title
-
 from stratae.events.direct import DirectBus
 from stratae.events.event import EventConfig, PubSub, Request
 
@@ -70,6 +67,11 @@ def lookup(query: BookQuery) -> Book:
 # the two events actually feed the same catalog rather than two unrelated payloads.
 assert find_book(title="Dune") is catalog["Dune"]
 ```
+```{output}
+log: order 42 created
+created order: 42
+```
+````
 """
 
 import asyncio
