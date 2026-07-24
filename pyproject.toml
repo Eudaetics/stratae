@@ -29,6 +29,22 @@ Repository = "https://github.com/Eudaetics/stratae"
 Issues = "https://github.com/Eudaetics/stratae/issues"
 
 [project.optional-dependencies]
+msgspec = [
+    "msgspec>=0.21.0"
+]
+rabbitmq = [
+    "aiormq>=6.8.0"
+]
+fastapi = [
+    "fastapi>=0.115.0",
+    "httpx2>=2.0.0",
+]
+starlette = [
+    "starlette>=1.2.0",
+    "httpx2>=2.0.0",
+]
+
+[dependency-groups]
 dev = [
     "pre-commit>=4.2.0",
     "pyright>=1.1.403",
@@ -41,12 +57,6 @@ test = [
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=6.1.1",
     "pytest-mock>=3.14.1",
-]
-msgspec = [
-    "msgspec>=0.21.0"
-]
-rabbitmq = [
-    "aiormq>=6.8.0"
 ]
 
 [tool.setuptools.packages.find]
@@ -88,6 +98,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "fastapi: FastAPI integration smoke tests (requires fastapi, httpx)",
+    "starlette: Starlette integration smoke tests (requires starlette, httpx)",
     "msgspec: msgspec integration tests (requires msgspec)",
     "rabbitmq: RabbitMQ integration tests (requires aiormq, msgspec, and a live broker)",
 ]
