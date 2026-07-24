@@ -13,6 +13,78 @@ its result is cached for the lifetime of that scope's active activation. A
 entered automatically when cached. Its yielded value is cached in place of the context
 manager itself.
 
+````{example} Three scope tiers working together: application, request, and block
+```{code-block} python
+import asyncio
+from itertools import count
+from stratae.lifecycle import AsyncLifecycle, Scope
+
+lifecycle = AsyncLifecycle(
+    [
+        Scope("application", isolation="shared"),
+        Scope("request", storage="sparse"),
+        Scope("block", storage="sparse"),
+    ]
+)
+
+class ConnectionPool:
+    def __init__(self):
+        print("Opening connection pool")
+
+@lifecycle.cache("application")
+async def get_pool() -> ConnectionPool:
+    return ConnectionPool()
+
+_next_request_id = count(1)
+
+@lifecycle.cache("request")
+async def get_request_id() -> int:
+    return next(_next_request_id)
+
+_next_block_id = count(1)
+
+@lifecycle.cache("block")
+async def get_block_id() -> int:
+    return next(_next_block_id)
+
+async def process_order(order_id: int) -> None:
+    async with lifecycle.start("block"):
+        await get_pool()
+        req_id, block_id = await get_request_id(), await get_block_id()
+        print(f"request {req_id} block {block_id}: processing {order_id}")
+
+async def log_audit(order_id: int) -> None:
+    async with lifecycle.start("block"):
+        await get_pool()
+        req_id, block_id = await get_request_id(), await get_block_id()
+        print(f"request {req_id} block {block_id}: logging {order_id}")
+
+async def handle_order(order_id: int) -> None:
+    async with lifecycle.start("request"):
+        req_id = await get_request_id()
+        print(f"request {req_id}: handling {order_id}")
+        await asyncio.gather(process_order(order_id), log_audit(order_id))
+
+async def main() -> None:
+    async with lifecycle.start("application"):
+        # Starting a scope doesn't cache anything - get_pool() only runs
+        # on its first real call, inside process_order below.
+        await handle_order(101)
+        await handle_order(102)
+
+asyncio.run(main())
+```
+```{container} example-output
+request 1: handling 101
+Opening connection pool
+request 1 block 1: processing 101
+request 1 block 2: logging 101
+request 2: handling 102
+request 2 block 3: processing 102
+request 2 block 4: logging 102
+```
+````
+
 ```{note}
 Cache keying behaves like `functools.lru_cache`: unless `ignore_params` is set, a
 function that takes parameters gets one cached value per distinct set of
@@ -29,9 +101,8 @@ even though it still accepts parameters, pass `ignore_params=True`. That caches
 the value directly in the function's slot instead of a keyed dict, trading
 per-argument caching for a single, faster slot lookup.
 ```
-
 See {py:class}`BaseLifecycle`, {py:class}`Lifecycle`, and {py:class}`AsyncLifecycle` for
-additional examples.
+the rest of the module's API.
 """
 
 from contextvars import Token
@@ -65,7 +136,7 @@ class BaseLifecycle[
     Shared scope and slot mechanics behind Lifecycle and AsyncLifecycle.
 
     See {py:class}`Lifecycle` and {py:class}`AsyncLifecycle` for the concrete, usable
-    classes and their examples.
+    classes.
     """
 
     __slots__ = (
@@ -110,23 +181,6 @@ class BaseLifecycle[
         :returns: A token identifying this activation; pass it to `pop()` to deactivate
             the scope again.
         :raises ScopeNotFoundError: If `scope` was not declared on this lifecycle.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: Activate and deactivate a scope manually, outside a with block
-
-        from stratae.lifecycle import Lifecycle, Scope
-
-        lifecycle = Lifecycle([Scope("request")])
-
-        token = lifecycle.push("request")
-        assert lifecycle.active_scopes() == ["request"]
-
-        lifecycle.pop(token)
-        assert lifecycle.is_empty()
-        ```
-
         """
         try:
             return self._vars[scope].set(self._templates[scope].copy())
@@ -148,22 +202,6 @@ class BaseLifecycle[
             activates the scope on entry and deactivates it on exit, closing any exit
             stack that activation created.
         :raises ScopeNotFoundError: If `scope` was not declared on this lifecycle.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: Activating a scope makes its cached functions callable for the block's duration
-
-        from stratae.lifecycle import Lifecycle, Scope
-
-        lifecycle = Lifecycle([Scope("request")])
-
-        with lifecycle.start("request"):
-            assert lifecycle.active_scopes() == ["request"]
-
-        assert lifecycle.is_empty()
-        ```
-
         """
         ctx = self._contexts.get(scope)
         if ctx is not None:
@@ -190,21 +228,6 @@ class BaseLifecycle[
         Get the names of currently active scopes, in declaration order.
 
         :returns: The names of scopes with an active activation in the calling context.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: Nested scope activations are reported in declaration order, not activation order
-
-        from stratae.lifecycle import Lifecycle, Scope
-
-        lifecycle = Lifecycle([Scope("application", "shared"), Scope("request")])
-
-        with lifecycle.start("request"):
-            with lifecycle.start("application"):
-                assert lifecycle.active_scopes() == ["application", "request"]
-        ```
-
         """
         return [name for name in self._scopes if self._is_active(name)]
 
@@ -228,21 +251,6 @@ class BaseLifecycle[
         :raises ScopeNotFoundError: If `scope` was not declared on this lifecycle.
         :raises ScopeInactiveError: If `scope` has no active activation in the calling
             context.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: The exit stack is created lazily and reused within one activation
-
-        from stratae.lifecycle import Lifecycle, Scope
-
-        lifecycle = Lifecycle([Scope("request")])
-
-        with lifecycle.start("request"):
-            stack = lifecycle.get_exit_stack("request")
-            assert lifecycle.get_exit_stack("request") is stack
-        ```
-
         """
         slots = self.get_slots(scope)
         stack = slots[0]
@@ -306,27 +314,6 @@ class BaseLifecycle[
         :raises ScopeNotFoundError: If `scope` was not declared on this lifecycle.
         :raises ScopeInactiveError: If `scope` has no active activation in the calling
             context.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: An inactive scope's slots raise, an active scope's slots are readable and writable
-
-        import pytest
-        from stratae.lifecycle import Lifecycle, Scope
-        from stratae.lifecycle.exceptions import ScopeInactiveError
-
-        lifecycle = Lifecycle([Scope("request", "context")])
-        slot = lifecycle.allocate_slot("request")
-
-        with pytest.raises(ScopeInactiveError):
-            lifecycle.get_slots("request")
-
-        with lifecycle.start("request"):
-            lifecycle.get_slots("request")[slot] = "cached value"
-            assert lifecycle.get_slots("request")[slot] == "cached value"
-        ```
-
         """
         try:
             return self._vars[scope].get()
@@ -352,32 +339,7 @@ class Lifecycle(BaseLifecycle[LifecycleContext, ExitStack]):
     functions with ``@lifecycle.cache(scope)`` to cache their results for that activation's
     lifetime.
 
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: A request ID is generated once per request and reused by every caller within it
-
-    from uuid import uuid4
-    from stratae.lifecycle import Lifecycle, Scope
-
-    lifecycle = Lifecycle([Scope("request", "context")])
-
-    @lifecycle.cache("request")
-    def get_request_id() -> str:
-        return str(uuid4())
-
-    with lifecycle.start("request"):
-        logged_id = get_request_id()
-        response_id = get_request_id()
-
-    with lifecycle.start("request"):
-        next_request_id = get_request_id()
-
-    assert logged_id == response_id  # same ID throughout one request
-    assert logged_id != next_request_id  # a new ID for the next request
-    ```
-
-    See the module docstring for a further example.
+    See the module docstring for an example.
     """
 
     __slots__ = ()
@@ -392,25 +354,6 @@ class Lifecycle(BaseLifecycle[LifecycleContext, ExitStack]):
         :param token: The token returned by the matching {py:func}`BaseLifecycle.push` call.
         :raises ScopeActivationError: If the scope identified by `token` is not currently
             active.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: Popping the same token twice raises, since the activation is already gone
-
-        import pytest
-        from stratae.lifecycle import Lifecycle, Scope
-        from stratae.lifecycle.exceptions import ScopeActivationError
-
-        lifecycle = Lifecycle([Scope("request", "context")])
-        token = lifecycle.push("request")
-
-        lifecycle.pop(token)
-
-        with pytest.raises(ScopeActivationError):
-            lifecycle.pop(token)
-        ```
-
         """
         var = token.var
         try:
@@ -449,32 +392,8 @@ class Lifecycle(BaseLifecycle[LifecycleContext, ExitStack]):
         :returns: A decorator, applied to the function whose result should be cached.
         :raises ValueError: If both `cache_key` and `ignore_params` are given.
 
-        See the module docstring for cache-keying semantics and when to use
-        `ignore_params`.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: Cache per distinct argument value, or collapse to one value with ignore_params
-
-        from stratae.lifecycle import Lifecycle, Scope
-
-        lifecycle = Lifecycle([Scope("request", "context")])
-
-        @lifecycle.cache("request")
-        def get_user(user_id: int) -> object:
-            return object()
-
-        @lifecycle.cache("request", ignore_params=True)
-        def get_current_time() -> object:
-            return object()
-
-        with lifecycle.start("request"):
-            assert get_user(1) is get_user(1)  # same value, same argument
-            assert get_user(1) is not get_user(2)  # different arguments, different value
-            assert get_current_time() is get_current_time()  # cached once, args ignored
-        ```
-
+        See the module docstring for cache-keying semantics, when to use
+        `ignore_params`, and an example.
         """
         if ignore_params and cache_key is not None:
             raise ValueError("Cannot use both ignore_params and cache_key together.")
@@ -494,34 +413,8 @@ class AsyncLifecycle(BaseLifecycle[AsyncLifecycleContext, AsyncExitStack]):
     {py:func}`async_resource <stratae.lifecycle.resource.async_resource>`-tagged context
     managers of either flavor.
 
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: A request ID is generated once per request and reused by every caller within it
-
-    import asyncio
-    from uuid import uuid4
-    from stratae.lifecycle import AsyncLifecycle, Scope
-
-    lifecycle = AsyncLifecycle([Scope("request", "context")])
-
-    @lifecycle.cache("request")
-    async def get_request_id() -> str:
-        return str(uuid4())
-
-    async def main():
-        async with lifecycle.start("request"):
-            logged_id = await get_request_id()
-            response_id = await get_request_id()
-
-        async with lifecycle.start("request"):
-            next_request_id = await get_request_id()
-
-        assert logged_id == response_id  # same ID throughout one request
-        assert logged_id != next_request_id  # a new ID for the next request
-
-    asyncio.run(main())
-    ```
+    See the module docstring for an example (sync there, but the same caching and
+    `ignore_params` semantics apply with `async`/`await`).
     """
 
     __slots__ = ()
@@ -536,29 +429,6 @@ class AsyncLifecycle(BaseLifecycle[AsyncLifecycleContext, AsyncExitStack]):
         :param token: The token returned by the matching {py:func}`BaseLifecycle.push` call.
         :raises ScopeActivationError: If the scope identified by `token` is not currently
             active.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: Popping the same token twice raises, since the activation is already gone
-
-        import asyncio
-        import pytest
-        from stratae.lifecycle import AsyncLifecycle, Scope
-        from stratae.lifecycle.exceptions import ScopeActivationError
-
-        lifecycle = AsyncLifecycle([Scope("request", "context")])
-
-        async def main():
-            token = lifecycle.push("request")
-            await lifecycle.pop(token)
-
-            with pytest.raises(ScopeActivationError):
-                await lifecycle.pop(token)
-
-        asyncio.run(main())
-        ```
-
         """
         var = token.var
         try:
@@ -600,48 +470,10 @@ class AsyncLifecycle(BaseLifecycle[AsyncLifecycleContext, AsyncExitStack]):
         :returns: A decorator, applied to the function whose result should be cached.
         :raises ValueError: If both `cache_key` and `ignore_params` are given.
 
-        See the module docstring for cache-keying semantics and when to use
-        `ignore_params`.
-
-        ```{rubric} Example:
-        ```
-        ```{code-block} python
-        :caption: An async_resource-tagged function's yielded value is cached and closed on exit
-
-        import asyncio
-        from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
-
-        lifecycle = AsyncLifecycle([Scope("request", "context")])
-
-        class RemoteClient:
-            connected = False
-
-            async def connect(self):
-                self.connected = True
-
-            async def disconnect(self):
-                self.connected = False
-
-        @lifecycle.cache("request")
-        @async_resource
-        async def get_client():
-            client = RemoteClient()
-            await client.connect()
-            try:
-                yield client
-            finally:
-                await client.disconnect()
-
-        async def main():
-            async with lifecycle.start("request"):
-                client = await get_client()
-                assert client.connected
-
-            assert not client.connected
-
-        asyncio.run(main())
-        ```
-
+        See the module docstring for cache-keying semantics, when to use
+        `ignore_params`, and an example. See
+        {py:func}`async_resource <stratae.lifecycle.resource.async_resource>` for its
+        own auto-entry example.
         """
         if ignore_params and cache_key is not None:
             raise ValueError("Cannot use both ignore_params and cache_key together.")
