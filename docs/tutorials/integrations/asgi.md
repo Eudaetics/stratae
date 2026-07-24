@@ -8,11 +8,14 @@ from stratae.lifecycle import AsyncLifecycle, Scope
 
 lifecycle = AsyncLifecycle([Scope("request")])
 
+
 @lifecycle.cache("request")
 async def get_request_id() -> str:
     return str(uuid4())
 
+
 app.add_middleware(RequestLifecycleMiddleware, lifecycle=lifecycle, scope="request")
+
 
 @app.get("/orders")
 async def list_orders():

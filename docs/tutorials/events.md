@@ -9,19 +9,23 @@ An event is a factory (usually a class) paired with a dispatch pattern:
 ```python
 from stratae.events import event, PubSub, Request
 
+
 class BookCreated:
     def __init__(self, title: str, author: str) -> None:
         self.title = title
         self.author = author
+
 
 class Book:
     def __init__(self, title: str, author: str) -> None:
         self.title = title
         self.author = author
 
+
 class BookQuery:
     def __init__(self, title: str) -> None:
         self.title = title
+
 
 book_created = event(BookCreated, PubSub)
 book_query = event(BookQuery, Request[Book])
@@ -42,13 +46,16 @@ catalog: dict[str, Book] = {}
 create_book = bus.bind(book_created)
 query_book = bus.bind(book_query)
 
+
 @bus.handle(book_created)
 def _(event: BookCreated) -> None:
     catalog[event.title] = Book(event.title, event.author)
 
+
 @bus.handle(book_query)
 def _(query: BookQuery) -> Book:
     return catalog[query.title]
+
 
 create_book(title="Dune", author="Frank Herbert")
 query_book(title="Dune")  # -> Book("Dune", "Frank Herbert")
@@ -67,9 +74,11 @@ from stratae.lifecycle import Lifecycle, Scope
 lifecycle = Lifecycle([Scope("application", isolation="shared")])
 bus = DirectBus()
 
+
 @lifecycle.cache("application")
 def order_store() -> dict[int, dict]:
     return {}
+
 
 order_placed = event(OrderPlaced, PubSub)
 price_order = event(PriceOrder, Request[Quote])
@@ -77,15 +86,18 @@ price_order = event(PriceOrder, Request[Quote])
 place_order = bus.bind(order_placed)
 request_quote = bus.bind(price_order)
 
+
 @bus.handle(order_placed)
 @inject
 def _(order: OrderPlaced, store: Injected[dict, Depends(order_store)]) -> None:
     store[order.order_id] = {"status": "placed"}
 
+
 @bus.handle(price_order)
 @inject
 def _(request: PriceOrder, store: Injected[dict, Depends(order_store)]) -> Quote:
     return Quote(order_id=request.order_id, total=100)
+
 
 with lifecycle.start("application"):
     place_order(order_id=42)
@@ -101,10 +113,11 @@ An `Envelope` is a small record — `message_id`, `correlation_id`, `causation_i
 ```python
 bus = DirectBus(use_envelope=True)
 
+
 @bus.handle(order_placed)
 def _(order: OrderPlaced) -> None:
     log_message(text=f"order {order.order_id} placed")  # a nested emit --
-                                                          # its envelope is a child of order_placed's
+    # its envelope is a child of order_placed's
 ```
 
 For pure in-process dispatch this is optional overhead you can skip. It earns its keep once a message crosses a real transport — see the [RabbitMQ integration](integrations/rabbitmq), which stamps envelopes onto the wire so correlation survives a publish/consume hop.
@@ -118,15 +131,20 @@ from stratae.events import AsyncDirectBus
 
 bus = AsyncDirectBus()
 
+
 @bus.handle(book_created)
 async def _(event: BookCreated) -> None:
     await db.insert(event)
+
 
 @bus.handle(book_created)
 def _(event: BookCreated) -> None:
     logger.info("book created: %s", event.title)
 
-await create_book(title="Dune", author="Frank Herbert")  # both handlers run, concurrently where async
+
+await create_book(
+    title="Dune", author="Frank Herbert"
+)  # both handlers run, concurrently where async
 ```
 
 ## Errors

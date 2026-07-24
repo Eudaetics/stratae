@@ -7,11 +7,14 @@
 ```python
 from stratae.checks import check
 
+
 def is_admin() -> None:
     assert user.is_admin, "not an admin"
 
+
 def not_suspended() -> None:
     assert not user.suspended, "account suspended"
+
 
 check(is_admin, not_suspended)
 ```
@@ -29,12 +32,13 @@ By default (`mode="all"`), `check` stops at the first failure and propagates its
 ```python
 from stratae.checks import require
 
+
 def is_admin() -> None:
     assert user.is_admin
 
+
 @require(is_admin)
-def delete_account(account_id: int) -> None:
-    ...
+def delete_account(account_id: int) -> None: ...
 ```
 
 For a sync function, every check passed to `require` must be sync — an async check raises `TypeError` at decoration time, not buried in a call-time failure. An async-decorated function can mix sync and async checks freely. Decorating with no checks at all is a no-op: `require()` returns the function unchanged.
@@ -63,8 +67,10 @@ If any check inside `any_of`/`all_of` is async, the combinator it returns is its
 def cache_healthy() -> None:
     assert redis.ping()
 
+
 async def store_healthy() -> None:
     assert await db.execute("SELECT 1")
+
 
 await check_async(cache_healthy, store_healthy, mode="any")
 ```

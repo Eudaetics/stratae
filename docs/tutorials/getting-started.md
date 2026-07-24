@@ -16,10 +16,12 @@ lifecycle = Lifecycle([Scope("application", "shared")])
 
 type Database = dict[str, list[dict[str, str]]]
 
+
 # Simple database connection (just a dict for demo)
-@lifecycle.cache('application')
+@lifecycle.cache("application")
 def get_database() -> Database:
     return {"users": []}
+
 
 @inject
 def create_user(name: str, db: Injected[Database, Depends(get_database)]):
@@ -27,7 +29,8 @@ def create_user(name: str, db: Injected[Database, Depends(get_database)]):
     db["users"].append(user)
     return user
 
-with lifecycle.start('application'):
+
+with lifecycle.start("application"):
     user = create_user("Alice")
     print(f"Created user: {user['name']}")
 ```

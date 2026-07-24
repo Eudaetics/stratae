@@ -18,10 +18,12 @@ lifecycle = Lifecycle([Scope("application", "shared")])
 
 type Database = dict[str, list[dict[str, str]]]
 
+
 # Simple database connection (just a dict for demo)
-@lifecycle.cache('application')
+@lifecycle.cache("application")
 def get_database() -> Database:
     return {"users": []}
+
 
 @inject
 def create_user(name: str, db: Injected[Database, Depends(get_database)]):
@@ -29,7 +31,8 @@ def create_user(name: str, db: Injected[Database, Depends(get_database)]):
     db["users"].append(user)
     return user
 
-with lifecycle.start('application'):
+
+with lifecycle.start("application"):
     user = create_user("Alice")
     print(f"Created user: {user['name']}")
 ```
@@ -43,12 +46,15 @@ Dependency injection in Stratae uses familiar decorator syntax that works with c
 ```python
 from stratae.depends import Depends, Injected, inject
 
+
 def get_config():
     return {"env": "dev", "mode": "strict"}
+
 
 @inject
 def endpoint(config: Injected[dict[str, str], Depends(get_config)]):
     print(f"Environment: {config['env']}, Mode: {config['mode']}")
+
 
 endpoint()
 # Environment: dev, Mode: strict
@@ -59,11 +65,12 @@ endpoint()
 Use lifecycle management when you want to cache objects or guarantee resource cleanup for context managers. With managed resources, everything is cleaned up automatically at the end of a lifecycle scope.
 
 ```python
-lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
+lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "shared")])
+
 
 # Cache the yielded value and return it for all calls within a request;
 # @resource marks get_session as a contextmanager to be auto-entered
-@lifecycle.cache('request')
+@lifecycle.cache("request")
 @resource
 def get_session():
     session = Session()
@@ -76,15 +83,16 @@ def get_session():
     finally:
         session.close()
 
+
 # Set up your lifecycle boundaries
-with lifecycle.start('application'):
-    with lifecycle.start('request'):
+with lifecycle.start("application"):
+    with lifecycle.start("request"):
         # Session is created at first call and cached automatically
         # All get_session calls in this request will return the same session
         db = get_session()
         assert db is get_session()
-        db.users.create_user('John')
-    with lifecycle.start('request'):
+        db.users.create_user("John")
+    with lifecycle.start("request"):
         # New request, new session
         db = get_session()
 ```
@@ -99,13 +107,15 @@ Stratae uses context variables for setting values that are needed deep in depend
 from stratae.context import Context
 from stratae.depends import Depends, Injected, inject
 
-lifecycle = Lifecycle([Scope('request', 'shared')])
+lifecycle = Lifecycle([Scope("request", "shared")])
 user_id = Context[int]("user_id")
 
-@lifecycle.cache('request')
+
+@lifecycle.cache("request")
 @inject
 def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
     return fetch_user(uid)
+
 
 @inject
 def create_post(
@@ -114,7 +124,8 @@ def create_post(
 ) -> Post:
     return Post(author=user, content=content)
 
-with lifecycle.start('request'), user_id.use(123):
+
+with lifecycle.start("request"), user_id.use(123):
     post = create_post("Hello world!")
 ```
 
@@ -128,15 +139,19 @@ from stratae.events.adapters import DirectBus
 
 bus = DirectBus()
 
+
 class OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
+
 order_placed = EventConfig(OrderPlaced, PubSub)
+
 
 @bus.handle(order_placed)
 def notify(order: OrderPlaced) -> None:
     print(f"Order {order.order_id} placed")
+
 
 bus.emit(OrderPlaced(42), order_placed)
 # Order 42 placed
@@ -158,19 +173,24 @@ Request events block until their responder returns, and the reply is fully typed
 ```python
 from stratae.events import EventConfig, Request
 
+
 class Quote:
     def __init__(self, total: int) -> None:
         self.total = total
+
 
 class PriceOrder:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
+
 price_order = EventConfig(PriceOrder, Request[Quote])
+
 
 @bus.handle(price_order)
 def price(order: PriceOrder) -> Quote:
     return Quote(total=100)
+
 
 quote = bus.emit(PriceOrder(42), price_order)  # typed as Quote
 ```
@@ -185,11 +205,13 @@ Stratae is fully async compatible. Injection natively works with sync or async f
 from stratae.depends import Depends, Injected, inject
 from stratae.lifecycle import AsyncLifecycle, Scope
 
-lifecycle = AsyncLifecycle([Scope('application', 'shared'), Scope('request', 'context')])
+lifecycle = AsyncLifecycle([Scope("application", "shared"), Scope("request", "context")])
 
-@lifecycle.cache('application')
+
+@lifecycle.cache("application")
 async def get_database() -> Database:
     return await Database(url="postgresql://...")
+
 
 @inject
 async def create_user(
@@ -198,8 +220,9 @@ async def create_user(
 ) -> User:
     return await db.users.create(name=name)
 
-async with lifecycle.start('application'):
-    async with lifecycle.start('request'):
+
+async with lifecycle.start("application"):
+    async with lifecycle.start("request"):
         user = await create_user("Alice")
 ```
 
@@ -216,16 +239,17 @@ async def create_user(
 ) -> User:
     return await db.users.create(name=name)
 
+
 # FastAPI
 @app.post("/users")
 async def api_create(name: str):
     return await create_user(name)
 
+
 # CLI
 @click.command()
 def cli_create(name: str):
     asyncio.run(create_user(name))
-
 ```
 
 ### Testing Overrides
@@ -235,8 +259,10 @@ Swap a dependency's value in a `with` block without touching the function that d
 ```python
 from stratae.depends import override
 
+
 def get_config():
     return {"env": "prod"}
+
 
 with override(get_config, {"env": "test"}):
     endpoint()  # sees {"env": "test"}
@@ -250,13 +276,14 @@ endpoint()  # back to {"env": "prod"}
 ```python
 from stratae.check import require
 
+
 def is_admin():
     if not current_user().is_admin:
         raise PermissionError("admin required")
 
+
 @require(is_admin)
-def delete_account(account_id: int):
-    ...
+def delete_account(account_id: int): ...
 ```
 
 Sync functions only accept sync checks. Async functions accept a mix of sync and async checks, run in order.
@@ -273,13 +300,14 @@ from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
 
 
 app = FastAPI()
-lifecycle = AsyncLifecycle([Scope('request', 'context')])
+lifecycle = AsyncLifecycle([Scope("request", "context")])
 
 # Add the middleware that starts a lifecycle request
-app.add_middleware(RequestLifecycleMiddleware, lifecycle, 'request')
+app.add_middleware(RequestLifecycleMiddleware, lifecycle, "request")
+
 
 # Every FastAPI request will now get the same session within that request
-@lifecycle.cache('request')
+@lifecycle.cache("request")
 @async_resource
 async def get_session():
     session = AsyncSession()
@@ -292,7 +320,8 @@ async def get_session():
     finally:
         session.close()
 
-@app.post('/users')
+
+@app.post("/users")
 @inject
 async def post_user(
     name: str,

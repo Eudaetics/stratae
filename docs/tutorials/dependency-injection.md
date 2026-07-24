@@ -9,12 +9,15 @@ A provider is any callable, sync or async, wrapped in `Depends`. Mark the parame
 ```python
 from stratae.depends import Depends, Injected, inject
 
+
 def get_tax_rate() -> float:
     return 0.08
+
 
 @inject
 def total_with_tax(subtotal: float, tax_rate: Injected[float, Depends(get_tax_rate)]) -> float:
     return subtotal + subtotal * tax_rate
+
 
 total_with_tax(100.0)  # 108.0 -- tax_rate is resolved, not passed
 ```
@@ -26,9 +29,9 @@ total_with_tax(100.0)  # 108.0 -- tax_rate is resolved, not passed
 ```python
 type TaxRate = Injected[float, Depends(get_tax_rate)]
 
+
 @inject
-def total_with_tax(subtotal: float, tax_rate: TaxRate) -> float:
-    ...
+def total_with_tax(subtotal: float, tax_rate: TaxRate) -> float: ...
 ```
 
 ## Composing providers
@@ -38,12 +41,13 @@ Providers can themselves take injected parameters, resolved recursively when the
 ```python
 def get_config() -> Config: ...
 
+
 def get_database(config: Injected[Config, Depends(get_config)]) -> Database:
     return Database(config.dsn)
 
+
 @inject
-def create_user(name: str, db: Injected[Database, Depends(get_database)]) -> User:
-    ...
+def create_user(name: str, db: Injected[Database, Depends(get_database)]) -> User: ...
 ```
 
 Only `create_user` needs `@inject` — the whole chain (`create_user` → `get_database` → `get_config`) is wired up the moment `create_user` is decorated. A cycle anywhere in that chain raises `CircularDependencyError` at decoration time, rather than surfacing as a buried `RecursionError`.
@@ -54,7 +58,7 @@ Every call to an injected function re-runs its providers, unless you layer cachi
 
 ```python
 create_user("Alice")  # calls get_database() (and get_config())
-create_user("Bob")    # calls get_database() (and get_config()) again
+create_user("Bob")  # calls get_database() (and get_config()) again
 ```
 
 This is a deliberate boundary, not an oversight: `stratae.depends` only wires values through; scoping how long a value lives is [`stratae.lifecycle`](lifecycle)'s job. See [Combining with lifecycle](#combining-with-lifecycle).
@@ -67,9 +71,9 @@ Async functions can depend on a mix of sync and async providers — `@inject` aw
 async def get_current_user(user_id: Injected[int, Depends(get_user_id)]) -> User:
     return await db.fetch_user(user_id)
 
+
 @inject
-async def handle_request(user: Injected[User, Depends(get_current_user)]) -> Response:
-    ...
+async def handle_request(user: Injected[User, Depends(get_current_user)]) -> Response: ...
 ```
 
 Generator and async-generator functions can be injection targets too, not just plain functions and coroutines.
@@ -83,17 +87,19 @@ from stratae.lifecycle import Lifecycle, Scope
 
 lifecycle = Lifecycle([Scope("application", isolation="shared")])
 
+
 @lifecycle.cache("application")
 def get_database() -> Database:
     return Database(connect())
 
+
 @inject
-def create_user(name: str, db: Injected[Database, Depends(get_database)]) -> User:
-    ...
+def create_user(name: str, db: Injected[Database, Depends(get_database)]) -> User: ...
+
 
 with lifecycle.start("application"):
     create_user("Alice")  # get_database() runs once per activation, not once per call
-    create_user("Bob")    # cached value reused
+    create_user("Bob")  # cached value reused
 ```
 
 See the [Lifecycle guide](lifecycle) for how scopes, caching, and cleanup actually work.
@@ -104,6 +110,7 @@ See the [Lifecycle guide](lifecycle) for how scopes, caching, and cleanup actual
 
 ```python
 from stratae.depends import override
+
 
 def test_create_user():
     fake_db = FakeDatabase()

@@ -11,6 +11,7 @@ from dataclasses import dataclass, asdict
 from uuid import UUID, uuid4
 from stratae.serde import pack, unpack_json
 
+
 @dataclass
 class Widget:
     id: UUID
@@ -22,6 +23,7 @@ class Widget:
     def __post_init__(self) -> None:
         if isinstance(self.id, str):
             self.id = UUID(self.id)
+
 
 widget = Widget(id=uuid4(), name="sprocket")
 data = pack(widget)  # b'{"id": "...", "name": "sprocket"}'
@@ -37,6 +39,7 @@ Both `encode` and `pack` are `functools.singledispatch` functions — register a
 
 ```python
 from stratae.serde import encode
+
 
 @encode.register
 def _(obj: Money) -> str:

@@ -22,7 +22,7 @@ current_user()  # back to "guest"
 
 ```python
 with current_user.use("alice"):
-    with current_user.use("bob"):       # e.g. "view as" impersonation
+    with current_user.use("bob"):  # e.g. "view as" impersonation
         current_user()  # "bob"
     current_user()  # "alice" -- restored
 ```
@@ -44,9 +44,11 @@ Because `Context.__call__` takes no required arguments, a `Context` instance can
 ```python
 from stratae.depends import Depends, Injected, inject
 
+
 @inject
 def audit_log(action: str, user: Injected[str, Depends(current_user)]) -> None:
     print(f"{user}: {action}")
+
 
 with current_user.use("alice"):
     audit_log("deleted account")  # "alice: deleted account"

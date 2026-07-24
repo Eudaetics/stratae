@@ -31,12 +31,14 @@ from stratae.integrations.rabbitmq import RabbitMQConsumer, RabbitMQConsumeConfi
 
 consumer = RabbitMQConsumer("amqp://guest:guest@localhost/", prefetch_count=1)
 
+
 @consumer.handle(
     order_placed,
     config=RabbitMQConsumeConfig(exchange="events", binding_key="order.*"),
 )
 def on_order(payload: OrderPlaced) -> None:
     print(f"order {payload.order_id} placed")
+
 
 async with consumer:
     ...  # consumes in the background until the context exits
@@ -56,6 +58,7 @@ Every publish stamps AMQP headers with an `Envelope` — a child of whatever env
 
 ```python
 from stratae.events import Envelope
+
 
 @consumer.handle(order_placed, config=RabbitMQConsumeConfig(queue="orders"))
 async def on_order(payload: OrderPlaced) -> None:

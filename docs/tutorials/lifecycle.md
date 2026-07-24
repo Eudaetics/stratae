@@ -30,14 +30,18 @@ Start with the defaults; reach for `"shared"` and `"sparse"` only when you know 
 ```python
 from stratae.lifecycle import Lifecycle, Scope
 
-lifecycle = Lifecycle([
-    Scope("application", isolation="shared"),
-    Scope("request"),
-])
+lifecycle = Lifecycle(
+    [
+        Scope("application", isolation="shared"),
+        Scope("request"),
+    ]
+)
+
 
 @lifecycle.cache("application")
 def get_database() -> Database:
     return Database(connect())
+
 
 with lifecycle.start("application"):
     get_database()  # runs the function, caches the result
@@ -50,6 +54,7 @@ with lifecycle.start("application"):
 ```python
 @lifecycle.cache("request")
 def get_user(user_id: int) -> User: ...
+
 
 with lifecycle.start("request"):
     get_user(1)  # computed
@@ -72,6 +77,7 @@ Scopes can be activated in any order — you don't have to start `"application"`
 ```python
 from stratae.lifecycle import resource
 
+
 @lifecycle.cache("application")
 @resource
 def get_database():
@@ -89,10 +95,13 @@ If a scope has several open resources, they close in LIFO order — the reverse 
 ## A worked example: two-tier app scopes
 
 ```python
-lifecycle = Lifecycle([
-    Scope("application", isolation="shared"),
-    Scope("request"),
-])
+lifecycle = Lifecycle(
+    [
+        Scope("application", isolation="shared"),
+        Scope("request"),
+    ]
+)
+
 
 @lifecycle.cache("application")
 @resource
@@ -103,13 +112,15 @@ def get_pool():
     finally:
         pool.close()
 
+
 @lifecycle.cache("request")
 def get_request_id() -> str:
     return str(uuid4())
 
+
 with lifecycle.start("application"):
     with lifecycle.start("request"):
-        pool = get_pool()              # opened once for the whole application activation
+        pool = get_pool()  # opened once for the whole application activation
         request_id = get_request_id()  # fresh per request activation
     # request scope exits -- request_id's cache is gone
 # application scope exits -- pool.close() runs here
