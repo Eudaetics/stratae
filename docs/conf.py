@@ -20,6 +20,7 @@ extensions = [
     "myst_parser",
     "autodoc2",
     "sphinx_design",
+    "admonitions",
 ]
 
 source_suffix = {

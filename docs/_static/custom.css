@@ -2,16 +2,16 @@
 
 :root {
     /* Brand palette */
-    --color-purple-50: oklch(0.967 0.009 292.95);
-    --color-purple-100: oklch(0.922 0.023 291.41);
-    --color-purple-200: oklch(0.847 0.047 290.78);
-    --color-purple-300: oklch(0.78 0.069 291.26);
-    --color-purple-400: oklch(0.705 0.094 290.12);
-    --color-purple-600: oklch(0.555 0.142 288.23);
-    --color-purple-700: oklch(0.488 0.157 287.6);
-    --color-purple-800: oklch(0.408 0.138 287.09);
-    --color-purple-900: oklch(0.293 0.1 287.3);
-    --color-purple-950: oklch(0.24 0.081 286.73);
+    --color-purple-50: oklch(0.967 0.009 317.95);
+    --color-purple-100: oklch(0.922 0.023 316.41);
+    --color-purple-200: oklch(0.847 0.047 315.78);
+    --color-purple-300: oklch(0.78 0.069 316.26);
+    --color-purple-400: oklch(0.705 0.094 315.12);
+    --color-purple-600: oklch(0.555 0.142 313.23);
+    --color-purple-700: oklch(0.488 0.157 312.6);
+    --color-purple-800: oklch(0.408 0.138 312.09);
+    --color-purple-900: oklch(0.293 0.1 312.3);
+    --color-purple-950: oklch(0.24 0.081 311.73);
 
     --color-blue-gray-50: oklch(0.966 0.005 247.84);
     --color-blue-gray-100: oklch(0.96 0.012 264.54);
@@ -221,6 +221,29 @@ p.rubric {
     color: var(--pst-color-primary);
 }
 
+.admonition-title {
+    font-family: var(--pst-font-family-heading);
+    font-variant: small-caps;
+    font-size: 1.15rem;
+}
+
+.admonition-title-label,
+.admonition-title-subtitle {
+    display: inline;
+    margin: 0;
+}
+
+.admonition-title-label {
+    margin-right: 0.35rem;
+}
+
+.admonition-title-subtitle {
+    font-family: var(--pst-font-family-base);
+    font-variant: normal;
+    font-size: 1rem;
+    font-weight: normal;
+}
+
 .sd-card {
     border-radius: 0.375rem;
     transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -303,4 +326,21 @@ html[data-theme="dark"] .bd-content .sd-card .sd-card-footer {
 #stratae .sd-btn,
 #stratae .sd-btn:hover {
     text-decoration: none;
+}
+
+.admonition.example-block {
+    border-color: var(--pst-color-primary);
+}
+
+.admonition.example-block > .admonition-title {
+    background-color: var(--pst-color-primary-bg);
+}
+
+.admonition.example-block > .admonition-title::after {
+    content: "\f120";
+    color: var(--pst-color-primary);
+}
+
+.admonition.example-block pre {
+    border: none;
 }
