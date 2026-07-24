@@ -1,6 +1,9 @@
 """Smoke tests for the FastAPI lifecycle integration, using a real FastAPI app."""
 
 import pytest
+
+pytest.importorskip("fastapi")
+
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 

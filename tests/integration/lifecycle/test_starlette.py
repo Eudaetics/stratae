@@ -1,6 +1,9 @@
 """Smoke tests for the Starlette lifecycle integration, using a real Starlette app."""
 
 import pytest
+
+pytest.importorskip("starlette")
+
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request

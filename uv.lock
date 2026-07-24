@@ -891,7 +891,7 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'fastapi'", specifier = ">=2.0.0" },
     { name = "httpx2", marker = "extra == 'starlette'", specifier = ">=2.0.0" },
     { name = "msgspec", marker = "extra == 'msgspec'", specifier = ">=0.21.0" },
-    { name = "starlette", marker = "extra == 'starlette'", specifier = ">=0.40.0" },
+    { name = "starlette", marker = "extra == 'starlette'", specifier = ">=1.2.0" },
 ]
 provides-extras = ["msgspec", "rabbitmq", "fastapi", "starlette"]
 
