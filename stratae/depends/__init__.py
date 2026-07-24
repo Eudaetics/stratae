@@ -24,37 +24,46 @@ replace providers' values within a scope, e.g. substituting a mock
 in tests. Overrides are context-local, so concurrent tasks do
 not interfere with each other.
 
-```{rubric} Example:
-```
+````{example} Injecting a repository and swapping in a test mock
 ```{code-block} python
-:caption: Injecting a database dependency and swapping it for a fake within a scope
-
 from stratae.depends import Depends, Injected, inject, override
 
-class Database:
-    def __init__(self, name: str):
-        self.name = name
+class UserRepository:
+    def __init__(self, users: dict[int, str]):
+        self._users = users
 
-def get_db() -> Database:
-    return Database("production")
+    def get_name(self, user_id: int) -> str:
+        return self._users[user_id]
+
+def get_user_repository() -> UserRepository:
+    return UserRepository({1: "Jane Doe"})
 
 @inject
-def get_db_name(db: Injected[Database, Depends(get_db)]) -> str:
-    return db.name
+def greet(
+    user_id: int, repo: Injected[UserRepository, Depends(get_user_repository)]
+) -> str:
+    print(f"Hello, {repo.get_name(user_id)}!")
 
-assert get_db_name() == "production"  # db resolved by calling get_db()
+greet(user_id=1)
 
-with override(get_db, Database("test")):
-    assert get_db_name() == "test"  # db is the test within this scope
+mock_repo = UserRepository({1: "Test User"})
+with override(get_user_repository, mock_repo):
+    greet(user_id=1)
 
-assert get_db_name() == "production"
+greet(user_id=1)
 ```
+```{container} example-output
+Hello, Jane Doe!
+Hello, Test User!
+Hello, Jane Doe!
+```
+````
 
 See {py:func}`Depends <stratae.depends.inject.Depends>`,
 {py:func}`inject <stratae.depends.inject.inject>`,
 {py:func}`override <stratae.depends.override.override>`, and
-{py:func}`overrides <stratae.depends.override.overrides>` for additional
-examples.
+{py:func}`overrides <stratae.depends.override.overrides>` for the rest
+of the module's API.
 
 """
 

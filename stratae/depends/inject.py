@@ -27,38 +27,55 @@ This module only handles wiring: calling a provider and passing its
 result to whatever declared it as a dependency. A provider runs again on
 every call unless it caches its own result. For singleton or
 scoped values (computed once per request, once per process, etc.),
-layer this with {py:mod}`stratae.lifecycle`: decorate the provider with
+layer this with {py:mod}`stratae.lifecycle`. Decorate the provider with
 {py:meth}`Lifecycle.cache <stratae.lifecycle.lifecycle.Lifecycle.cache>`
 (or its {py:class}`AsyncLifecycle <stratae.lifecycle.lifecycle.AsyncLifecycle>`
-counterpart) so it is computed once per scope activation, then pass that
+counterpart) to compute it once per scope activation, then pass that
 cached provider to {py:func}`Depends` as usual.
 ```
 
-```{rubric} Example:
-```
+````{example} Injecting a Stripe client backed by an API key provider
 ```{code-block} python
-:caption: Injecting a database dependency into a function that queries it
-
-from typing import Annotated
+from typing import Annotated, Any
 from stratae.depends import Depends, inject
 
-class Database:
-    def query(self, table: str) -> list[str]:
-        return [f"row from {table}"]
+class PaymentIntents:
+    def __init__(self, api_key: str):
+        self._api_key = api_key
 
-def get_db() -> Database:
-    return Database()
+    def create(self, params: dict[str, Any]) -> str:
+        return f"pi_{params['amount']}_{self._api_key[-6:]}"
 
-type DatabaseDep = Annotated[Database, Depends(get_db)]
+class StripeClient:
+    def __init__(self, api_key: str):
+        self.payment_intents = PaymentIntents(api_key)
+
+def get_api_key() -> str:
+    return "fake-api-key-123456"
+
+def get_stripe_client(
+    api_key: Annotated[str, Depends(get_api_key)]
+) -> StripeClient:
+    return StripeClient(api_key)
+
+type StripeClientDep = Annotated[StripeClient, Depends(get_stripe_client)]
 
 @inject
-def list_users(db: DatabaseDep) -> list[str]:
-    return db.query("users")
+def create_payment(amount_cents: int, stripe: StripeClientDep) -> str:
+    return stripe.payment_intents.create({
+        "amount": amount_cents,
+        "currency": "usd",
+        "automatic_payment_methods": {"enabled": True},
+    })
 
-assert list_users() == ["row from users"]  # db resolved by calling get_db()
+print(create_payment(2000))
 ```
+```{container} example-output
+pi_2000_123456
+```
+````
 
-See {py:func}`Depends` and {py:func}`inject` for additional examples.
+See {py:func}`Depends` and {py:func}`inject` for the rest of the module's API.
 
 """
 
@@ -110,20 +127,6 @@ def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:  # n
         when the using function is decorated.
     :returns: The {py:class}`Provider <stratae.depends._provide.Provider>`
         registered for the callable.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Registering the same provider twice returns the same Provider
-
-    from stratae.depends import Depends
-
-    def get_value() -> int:
-        return 42
-
-    assert Depends(get_value) is Depends(get_value)
-    ```
-
     """
     return Provider(dependency=dependency)
 
@@ -174,46 +177,6 @@ def inject(
         value, or a sync function depends on an async provider.
     :raises CircularDependencyError: Providers depend on each other in a
         cycle.
-
-    ```{rubric} Examples:
-    ```
-    ```{code-block} python
-    :caption: Decorating a function with a bare @inject
-
-    from stratae.depends import Depends, Injected, inject
-
-    def get_tax_rate() -> float:
-        return 0.08
-
-    @inject
-    def total_with_tax(
-        subtotal: float, tax_rate: Injected[float, Depends(get_tax_rate)]
-    ) -> float:
-        return subtotal * (1 + tax_rate)
-
-    assert total_with_tax(100) == 108.0  # tax_rate resolved by calling get_tax_rate()
-    ```
-
-    ```{code-block} python
-    :caption: Correcting the decorated signature seen by type checkers with sig
-
-    from stratae.depends import Depends, Injected, inject
-
-    def get_tax_rate() -> float:
-        return 0.08
-
-    def _total_with_tax_sig(subtotal: float) -> float: ...
-
-    @inject(sig=_total_with_tax_sig)
-    def total_with_tax(
-        subtotal: float, tax_rate: Injected[float, Depends(get_tax_rate)]
-    ) -> float:
-        return subtotal * (1 + tax_rate)
-
-    assert total_with_tax(100) == 108.0
-    # Pylance shows (function) def total_with_tax(subtotal: float) -> float
-    ```
-
     """
 
     def decorator(f: Callable[..., Any]) -> Any:

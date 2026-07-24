@@ -11,13 +11,10 @@ Register additional types with `@encode.register` or `@pack.register` as
 needed; see {py:mod}`stratae.integrations.msgspec` for a faster `pack`
 registered for `msgspec.Struct` payloads.
 
-```{rubric} Example:
-```
+````{example} Round-tripping a dataclass through the default pack/unpack pair
 ```{code-block} python
-:caption: Round-tripping a dataclass through the default pack/unpack pair
-
 from dataclasses import asdict, dataclass
-from uuid import UUID, uuid4
+from uuid import UUID
 from stratae.serde import pack, unpack_json
 
 @dataclass
@@ -32,16 +29,23 @@ class Widget:
     def to_dict(self):
         return asdict(self)
 
-widget = Widget(id=uuid4(), name="sprocket")
+widget = Widget(
+    id=UUID("47e511ef-f16c-4699-98db-a0d44abcab90"), name="sprocket"
+)
 data = pack(widget)
-assert data == f'{{"id": "{widget.id}", "name": "sprocket"}}'.encode()
+print(data)
 
 restored = unpack_json(data, type=Widget)
-assert restored == widget
+print(restored == widget)
 ```
+```{container} example-output
+b'{"id": "47e511ef-f16c-4699-98db-a0d44abcab90", "name": "sprocket"}'
+True
+```
+````
 
 See {py:func}`encode`, {py:func}`pack`, {py:class}`Unpacker`, and
-{py:func}`unpack_json` for additional examples.
+{py:func}`unpack_json` for the rest of the module's API.
 
 """
 
@@ -72,21 +76,6 @@ def encode(obj: object) -> Any:
     :returns: A JSON-serializable representation of `obj`.
     :raises TypeError: If `obj` has no registered encoder and no `to_dict` or
         `model_dump` method.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Falling back to a to_dict() method for an unregistered type
-
-    from stratae.serde import encode
-
-    class Point:
-        def to_dict(self):
-            return {"x": 1, "y": 2}
-
-    assert encode(Point()) == {"x": 1, "y": 2}
-    ```
-
     """
     if to_dict := getattr(obj, "to_dict", None):
         return to_dict()
@@ -105,19 +94,6 @@ def encode_uuid(obj: UUID) -> str:
 
     :param obj: The UUID to encode.
     :returns: The string form of `obj`.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Encoding a UUID field as a str
-
-    from uuid import UUID
-    from stratae.serde import encode
-
-    value = UUID("3fa85f64-5717-4562-b3fc-2c963f66afa6")
-    assert encode(value) == "3fa85f64-5717-4562-b3fc-2c963f66afa6"
-    ```
-
     """
     return str(obj)
 
@@ -132,19 +108,6 @@ def encode_datetime(obj: datetime) -> str:
 
     :param obj: The datetime to encode.
     :returns: The ISO 8601 string form of `obj`.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Encoding a datetime field as a string using ISO date format
-
-    from datetime import datetime, timezone
-    from stratae.serde import encode
-
-    value = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    assert encode(value) == "2024-01-01T00:00:00+00:00"
-    ```
-
     """
     return obj.isoformat()
 
@@ -159,18 +122,6 @@ def encode_decimal(obj: Decimal) -> str:
 
     :param obj: The decimal to encode.
     :returns: The string form of `obj`.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Encoding a Decimal field, e.g. a currency amount
-
-    from decimal import Decimal
-    from stratae.serde import encode
-
-    assert encode(Decimal("9.99")) == "9.99"
-    ```
-
     """
     return str(obj)
 
@@ -188,17 +139,6 @@ def pack(obj: object) -> bytes:
 
     :param obj: The payload to serialize.
     :returns: The serialized payload as bytes.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Serializing a plain JSON-compatible payload
-
-    from stratae.serde import pack
-
-    assert pack({"id": 1, "name": "widget"}) == b'{"id": 1, "name": "widget"}'
-    ```
-
     """
     return json.dumps(obj, default=encode).encode()
 
@@ -211,20 +151,6 @@ class Unpacker(Protocol):
     so adapters for other tools can be written as lambdas or thin wrappers
     around that tool's own decode function. {py:func}`unpack_json` is the
     default, dependency-free implementation.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Adapting msgspec's decoder to the Unpacker protocol
-
-    import msgspec
-
-    from stratae.serde import Unpacker
-
-    unpacker: Unpacker = msgspec.json.decode
-    assert unpacker(b'{"x": 1}', type=dict) == {"x": 1}
-    ```
-
     """
 
     def __call__[S](self, data: bytes, /, *, type: type[S]) -> S:
@@ -248,26 +174,6 @@ def unpack_json[S](data: bytes, /, *, type: type[S]) -> S:
     :param data: The raw JSON bytes to decode.
     :param type: The type to reconstruct.
     :returns: The reconstructed `type` instance.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Reconstructing a dataclass from JSON bytes
-
-    from dataclasses import dataclass
-
-    from stratae.serde import unpack_json
-
-
-    @dataclass
-    class Point:
-        x: int
-        y: int
-
-
-    assert unpack_json(b'{"x": 1, "y": 2}', type=Point) == Point(x=1, y=2)
-    ```
-
     """
     fields: dict[str, Any] = json.loads(data)
     return type(**fields)

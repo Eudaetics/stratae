@@ -19,7 +19,7 @@ controlling failure handling:
   from earlier checks.
 
 
-````{example} Allow deletion by admins, or by owners of a non-archived resource
+````{example} Using require to check authorization
 ```{code-block} python
 from types import SimpleNamespace
 from stratae.checks import all_of, require
@@ -43,7 +43,6 @@ def delete_resource(resource_id: int):
 try:
     delete_resource(resource.id)
 except ExceptionGroup as exc:
-    # Owns the resource but it's archived, and isn't an admin either
     print("Access denied:", exc.exceptions[-1])
 ```
 ```{container} example-output

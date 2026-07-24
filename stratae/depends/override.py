@@ -8,33 +8,58 @@ restored on exit. Overrides are stored per
 state, so concurrent tasks can hold different overrides for the same
 provider without interfering.
 
-```{rubric} Example:
-```
+````{example} Swapping dependencies for test doubles
 ```{code-block} python
-:caption: Swap a database provider for a fake within a scope
+from typing import Annotated
+from stratae.depends import Depends, inject, overrides
 
-from stratae.depends import Depends, Injected, inject, override
+class UserRepository:
+    def __init__(self, users: dict[int, str]):
+        self._users = users
 
-class Database:
-    def __init__(self, name: str):
-        self.name = name
+    def get_email(self, user_id: int) -> str:
+        return self._users[user_id]
 
-def get_db() -> Database:
-    return Database("production")
+class EmailService:
+    def __init__(self, sender: str):
+        self.sender = sender
+
+    def send(self, to: str, subject: str) -> str:
+        return f"from={self.sender} to={to} subject={subject!r}"
+
+def get_user_repository() -> UserRepository:
+    return UserRepository({1: "jane@example.com"})
+
+def get_email_service() -> EmailService:
+    return EmailService(sender="notifications@example.com")
 
 @inject
-def get_db_name(db: Injected[Database, Depends(get_db)]) -> str:
-    return db.name
+def notify_user(
+    user_id: int,
+    repo: Annotated[UserRepository, Depends(get_user_repository)],
+    mailer: Annotated[EmailService, Depends(get_email_service)],
+) -> str:
+    return mailer.send(repo.get_email(user_id), "Welcome!")
 
-assert get_db_name() == "production"  # db resolved by calling get_db()
+print(notify_user(1))
 
-with override(get_db, Database("test")):
-    assert get_db_name() == "test"  # db is the test within this scope
+with overrides({
+    get_user_repository: UserRepository({1: "test@example.com"}),
+    get_email_service: EmailService(sender="test@example.com"),
+}):
+    # both dependencies are the test doubles within this scope
+    print(notify_user(1))
 
-assert get_db_name() == "production"
+print(notify_user(1))
 ```
+```{container} example-output
+from=notifications@example.com to=jane@example.com subject='Welcome!'
+from=test@example.com to=test@example.com subject='Welcome!'
+from=notifications@example.com to=jane@example.com subject='Welcome!'
+```
+````
 
-See {py:func}`override` and {py:func}`overrides` for additional examples.
+See {py:func}`override` and {py:func}`overrides` for the rest of the module's API.
 
 """
 
@@ -118,29 +143,6 @@ def override(func: Callable[..., Any], value: Any) -> _Override:
     :returns: A context manager holding the override between entry and exit.
     :raises DependencyNotFoundError: If `func` was never passed to
         {py:func}`Depends <stratae.depends.inject.Depends>`.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Force a feature flag on for a single test
-
-    from stratae.depends import Depends, Injected, inject, override
-
-    def is_beta_enabled() -> bool:
-        return False
-
-    @inject
-    def get_banner(enabled: Injected[bool, Depends(is_beta_enabled)]) -> str:
-        return "Beta banner" if enabled else "No banner"
-
-    assert get_banner() == "No banner"
-
-    with override(is_beta_enabled, True):
-        assert get_banner() == "Beta banner"  # flag forced on within this scope
-
-    assert get_banner() == "No banner"
-    ```
-
     """
     return _Override(Provider.find(func), value)
 
@@ -159,43 +161,6 @@ def overrides(mapping: _OverrideMap) -> _Overrides:
     :raises ValueError: If `mapping` is empty.
     :raises DependencyNotFoundError: If any key was never passed to
         {py:func}`Depends <stratae.depends.inject.Depends>`.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Swap both a database and mailer provider for fakes within one scope
-
-    from stratae.depends import Depends, Injected, inject, overrides
-
-    class Database:
-        def __init__(self, name: str):
-            self.name = name
-
-    class Mailer:
-        def __init__(self, name: str):
-            self.name = name
-
-    def get_db() -> Database:
-        return Database("production")
-
-    def get_mailer() -> Mailer:
-        return Mailer("production")
-
-    @inject
-    def get_names(
-        db: Injected[Database, Depends(get_db)],
-        mailer: Injected[Mailer, Depends(get_mailer)],
-    ) -> tuple[str, str]:
-        return db.name, mailer.name
-
-    assert get_names() == ("production", "production")
-
-    with overrides({get_db: Database("test"), get_mailer: Mailer("test")}):
-        assert get_names() == ("test", "test")  # both are test mocks within this scope
-
-    assert get_names() == ("production", "production")
-    ```
-
     """
     if not mapping:
         raise ValueError("overrides() requires at least one entry.")

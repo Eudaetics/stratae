@@ -9,52 +9,40 @@ instances are callable, they work as {py:func}`Depends <stratae.depends.inject.D
 letting runtime values (a request's user ID, a feature flag, a connection)
 flow into injected functions without changing their signatures.
 
-```{rubric} Examples:
-```
+````{example} A/B testing a recommendation model
 ```{code-block} python
-:caption: Setting and reading a value across nested scopes
-
-from stratae.context import Context
-
-user_id = Context[int]("user_id")
-
-with user_id.use(42):  # the support agent's own account
-    assert user_id() == 42
-
-    # "View as customer" temporarily impersonates the customer
-    # to reproduce a bug, then reverts to the agent's session.
-    with user_id.use(7):
-        assert user_id() == 7
-
-    assert user_id() == 42  # back to the agent's own session
-```
-
-```{code-block} python
-:caption: An A/B test, where the Context holds the function to run
-
 from typing import Callable
 from stratae.context import Context
 from stratae.depends import Depends, Injected, inject
 
-def train_baseline_model() -> str: ...
-def train_challenger_model() -> str: ...
+def rank_v1(item: str) -> float:
+    return 0.42
 
-model_trainer = Context[Callable[[], str]](
-    "model_trainer", default=train_baseline_model
-)
+def rank_v2(item: str) -> float:
+    return 0.91
+
+recommender = Context[Callable[[str], float]]("recommender", default=rank_v1)
 
 @inject
-def run_training(
-    train: Injected[Callable[[], str], Depends(model_trainer)],
-) -> str:
-    return train()
+def score(
+    item: str, rank: Injected[Callable[[str], float], Depends(recommender)]
+) -> None:
+    print(f"score={rank(item)}")
 
-run_training()  # control: baseline model
+score("wireless headphones")  # control group, using rank_v1
 
-with model_trainer.use(train_challenger_model):
-    run_training()  # experiment group: challenger model
+with recommender.use(rank_v2):
+    score("wireless headphones")  # experiment group, using rank_v2
+
+# back to the control default
+score("wireless headphones")
 ```
-
+```{container} example-output
+score=0.42
+score=0.91
+score=0.42
+```
+````
 
 ````{note}
 On Python 3.14+, `contextvars.Token` itself supports the context manager
@@ -73,8 +61,8 @@ with user_id.set(99):
 ```
 
 On earlier versions, {py:func}`Context.set` returns a plain token that
-cannot be used as a context manager; use {py:func}`Context.use` instead,
-which provides that behavior on any supported Python version.
+cannot be used as a context manager. Use {py:func}`Context.use` to
+set up the context manager automatically on any supported Python version.
 ````
 """
 
@@ -98,29 +86,6 @@ finally raises a LookupError.
 The `IGNORE` sentinel provides a third option. If the {py:func}`Context.get` is called with
 `IGNORE`, then it will raise a LookupError if no value is set and ignore the constructor
 level default.
-
-```{rubric} Example:
-```
-```{code-block} python
-:caption: Forcing a real user in a security-sensitive path, bypassing the guest default
-
-import pytest
-from stratae.context import IGNORE, Context
-
-current_user = Context[str]("current_user", default="guest")
-
-current_user()  # "guest", falls back to the constructor default
-
-def delete_account():
-    # Refuse to run unless a real user was explicitly set for this request;
-    # silently falling back to "guest" here would be a bug, not a convenience.
-    actor = current_user(IGNORE)
-    ...
-
-with pytest.raises(LookupError):
-    delete_account()
-```
-
 """
 
 
@@ -161,25 +126,6 @@ class Context[T]:
     unset and no default is given to that particular {py:func}`Context.get`
     call. A default passed to {py:func}`Context.get`/`__call__` overrides
     the constructor's default for that call only.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Injecting the current user's ID via a Context provider
-
-    from stratae.context import Context
-    from stratae.depends import Depends, Injected, inject
-
-    user_id = Context[int]("user_id")
-
-    @inject
-    def get_current_user_id(uid: Injected[int, Depends(user_id)]) -> int:
-        return uid
-
-    with user_id.use(123):
-        assert get_current_user_id() == 123
-    ```
-
     """
 
     __slots__ = ("_name", "_var", "_default")
