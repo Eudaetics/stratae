@@ -7,14 +7,13 @@ a sequence of them to {py:class}`Lifecycle <stratae.lifecycle.lifecycle.Lifecycl
 storage and activation machinery each scope's `isolation` and `storage` choices
 describe.
 
-```{rubric} Example:
-```
+````{example} Shared vs. context scope isolation
 ```{code-block} python
-:caption: A shared scope caches once for the process; a context scope caches once per activation
+import asyncio
+from uuid import UUID, uuid4
+from stratae.lifecycle import AsyncLifecycle, Scope
 
-from stratae.lifecycle import Lifecycle, Scope
-
-lifecycle = Lifecycle(
+lifecycle = AsyncLifecycle(
     [
         Scope("application", isolation="shared"),
         Scope("request", storage="sparse"),
@@ -22,27 +21,34 @@ lifecycle = Lifecycle(
 )
 
 @lifecycle.cache("application")
-def get_connection_pool() -> object:
-    return object()
+async def get_connection_pool_id() -> UUID:
+    return uuid4()
 
 @lifecycle.cache("request")
-def get_request_context() -> object:
-    return object()
+async def get_request_id() -> UUID:
+    return uuid4()
 
-with lifecycle.start("application"):
-    with lifecycle.start("request"):
-        pool_first, request_first = get_connection_pool(), get_request_context()
-    with lifecycle.start("request"):
-        pool_second, request_second = get_connection_pool(), get_request_context()
+async def handle_request() -> tuple[UUID, UUID]:
+    async with lifecycle.start("request"):
+        return await get_connection_pool_id(), await get_request_id()
 
-# "shared": same cached pool across both "request" activations
-assert pool_first is pool_second
+async def main() -> None:
+    async with lifecycle.start("application"):
+        # two requests handled concurrently, not one after another
+        (pool1, req1), (pool2, req2) = await asyncio.gather(
+            handle_request(), handle_request()
+        )
 
-# "context": a fresh instances per "request" activation
-assert request_first is not request_second
+    print("same pool id across concurrent requests:", pool1 is pool2)
+    print("same request id across concurrent requests:", req1 is req2)
+
+asyncio.run(main())
 ```
-
-See {py:class}`Scope` for additional examples.
+```{container} example-output
+same pool id across concurrent requests: True
+same request id across concurrent requests: False
+```
+````
 """
 
 from dataclasses import dataclass
@@ -91,25 +97,6 @@ class Scope:
         handful, e.g. a large API's per-resource caches.
     :raises LifecycleConfigurationError: If `name` is not a valid Python identifier, or
         `isolation`/`storage` is not one of their allowed values.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Declare an application-wide shared scope and a per-request context-isolated scope
-
-    from stratae.lifecycle import Lifecycle, Scope
-
-    lifecycle = Lifecycle(
-        [
-            Scope("application", isolation="shared"),
-            Scope("request", isolation="context", storage="sparse"),
-        ]
-    )
-
-    with lifecycle.start("application"):
-        with lifecycle.start("request"):
-            pass  # both scopes active, each isolating/storing per its own configuration
-    ```
 
     """
 

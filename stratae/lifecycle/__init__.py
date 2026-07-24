@@ -27,24 +27,27 @@ function as a context manager to auto-enter when cached. Exiting the associated
 lifecycle scope causes its cleanup (closing a connection, committing changes) to run
 without every caller having to handle it explicitly.
 
-```{rubric} Example:
-```
+````{example} Application- and request-scoped resources
 ```{code-block} python
-:caption: Open a database connection once per application, closing it when the scope exits
-
 from stratae.lifecycle import Lifecycle, Scope, resource
 
 class Connection:
-    open_count = 0
-
     def __init__(self):
-        Connection.open_count += 1
-        self.closed = False
+        print("Opening connection")
 
     def close(self):
-        self.closed = True
+        print("Closing connection")
 
-lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "context")])
+class Transaction:
+    def __init__(self, conn):
+        print("begin transaction")
+
+    def close(self):
+        print("commit")
+
+lifecycle = Lifecycle(
+    [Scope("application", "shared"), Scope("request", "context")]
+)
 
 @lifecycle.cache("application")
 @resource
@@ -55,25 +58,40 @@ def get_db():
     finally:
         conn.close()
 
+@lifecycle.cache("request")
+@resource
+def get_transaction():
+    txn = Transaction(get_db())
+    try:
+        yield txn
+    finally:
+        txn.close()
+
 with lifecycle.start("application"):
     with lifecycle.start("request"):
-        conn = get_db()
+        get_transaction()
+        get_transaction()  # same transaction within this request
+
     with lifecycle.start("request"):
-        conn_again = get_db()  # same connection, not reopened
+        get_transaction()  # new request, new transaction, same connection
 
-    assert conn is conn_again
-    assert Connection.open_count == 1
-    assert not conn.closed
-
-assert conn.closed  # closed once the "application" activation ends
 ```
+```{container} example-output
+Opening connection
+begin transaction
+commit
+begin transaction
+commit
+Closing connection
+```
+````
 
 See {py:class}`Lifecycle <stratae.lifecycle.lifecycle.Lifecycle>`,
 {py:class}`AsyncLifecycle <stratae.lifecycle.lifecycle.AsyncLifecycle>`,
 {py:class}`Scope <stratae.lifecycle.scope.Scope>`,
 {py:func}`resource <stratae.lifecycle.resource.resource>`, and
-{py:func}`async_resource <stratae.lifecycle.resource.async_resource>` for additional
-examples.
+{py:func}`async_resource <stratae.lifecycle.resource.async_resource>` for the
+rest of the module's API.
 """
 
 from .lifecycle import AsyncLifecycle, Lifecycle
