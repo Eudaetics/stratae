@@ -14,10 +14,10 @@ await one from inside its synchronous `__call__`. {py:class}`AsyncBoundEvent`
 accepts either a sync or async factory, and awaits its `__call__` either
 way.
 
-````{example} Binding events to a bus
+````{example} Binding an event to a generic emitter
 ```{code-block} python
-from types import SimpleNamespace
-from stratae.events import DirectBus, PubSub, Request, bind, event
+from typing import Any
+from stratae.events import EventConfig, Request, bind, event
 
 class CreateOrder:
     def __init__(self, order_id: int) -> None:
@@ -27,36 +27,22 @@ class Order:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-class OrderLogged:
-    def __init__(self, text: str) -> None:
-        self.text = text
-
 order_created = event(CreateOrder, Request[Order])
-order_logged = event(OrderLogged, PubSub)
 
-bus = DirectBus()
+# A generic emitter only needs to match EmitCallable's shape: payload,
+# event, and config in, some result out. This one does the work directly,
+# with no bus involved.
+def emit(payload: CreateOrder, event: EventConfig[Any, Any, Any], config: None, *, serializer=None) -> Order:
+    print(f"creating order {payload.order_id}")
+    return Order(order_id=payload.order_id)
 
-# bind() just returns a plain callable, so a set of related bound events
-# can be grouped under a namespace or module.
-order = SimpleNamespace(
-    create=bind(bus.emit, order_created, config=None),
-    log=bind(bus.emit, order_logged, config=None),
-)
+create_order = bind(emit, order_created, config=None)
 
-@bus.handle(order_logged)
-def write_to_log(entry: OrderLogged) -> None:
-    print(f"log: {entry.text}")
-
-@bus.handle(order_created)
-def on_order_created(cmd: CreateOrder) -> Order:
-    order.log(text=f"order {cmd.order_id} created")
-    return Order(order_id=cmd.order_id)
-
-created = order.create(order_id=42)
+created = create_order(order_id=42)
 print(f"created order: {created.order_id}")
 ```
 ```{output}
-log: order 42 created
+creating order 42
 created order: 42
 ```
 ````
