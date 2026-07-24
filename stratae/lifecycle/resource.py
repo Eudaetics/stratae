@@ -40,7 +40,7 @@ with lifecycle.start("request"):
     get_audit_log().write("user logged in")
     get_audit_log().write("user viewed dashboard")
 ```
-```{container} example-output
+```{output}
 Opening audit.log
 audit.log: user logged in
 audit.log: user viewed dashboard

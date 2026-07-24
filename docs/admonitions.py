@@ -1,6 +1,7 @@
-"""Custom "Example" admonition with an optional title that inlines after "Example:"."""
+"""Custom "Example" admonition and verbatim "Output" block."""
 
 from docutils import nodes
+from docutils.parsers.rst import Directive
 from docutils.parsers.rst.directives.admonitions import BaseAdmonition
 from sphinx.application import Sphinx
 from sphinx.util.typing import ExtensionMetadata
@@ -41,7 +42,22 @@ class ExampleDirective(BaseAdmonition):
         return [admonition_node]
 
 
+class OutputDirective(Directive):
+    """Renders its content verbatim as plain preformatted text."""
+
+    has_content = True
+
+    def run(self) -> list[nodes.Node]:
+        """Build a plain, unhighlighted "example-output" node from raw content lines."""
+        self.assert_has_content()
+        text = "\n".join(self.content)
+        container = nodes.container("", classes=["example-output"])
+        container += nodes.paragraph(text, "", nodes.Text(text))
+        return [container]
+
+
 def setup(app: Sphinx) -> ExtensionMetadata:
-    """Register the "example" directive with Sphinx."""
+    """Register the "example" and "output" directives with Sphinx."""
     app.add_directive("example", ExampleDirective)
+    app.add_directive("output", OutputDirective)
     return {"parallel_read_safe": True, "parallel_write_safe": True}

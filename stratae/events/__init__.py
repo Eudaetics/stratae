@@ -44,36 +44,57 @@ round-trips through message headers
 {py:data}`TIMESTAMP_HEADER <stratae.events.envelope.TIMESTAMP_HEADER>`) for
 adapters that cross a real transport.
 
-```{rubric} Example:
-```
+````{example} Create event triggering a logging event
 ```{code-block} python
-:caption: Defining a pub/sub event and dispatching it through an in-process bus
+from stratae.events import DirectBus, Envelope, PubSub, Request, event
 
-from stratae.events import DirectBus, PubSub, event
+class LogMessage:
+    def __init__(self, text: str) -> None:
+        self.text = text
 
-class OrderPlaced:
-    def __init__(self, order_id: int) -> None:
-        self.order_id = order_id
+class CreateUserSchema:
+    def __init__(self, username: str) -> None:
+        self.username = username
 
-order_placed = event(OrderPlaced, PubSub)
+class User:
+    def __init__(self, username: str) -> None:
+        self.username = username
 
-bus = DirectBus()
-place_order = bus.bind(order_placed)
+log_message = event(LogMessage, PubSub)
+create_user = event(CreateUserSchema, Request[User])
 
-received: list[int] = []
+bus = DirectBus(use_envelope=True)
+log = bus.bind(log_message)
+create = bus.bind(create_user)
 
-@bus.handle(order_placed)
-def on_order_placed(order: OrderPlaced) -> None:
-    received.append(order.order_id)
+@bus.handle(log_message)
+def write_to_log(entry: LogMessage) -> None:
+    print(f"log: {entry.text}")
+    print(f"  {Envelope.current()}")
 
-place_order(order_id=42)
-assert received == [42]
+@bus.handle(create_user)
+def handle_create_user(cmd: CreateUserSchema) -> User:
+    print("create envelope:")
+    print(f"  {Envelope.current()}")
+    log(text=f"creating user {cmd.username}")
+    return User(username=cmd.username)
+
+created = create(username="ada")
+print(f"created user: {created.username}")
 ```
+```{output}
+create envelope:
+  Envelope(message_id=..b3e1, correlation_id=..a1c4, causation_id=None)
+log: creating user ada
+  Envelope(message_id=..f02d, correlation_id=..a1c4, causation_id=..b3e1)
+created user: ada
+```
+````
 
 See {py:class}`DirectBus <stratae.events.direct.DirectBus>`,
 {py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>`,
 {py:func}`bind <stratae.events.bound.bind>`, and
-{py:func}`abind <stratae.events.bound.abind>` for additional examples.
+{py:func}`abind <stratae.events.bound.abind>` for the rest of the module's API.
 
 """
 

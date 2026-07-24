@@ -38,7 +38,7 @@ print(data)
 restored = unpack_json(data, type=Widget)
 print(restored == widget)
 ```
-```{container} example-output
+```{output}
 b'{"id": "47e511ef-f16c-4699-98db-a0d44abcab90", "name": "sprocket"}'
 True
 ```

@@ -74,7 +74,7 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
-```{container} example-output
+```{output}
 request 1: handling 101
 Opening connection pool
 request 1 block 1: processing 101

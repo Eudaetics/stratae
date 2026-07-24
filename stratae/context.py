@@ -37,7 +37,7 @@ with recommender.use(rank_v2):
 # back to the control default
 score("wireless headphones")
 ```
-```{container} example-output
+```{output}
 score=0.42
 score=0.91
 score=0.42

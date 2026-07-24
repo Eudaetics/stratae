@@ -52,7 +52,7 @@ with override(get_user_repository, mock_repo):
 
 greet(user_id=1)
 ```
-```{container} example-output
+```{output}
 Hello, Jane Doe!
 Hello, Test User!
 Hello, Jane Doe!

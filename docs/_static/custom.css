@@ -374,5 +374,5 @@ html[data-theme="dark"] .bd-content .sd-card .sd-card-footer {
 
 .example-output p {
     margin: 0;
-    white-space: pre-line;
+    white-space: pre-wrap;
 }

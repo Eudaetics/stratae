@@ -70,7 +70,7 @@ def create_payment(amount_cents: int, stripe: StripeClientDep) -> str:
 
 print(create_payment(2000))
 ```
-```{container} example-output
+```{output}
 pi_2000_123456
 ```
 ````

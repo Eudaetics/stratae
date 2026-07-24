@@ -44,7 +44,7 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
-```{container} example-output
+```{output}
 same pool id across concurrent requests: True
 same request id across concurrent requests: False
 ```

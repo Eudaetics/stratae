@@ -52,7 +52,7 @@ with overrides({
 
 print(notify_user(1))
 ```
-```{container} example-output
+```{output}
 from=notifications@example.com to=jane@example.com subject='Welcome!'
 from=test@example.com to=test@example.com subject='Welcome!'
 from=notifications@example.com to=jane@example.com subject='Welcome!'

@@ -14,34 +14,55 @@ await one from inside its synchronous `__call__`. {py:class}`AsyncBoundEvent`
 accepts either a sync or async factory, and awaits its `__call__` either
 way.
 
-```{rubric} Example:
-```
+````{example} Grouping bound events under a namespace, like order.create and order.log
 ```{code-block} python
-:caption: Binding a sync emitter to a pub/sub event and dispatching it
+from types import SimpleNamespace
+from stratae.events import DirectBus, PubSub, Request, event
 
-from stratae.events.bound import bind
-from stratae.events.event import EventConfig, PubSub
-
-class OrderPlaced:
+class CreateOrder:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_placed = EventConfig(OrderPlaced, PubSub)
+class Order:
+    def __init__(self, order_id: int) -> None:
+        self.order_id = order_id
 
-dispatched: list[OrderPlaced] = []
+class OrderLogged:
+    def __init__(self, text: str) -> None:
+        self.text = text
 
-def emit(payload, event, config, *, serializer=None):
-    dispatched.append(payload)
-    return None
+order_created = event(CreateOrder, Request[Order])
+order_logged = event(OrderLogged, PubSub)
 
-place_order = bind(emit, order_placed, config=None)
-place_order(order_id=42)
+bus = DirectBus()
 
-assert dispatched[0].order_id == 42
+# bind() just returns a plain callable, so a set of related bound events
+# can be grouped under a namespace instead of scattered module-level names.
+order = SimpleNamespace(
+    create=bus.bind(order_created),
+    log=bus.bind(order_logged),
+)
+
+@bus.handle(order_logged)
+def write_to_log(entry: OrderLogged) -> None:
+    print(f"log: {entry.text}")
+
+@bus.handle(order_created)
+def on_order_created(cmd: CreateOrder) -> Order:
+    order.log(text=f"order {cmd.order_id} created")
+    return Order(order_id=cmd.order_id)
+
+created = order.create(order_id=42)
+print(f"created order: {created.order_id}")
 ```
+```{output}
+log: order 42 created
+created order: 42
+```
+````
 
 See {py:func}`bind`, {py:func}`abind`, {py:class}`BoundEvent`, and
-{py:class}`AsyncBoundEvent` for additional examples.
+{py:class}`AsyncBoundEvent` for the rest of the module's API.
 
 """
 
@@ -67,33 +88,6 @@ class BoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     sync `__call__`; use {py:class}`AsyncBoundEvent` for an async
     factory. `RoutingConfig` is the adapter-specific config attached at
     construction time.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Binding a sync emitter directly to an EventConfig
-
-    from stratae.events.bound import BoundEvent
-    from stratae.events.event import EventConfig, PubSub
-
-    class LogMessage:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    log_message = EventConfig(LogMessage, PubSub)
-
-    dispatched: list[LogMessage] = []
-
-    def emit(payload, event, config, *, serializer=None):
-        dispatched.append(payload)
-        return None
-
-    log = BoundEvent(emit, log_message, config=None)
-    log(text="hello")
-
-    assert dispatched[0].text == "hello"
-    ```
-
     """
 
     __slots__ = ("emitter", "event", "config", "serializer", "_factory")
@@ -153,38 +147,6 @@ class AsyncBoundEvent[**P, S: Any, T: EventType, RoutingConfig: Any, Resp]:
     async factory; an async factory is awaited before its payload is
     forwarded to `emitter`. Use {py:class}`BoundEvent` for a synchronous
     emitter.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Binding an async emitter with an async payload factory
-
-    import asyncio
-    from stratae.events.bound import AsyncBoundEvent
-    from stratae.events.event import AsyncEventConfig, PubSub
-
-    class LogMessage:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    async def make_log_message(text: str) -> LogMessage:
-        await asyncio.sleep(0)
-        return LogMessage(text=text)
-
-    log_message = AsyncEventConfig(make_log_message, PubSub, payload_type=LogMessage)
-
-    dispatched: list[LogMessage] = []
-
-    async def emit(payload, event, config, *, serializer=None):
-        dispatched.append(payload)
-        return None
-
-    log = AsyncBoundEvent(emit, log_message, config=None)
-    asyncio.run(log(text="hello"))
-
-    assert dispatched[0].text == "hello"
-    ```
-
     """
 
     __slots__ = ("event", "emitter", "config", "serializer", "_sync_factory", "_async_factory")
@@ -260,33 +222,6 @@ def bind[**P, S: Any, T: EventType, C, R](
         emitter falls back to its own default serializer, if any.
     :returns: A {py:class}`BoundEvent` wrapping `emitter` and `event`.
     :raises TypeError: If `event`'s factory is async.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Binding an emitter directly to an EventConfig
-
-    from stratae.events.bound import bind
-    from stratae.events.event import EventConfig, PubSub
-
-    class LogMessage:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    log_message = EventConfig(LogMessage, PubSub)
-
-    dispatched: list[LogMessage] = []
-
-    def emit(payload, event, config, *, serializer=None):
-        dispatched.append(payload)
-        return None
-
-    log = bind(emit, log_message, config=None)
-    log(text="hello")
-
-    assert dispatched[0].text == "hello"
-    ```
-
     """
     if not is_sync_factory(event.factory):
         raise TypeError(_SYNC_FACTORY_REQUIRED)
@@ -314,33 +249,5 @@ def abind[**P, S: Any, T: EventType, C, R](
         adapter-defined (bytes, a JSON string, etc.). When omitted, the
         emitter falls back to its own default serializer, if any.
     :returns: An {py:class}`AsyncBoundEvent` wrapping `emitter` and `event`.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Binding an async emitter to a pub/sub event
-
-    import asyncio
-    from stratae.events.bound import abind
-    from stratae.events.event import EventConfig, PubSub
-
-    class OrderPlaced:
-        def __init__(self, order_id: int) -> None:
-            self.order_id = order_id
-
-    order_placed = EventConfig(OrderPlaced, PubSub)
-
-    dispatched: list[OrderPlaced] = []
-
-    async def emit(payload, event, config, *, serializer=None):
-        dispatched.append(payload)
-        return None
-
-    place_order = abind(emit, order_placed, config=None)
-    asyncio.run(place_order(order_id=42))
-
-    assert dispatched[0].order_id == 42
-    ```
-
     """
     return AsyncBoundEvent(emitter, event, config=config, serializer=serializer)

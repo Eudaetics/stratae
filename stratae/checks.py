@@ -45,7 +45,7 @@ try:
 except ExceptionGroup as exc:
     print("Access denied:", exc.exceptions[-1])
 ```
-```{container} example-output
+```{output}
 Access denied: resource is archived
 ```
 ````

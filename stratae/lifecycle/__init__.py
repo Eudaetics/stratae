@@ -76,7 +76,7 @@ with lifecycle.start("application"):
         get_transaction()  # new request, new transaction, same connection
 
 ```
-```{container} example-output
+```{output}
 Opening connection
 begin transaction
 commit
