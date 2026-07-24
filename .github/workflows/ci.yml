@@ -34,7 +34,7 @@ jobs:
           enable-cache: true
 
       - name: Install
-        run: uv sync --all-extras
+        run: uv sync --all-extras --all-groups
 
       - name: Format check
         run: uv run ruff format --check .
@@ -69,7 +69,7 @@ jobs:
           enable-cache: true
 
       - name: Test lowest direct dependency versions
-        run: uv run --isolated --resolution lowest-direct --all-extras pytest --no-cov
+        run: uv run --isolated --resolution lowest-direct --all-extras --group test pytest --no-cov
 
   integration:
     runs-on: ubuntu-latest
@@ -93,7 +93,7 @@ jobs:
           enable-cache: true
 
       - name: Install
-        run: uv sync --extra test --extra msgspec --extra rabbitmq
+        run: uv sync --group test --extra msgspec --extra rabbitmq
 
       - name: Integration test
         run: uv run pytest -m rabbitmq --no-cov
