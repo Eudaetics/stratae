@@ -30,4 +30,5 @@ repos:
           - aiormq
           - fastapi
           - msgspec
+          - starlette
         exclude: ^tests/
