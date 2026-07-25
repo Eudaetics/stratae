@@ -16,7 +16,7 @@ way.
 
 ````{example} Binding an event to a generic emitter
 ```{code-block} python
-from typing import Any
+from typing import Any, Callable
 from stratae.events import EventConfig, Request, bind, event
 
 class CreateOrder:
@@ -30,19 +30,25 @@ class Order:
 order_created = event(CreateOrder, Request[Order])
 
 # A generic emitter only needs to match EmitCallable's shape: payload,
-# event, and config in, some result out. This one does the work directly,
-# with no bus involved.
-def emit(payload: CreateOrder, event: EventConfig[Any, Any, Any], config: None, *, serializer=None) -> Order:
-    print(f"creating order {payload.order_id}")
+# event, and config in, some result out. This one does the work
+# directly, using config as the destination label to route to.
+def emit(
+    payload: CreateOrder,
+    event: EventConfig[..., CreateOrder, Request[Order]],
+    config: str,
+    *,
+    serializer: Callable[[CreateOrder], Any] | None = None,
+) -> Order:
+    print(f"[{config}] creating order {payload.order_id}")
     return Order(order_id=payload.order_id)
 
-create_order = bind(emit, order_created, config=None)
+create_order = bind(emit, order_created, config="orders")
 
 created = create_order(order_id=42)
 print(f"created order: {created.order_id}")
 ```
 ```{output}
-creating order 42
+[orders] creating order 42
 created order: 42
 ```
 ````
