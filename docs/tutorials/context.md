@@ -32,7 +32,10 @@ If you need to bypass a configured default and force a hard failure when nothing
 ```python
 from stratae.context import IGNORE
 
-current_user(IGNORE)  # raises LookupError if unset, ignoring the "guest" default
+try:
+    current_user(IGNORE)  # ignores the "guest" default
+except RuntimeError as exc:
+    print(f"blocked: {exc}")
 ```
 
 `IGNORE` is only valid as a per-call default; passing it to the constructor raises `ValueError`.

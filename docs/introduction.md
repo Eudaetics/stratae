@@ -1,19 +1,122 @@
 # Introduction
 
-Stratae is a set of small, focused developer tools for Python 3.12+, covering three problems that show up in almost every non-trivial application:
+Most frameworks optimize for *easy*. They get you moving fast by deciding a lot upfront, and that speed comes from tangling your application code together with their way of doing things. For some projects, that tangle never matters. However, if your business needs change enough, or you need the same code to run somewhere else, unwinding it gets expensive.
 
-- **Dependency injection** (`stratae.depends`) — wire a function's inputs to providers instead of constructing them inline.
-- **Lifecycle management** (`stratae.lifecycle`) — scope caching and cleanup to a unit of work, like a request, a job, or an application run.
-- **Events** (`stratae.events`) — define pub/sub and request/reply messages independently of whatever bus delivers them.
+Stratae optimizes for *simple* instead, in the sense Rich Hickey draws out in "Simple Made Easy": not tangled together, not necessarily the fastest thing to pick up on day one. Dependency injection, lifecycle management, and events are three small, independent tools. None of them know about each other. You choose whether and how to combine them.
 
-Around these three, a handful of supporting modules solve smaller, adjacent problems: `stratae.context` (scoped values usable directly as DI providers), `stratae.checks` (declarative precondition running), `stratae.serde` (encode/decode primitives), and `stratae.integrations` (bridges to ASGI, msgspec, and RabbitMQ).
+Combined well, they can make A/B tests, feature flags, and per-tenant behavior straightforward. Say a `FetchFile` request is answered by reading from whichever tenant's storage backend is active for the call. Every call site that calls `fetch_file` stays the same no matter which tenant it's for, no facade or adapter layer to maintain, and no branch anywhere in the handler for which tenant it is. Dependency injection is what lets that handler receive whatever client it needs without constructing it by hand. Lifecycle management scopes that client to the right unit of work, a request, a job, an application run, so it opens once and tears down automatically.
+
+## The three core tools
+
+`stratae.depends` is dependency injection. Mark a parameter as injected and it gets resolved from a provider at call time. There's no container to configure, or registration steps.
+
+`stratae.lifecycle` is lifecycle management. Scope caching and cleanup to a unit of work, so a resource opens once per scope and tears down automatically when the scope ends.
+
+`stratae.events` is event definitions. Define pub/sub and request/reply messages as plain Python, independent of whatever bus eventually delivers them or whatever handler answers them. The same event definition works whether you bind it to an in-process `DirectBus` today or a distributed broker like RabbitMQ later. Growing from one to the other means updating the bind and the handler registration with the new adapter's config, not rewriting the event definition or the code inside the handler.
+
+A handful of supporting modules solve smaller, adjacent problems. `stratae.context` gives you scoped values usable directly as DI providers. `stratae.checks` runs declarative preconditions. `stratae.serde` handles encode/decode primitives. `stratae.integrations` is what makes that growth path real. RabbitMQ turns the same events into a distributed bus, FastAPI and Starlette scope lifecycles to actual requests, and msgspec speeds up serialization.
 
 ## Design philosophy
 
-Each tool works on its own. You can use `stratae.lifecycle` for scoped caching without ever touching `stratae.depends`, or use `stratae.depends` for injection without any lifecycle scoping at all. None of the core modules import each other. Where they do compose — a cached provider resolved through injection, a handler that's both an event responder and an injected function — it's because ordinary Python composes that way, not because of special glue code. `stratae.events`, for instance, has zero code-level dependency on `stratae.depends` or `stratae.lifecycle`: an injected function is just a plain callable, and a plain callable is all a bus needs to register a handler.
+Each tool works on its own. You can use `stratae.lifecycle` for scoped caching without touching `stratae.depends`. You can use `stratae.depends` for injection without any lifecycle scoping at all. None of the core modules import each other. Where they do compose, it's because ordinary Python composes that way, not because of special glue code. A cached provider can be resolved through injection. A handler can be both an event responder and an injected function. `stratae.events` has zero code-level dependency on `stratae.depends` or `stratae.lifecycle`. An injected function is just a plain callable, and a plain callable is all a bus needs to register a handler.
+
+Here's all three working together end to end. Once it's wired up, the calling code stays simple. There's no conditional branching for which tenant or which user, no framework request object anywhere in sight. The same setup runs identically in an API, CLI script, a worker, or a REPL.
+
+````{example} Wiring events, injection, and lifecycle together
+```{code-block} python
+from typing import Annotated, Protocol
+from stratae.context import Context
+from stratae.depends import Depends, inject
+from stratae.events import DirectBus, PubSub, Request, event
+from stratae.lifecycle import Lifecycle, Scope, resource
+
+class FetchFile:
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+
+class FileAccessed:
+    def __init__(self, filename: str, source: str) -> None:
+        self.filename = filename
+        self.source = source
+
+fetch_file_event = event(FetchFile, Request[str])
+file_accessed_event = event(FileAccessed, PubSub)
+lifecycle = Lifecycle([Scope("application", "shared")])
+
+class AuditLog:
+    def __init__(self) -> None:
+        self.entries: list[str] = []
+
+    def record(self, filename: str, user: str, source: str) -> None:
+        self.entries.append(f"{user}: {source}://{filename}")
+
+@lifecycle.cache("application")
+@resource
+def get_audit_log():
+    yield AuditLog()
+
+class Storage(Protocol):
+    source: str
+
+    def read(self, filename: str) -> str: ...
+
+class LocalDisk:
+    source = "file"
+
+    def read(self, filename: str) -> str:
+        return f"[{filename} from local disk] Lorem ipsum dolor sit amet"
+
+class S3:
+    source = "s3"
+
+    def read(self, filename: str) -> str:
+        return f"[{filename} from s3] consectetur adipiscing elit"
+
+storage = Context[Storage]("storage", default=LocalDisk())
+current_user = Context("current_user", default="guest")
+
+bus = DirectBus()
+fetch_file = bus.bind(fetch_file_event)
+notify_accessed = bus.bind(file_accessed_event)
+
+@bus.handle(fetch_file_event)
+@inject
+def handle_fetch(
+    cmd: FetchFile, backend: Annotated[Storage, Depends(storage)]
+) -> str:
+    content = backend.read(cmd.filename)
+    notify_accessed(filename=cmd.filename, source=backend.source)
+    return content
+
+@bus.handle(file_accessed_event)
+@inject
+def record_audit_entry(
+    accessed: FileAccessed,
+    audit_log: Annotated[AuditLog, Depends(get_audit_log)],
+    user: Annotated[str, Depends(current_user)],
+) -> None:
+    audit_log.record(accessed.filename, user, accessed.source)
+
+file = "report.csv"
+with lifecycle.start("application"):
+    print(fetch_file(filename=file))
+
+    with storage.use(S3()), current_user.use("alice"):
+        print(fetch_file(filename=file))
+
+    print(fetch_file(filename=file))
+    print(get_audit_log().entries)
+```
+```{output}
+[report.csv from local disk] Lorem ipsum dolor sit amet
+[report.csv from s3] consectetur adipiscing elit
+[report.csv from local disk] Lorem ipsum dolor sit amet
+['guest: file://report.csv', 'alice: s3://report.csv', 'guest: file://report.csv']
+```
+````
 
 ## How these guides are organized
 
-Each guide covers one module end to end: the core concepts, the way its pieces compose in practice, and the mistakes that are easy to make. They build loosely on each other — the dependency injection and lifecycle guides are worth reading before the events guide, since the richest examples combine all three — but each is written to stand alone if you only need one tool.
+Each guide covers one module end to end. It walks through the core concepts and the way its pieces compose in practice. The guides build loosely on each other. Read the dependency injection and lifecycle guides before the events guide, since the richest examples combine all three. Each guide still stands on its own if you only need one tool.
 
-Start with [Getting Started](tutorials/getting-started) for a five-minute working example, then read the guides in whatever order matches what you're building. The [API reference](api-reference) has the full signature-level detail for everything covered here.
+Start with [Getting Started](tutorials/getting-started) for a five-minute working example. The [API reference](api-reference) has the full signature-level detail for everything covered here.

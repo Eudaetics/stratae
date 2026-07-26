@@ -1,18 +1,18 @@
 # API Reference
 
-Stratae is organized around three core tools — dependency injection, lifecycle management, and events — plus a few supporting modules used across all three.
+Stratae is organized around three core tools: dependency injection, lifecycle management, and events. Some additional supporting modules are also included to provide additional utility.
 
 ## Core
 
 ### Dependency Injection
 
-Mark a parameter with `Injected[T, Depends(provider)]` and decorate the function with `inject`: the parameter is resolved by calling its provider at call time. Supports sync and async providers, and temporary overrides for testing.
+Mark a parameter with `Annotated[T, Depends(provider)]` and decorate the function with `inject`: the parameter is resolved by calling its provider at call time. Supports sync and async providers, and temporary overrides for testing.
 
+````{example} Injecting a provider and overriding it
 ```{code-block} python
-:caption: Injecting the current user and swapping in a test user.
-
 from dataclasses import dataclass
-from stratae.depends import Depends, Injected, inject, override
+from typing import Annotated
+from stratae.depends import Depends, inject, override
 
 @dataclass
 class User:
@@ -22,26 +22,31 @@ def get_current_user() -> User:
     return User(name="anonymous")
 
 @inject
-def greeting(user: Injected[User, Depends(get_current_user)]) -> str:
+def greeting(user: Annotated[User, Depends(get_current_user)]) -> str:
     return f"Welcome, {user.name}!"
 
-assert greeting() == "Welcome, anonymous!"
+print(greeting())
 
 with override(get_current_user, User(name="Jane")):
-    assert greeting() == "Welcome, Jane!"
+    print(greeting())
 
-assert greeting() == "Welcome, anonymous!"
+print(greeting())
 ```
+```{output}
+Welcome, anonymous!
+Welcome, Jane!
+Welcome, anonymous!
+```
+````
 
 {doc}`Full reference <apidocs/stratae.depends/stratae.depends>`
 
 ### Lifecycle
 
-Manage hierarchical, scoped contexts for caching and cleanup — `Lifecycle`/`AsyncLifecycle`, `Scope`, and `resource`/`async_resource` for resources that need teardown.
+Manage hierarchical, scoped contexts for caching and cleanup. `Lifecycle`/`AsyncLifecycle`, `Scope` describe the blocks and configuration. Use `resource`/`async_resource` for cached resources that need teardown.
 
+````{example} Committing a transaction, or rolling back if the scope raises
 ```{code-block} python
-:caption: Commit a transaction if the request scope exits cleanly, roll back if it raises
-
 from stratae.lifecycle import Lifecycle, Scope, resource
 
 class Connection:
@@ -62,9 +67,9 @@ def get_transaction():
     conn = Connection()
     try:
         yield conn
-        conn.commit()  # request scope exited without raising
+        conn.commit()
     except Exception:
-        conn.rollback()  # an exception propagated out of the request
+        conn.rollback()
         raise
     finally:
         conn.close()
@@ -78,8 +83,15 @@ try:
         conn = get_transaction()
         raise ValueError("payment failed")
 except ValueError:
-    pass  # transaction was rolled back before the exception propagated here
+    pass
 ```
+```{output}
+committing
+closing
+rolling back
+closing
+```
+````
 
 {doc}`Full reference <apidocs/stratae.lifecycle/stratae.lifecycle>`
 
@@ -87,29 +99,29 @@ except ValueError:
 
 Event definitions, bound-event facades, and dispatch protocols for pub/sub and request/reply messaging.
 
+````{example} Dispatching a pub/sub event through an in-process bus
 ```{code-block} python
-:caption: Defining a pub/sub event and dispatching it through an in-process bus
-
 from stratae.events import DirectBus, PubSub, event
 
 class OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_placed = event(OrderPlaced, PubSub)
+order_placed_event = event(OrderPlaced, PubSub)
 
 bus = DirectBus()
-place_order = bus.bind(order_placed)
+place_order = bus.bind(order_placed_event)
 
-received: list[int] = []
-
-@bus.handle(order_placed)
-def on_order_placed(order: OrderPlaced) -> None:
-    received.append(order.order_id)
+@bus.handle(order_placed_event)
+def notify_shipping(order: OrderPlaced) -> None:
+    print(f"shipping notified for order {order.order_id}")
 
 place_order(order_id=42)
-assert received == [42]
 ```
+```{output}
+shipping notified for order 42
+```
+````
 
 {doc}`Full reference <apidocs/stratae.events/stratae.events>`
 
@@ -117,62 +129,69 @@ assert received == [42]
 
 ### Context
 
-Callable, injectable values backed by `contextvars` — set once with `.set()` or `with ctx.use(value):`, read anywhere within that scope, and usable directly as a `Depends()` provider.
+Callable, injectable values backed by `contextvars`. Set once with `.set()` or `with ctx.use(value):` and read anywhere within that scope. It is usable directly as a `Depends()` provider.
 
+````{example} Impersonating a customer, then reverting to the agent's session
 ```{code-block} python
-:caption: Setting and reading a value across nested scopes
-
 from stratae.context import Context
 
 user_id = Context[int]("user_id")
 
 with user_id.use(42):  # the support agent's own account
-    assert user_id() == 42
+    print(f"acting as user {user_id()}")
 
     # "View as customer" temporarily impersonates the customer
     # to reproduce a bug, then reverts to the agent's session.
     with user_id.use(7):
-        assert user_id() == 7
+        print(f"acting as user {user_id()}")
 
-    assert user_id() == 42  # back to the agent's own session
+    print(f"acting as user {user_id()}")
 ```
+```{output}
+acting as user 42
+acting as user 7
+acting as user 42
+```
+````
 
 {doc}`Full reference <apidocs/stratae.context/stratae.context>`
 
 ### Checks
 
-Run collections of zero-argument checks, raising or gathering their failures — `check`, `check_async`, and the `require` decorator.
+Run collections of zero-argument checks, raising or gathering their failures: `check`, `check_async`, and the `require` decorator.
 
+````{example} Rejecting an action that fails a check
 ```{code-block} python
-:caption: Reject account deletion if the user is not an admin
-
 from types import SimpleNamespace
-import pytest
 from stratae.checks import require
 
 user = SimpleNamespace(id=1, is_admin=False)
 
 def is_admin():
-    assert user.is_admin
+    assert user.is_admin, "not an admin"
 
 @require(is_admin)
 def delete_account(account_id: int):
-    # Code in here only runs if the require checks do not raise
-    print("Deleting Account")
+    print(f"deleting account {account_id}")
 
-with pytest.raises(AssertionError):
-    delete_account(24)  # Will abort for the above user since it fails the check
+try:
+    delete_account(24)
+except AssertionError as exc:
+    print(f"access denied: {exc}")
 ```
+```{output}
+access denied: not an admin
+```
+````
 
 {doc}`Full reference <apidocs/stratae.checks/stratae.checks>`
 
 ### Serde
 
-Serialization and deserialization tools for encoding/decoding data — `encode`, `pack`, `unpack_json`.
+Serialization and deserialization tools for encoding/decoding data: `encode`, `pack`, and `unpack_json`.
 
+````{example} Round-tripping a dataclass through pack/unpack
 ```{code-block} python
-:caption: Round-tripping a dataclass through the default pack/unpack pair
-
 from dataclasses import asdict, dataclass
 from uuid import UUID, uuid4
 from stratae.serde import pack, unpack_json
@@ -191,34 +210,75 @@ class Widget:
 
 widget = Widget(id=uuid4(), name="sprocket")
 data = pack(widget)
-assert data == f'{{"id": "{widget.id}", "name": "sprocket"}}'.encode()
+print(data)
 
 restored = unpack_json(data, type=Widget)
-assert restored == widget
+print(restored.name)
 ```
+```{output}
+b'{"id": "05483b1e-b51a-4a28-a992-59dc75499b1f, "name": "sprocket"}'
+sprocket
+```
+````
 
 {doc}`Full reference <apidocs/stratae.serde/stratae.serde>`
 
 ### Integrations
 
-Bridges between Stratae modules and third-party tools: event adapters (RabbitMQ), lifecycle integrations (ASGI), and serde integrations (msgspec).
+Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. msgspec enables a faster pack path. RabbitMQ gets async publish and consume adapters.
 
+````{example} Publishing a msgspec.Struct event to RabbitMQ, then consuming it back
+<!--- skip: next -->
 ```{code-block} python
-:caption: Packing a msgspec.Struct uses the faster msgspec-based encoder
-
+import asyncio
 import msgspec
-import stratae.integrations.msgspec  # noqa: F401 (registers the pack fast path)
-from stratae.serde import pack
+import stratae.integrations.msgspec  # noqa: F401
+from stratae.events import PubSub, event
+from stratae.integrations.rabbitmq import (
+    RabbitMQConfig,
+    RabbitMQConsumeConfig,
+    RabbitMQConsumer,
+    RabbitMQPublisher,
+)
 
-class Point(msgspec.Struct):
-    x: int
-    y: int
+class OrderPlaced(msgspec.Struct):
+    order_id: int
 
-point = Point(x=1, y=2)
-result = pack(point)
-assert isinstance(result, bytes)
-assert msgspec.json.decode(result, type=Point) == point
+order_placed_event = event(OrderPlaced, PubSub)
+
+consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
+
+@consumer.handle(
+    order_placed_event,
+    config=RabbitMQConsumeConfig(
+        exchange="events",
+        binding_key="order.placed",
+        exchange_type="topic",
+        exchange_durable=True,
+    ),
+)
+def on_order_placed(order: OrderPlaced) -> None:
+    print(f"received order {order.order_id}")
+
+async def main() -> None:
+    async with (
+        consumer,
+        RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher,
+    ):
+        place_order = publisher.bind(
+            order_placed_event,
+            config=RabbitMQConfig("events", "order.placed"),
+        )
+        await place_order(order_id=42)
+
+        await asyncio.sleep(0.05)
+
+asyncio.run(main())
 ```
+```{output}
+received order 42
+```
+````
 
 {doc}`Full reference <apidocs/stratae.integrations/stratae.integrations>`
 

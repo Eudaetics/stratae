@@ -82,9 +82,9 @@ Sentinel passed as a 'default' to skip the constructor default and require a set
 [`ContextVar`](https://docs.python.org/3/library/contextvars.html#contextvars.ContextVar.get).
 If there is no value set in the current context, then {py:func}`Context.get` returns first
 the default provided to {py:func}`Context.get`, then the constructor level default, and
-finally raises a LookupError.
+finally raises a RuntimeError.
 The `IGNORE` sentinel provides a third option. If the {py:func}`Context.get` is called with
-`IGNORE`, then it will raise a LookupError if no value is set and ignore the constructor
+`IGNORE`, then it will raise a RuntimeError if no value is set and ignore the constructor
 level default.
 """
 

@@ -19,12 +19,17 @@ sent. Every delivered message reopens that envelope as the active one for
 its handler. Correlation ids propagate across a chain of publishes and
 handlers this way, without extra plumbing.
 
-````{example} Publishing to a RabbitMQ exchange
+````{example} Publishing an event to RabbitMQ, then consuming it back
 <!--- skip: next -->
 ```{code-block} python
 import asyncio
 from stratae.events import PubSub, event
-from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
+from stratae.integrations.rabbitmq import (
+    RabbitMQConfig,
+    RabbitMQConsumeConfig,
+    RabbitMQConsumer,
+    RabbitMQPublisher,
+)
 
 class OrderPlaced:
     def __init__(self, order_id: int) -> None:
@@ -35,14 +40,36 @@ class OrderPlaced:
 
 order_placed_event = event(OrderPlaced, PubSub)
 
+consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
+
+@consumer.handle(
+    order_placed_event,
+    config=RabbitMQConsumeConfig(
+        exchange="events",
+        binding_key="order.placed",
+        exchange_type="topic",
+        exchange_durable=True,
+    ),
+)
+def on_order_placed(order: OrderPlaced) -> None:
+    print(f"received order {order.order_id}")
+
 async def main() -> None:
-    async with RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher:
+    async with (
+        consumer,  # declares the queue before anything is published
+        RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher,
+    ):
         place_order = publisher.bind(
             order_placed_event, config=RabbitMQConfig("events", "order.placed")
         )
         await place_order(order_id=42)
 
+        await asyncio.sleep(0.05)  # wait for delivery
+
 asyncio.run(main())
+```
+```{output}
+received order 42
 ```
 ````
 
@@ -125,7 +152,7 @@ class RabbitMQConfig:
     already declared elsewhere.
     """
 
-    __slots__ = ("exchange", "exchange_type", "properties", "routing_key")
+    __slots__ = ("exchange", "exchange_durable", "exchange_type", "properties", "routing_key")
 
     def __init__(
         self,
@@ -133,6 +160,7 @@ class RabbitMQConfig:
         routing_key: str,
         *,
         exchange_type: str | None = None,
+        exchange_durable: bool = False,
         properties: Basic.Properties | None = None,
     ) -> None:
         """
@@ -142,6 +170,11 @@ class RabbitMQConfig:
         :param routing_key: The routing key for the message.
         :param exchange_type: When given, the publisher declares the exchange
             with this type before its first publish to it.
+        :param exchange_durable: Whether the declared exchange survives a
+            broker restart. Must match whatever the exchange was already
+            declared with elsewhere; a mismatch raises an AMQP channel
+            error. Ignored when `exchange_type` is unset, since no
+            declaration happens in that case.
         :param properties: AMQP message properties published with every
             message, e.g. `Basic.Properties(delivery_mode=2)` for persistent
             messages.
@@ -150,6 +183,7 @@ class RabbitMQConfig:
         self.exchange = exchange
         self.routing_key = routing_key
         self.exchange_type = exchange_type
+        self.exchange_durable = exchange_durable
         self.properties = properties
 
 
@@ -247,7 +281,9 @@ class RabbitMQPublisher:
             raise NotConnectedError(_NOT_CONNECTED)
         if config.exchange_type is not None and config.exchange not in self._declared:
             await self._channel.exchange_declare(
-                config.exchange, exchange_type=config.exchange_type
+                config.exchange,
+                exchange_type=config.exchange_type,
+                durable=config.exchange_durable,
             )
             self._declared.add(config.exchange)
         body = serializer(payload) if serializer is not None else self._serializer(payload)
@@ -279,6 +315,7 @@ class RabbitMQConsumeConfig:
         "binding_keys",
         "durable",
         "exchange",
+        "exchange_durable",
         "exchange_type",
         "exclusive",
         "queue",
@@ -291,6 +328,7 @@ class RabbitMQConsumeConfig:
         exchange: str | None = None,
         binding_key: str | Iterable[str] = "",
         exchange_type: str = "fanout",
+        exchange_durable: bool = False,
         durable: bool | None = None,
         exclusive: bool | None = None,
         auto_delete: bool | None = None,
@@ -305,6 +343,10 @@ class RabbitMQConsumeConfig:
             subscriber mode.
         :param binding_key: The routing key pattern for the binding.
         :param exchange_type: The type the exchange is declared with.
+        :param exchange_durable: Whether the declared exchange survives a
+            broker restart. Must match whatever the exchange was already
+            declared with elsewhere (by this adapter, a publisher, or
+            another tool); a mismatch raises an AMQP channel error.
         :param durable: Overrides the inferred queue durability.
         :param exclusive: Overrides the inferred queue exclusivity.
         :param auto_delete: Overrides the inferred queue auto-delete flag.
@@ -321,6 +363,7 @@ class RabbitMQConsumeConfig:
             (binding_key,) if isinstance(binding_key, str) else tuple(binding_key)
         )
         self.exchange_type = exchange_type
+        self.exchange_durable = exchange_durable
         self.durable = durable
         self.exclusive = exclusive
         self.auto_delete = auto_delete
@@ -550,7 +593,11 @@ class RabbitMQConsumer:
         queue = config.queue or declared.queue or ""
         if config.exchange is None:
             return queue
-        await channel.exchange_declare(config.exchange, exchange_type=config.exchange_type)
+        await channel.exchange_declare(
+            config.exchange,
+            exchange_type=config.exchange_type,
+            durable=config.exchange_durable,
+        )
         for binding_key in config.binding_keys:
             await channel.queue_bind(queue, config.exchange, routing_key=binding_key)
         return queue
