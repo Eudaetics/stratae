@@ -11,9 +11,9 @@ flow into injected functions without changing their signatures.
 
 ````{example} A/B testing a recommendation model
 ```{code-block} python
-from typing import Callable
+from typing import Annotated, Callable
 from stratae.context import Context
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 
 def rank_v1(item: str) -> float:
     return 0.42
@@ -25,7 +25,7 @@ recommender = Context[Callable[[str], float]]("recommender", default=rank_v1)
 
 @inject
 def score(
-    item: str, rank: Injected[Callable[[str], float], Depends(recommender)]
+    item: str, rank: Annotated[Callable[[str], float], Depends(recommender)]
 ) -> None:
     print(f"score={rank(item)}")
 

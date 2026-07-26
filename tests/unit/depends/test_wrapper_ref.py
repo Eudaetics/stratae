@@ -10,10 +10,10 @@ Resolver keeps no state, so the only references to an injection graph are the us
 import gc
 import typing
 import weakref
-from typing import Any
+from typing import Annotated, Any
 from weakref import ReferenceType
 
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 from stratae.depends._provide import Provider
 
 
@@ -35,7 +35,7 @@ def test_dropped_injection_graph_is_collected():
             return 1
 
         @inject
-        def local_func(dep: Injected[int, Depends(local_dep)]) -> int:
+        def local_func(dep: Annotated[int, Depends(local_dep)]) -> int:
             return dep
 
         assert local_func() == 1
@@ -57,8 +57,8 @@ def test_dropped_injection_graph_is_collected():
     # Assert
     assert wrapper_ref() is None
 
-    # typing memoizes Annotated parameterizations. Since the ref is inside the Injected
-    # alias for Annotated, kick the values out of the cache
+    # typing memoizes Annotated parameterizations. Since the ref is inside the
+    # Annotated, kick the values out of the cache
     for cleanup in getattr(typing, "_cleanups", []):
         cleanup()
     gc.collect()
@@ -81,7 +81,7 @@ def test_live_consumer_keeps_dependency_registered():
         return 2
 
     @inject
-    def local_func(dep: Injected[int, Depends(local_dep)]) -> int:
+    def local_func(dep: Annotated[int, Depends(local_dep)]) -> int:
         return dep
 
     depends_ref = weakref.ref(Provider.find(local_dep))

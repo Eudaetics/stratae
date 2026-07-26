@@ -1,11 +1,12 @@
 """Tests for async sync lifecycle management with dependency injection."""
 
+from typing import Annotated
 from unittest.mock import Mock
 
 import pytest
 
 from stratae.context import Context
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 from stratae.lifecycle import Lifecycle, resource
 
 
@@ -21,7 +22,7 @@ def test_lifecycle_inject_sync(lifecycle: Lifecycle):
     # Arrange
     @lifecycle.cache("application")
     @inject
-    def get_db(db: Injected[object, Depends(lambda: object())]) -> object:
+    def get_db(db: Annotated[object, Depends(lambda: object())]) -> object:
         return db
 
     # Act / Assert
@@ -42,12 +43,12 @@ def test_lifecycle_inject_nested_sync(lifecycle: Lifecycle):
     # Arrange
     @lifecycle.cache("application")
     @inject
-    def get_app_db(db: Injected[object, Depends(lambda: object())]) -> object:
+    def get_app_db(db: Annotated[object, Depends(lambda: object())]) -> object:
         return db
 
     @lifecycle.cache("request")
     @inject
-    def get_request_db(db: Injected[object, Depends(lambda: object())]) -> object:
+    def get_request_db(db: Annotated[object, Depends(lambda: object())]) -> object:
         return db
 
     # Act / Assert
@@ -85,7 +86,7 @@ def test_lifecycle_inject_sync_generator(lifecycle: Lifecycle):
     @lifecycle.cache("application")
     @inject
     @resource
-    def get_resource(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
+    def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
         finally:
@@ -119,7 +120,7 @@ def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
     @lifecycle.cache("application")
     @inject
     @resource
-    def get_app_resource(resource: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
+    def get_app_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield resource
         finally:
@@ -128,7 +129,7 @@ def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
     @lifecycle.cache("request")
     @inject
     @resource
-    def get_request_resource(resource: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
+    def get_request_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield resource
         finally:
@@ -170,7 +171,7 @@ def test_lifecycle_inject_sync_with_exception(lifecycle: Lifecycle):
     @lifecycle.cache("application")
     @inject
     @resource
-    def get_resource(_: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
+    def get_resource(_: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         yield
         raise ValueError("Simulated exception")
 
@@ -199,7 +200,7 @@ def test_lifecycle_inject_sync_gen_with_exception(lifecycle: Lifecycle):
     @lifecycle.cache("application")
     @inject
     @resource
-    def get_resource(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
+    def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
             mock_side_effect()
@@ -237,7 +238,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle
     @lifecycle.cache("application")
     @inject
     @resource
-    def get_one(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
+    def get_one(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
             mock_side_effect()
@@ -251,7 +252,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle
     @lifecycle.cache("application")
     @inject
     @resource
-    def get_two(db: Injected[SimpleObject, Depends(lambda: SimpleObject())]):
+    def get_two(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
             mock_side_effect()
@@ -299,7 +300,7 @@ def test_lifecycle_outer_cache_and_inject_change(lifecycle: Lifecycle):
 
     @lifecycle.cache("application")
     @inject
-    def get_value(x: Injected[int, Depends(lambda: mock.call_count)]) -> int:
+    def get_value(x: Annotated[int, Depends(lambda: mock.call_count)]) -> int:
         mock()
         return x + 1
 
@@ -328,7 +329,7 @@ def test_lifecycle_outer_cache_inject_change_with_custom_key(lifecycle: Lifecycl
 
     @lifecycle.cache("application", cache_key=lambda: mock.call_count)
     @inject
-    def get_value(x: Injected[int, Depends(lambda: mock.call_count)]) -> int:
+    def get_value(x: Annotated[int, Depends(lambda: mock.call_count)]) -> int:
         mock()
         return x + 1
 
@@ -357,7 +358,7 @@ def test_lifecycle_inner_cache_inject(lifecycle: Lifecycle):
 
     @inject
     @lifecycle.cache("application")
-    def get_value(x: Injected[int, Depends(x)]) -> int:
+    def get_value(x: Annotated[int, Depends(x)]) -> int:
         counter()
         return x * 2
 

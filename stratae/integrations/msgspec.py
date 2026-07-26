@@ -17,27 +17,44 @@ once, for its side effect, before packing any `msgspec.Struct` — installing
 `msgspec.Struct` by falling back to its generic `json.dumps`-based path,
 so the fallback can go unnoticed rather than failing loudly.
 
-```{rubric} Example:
-```
+````{example} Packing a msgspec.Struct with a field msgspec can't natively encode
 ```{code-block} python
-:caption: Packing a msgspec.Struct uses the faster msgspec-based encoder
-
 import msgspec
 import stratae.integrations.msgspec  # noqa: F401 (registers the pack fast path)
 from stratae.serde import pack
 
-class Point(msgspec.Struct):
-    x: int
-    y: int
+class Amount:
+    def __init__(self, value: float, currency: str) -> None:
+        self.value = value
+        self.currency = currency
 
-point = Point(x=1, y=2)
-result = pack(point)
-assert isinstance(result, bytes)
-assert msgspec.json.decode(result, type=Point) == point
+    def to_dict(self) -> dict[str, object]:
+        return {"value": self.value, "currency": self.currency}
+
+class OrderPlaced(msgspec.Struct):
+    order_id: int
+    total: Amount
+
+def dec_hook(type, obj):
+    if type is Amount:
+        return Amount(value=obj["value"], currency=obj["currency"])
+    raise TypeError(f"unsupported type: {type}")
+
+order = OrderPlaced(order_id=42, total=Amount(value=19.99, currency="usd"))
+data = pack(order)
+print(data.decode())
+
+restored = msgspec.json.decode(data, type=OrderPlaced, dec_hook=dec_hook)
+print(restored.total.value, restored.total.currency)
 ```
+```{output}
+{"order_id":42,"total":{"value":19.99,"currency":"usd"}}
+19.99 usd
+```
+````
 
 See {py:func}`pack <stratae.serde.pack>` and {py:func}`encode
-<stratae.serde.encode>` for additional examples.
+<stratae.serde.encode>` for the rest of the module's API.
 
 """
 

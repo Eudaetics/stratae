@@ -5,7 +5,7 @@ from typing import Annotated, Callable
 
 import pytest
 
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 from stratae.depends.exceptions import InjectionSignatureError
 
 type IntDependency = Annotated[int, Depends(lambda: 42)]
@@ -32,7 +32,7 @@ def test_inject():
         return SampleType(5)
 
     @inject
-    def test_dep(val: Injected[SampleType, Depends(factory_function)]) -> SampleType:
+    def test_dep(val: Annotated[SampleType, Depends(factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -67,7 +67,7 @@ def test_inject_multiple_calls():
         return SampleType(counter := counter + 1)
 
     @inject
-    def test_dep(val: Injected[SampleType, Depends(factory_function)]) -> SampleType:
+    def test_dep(val: Annotated[SampleType, Depends(factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -103,7 +103,7 @@ def test_inject_with_parens():
         return SampleType(15)
 
     @inject()
-    def test_dep(val: Injected[SampleType, Depends(factory_function)]) -> SampleType:
+    def test_dep(val: Annotated[SampleType, Depends(factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -222,7 +222,7 @@ def test_mixed_depends_types():
         no_default: int,
         type_dep: IntDependency,
         annotated_dep: Annotated[int, Depends(get_two)],
-        db: Injected[int, Depends(get_three)],
+        db: Annotated[int, Depends(get_three)],
         no_dep: int = -2,
     ) -> int:
         """Sum the various dependencies."""

@@ -1,10 +1,10 @@
 """End-to-end tests for events composed with dependency injection and lifecycle."""
 
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 from stratae.events import DirectBus, EventConfig, PubSub, Request
 from stratae.lifecycle import Lifecycle, Scope
 
@@ -52,7 +52,7 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
     @inject
     def _(
         order: OrderPlaced,
-        store: Injected[dict[int, dict[str, Any]], Depends(order_store)],
+        store: Annotated[dict[int, dict[str, Any]], Depends(order_store)],
     ) -> None:
         store[order.order_id] = {"status": "placed"}
 
@@ -60,7 +60,7 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
     @inject
     def _(
         request: PriceOrder,
-        store: Injected[dict[int, dict[str, Any]], Depends(order_store)],
+        store: Annotated[dict[int, dict[str, Any]], Depends(order_store)],
     ) -> Quote:
         assert request.order_id in store
         return Quote(order_id=request.order_id, total=100)

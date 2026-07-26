@@ -15,20 +15,33 @@ the exact `Handler` a prior `handle` call returned. See
 {py:class}`Consumer <stratae.events.protocols.Consumer>` for how adapters
 expose `handle` and `remove`.
 
-```{rubric} Example:
-```
+````{example} Using a returned Handler to unregister it later
 ```{code-block} python
-:caption: Wrapping a sync callable and detecting its async-ness
+from stratae.events import DirectBus, PubSub, event
 
-from stratae.events.handler import Handler
+class LogMessage:
+    def __init__(self, text: str) -> None:
+        self.text = text
 
-def greet(name: str) -> str:
-    return f"hello {name}"
+log_message_event = event(LogMessage, PubSub)
+bus = DirectBus()
+log = bus.bind(log_message_event)
 
-handler = Handler(greet, config="on-greet")
-assert handler.is_async is False
-assert handler(name="Sam") == "hello Sam"
+@bus.handle(log_message_event)
+def write_to_log(entry: LogMessage) -> None:
+    print(f"log: {entry.text}")
+
+log(text="first")
+
+# handle's decorator form returns the Handler in place of the function it
+# wraps, so write_to_log now holds the exact token remove needs.
+bus.remove(write_to_log)
+log(text="second")
 ```
+```{output}
+log: first
+```
+````
 
 """
 
@@ -51,23 +64,6 @@ class Handler[**P, HandlerConfig: Any, R]:
     multiple times, with different config or independently, without being
     deduplicated. Callers remove a registration by passing back the exact
     `Handler` instance it returned.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Wrapping an async callable for a dispatcher to detect
-
-    import asyncio
-    from stratae.events.handler import Handler
-
-    async def notify(order_id: int) -> None:
-        await asyncio.sleep(0)
-
-    handler = Handler(notify, config="order-placed")
-    assert handler.is_async is True
-    asyncio.run(handler(order_id=42))
-    ```
-
     """
 
     __slots__ = ("call", "config", "is_async")

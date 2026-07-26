@@ -19,12 +19,9 @@ sent. Every delivered message reopens that envelope as the active one for
 its handler. Correlation ids propagate across a chain of publishes and
 handlers this way, without extra plumbing.
 
-```{rubric} Example:
-```
+````{example} Publishing to a RabbitMQ exchange
 <!--- skip: next -->
 ```{code-block} python
-:caption: Publishing a pub/sub event to a RabbitMQ exchange
-
 import asyncio
 from stratae.events import PubSub, event
 from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
@@ -36,20 +33,21 @@ class OrderPlaced:
     def to_dict(self) -> dict[str, int]:
         return {"order_id": self.order_id}
 
-order_placed = event(OrderPlaced, PubSub)
+order_placed_event = event(OrderPlaced, PubSub)
 
 async def main() -> None:
     async with RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher:
         place_order = publisher.bind(
-            order_placed, config=RabbitMQConfig("events", "order.placed")
+            order_placed_event, config=RabbitMQConfig("events", "order.placed")
         )
         await place_order(order_id=42)
 
 asyncio.run(main())
 ```
+````
 
-See {py:class}`RabbitMQPublisher` and {py:class}`RabbitMQConsumer` for
-additional examples.
+See {py:class}`RabbitMQPublisher` and {py:class}`RabbitMQConsumer` for the
+rest of the module's API.
 
 """
 
@@ -125,28 +123,6 @@ class RabbitMQConfig:
     binding publishes to. Supplying `exchange_type` declares the exchange
     before the binding's first publish; leave it unset when the exchange is
     already declared elsewhere.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Declaring routing config for a persistent, topic-routed binding
-
-    from pamqp.commands import Basic
-    from stratae.integrations.rabbitmq import RabbitMQConfig
-
-    config = RabbitMQConfig(
-        "orders",
-        "order.placed",
-        exchange_type="topic",
-        properties=Basic.Properties(delivery_mode=2),
-    )
-
-    assert config.exchange == "orders"
-    assert config.routing_key == "order.placed"
-    assert config.exchange_type == "topic"
-    assert config.properties.delivery_mode == 2
-    ```
-
     """
 
     __slots__ = ("exchange", "exchange_type", "properties", "routing_key")
@@ -189,37 +165,6 @@ class RabbitMQPublisher:
     Bind an {py:class}`EventConfig <stratae.events.event.EventConfig>` to
     this adapter with {py:func}`RabbitMQPublisher.bind`, which returns an
     {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`.
-
-    ```{rubric} Example:
-    ```
-    <!--- skip: next -->
-    ```{code-block} python
-    :caption: Binding and publishing a pub/sub event to a declared exchange
-
-    import asyncio
-    from stratae.events import PubSub, event
-    from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
-
-    class OrderPlaced:
-        def __init__(self, order_id: int) -> None:
-            self.order_id = order_id
-
-        def to_dict(self) -> dict[str, int]:
-            return {"order_id": self.order_id}
-
-    order_placed = event(OrderPlaced, PubSub)
-
-    async def main() -> None:
-        async with RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher:
-            place_order = publisher.bind(
-                order_placed,
-                config=RabbitMQConfig("events", "order.placed", exchange_type="topic"),
-            )
-            await place_order(order_id=42)
-
-    asyncio.run(main())
-    ```
-
     """
 
     def __init__(self, url: str, serializer: Callable[[Any], bytes] = pack) -> None:
@@ -326,31 +271,6 @@ class RabbitMQConsumeConfig:
     when `queue` is omitted, or durable when `queue` is named. `durable`,
     `exclusive`, and `auto_delete` override those inferred defaults when
     given.
-
-    ```{rubric} Examples:
-    ```
-    ```{code-block} python
-    :caption: Declaring subscriber-mode config bound to a topic exchange
-
-    from stratae.integrations.rabbitmq import RabbitMQConsumeConfig
-
-    config = RabbitMQConsumeConfig(exchange="events", binding_key="order.*", exchange_type="topic")
-
-    assert config.queue is None
-    assert config.exchange == "events"
-    assert config.binding_keys == ("order.*",)
-    ```
-
-    ```{code-block} python
-    :caption: Omitting both a queue and an exchange is rejected
-
-    import pytest
-    from stratae.integrations.rabbitmq import RabbitMQConsumeConfig
-
-    with pytest.raises(ValueError, match="queue"):
-        RabbitMQConsumeConfig()
-    ```
-
     """
 
     __slots__ = (
@@ -457,35 +377,6 @@ class RabbitMQConsumer:
     from redelivering forever, and it shields the channel from handler
     errors that would otherwise escape into aiormq's channel machinery and
     close it.
-
-    ```{rubric} Example:
-    ```
-    <!--- skip: next -->
-    ```{code-block} python
-    :caption: Registering a handler and consuming a queue
-
-    import asyncio
-    from stratae.events import PubSub, event
-    from stratae.integrations.rabbitmq import RabbitMQConsumeConfig, RabbitMQConsumer
-
-    class OrderPlaced:
-        def __init__(self, order_id: int) -> None:
-            self.order_id = order_id
-
-    order_placed = event(OrderPlaced, PubSub)
-    consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
-
-    @consumer.handle(order_placed, config=RabbitMQConsumeConfig("orders"))
-    def on_order(payload: OrderPlaced) -> None:
-        print(f"order {payload.order_id} placed")
-
-    async def main() -> None:
-        async with consumer:
-            ...  # consumes in the background until the context exits
-
-    asyncio.run(main())
-    ```
-
     """
 
     def __init__(

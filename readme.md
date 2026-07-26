@@ -11,7 +11,8 @@ pip install stratae
 ## Quick Start
 
 ```python
-from stratae.depends import Depends, Injected, inject
+from typing import Annotated
+from stratae.depends import Depends, inject
 from stratae.lifecycle import Lifecycle, Scope
 
 lifecycle = Lifecycle([Scope("application", "shared")])
@@ -26,7 +27,7 @@ def get_database() -> Database:
 
 
 @inject
-def create_user(name: str, db: Injected[Database, Depends(get_database)]):
+def create_user(name: str, db: Annotated[Database, Depends(get_database)]):
     user = {"name": name}
     db["users"].append(user)
     return user
@@ -44,7 +45,8 @@ with lifecycle.start("application"):
 Dependency injection in Stratae uses familiar decorator syntax that works with callables. Use this to send values, objects, or anything into a function.
 
 ```python
-from stratae.depends import Depends, Injected, inject
+from typing import Annotated
+from stratae.depends import Depends, inject
 
 
 def get_config():
@@ -52,7 +54,7 @@ def get_config():
 
 
 @inject
-def endpoint(config: Injected[dict[str, str], Depends(get_config)]):
+def endpoint(config: Annotated[dict[str, str], Depends(get_config)]):
     print(f"Environment: {config['env']}, Mode: {config['mode']}")
 
 
@@ -104,8 +106,9 @@ Each `Scope` also takes a `storage` option (`"dense"`, the default, or `"sparse"
 Stratae uses context variables for setting values that are needed deep in dependency chains. Change values at runtime, or even whole behavior, without needing to thread parameters or manipulate overrides.
 
 ```python
+from typing import Annotated
 from stratae.context import Context
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 
 lifecycle = Lifecycle([Scope("request", "shared")])
 user_id = Context[int]("user_id")
@@ -113,14 +116,14 @@ user_id = Context[int]("user_id")
 
 @lifecycle.cache("request")
 @inject
-def get_current_user(uid: Injected[int, Depends(user_id)]) -> User:
+def get_current_user(uid: Annotated[int, Depends(user_id)]) -> User:
     return fetch_user(uid)
 
 
 @inject
 def create_post(
     content: str,
-    user: Injected[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> Post:
     return Post(author=user, content=content)
 
@@ -202,7 +205,8 @@ quote = bus.emit(PriceOrder(42), price_order)  # typed as Quote
 Stratae is fully async compatible. Injection natively works with sync or async functions. Lifecycle offers versions for sync and async handling of resources.
 
 ```python
-from stratae.depends import Depends, Injected, inject
+from typing import Annotated
+from stratae.depends import Depends, inject
 from stratae.lifecycle import AsyncLifecycle, Scope
 
 lifecycle = AsyncLifecycle([Scope("application", "shared"), Scope("request", "context")])
@@ -216,7 +220,7 @@ async def get_database() -> Database:
 @inject
 async def create_user(
     name: str,
-    db: Injected[Database, Depends(get_database)],
+    db: Annotated[Database, Depends(get_database)],
 ) -> User:
     return await db.users.create(name=name)
 
@@ -235,7 +239,7 @@ Stratae doesn't have a complex framework to configure or objects to pass around.
 @inject
 async def create_user(
     name: str,
-    db: Injected[Database, Depends(get_database)],
+    db: Annotated[Database, Depends(get_database)],
 ) -> User:
     return await db.users.create(name=name)
 
@@ -293,20 +297,19 @@ Sync functions only accept sync checks. Async functions accept a mix of sync and
 The design of Stratae means integrating with other tools or frameworks is typically easy. For FastAPI, an ASGI middleware that starts the request lifecycle is enough to add Stratae's lifecycle management.
 
 ```python
+from typing import Annotated
 from fastapi import FastAPI
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 from stratae.integrations import RequestLifecycleMiddleware
 from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
 
 
+lifecycle = AsyncLifecycle([Scope("request")])
+
 app = FastAPI()
-lifecycle = AsyncLifecycle([Scope("request", "context")])
-
-# Add the middleware that starts a lifecycle request
-app.add_middleware(RequestLifecycleMiddleware, lifecycle, "request")
+app.router.route_class = scoped_route(lifecycle, "request")
 
 
-# Every FastAPI request will now get the same session within that request
 @lifecycle.cache("request")
 @async_resource
 async def get_session():
@@ -326,7 +329,7 @@ async def get_session():
 async def post_user(
     name: str,
     # Using Stratae Depends
-    db: Injected[Session, Depends(get_session)],
+    db: Annotated[Session, Depends(get_session)],
 ):
     await db.users.create(name=name)
 ```

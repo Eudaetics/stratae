@@ -16,11 +16,8 @@ envelope for the duration of a block, restoring the previous one on exit.
 Called with no envelope, it creates a child of the current one if there is
 one, or a fresh root envelope otherwise.
 
-```{rubric} Example:
-```
+````{example} Tracing a chained event through envelopes
 ```{code-block} python
-:caption: A DirectBus emission opens an envelope that a handler can read
-
 from stratae.events import DirectBus, PubSub, event
 from stratae.events.envelope import Envelope
 
@@ -28,24 +25,37 @@ class OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_placed = event(OrderPlaced, PubSub)
+class ShipmentScheduled:
+    def __init__(self, order_id: int) -> None:
+        self.order_id = order_id
+
+order_placed_event = event(OrderPlaced, PubSub)
+shipment_scheduled_event = event(ShipmentScheduled, PubSub)
 
 bus = DirectBus(use_envelope=True)
-place_order = bus.bind(order_placed)
+place_order = bus.bind(order_placed_event)
+schedule_shipment = bus.bind(shipment_scheduled_event)
 
-seen: list[Envelope | None] = []
-
-@bus.handle(order_placed)
+@bus.handle(order_placed_event)
 def on_order_placed(order: OrderPlaced) -> None:
-    # DirectBus opened an envelope scope for this emission, so a handler
-    # can read it to correlate its own logs or downstream events.
-    seen.append(Envelope.current())
+    print(f"order placed:       {Envelope.current()}")
+    # Emitting from inside a handler opens a child envelope: same
+    # correlation_id, with causation_id set to this envelope's message_id.
+    # The payoff is bigger once a chain like this crosses a real transport,
+    # but it threads through in-process dispatch the same way.
+    schedule_shipment(order_id=order.order_id)
+
+@bus.handle(shipment_scheduled_event)
+def on_shipment_scheduled(shipment: ShipmentScheduled) -> None:
+    print(f"shipment scheduled: {Envelope.current()}")
 
 place_order(order_id=42)
-
-envelope = seen[0]
-print(envelope.message_id)
 ```
+```{output}
+order placed:       Envelope(message_id=..f9fa, correlation_id=..740c, causation_id=None)
+shipment scheduled: Envelope(message_id=..7d86, correlation_id=..740c, causation_id=..f9fa)
+```
+````
 
 """
 

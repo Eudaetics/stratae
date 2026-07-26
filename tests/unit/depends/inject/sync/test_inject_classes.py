@@ -1,6 +1,8 @@
 """Test suite for verifying dependency injection in class methods and constructors."""
 
-from stratae.depends import Depends, Injected, inject
+from typing import Annotated
+
+from stratae.depends import Depends, inject
 
 
 def get_dep():
@@ -20,7 +22,7 @@ def test_class_init():
     # Arrange
     class SimpleObject:
         @inject
-        def __init__(self, value: Injected[int, Depends(get_dep)]):
+        def __init__(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
     # Act
@@ -43,7 +45,7 @@ def test_nested_class_injection():
 
     class DepClass:
         @inject
-        def __init__(self, value: Injected[int, Depends(get_dep)]):
+        def __init__(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
         def get_value(self):
@@ -51,7 +53,7 @@ def test_nested_class_injection():
 
     class SimpleObject:
         @inject
-        def __init__(self, dep: Injected[DepClass, Depends(DepClass)]):
+        def __init__(self, dep: Annotated[DepClass, Depends(DepClass)]):
             self.dep = dep
 
     # Act
@@ -76,7 +78,7 @@ def test_method_injection_in_class():
             self.value = 0
 
         @inject
-        def set_value(self, value: Injected[int, Depends(get_dep)]):
+        def set_value(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
     # Act
@@ -102,7 +104,7 @@ def test_static_method_injection_in_class():
 
         @staticmethod
         @inject
-        def set_value(value: Injected[int, Depends(get_dep)]):
+        def set_value(value: Annotated[int, Depends(get_dep)]):
             SimpleObject.value = value
 
     # Act
@@ -127,7 +129,7 @@ def test_class_method_injection_in_class():
 
         @classmethod
         @inject
-        def set_value(cls, value: Injected[int, Depends(get_dep)]):
+        def set_value(cls, value: Annotated[int, Depends(get_dep)]):
             return value
 
     # Act
@@ -149,7 +151,7 @@ def test_inherited_class_injection():
     # Arrange
     class BaseClass:
         @inject
-        def __init__(self, value: Injected[int, Depends(get_dep)]):
+        def __init__(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
     class ChildClass(BaseClass):
@@ -175,13 +177,13 @@ def test_inherited_class_method_injection():
     class BaseClass:
         @classmethod
         @inject
-        def get_value(cls, value: Injected[int, Depends(get_dep)]):
+        def get_value(cls, value: Annotated[int, Depends(get_dep)]):
             return value
 
     class ChildClass(BaseClass):
         @classmethod
         @inject
-        def get_value(cls, value: Injected[int, Depends(get_dep)]):
+        def get_value(cls, value: Annotated[int, Depends(get_dep)]):
             return value + 1
 
     # Act
@@ -205,7 +207,7 @@ def test_injection_with_other_params():
     # Arrange
     class SimpleObject:
         @inject
-        def __init__(self, value: Injected[int, Depends(get_dep)], other: str = "default"):
+        def __init__(self, value: Annotated[int, Depends(get_dep)], other: str = "default"):
             self.value = value
             self.other = other
 
@@ -234,8 +236,8 @@ def test_multiple_injections():
         @inject
         def __init__(
             self,
-            value: Injected[int, Depends(get_dep)],
-            text: Injected[str, Depends(get_another_dep)],
+            value: Annotated[int, Depends(get_dep)],
+            text: Annotated[str, Depends(get_another_dep)],
         ):
             self.value = value
             self.text = text
@@ -282,7 +284,7 @@ def test_injecting_classes():
     # Arrange
 
     class DepClass:
-        def __init__(self, value: Injected[int, Depends(get_dep)]):
+        def __init__(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
         def get_value(self):
@@ -290,7 +292,7 @@ def test_injecting_classes():
 
     class SimpleObject:
         @inject
-        def __init__(self, dep: Injected[DepClass, Depends(DepClass)]):
+        def __init__(self, dep: Annotated[DepClass, Depends(DepClass)]):
             self.dep = dep
 
     # Act

@@ -8,9 +8,6 @@ that tracks that provider's resolution and override state. Passing the
 same callable twice returns the same
 {py:class}`Provider <stratae.depends._provide.Provider>`. Every
 injection site sharing a provider shares one registration.
-{py:data}`Injected` is provided as an alias of `Annotated` to make
-injected parameters easier to spot in a signature, but using it is not
-required since {py:func}`Depends` also works directly inside `Annotated`.
 
 The {py:func}`inject` decorator inspects a function's signature at
 decoration time, finds parameters annotated with {py:func}`Depends`, and
@@ -101,9 +98,6 @@ from stratae.depends.exceptions import (
     InjectionSignatureError,
 )
 
-Injected = Annotated
-"""Alias `Annotated` for clearer semantics when typing a parameter that will be injected."""
-
 
 @overload
 def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> Provider: ...  # noqa: S1542
@@ -117,7 +111,7 @@ def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:  # n
     """
     Mark a callable as the provider for an injected parameter.
 
-    Used inside an annotation, e.g. `Injected[int, Depends(get_value)]`
+    Used inside an annotation, e.g. `Annotated[int, Depends(get_value)]`
     or `Annotated[int, Depends(get_value)]`. Passing the same callable
     twice returns the same {py:class}`Provider <stratae.depends._provide.Provider>`,
     so every injection site of a provider shares one registration.
@@ -149,9 +143,9 @@ def inject(
     sig: Callable[..., Any] | None = None,
 ) -> Any:
     """
-    Resolve a function's Injected parameters and strip them from calls.
+    Resolve a function's injected parameters and strip them from calls.
 
-    Each parameter annotated `Injected[T, Depends(provider)]` is filled by
+    Each parameter annotated `Annotated[T, Depends(provider)]` is filled by
     its provider when the function is called; callers do not pass it. The
     dependency graph, including providers' own injected parameters, is
     resolved once at decoration time.

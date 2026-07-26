@@ -10,7 +10,8 @@ Python's native features, it works anywhere: APIs, CLIs, workers, and tests.
 :caption: Cache a database connection
 
 import pytest
-from stratae.depends import Depends, Injected, inject
+from typing import Annotated
+from stratae.depends import Depends, inject
 from stratae.lifecycle import Lifecycle, Scope
 
 class Database:
@@ -29,11 +30,11 @@ def get_database() -> Database:
     return Database(url="postgresql://localhost/app")
 
 @inject
-def create_user(name: str, db: Injected[Database, Depends(get_database)]):
+def create_user(name: str, db: Annotated[Database, Depends(get_database)]):
     return db.create_user(name)
 
 @inject
-def get_user(name: str, db: Injected[Database, Depends(get_database)]) -> str:
+def get_user(name: str, db: Annotated[Database, Depends(get_database)]) -> str:
     assert name in db.users, f"no such user: {name}"
     return name
 

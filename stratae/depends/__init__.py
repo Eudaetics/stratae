@@ -9,11 +9,6 @@ injected parameters of their own, resolved recursively when the injected
 function is decorated. {py:func}`Depends <stratae.depends.inject.Depends>`
 marks a callable as a provider.
 
-{py:data}`Injected <stratae.depends.inject.Injected>` is provided as an
-alias of `Annotated` to highlight injected parameters. Using that alias
-is not required. Defining a shared Annotated type is supported, such as
-`type UserDep = Annotated[User, Depends(get_user)]`.
-
 Sync functions may only depend on sync providers, validated at
 decoration time. Async functions may mix sync and async providers.
 Generator and async generator functions are supported.
@@ -26,7 +21,8 @@ not interfere with each other.
 
 ````{example} Injecting a repository and swapping in a test mock
 ```{code-block} python
-from stratae.depends import Depends, Injected, inject, override
+from typing import Annotated
+from stratae.depends import Depends, inject, override
 
 class UserRepository:
     def __init__(self, users: dict[int, str]):
@@ -40,7 +36,7 @@ def get_user_repository() -> UserRepository:
 
 @inject
 def greet(
-    user_id: int, repo: Injected[UserRepository, Depends(get_user_repository)]
+    user_id: int, repo: Annotated[UserRepository, Depends(get_user_repository)]
 ) -> str:
     print(f"Hello, {repo.get_name(user_id)}!")
 
@@ -67,13 +63,12 @@ of the module's API.
 
 """
 
-from .inject import Depends, Injected, inject
+from .inject import Depends, inject
 from .override import override, overrides
 
 __all__ = [
     "Depends",
     "override",
     "overrides",
-    "Injected",
     "inject",
 ]

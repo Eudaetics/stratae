@@ -14,53 +14,37 @@ inspect an `EventConfig`'s discriminant: {py:func}`is_request` reports
 whether it's a subscripted `Request`, and {py:func}`reply_type` recovers
 the reply type from one.
 
-```{rubric} Example:
-```
+````{example} Reusing one event definition across bus instances
 ```{code-block} python
-:caption: A create-user request whose responder logs a pub/sub event as a side effect
-
-from stratae.events import DirectBus, PubSub, Request, event
+from stratae.events import DirectBus, PubSub, event
 
 class LogMessage:
     def __init__(self, text: str) -> None:
         self.text = text
 
-class CreateUserSchema:
-    def __init__(self, username: str) -> None:
-        self.username = username
+log_message_event = event(LogMessage, PubSub)
 
-class User:
-    def __init__(self, username: str) -> None:
-        self.username = username
+# The same EventConfig carries no bus-specific state, so it binds
+# to any number of different bus instances.
+primary = DirectBus()
+audit = DirectBus()
 
-log_message = event(LogMessage, PubSub)
-create_user = event(CreateUserSchema, Request[User])
+primary_log = primary.bind(log_message_event)
+audit_log = audit.bind(log_message_event)
 
-bus = DirectBus()
-# DirectBus takes no routing config since it dispatches in-process. A real
-# broker's bind() would take that config here instead (e.g. a queue or
-# exchange name), once, so it isn't repeated at every call site.
-log = bus.bind(log_message)
-create = bus.bind(create_user)
-
-logged: list[str] = []
-
-@bus.handle(log_message)
+@primary.handle(log_message_event)
 def write_to_log(entry: LogMessage) -> None:
-    logged.append(entry.text)
+    print(f"log: {entry.text}")
 
-@bus.handle(create_user)
-def handle_create_user(cmd: CreateUserSchema) -> User:
-    log(text=f"creating user {cmd.username}")
-    return User(username=cmd.username)
-
-created = create(username="ada")
-assert created.username == "ada"
-assert logged == ["creating user ada"]
+primary_log(text="hello")
 ```
+```{output}
+log: hello
+```
+````
 
 See {py:class}`EventConfig`, {py:class}`AsyncEventConfig`, {py:func}`event`,
-{py:func}`is_request`, and {py:func}`reply_type` for additional examples.
+{py:func}`is_request`, and {py:func}`reply_type` for the rest of the module's API.
 
 """
 
@@ -126,22 +110,6 @@ class EventConfig[**P, E: Any, T: EventType]:
     is fully checked. Passing the bare class with
     `payload_type=Wrapped[OrderPlaced]` leaves any parameter typed with `T`
     unchecked.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Binding a plain payload class to a pub/sub dispatch pattern
-
-    from stratae.events import EventConfig, PubSub
-
-    class LogMessage:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    log_message = EventConfig(LogMessage, PubSub)
-    payload = log_message.factory(text="hello")
-    ```
-
     """
 
     __slots__ = ("_factory", "event_type", "name", "payload_type")
@@ -203,27 +171,6 @@ class AsyncEventConfig[**P, E: Any, T: EventType](EventConfig[P, E, T]):
     still end up with unchecked argument types even when `payload_type`
     looks precise. Where practical, prefer a concrete factory whose
     parameters and return type are already fully resolved.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Binding an async payload factory to a pub/sub dispatch pattern
-
-    import asyncio
-    from stratae.events import AsyncEventConfig, PubSub
-
-    class LogMessage:
-        def __init__(self, text: str) -> None:
-            self.text = text
-
-    async def make_log_message(text: str) -> LogMessage:
-        await asyncio.sleep(0)  # e.g. an async lookup before constructing the payload
-        return LogMessage(text=text)
-
-    log_message = AsyncEventConfig(make_log_message, PubSub, payload_type=LogMessage)
-    payload = asyncio.run(log_message.factory(text="hello"))
-    ```
-
     """
 
     __slots__ = ("_async_factory",)
@@ -321,29 +268,6 @@ def event[**P, E: Any, T: EventType](
         for an async factory) binding `factory` to `event_type`.
     :raises TypeError: If `event_type` is an unsubscripted `Request`, or if
         `payload_type` is omitted for a factory that isn't itself a class.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Defining a pub/sub event and emitting it through a bus
-
-    from stratae.events import DirectBus, PubSub, event
-
-    class OrderPlaced:
-        def __init__(self, order_id: int) -> None:
-            self.order_id = order_id
-
-    order_placed = event(OrderPlaced, PubSub)
-
-    bus = DirectBus()
-
-    @bus.handle(order_placed)
-    def on_order_placed(order: OrderPlaced) -> None:
-        print(f"order {order.order_id} placed")
-
-    bus.emit(OrderPlaced(order_id=42), order_placed)
-    ```
-
     """
     if is_async_factory(factory):
         return AsyncEventConfig(factory, event_type, name=name, payload_type=payload_type)
@@ -361,33 +285,6 @@ def is_request[**P, S: Any, T: EventType](event: EventConfig[P, S, T]) -> bool:
     :returns: `True` when the event's discriminant is a subscripted
         {py:class}`Request` (or a subscripted subclass of it), `False`
         otherwise.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Distinguishing a request/reply event from a pub/sub event
-
-    from stratae.events import PubSub, Request, event, is_request
-
-    class OrderPlaced:
-        def __init__(self, order_id: int) -> None:
-            self.order_id = order_id
-
-    class BookFound:
-        def __init__(self, title: str) -> None:
-            self.title = title
-
-    class FindBook:
-        def __init__(self, query: str) -> None:
-            self.query = query
-
-    order_placed = event(OrderPlaced, PubSub)
-    find_book = event(FindBook, Request[BookFound])
-
-    assert not is_request(order_placed)
-    assert is_request(find_book)
-    ```
-
     """
     origin: object = get_origin(event.event_type)
     return isinstance(origin, type) and issubclass(origin, Request)
@@ -408,26 +305,6 @@ def reply_type[**P, S: Any, R](event: EventConfig[P, S, Request[R]]) -> type[R]:
     :raises TypeError: If the event's discriminant is not a subscripted
         `Request`. Unreachable for type-checked callers; guards dynamic
         construction paths.
-
-    ```{rubric} Example:
-    ```
-    ```{code-block} python
-    :caption: Recovering a request event's reply type at runtime
-
-    from stratae.events import Request, event, reply_type
-
-    class FindBook:
-        def __init__(self, query: str) -> None:
-            self.query = query
-
-    class BookFound:
-        def __init__(self, title: str) -> None:
-            self.title = title
-
-    find_book = event(FindBook, Request[BookFound])
-    assert reply_type(find_book) is BookFound
-    ```
-
     """
     if not is_request(event):
         raise TypeError(_NOT_A_REQUEST)
