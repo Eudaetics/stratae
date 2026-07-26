@@ -159,3 +159,7 @@ Use [Context](context.md) to carry it as a `ContextVar`-backed value. Take it fu
 :::{dropdown} I need a connection to close automatically, even on error.
 Use [Lifecycle](lifecycle.md)'s `resource` to wrap a generator so the cleanup code after `yield` runs when the scope exits, regardless of how it ended.
 :::
+
+:::{dropdown} I need a different implementation depending on the user, tenant, environment, or feature flag.
+Use a Dependency Injection provider that returns the correct implementation, or use [Context](context.md) as a shortcut to set it explicitly. Either way, the routing logic lives in one place instead of scattered through business logic.
+:::
