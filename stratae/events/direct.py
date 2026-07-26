@@ -29,47 +29,72 @@ constructed with `use_envelope=True`.
 
 ````{example} Sending events over a DirectBus
 ```{code-block} python
+from itertools import count
+from types import SimpleNamespace
 from stratae.events.direct import DirectBus
-from stratae.events.event import EventConfig, PubSub, Request
+from stratae.events.event import PubSub, Request, event
 
-class BookCreated:
-    def __init__(self, title: str) -> None:
-        self.title = title
+class PlaceOrder:
+    def __init__(self, customer: str, item: str) -> None:
+        self.customer = customer
+        self.item = item
 
-class BookQuery:
-    def __init__(self, title: str) -> None:
-        self.title = title
+class Order:
+    def __init__(self, order_id: int, customer: str, item: str) -> None:
+        self.order_id = order_id
+        self.customer = customer
+        self.item = item
 
-class Book:
-    def __init__(self, title: str) -> None:
-        self.title = title
+class OrderPlaced:
+    def __init__(self, order_id: int, item: str) -> None:
+        self.order_id = order_id
+        self.item = item
 
 bus = DirectBus()
-catalog: dict[str, Book] = {}
+inventory = {"widget": 5}
+reservations: list[str] = []
+shipments: list[str] = []
 
-book_created = EventConfig(BookCreated, PubSub)
-create_book = bus.bind(book_created)
+place_order_event = event(PlaceOrder, Request[Order])
+order_placed_event = event(OrderPlaced, PubSub)
 
-@bus.handle(book_created)
-def add_to_catalog(created: BookCreated) -> None:
-    catalog[created.title] = Book(title=created.title)
+# Grouping the events for later simplicity
+order = SimpleNamespace(
+    # DirectBus.bind doesn't need a separate routing config
+    place=bus.bind(place_order_event),
+    placed=bus.bind(order_placed_event),
+)
 
-create_book(title="Dune")
+@bus.handle(order_placed_event)
+def reserve_inventory(placed: OrderPlaced) -> None:
+    inventory[placed.item] -= 1
+    reservations.append(
+        f"reserved 1 {placed.item}, {inventory[placed.item]} left"
+    )
 
-book_requested = EventConfig(BookQuery, Request[Book])
-find_book = bus.bind(book_requested)
+@bus.handle(order_placed_event)
+def schedule_shipment(placed: OrderPlaced) -> None:
+    shipments.append(f"scheduled shipment for order {placed.order_id}")
 
-@bus.handle(book_requested)
-def lookup(query: BookQuery) -> Book:
-    return catalog[query.title]
+order_ids = count(1)
 
-# The request responder reads what the pub/sub handler wrote, confirming
-# the two events actually feed the same catalog rather than two unrelated payloads.
-assert find_book(title="Dune") is catalog["Dune"]
+@bus.handle(place_order_event)
+def handle_place_order(cmd: PlaceOrder) -> Order:
+    new_order = Order(
+        order_id=next(order_ids), customer=cmd.customer, item=cmd.item
+    )
+    order.placed(order_id=new_order.order_id, item=new_order.item)
+    return new_order
+
+customer_order = order.place(customer="ada", item="widget")
+print(f"order {customer_order.order_id} placed for {customer_order.customer}")
+print(reservations[0])
+print(shipments[0])
 ```
 ```{output}
-log: order 42 created
-created order: 42
+order 1 placed for ada
+reserved 1 widget, 4 left
+scheduled shipment for order 1
 ```
 ````
 """

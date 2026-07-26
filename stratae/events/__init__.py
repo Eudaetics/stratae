@@ -60,19 +60,19 @@ class User:
     def __init__(self, username: str) -> None:
         self.username = username
 
-log_message = event(LogMessage, PubSub)
-create_user = event(CreateUserSchema, Request[User])
+log_message_event = event(LogMessage, PubSub)
+create_user_event = event(CreateUserSchema, Request[User])
 
 bus = DirectBus(use_envelope=True)
-log = bus.bind(log_message)
-create = bus.bind(create_user)
+log = bus.bind(log_message_event)
+create = bus.bind(create_user_event)
 
-@bus.handle(log_message)
+@bus.handle(log_message_event)
 def write_to_log(entry: LogMessage) -> None:
     print(f"log: {entry.text}")
     print(f"  {Envelope.current()}")
 
-@bus.handle(create_user)
+@bus.handle(create_user_event)
 def handle_create_user(cmd: CreateUserSchema) -> User:
     print("create envelope:")
     print(f"  {Envelope.current()}")
