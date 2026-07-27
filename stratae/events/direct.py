@@ -5,13 +5,20 @@ from collections import defaultdict
 from inspect import iscoroutinefunction
 from typing import Any, Awaitable, Callable, Protocol, overload
 
-from stratae.events.bound import AsyncBoundEvent, BoundEvent, abind, bind
+from stratae.events.bound import (
+    AsyncBoundEvent,
+    AsyncFactoryBoundEvent,
+    BoundEvent,
+    FactoryBoundEvent,
+    abind,
+    bind,
+)
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, PubSub, Request, is_request
+from stratae.events.event import Event, PubSub, Request, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.handler import Handler
 
-_AnyEventConfig = EventConfig[Any, Any, Any]
+_AnyEvent = Event[Any, Any]
 
 _ASYNC_HANDLER_REJECTED = (
     "DirectBus dispatches synchronously and cannot await async handlers;"
@@ -22,7 +29,7 @@ _ASYNC_HANDLER_REJECTED = (
 class _HandlerDecorator[S: Any](Protocol):
     """Decorator form of ``handle`` for pub/sub events: registers and returns the ``Handler``."""
 
-    def __call__[R](self, fn: Callable[[S], R]) -> Handler[[S], _AnyEventConfig, R]:
+    def __call__[R](self, fn: Callable[[S], R]) -> Handler[[S], _AnyEvent, R]:
         """Register ``fn`` as a handler and return its ``Handler``."""
         ...
 
@@ -33,9 +40,9 @@ class _AsyncResponderDecorator[S: Any, R](Protocol):
     @overload
     def __call__(
         self, fn: Callable[[S], Awaitable[R]]
-    ) -> Handler[[S], _AnyEventConfig, Awaitable[R]]: ...
+    ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
     @overload
-    def __call__(self, fn: Callable[[S], R]) -> Handler[[S], _AnyEventConfig, R]: ...
+    def __call__(self, fn: Callable[[S], R]) -> Handler[[S], _AnyEvent, R]: ...
 
 
 class BaseDirectBus:
@@ -50,18 +57,14 @@ class BaseDirectBus:
 
     def __init__(self) -> None:
         """Initialise the handler registry."""
-        self._handlers: dict[_AnyEventConfig, set[Handler[Any, _AnyEventConfig, Any]]] = (
-            defaultdict(set)
-        )
+        self._handlers: dict[_AnyEvent, set[Handler[Any, _AnyEvent, Any]]] = defaultdict(set)
 
-    def _register[**P, R](
-        self, config: _AnyEventConfig, fn: Callable[P, R]
-    ) -> Handler[P, _AnyEventConfig, R]:
-        handler: Handler[P, _AnyEventConfig, R] = Handler(fn, config)
+    def _register[**P, R](self, config: _AnyEvent, fn: Callable[P, R]) -> Handler[P, _AnyEvent, R]:
+        handler: Handler[P, _AnyEvent, R] = Handler(fn, config)
         self._handlers[config].add(handler)
         return handler
 
-    def remove(self, handler: Handler[Any, _AnyEventConfig, Any]) -> None:
+    def remove(self, handler: Handler[Any, _AnyEvent, Any]) -> None:
         """
         Remove a previously registered handler.
 
@@ -71,7 +74,7 @@ class BaseDirectBus:
         """
         self._handlers[handler.config].discard(handler)
 
-    def _single_responder(self, event: _AnyEventConfig) -> Handler[Any, _AnyEventConfig, Any]:
+    def _single_responder(self, event: _AnyEvent) -> Handler[Any, _AnyEvent, Any]:
         responders = self._handlers.get(event)
         if not responders:
             raise NoResponderError(f"no responder registered for request event '{event.name}'")
@@ -88,10 +91,10 @@ class DirectBus(BaseDirectBus):
     """
     In-process, synchronous event bus with no routing config.
 
-    Bind ``DirectBus.emit`` to an ``EventConfig`` via ``bind`` to create a
-    callable that constructs payloads and dispatches them to registered
-    handlers.  Register handlers with ``handle``, using the same
-    ``EventConfig`` as the routing key.  Each ``handle`` call is an
+    Bind ``DirectBus.emit`` to an ``Event`` via ``bind`` to create a
+    callable that dispatches payloads to registered handlers, optionally
+    building them from a factory.  Register handlers with ``handle``, using
+    the same ``Event`` as the routing key.  Each ``handle`` call is an
     independent registration; the same callable may be registered multiple
     times.
 
@@ -112,16 +115,16 @@ class DirectBus(BaseDirectBus):
 
         bus = DirectBus()
 
-        book_created = EventConfig(Book, PubSub)
-        create_book = bus.bind(book_created)
+        book_created = Event(Book, PubSub)
+        create_book = bus.bind(book_created, factory=Book)
 
         @bus.handle(book_created)
         def save_book(book: Book) -> None: ...
 
         create_book(title="Dune", author="Herbert")
 
-        book_requested = EventConfig(BookQuery, Request[Book])
-        find_book = bus.bind(book_requested)
+        book_requested = Event(BookQuery, Request[Book])
+        find_book = bus.bind(book_requested, factory=BookQuery)
 
         @bus.handle(book_requested)
         def lookup(query: BookQuery) -> Book: ...
@@ -133,39 +136,49 @@ class DirectBus(BaseDirectBus):
     def __init__(self, *, use_envelope: bool = False) -> None:
         """Initialise the bus with optional envelope tracking."""
         super().__init__()
-        self._dispatch: Callable[[Any, _AnyEventConfig], Any] = (
+        self._dispatch: Callable[[Any, _AnyEvent], Any] = (
             self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
 
     @overload
     def bind[**P, S: Any, R](
-        self, event: EventConfig[P, S, Request[R]]
-    ) -> BoundEvent[P, S, Request[R], None, R]: ...
+        self, event: Event[S, Request[R]], *, factory: Callable[P, S]
+    ) -> FactoryBoundEvent[P, S, Request[R], None, R]: ...
 
     @overload
     def bind[**P, S: Any](
-        self, event: EventConfig[P, S, PubSub]
-    ) -> BoundEvent[P, S, PubSub, None, None]: ...
-
-    def bind(self, event: _AnyEventConfig) -> BoundEvent[Any, Any, Any, None, Any]:
-        """Return a ``BoundEvent`` pre-populated with this bus's emit and ``config=None``."""
-        return bind(self.emit, event, config=None, serializer=None)
+        self, event: Event[S, PubSub], *, factory: Callable[P, S]
+    ) -> FactoryBoundEvent[P, S, PubSub, None, None]: ...
 
     @overload
-    def emit[**P, S: Any, R](
+    def bind[S: Any, R](
+        self, event: Event[S, Request[R]]
+    ) -> BoundEvent[S, Request[R], None, R]: ...
+
+    @overload
+    def bind[S: Any](self, event: Event[S, PubSub]) -> BoundEvent[S, PubSub, None, None]: ...
+
+    def bind(
+        self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
+    ) -> FactoryBoundEvent[Any, Any, Any, None, Any] | BoundEvent[Any, Any, None, Any]:
+        """Return a ``BoundEvent`` or ``FactoryBoundEvent`` for this bus, with ``config=None``."""
+        return bind(self.emit, event, factory=factory, config=None, serializer=None)
+
+    @overload
+    def emit[S: Any, R](
         self,
         payload: S,
-        event: EventConfig[P, S, Request[R]],
+        event: Event[S, Request[R]],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> R: ...
 
     @overload
-    def emit[**P, S: Any](
+    def emit[S: Any](
         self,
         payload: S,
-        event: EventConfig[P, S, PubSub],
+        event: Event[S, PubSub],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -174,7 +187,7 @@ class DirectBus(BaseDirectBus):
     def emit(
         self,
         payload: Any,
-        event: _AnyEventConfig,
+        event: _AnyEvent,
         config: None = None,
         *,
         serializer: Callable[..., Any] | None = None,
@@ -188,8 +201,8 @@ class DirectBus(BaseDirectBus):
         propagate its exceptions directly.
 
         Args:
-            payload:    The constructed payload instance to dispatch.
-            event:      The ``EventConfig`` used as the handler lookup key.
+            payload:    The payload instance to dispatch.
+            event:      The ``Event`` used as the handler lookup key.
             config:     Unused; ``DirectBus`` requires no routing config.
             serializer: Unused; ``DirectBus`` requires no serializer.
 
@@ -206,36 +219,36 @@ class DirectBus(BaseDirectBus):
         return self._dispatch(payload, event)
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEventConfig, R]: ...
+    ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: None = None,
-    ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEventConfig, R]]: ...
+    ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, PubSub],
+        config: Event[S, PubSub],
         fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEventConfig, R]: ...
+    ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[**P, S: Any](
+    def handle[S: Any](
         self,
-        config: EventConfig[P, S, PubSub],
+        config: Event[S, PubSub],
         fn: None = None,
     ) -> _HandlerDecorator[S]: ...
 
     def handle(
         self,
-        config: _AnyEventConfig,
+        config: _AnyEvent,
         fn: Callable[..., Any] | None = None,
     ) -> Any:
         """
@@ -251,7 +264,7 @@ class DirectBus(BaseDirectBus):
         to ``remove`` later.
 
         Args:
-            config: The ``EventConfig`` used as the handler routing key.
+            config: The ``Event`` used as the handler routing key.
             fn:     When supplied, registers ``fn`` directly and returns its
                     ``Handler``.  When omitted, returns a decorator that
                     registers and returns the ``Handler``.
@@ -260,25 +273,23 @@ class DirectBus(BaseDirectBus):
         if fn is not None:
             return self._register(config, fn)
 
-        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEventConfig, Any]:
+        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEvent, Any]:
             return self._register(config, f)
 
         return decorator
 
-    def _register[**P, R](
-        self, config: _AnyEventConfig, fn: Callable[P, R]
-    ) -> Handler[P, _AnyEventConfig, R]:
+    def _register[**P, R](self, config: _AnyEvent, fn: Callable[P, R]) -> Handler[P, _AnyEvent, R]:
         if iscoroutinefunction(fn):
             raise TypeError(_ASYNC_HANDLER_REJECTED)
         return super()._register(config, fn)
 
-    def _dispatch_plain(self, payload: Any, event: _AnyEventConfig) -> Any:
+    def _dispatch_plain(self, payload: Any, event: _AnyEvent) -> Any:
         if is_request(event):
             return self._dispatch_request(payload, event)
         self._dispatch_fanout(payload, event)
         return None
 
-    def _dispatch_fanout(self, payload: Any, event: _AnyEventConfig) -> None:
+    def _dispatch_fanout(self, payload: Any, event: _AnyEvent) -> None:
         exceptions: list[Exception] = []
         handlers = list(self._handlers.get(event, ()))
         for handler in handlers:
@@ -289,10 +300,10 @@ class DirectBus(BaseDirectBus):
         if exceptions:
             raise ExceptionGroup("Handler Errors", exceptions)
 
-    def _dispatch_request(self, payload: Any, event: _AnyEventConfig) -> Any:
+    def _dispatch_request(self, payload: Any, event: _AnyEvent) -> Any:
         return self._single_responder(event)(payload)
 
-    def _dispatch_in_envelope(self, payload: Any, event: _AnyEventConfig) -> Any:
+    def _dispatch_in_envelope(self, payload: Any, event: _AnyEvent) -> Any:
         with Envelope.scope():
             return self._dispatch_plain(payload, event)
 
@@ -301,12 +312,13 @@ class AsyncDirectBus(BaseDirectBus):
     """
     In-process, asynchronous event bus with no routing config.
 
-    Bind ``AsyncDirectBus.emit`` to an ``EventConfig`` via ``abind`` to create a
-    callable that constructs payloads and dispatches them to registered handlers.
-    Register handlers with ``handle``, using the same ``EventConfig`` as the
-    routing key.  Sync and async handlers are both supported; all are dispatched
-    concurrently via ``asyncio.gather``.  Each ``handle`` call is an independent
-    registration; the same callable may be registered multiple times.
+    Bind ``AsyncDirectBus.emit`` to an ``Event`` via ``abind`` to create a
+    callable that dispatches payloads to registered handlers, optionally
+    building them from a factory.  Register handlers with ``handle``, using
+    the same ``Event`` as the routing key.  Sync and async handlers are both
+    supported; all are dispatched concurrently via ``asyncio.gather``.  Each
+    ``handle`` call is an independent registration; the same callable may be
+    registered multiple times.
 
     Pub/sub events fan out to every registered handler and emit resolves to
     ``None``.  Request events dispatch to the registered responder, sync or
@@ -323,16 +335,16 @@ class AsyncDirectBus(BaseDirectBus):
     Example::
 
         bus = AsyncDirectBus()
-        order_placed = EventConfig(OrderPlaced, PubSub)
-        place_order = bus.bind(order_placed)
+        order_placed = Event(OrderPlaced, PubSub)
+        place_order = bus.bind(order_placed, factory=OrderPlaced)
 
         @bus.handle(order_placed)
         async def on_order(payload: OrderPlaced) -> None: ...
 
         await place_order(order_id=42)
 
-        book_requested = EventConfig(BookQuery, Request[Book])
-        find_book = bus.bind(book_requested)
+        book_requested = Event(BookQuery, Request[Book])
+        find_book = bus.bind(book_requested, factory=BookQuery)
 
         @bus.handle(book_requested)
         async def lookup(query: BookQuery) -> Book: ...
@@ -348,33 +360,49 @@ class AsyncDirectBus(BaseDirectBus):
 
     @overload
     def bind[**P, S: Any, R](
-        self, event: EventConfig[P, S, Request[R]]
-    ) -> AsyncBoundEvent[P, S, Request[R], None, R]: ...
+        self,
+        event: Event[S, Request[R]],
+        *,
+        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+    ) -> AsyncFactoryBoundEvent[P, S, Request[R], None, R]: ...
 
     @overload
     def bind[**P, S: Any](
-        self, event: EventConfig[P, S, PubSub]
-    ) -> AsyncBoundEvent[P, S, PubSub, None, None]: ...
-
-    def bind(self, event: _AnyEventConfig) -> AsyncBoundEvent[Any, Any, Any, None, Any]:
-        """Return an ``AsyncBoundEvent`` pre-populated with this bus's emit and ``config=None``."""
-        return abind(self.emit, event, config=None, serializer=None)
+        self,
+        event: Event[S, PubSub],
+        *,
+        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+    ) -> AsyncFactoryBoundEvent[P, S, PubSub, None, None]: ...
 
     @overload
-    async def emit[**P, S: Any, R](
+    def bind[S: Any, R](
+        self, event: Event[S, Request[R]]
+    ) -> AsyncBoundEvent[S, Request[R], None, R]: ...
+
+    @overload
+    def bind[S: Any](self, event: Event[S, PubSub]) -> AsyncBoundEvent[S, PubSub, None, None]: ...
+
+    def bind(
+        self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
+    ) -> AsyncFactoryBoundEvent[Any, Any, Any, None, Any] | AsyncBoundEvent[Any, Any, None, Any]:
+        """Return an ``AsyncBoundEvent`` or ``AsyncFactoryBoundEvent`` for this bus."""
+        return abind(self.emit, event, factory=factory, config=None, serializer=None)
+
+    @overload
+    async def emit[S: Any, R](
         self,
         payload: S,
-        event: EventConfig[P, S, Request[R]],
+        event: Event[S, Request[R]],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> R: ...
 
     @overload
-    async def emit[**P, S: Any](
+    async def emit[S: Any](
         self,
         payload: S,
-        event: EventConfig[P, S, PubSub],
+        event: Event[S, PubSub],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -383,7 +411,7 @@ class AsyncDirectBus(BaseDirectBus):
     async def emit(
         self,
         payload: Any,
-        event: _AnyEventConfig,
+        event: _AnyEvent,
         config: None = None,
         *,
         serializer: Callable[..., Any] | None = None,
@@ -400,8 +428,8 @@ class AsyncDirectBus(BaseDirectBus):
         propagate its exceptions directly.
 
         Args:
-            payload:    The constructed payload instance to dispatch.
-            event:      The ``EventConfig`` used as the handler lookup key.
+            payload:    The payload instance to dispatch.
+            event:      The ``Event`` used as the handler lookup key.
             config:     Unused; ``AsyncDirectBus`` requires no routing config.
             serializer: Unused; ``AsyncDirectBus`` requires no serializer.
 
@@ -421,43 +449,43 @@ class AsyncDirectBus(BaseDirectBus):
         return await self._dispatch(payload, event)
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: Callable[[S], Awaitable[R]],
-    ) -> Handler[[S], _AnyEventConfig, Awaitable[R]]: ...
+    ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEventConfig, R]: ...
+    ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: None = None,
     ) -> _AsyncResponderDecorator[S, R]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, PubSub],
+        config: Event[S, PubSub],
         fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEventConfig, R]: ...
+    ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[**P, S: Any](
+    def handle[S: Any](
         self,
-        config: EventConfig[P, S, PubSub],
+        config: Event[S, PubSub],
         fn: None = None,
     ) -> _HandlerDecorator[S]: ...
 
     def handle(
         self,
-        config: _AnyEventConfig,
+        config: _AnyEvent,
         fn: Callable[..., Any] | None = None,
     ) -> Any:
         """
@@ -472,7 +500,7 @@ class AsyncDirectBus(BaseDirectBus):
         to ``remove`` later.
 
         Args:
-            config: The ``EventConfig`` used as the handler routing key.
+            config: The ``Event`` used as the handler routing key.
             fn:     When supplied, registers ``fn`` directly and returns its
                     ``Handler``.  When omitted, returns a decorator that
                     registers and returns the ``Handler``.
@@ -481,37 +509,37 @@ class AsyncDirectBus(BaseDirectBus):
         if fn is not None:
             return self._register(config, fn)
 
-        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEventConfig, Any]:
+        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEvent, Any]:
             return self._register(config, f)
 
         return decorator
 
-    async def _dispatch(self, payload: Any, event: _AnyEventConfig) -> Any:
+    async def _dispatch(self, payload: Any, event: _AnyEvent) -> Any:
         if is_request(event):
             return await self._dispatch_request(payload, event)
         await self.dispatch(payload, config=event)
         return None
 
-    async def _dispatch_request(self, payload: Any, event: _AnyEventConfig) -> Any:
+    async def _dispatch_request(self, payload: Any, event: _AnyEvent) -> Any:
         responder = self._single_responder(event)
         if responder.is_async:
             return await responder(payload)
         return responder(payload)
 
-    async def dispatch(self, payload: Any, *, config: _AnyEventConfig) -> None:
+    async def dispatch(self, payload: Any, *, config: _AnyEvent) -> None:
         """
-        Invoke every handler registered for the given ``EventConfig`` concurrently.
+        Invoke every handler registered for the given ``Event`` concurrently.
 
         Sync handlers are called directly; async handlers are awaited.  Both
         are dispatched via ``asyncio.gather``.
 
         Args:
-            payload: The constructed payload instance to dispatch.
-            config:  The ``EventConfig`` used as the handler lookup key.
+            payload: The payload instance to dispatch.
+            config:  The ``Event`` used as the handler lookup key.
 
         """
 
-        async def _call(handler: Handler[Any, _AnyEventConfig, Any]) -> None:
+        async def _call(handler: Handler[Any, _AnyEvent, Any]) -> None:
             if handler.is_async:
                 await handler(payload)
             else:

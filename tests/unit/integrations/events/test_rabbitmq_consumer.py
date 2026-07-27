@@ -17,7 +17,7 @@ RabbitMQConsumer:
 - Delivered messages are decoded with the default unpack_json and the
   message is acked after the handler returns.
 - Async handlers are awaited.
-- The consumer's deserializer is called as deserializer(body, type=payload_type).
+- The consumer's deserializer is called as deserializer(body, type=schema).
 - A per-registration deserializer overrides the consumer's.
 - A failing handler nacks the message without requeue.
 - A failing deserialization nacks the message without requeue.
@@ -58,7 +58,7 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     Envelope,
-    EventConfig,
+    Event,
     Handler,
     PubSub,
 )
@@ -72,7 +72,7 @@ class _OrderPlaced:
         self.order_id = order_id
 
 
-_order_placed = EventConfig(_OrderPlaced, PubSub)
+_order_placed = Event(_OrderPlaced, PubSub)
 _config = RabbitMQConsumeConfig("orders")
 
 
@@ -301,12 +301,12 @@ async def test_async_handler_awaited(consumer: RabbitMQConsumer, channel: AsyncM
 
 async def test_constructor_deserializer_used(connect_mock: AsyncMock, channel: AsyncMock):
     """
-    The consumer's deserializer should decode bodies against the payload type.
+    The consumer's deserializer should decode bodies against the event's schema.
 
     Given: A consumer constructed with a custom Unpacker
     When: The registered callback receives a message
     Then: The deserializer should be called with the body and the event's
-          payload type, and the handler should receive its result
+          schema, and the handler should receive its result
     """
     # Arrange
     calls: list[tuple[bytes, type[Any]]] = []

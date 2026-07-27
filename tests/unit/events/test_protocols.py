@@ -13,18 +13,18 @@ Consumer:
 
 from typing import Any, Callable
 
-from stratae.events import Consumer, EmitCallable, EventConfig, EventType, Producer
+from stratae.events import Consumer, DispatchPattern, EmitCallable, Event, Producer
 
 
 class _SyncProducer:
-    def emit[**P, E: object, T: EventType](
-        self, payload: E, event: EventConfig[P, E, T], config: Any
+    def emit[E: object, T: DispatchPattern](
+        self, payload: E, event: Event[E, T], config: Any
     ) -> None: ...
 
 
 class _AsyncProducer:
-    async def emit[**P, E: object, T: EventType](
-        self, payload: E, event: EventConfig[P, E, T], config: Any
+    async def emit[E: object, T: DispatchPattern](
+        self, payload: E, event: Event[E, T], config: Any
     ) -> None: ...
 
 

@@ -1,27 +1,22 @@
 """
-Unit tests for the AsyncBoundEvent class.
+Unit tests for the AsyncBoundEvent class (the no-factory passthrough binding).
 
 This test suite verifies the following behaviors:
-- The EventConfig, emitter, and config are stored on initialization.
-- Awaiting the bound event constructs the payload with positional arguments.
-- Awaiting the bound event constructs the payload with keyword arguments.
-- Awaiting the bound event with mixed positional and keyword arguments forwards them correctly.
+- The Event, emitter, and config are stored on initialization.
+- Awaiting the bound event forwards an already-built payload to the emitter.
 - The resolved value from the async emitter is returned to the caller.
-- An async factory is awaited before its result is forwarded to the emitter.
 """
 
-import asyncio
 from typing import Any
 from unittest.mock import Mock, create_autospec
 
 import pytest
-from pytest_mock import MockerFixture
 
-from stratae.events import AsyncBoundEvent, EventConfig, PubSub
+from stratae.events import AsyncBoundEvent, Event, PubSub
 
 
 async def _async_emit(
-    payload: Any, event: EventConfig[..., Any, Any], config: Any, serializer: Any = None
+    payload: Any, event: Event[Any, Any], config: Any, serializer: Any = None
 ): ...
 
 
@@ -37,18 +32,18 @@ class _PaymentReceived:
 
 
 @pytest.fixture
-def payment_received() -> EventConfig[..., _PaymentReceived, PubSub]:
-    """Return a fresh EventConfig for ``_PaymentReceived``."""
-    return EventConfig(_PaymentReceived, PubSub)
+def payment_received() -> Event[_PaymentReceived, PubSub]:
+    """Return a fresh Event for ``_PaymentReceived``."""
+    return Event(_PaymentReceived, PubSub)
 
 
 def test_init_stores_event_emitter_and_config(
-    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+    payment_received: Event[_PaymentReceived, PubSub],
 ):
     """
-    Test that the EventConfig, emitter, and config are stored during initialization.
+    Test that the Event, emitter, and config are stored during initialization.
 
-    Given: An EventConfig, an async emitter callable, and a config object
+    Given: An Event, an async emitter callable, and a config object
     When: An AsyncBoundEvent is created
     Then: The event, emitter, and config attributes should reference the supplied objects
     """
@@ -63,7 +58,7 @@ def test_init_stores_event_emitter_and_config(
 
 
 def test_init_defaults_serializer_to_none(
-    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+    payment_received: Event[_PaymentReceived, PubSub],
 ):
     """
     Test that serializer defaults to None when not supplied.
@@ -80,7 +75,7 @@ def test_init_defaults_serializer_to_none(
 
 
 def test_init_stores_serializer(
-    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+    payment_received: Event[_PaymentReceived, PubSub],
 ):
     """
     Test that a supplied serializer is stored during initialization.
@@ -97,80 +92,27 @@ def test_init_stores_serializer(
     assert bound.serializer is serializer
 
 
-async def test_call_passes_positional_args_to_factory(
-    payment_received: EventConfig[..., _PaymentReceived, PubSub],
-    mocker: MockerFixture,
+async def test_call_forwards_payload_to_emitter(
+    payment_received: Event[_PaymentReceived, PubSub],
 ):
     """
-    Test that positional arguments are forwarded to the factory.
+    Test that awaiting the bound event forwards the payload unchanged.
 
-    Given: An AsyncBoundEvent wrapping an EventConfig whose factory accepts positional arguments
-    When: The AsyncBoundEvent is called and awaited with positional arguments
-    Then: The factory should be called with those values and the emitter
-          should receive the constructed payload, the EventConfig, and the config
+    Given: An AsyncBoundEvent with no factory
+    When: The AsyncBoundEvent is called and awaited with an already-built payload
+    Then: The emitter should receive that exact payload, the Event, and the config
     """
-    spy = mocker.spy(_PaymentReceived, "__init__")
     emitter = create_autospec(_async_emit)
     bound = AsyncBoundEvent(emitter, payment_received, config=None)
+    payload = _PaymentReceived(42, 100)
 
-    await bound(42, 100)
+    await bound(payload)
 
-    spy.assert_called_once_with(mocker.ANY, 42, 100)
-    emitter.assert_called_once_with(
-        _PaymentReceived(42, 100), payment_received, None, serializer=None
-    )
-
-
-async def test_call_passes_keyword_args_to_factory(
-    payment_received: EventConfig[..., _PaymentReceived, PubSub],
-    mocker: MockerFixture,
-):
-    """
-    Test that keyword arguments are forwarded to the factory.
-
-    Given: An AsyncBoundEvent wrapping an EventConfig whose factory accepts keyword arguments
-    When: The AsyncBoundEvent is called and awaited with keyword arguments
-    Then: The factory should be called with those values and the emitter
-          should receive the constructed payload, the EventConfig, and the config
-    """
-    spy = mocker.spy(_PaymentReceived, "__init__")
-    emitter = create_autospec(_async_emit)
-    bound = AsyncBoundEvent(emitter, payment_received, config=None)
-
-    await bound(payment_id=7, amount=50)
-
-    spy.assert_called_once_with(mocker.ANY, payment_id=7, amount=50)
-    emitter.assert_called_once_with(
-        _PaymentReceived(7, 50), payment_received, None, serializer=None
-    )
-
-
-async def test_call_passes_mixed_args_to_factory(
-    payment_received: EventConfig[..., _PaymentReceived, PubSub],
-    mocker: MockerFixture,
-):
-    """
-    Test that a mix of positional and keyword arguments are forwarded to the factory.
-
-    Given: An AsyncBoundEvent wrapping an EventConfig that accepts positional and keyword args
-    When: The AsyncBoundEvent is called and awaited with one positional and one keyword argument
-    Then: The factory should be called with args in the same form and the emitter
-          should receive the constructed payload, the EventConfig, and the config
-    """
-    spy = mocker.spy(_PaymentReceived, "__init__")
-    emitter = create_autospec(_async_emit)
-    bound = AsyncBoundEvent(emitter, payment_received, config=None)
-
-    await bound(42, amount=100)
-
-    spy.assert_called_once_with(mocker.ANY, 42, amount=100)
-    emitter.assert_called_once_with(
-        _PaymentReceived(42, 100), payment_received, None, serializer=None
-    )
+    emitter.assert_awaited_once_with(payload, payment_received, None, serializer=None)
 
 
 async def test_call_returns_emitter_result(
-    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+    payment_received: Event[_PaymentReceived, PubSub],
 ):
     """
     Test that the resolved value from the async emitter is returned to the caller.
@@ -189,13 +131,13 @@ async def test_call_returns_emitter_result(
     emitter.side_effect = _return
     bound = AsyncBoundEvent(emitter, payment_received, config=None)
 
-    result = await bound(42, 100)
+    result = await bound(_PaymentReceived(42, 100))
 
     assert result == "dispatched"
 
 
 async def test_call_forwards_serializer_to_emitter(
-    payment_received: EventConfig[..., _PaymentReceived, PubSub],
+    payment_received: Event[_PaymentReceived, PubSub],
 ) -> None:
     """
     Test that the bound serializer is forwarded to the emitter when awaited.
@@ -207,34 +149,8 @@ async def test_call_forwards_serializer_to_emitter(
     emitter = create_autospec(_async_emit)
     serializer = Mock()
     bound = AsyncBoundEvent(emitter, payment_received, config=None, serializer=serializer)
+    payload = _PaymentReceived(42, 100)
 
-    await bound(42, 100)
+    await bound(payload)
 
-    emitter.assert_awaited_once_with(
-        _PaymentReceived(42, 100), payment_received, None, serializer=serializer
-    )
-
-
-async def test_call_awaits_async_factory_before_passing_to_emitter() -> None:
-    """
-    Test that an async factory is awaited and its resolved value forwarded to the emitter.
-
-    Given: An AsyncBoundEvent whose factory is a coroutine function
-    When: The AsyncBoundEvent is called and awaited
-    Then: The emitter should receive the resolved payload, not the coroutine
-    """
-
-    # Arrange
-    async def _async_factory(payment_id: int, amount: int) -> _PaymentReceived:
-        await asyncio.sleep(0)
-        return _PaymentReceived(payment_id, amount)
-
-    event = EventConfig(_async_factory, PubSub, payload_type=_PaymentReceived)
-    emitter = create_autospec(_async_emit)
-    bound = AsyncBoundEvent(emitter, event, config=None)
-
-    # Act
-    await bound(42, 100)
-
-    # Assert
-    emitter.assert_awaited_once_with(_PaymentReceived(42, 100), event, None, serializer=None)
+    emitter.assert_awaited_once_with(payload, payment_received, None, serializer=serializer)

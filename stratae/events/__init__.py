@@ -1,6 +1,13 @@
 """Event system: event definitions, bound-event facades, and dispatch protocols."""
 
-from .bound import AsyncBoundEvent, BoundEvent, abind, bind
+from .bound import (
+    AsyncBoundEvent,
+    AsyncFactoryBoundEvent,
+    BoundEvent,
+    FactoryBoundEvent,
+    abind,
+    bind,
+)
 from .direct import AsyncDirectBus, DirectBus
 from .envelope import (
     CAUSATION_ID_HEADER,
@@ -10,12 +17,10 @@ from .envelope import (
     Envelope,
 )
 from .event import (
-    AsyncEventConfig,
-    EventConfig,
-    EventType,
+    DispatchPattern,
+    Event,
     PubSub,
     Request,
-    event,
     is_request,
     reply_type,
 )
@@ -25,16 +30,17 @@ from .protocols import Consumer, EmitCallable, Producer
 __all__ = [
     "AsyncBoundEvent",
     "AsyncDirectBus",
-    "AsyncEventConfig",
+    "AsyncFactoryBoundEvent",
     "BoundEvent",
     "CAUSATION_ID_HEADER",
     "CORRELATION_ID_HEADER",
     "Consumer",
     "DirectBus",
+    "DispatchPattern",
     "EmitCallable",
     "Envelope",
-    "EventConfig",
-    "EventType",
+    "Event",
+    "FactoryBoundEvent",
     "Handler",
     "MESSAGE_ID_HEADER",
     "Producer",
@@ -43,7 +49,6 @@ __all__ = [
     "TIMESTAMP_HEADER",
     "abind",
     "bind",
-    "event",
     "is_request",
     "reply_type",
 ]

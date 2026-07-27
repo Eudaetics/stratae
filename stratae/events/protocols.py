@@ -2,11 +2,11 @@
 
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from stratae.events.event import EventConfig, EventType
+from stratae.events.event import DispatchPattern, Event
 
 
 @runtime_checkable
-class EmitCallable[**P, S: Any, T: EventType, C: Any, R: Any](Protocol):
+class EmitCallable[S: Any, T: DispatchPattern, C: Any, R: Any](Protocol):
     """
     Structural protocol for a single bound emit call.
 
@@ -19,16 +19,16 @@ class EmitCallable[**P, S: Any, T: EventType, C: Any, R: Any](Protocol):
     def __call__(
         self,
         payload: S,
-        event: EventConfig[P, S, T],
+        event: Event[S, T],
         config: C,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> R:
         """
-        Dispatch a constructed event payload.
+        Dispatch a payload.
 
         Args:
-            payload:    The constructed payload instance to dispatch.
+            payload:    The payload instance to dispatch.
             event:      The ``Event`` definition being emitted.
             config:     Adapter-specific routing configuration.
             serializer: Serializer the payload will be sent to prior to routing.
@@ -50,19 +50,19 @@ class Producer(Protocol):
     adapters implement it to perform the actual dispatch.
     """
 
-    def emit[**P, S: Any, T: EventType](
+    def emit[S: Any, T: DispatchPattern](
         self,
         payload: S,
-        event: EventConfig[P, S, T],
+        event: Event[S, T],
         config: Any,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> Any:
         """
-        Dispatch a constructed event payload.
+        Dispatch a payload.
 
         Args:
-            payload:    The constructed payload instance to dispatch.
+            payload:    The payload instance to dispatch.
             event:      The ``Event`` definition being emitted.
             config:     Adapter-specific routing configuration.
             serializer: Encodes ``payload`` before dispatch. Format is

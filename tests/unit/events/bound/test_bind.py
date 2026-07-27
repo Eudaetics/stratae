@@ -1,22 +1,20 @@
 """
-Unit tests for bind and bind_factory.
+Unit tests for bind.
 
 This test suite verifies the following behaviors:
 
-bind — direct form:
-- Returns a BoundEvent.
-- The BoundEvent uses the event's schema as its factory.
-- The BoundEvent stores the provided config.
-- Calling the BoundEvent constructs the schema and invokes the emitter.
-- Calling the BoundEvent returns the emitter's result.
-- Raises TypeError when the event's factory is async.
+bind — with a factory:
+- Returns a FactoryBoundEvent.
+- The FactoryBoundEvent stores the provided event, factory, and config.
+- Calling the FactoryBoundEvent constructs the schema and invokes the emitter.
+- Calling the FactoryBoundEvent returns the emitter's result.
+- Raises TypeError when the factory is async.
 
-bind — decorator form:
-- Returns a callable when no event is provided.
-- Applying the callable to an Event returns a BoundEvent.
-- The returned BoundEvent uses the event's schema as its factory.
-- The returned BoundEvent stores the provided config.
-- Raises TypeError when the event's factory is async.
+bind — without a factory:
+- Returns a BoundEvent.
+- The BoundEvent stores the provided event and config.
+- Calling the BoundEvent forwards an already-built payload to the emitter.
+- Calling the BoundEvent returns the emitter's result.
 """
 
 import asyncio
@@ -25,7 +23,7 @@ from unittest.mock import Mock, create_autospec
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events import BoundEvent, EmitCallable, EventConfig, PubSub, bind
+from stratae.events import BoundEvent, EmitCallable, Event, FactoryBoundEvent, PubSub, bind
 
 
 class _OrderCreated:
@@ -39,83 +37,83 @@ class _OrderCreated:
         return self.order_id == other.order_id and self.status == other.status
 
 
-# region: Bind Direct
+# region: Bind With Factory
 
 
-def test_bind_direct_returns_bound_event() -> None:
+def test_bind_with_factory_returns_factory_bound_event() -> None:
     """
-    Bind with an event returns a BoundEvent.
+    Bind with a factory returns a FactoryBoundEvent.
 
-    Given: An emitter, an Event, and a config
-    When: bind is called with all three
-    Then: The result should be a BoundEvent instance
+    Given: An emitter, an Event, a factory, and a config
+    When: bind is called with all four
+    Then: The result should be a FactoryBoundEvent instance
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
 
     # Act
-    result = bind(emitter, ev, config=None)
+    result = bind(emitter, ev, factory=_OrderCreated, config=None)
 
     # Assert
-    assert isinstance(result, BoundEvent)
+    assert isinstance(result, FactoryBoundEvent)
 
 
-def test_bind_direct_stores_event() -> None:
+def test_bind_with_factory_stores_event() -> None:
     """
-    Bind stores the EventConfig on the returned BoundEvent.
+    Bind stores the Event on the returned FactoryBoundEvent.
 
-    Given: An EventConfig
-    When: bind is called in direct form
-    Then: The BoundEvent's event should be the supplied EventConfig
+    Given: An Event
+    When: bind is called with a factory
+    Then: The FactoryBoundEvent's event should be the supplied Event
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
 
     # Act
-    result = bind(emitter, ev, config=None)
+    result = bind(emitter, ev, factory=_OrderCreated, config=None)
 
     # Assert
     assert result.event is ev
 
 
-def test_bind_direct_stores_config() -> None:
+def test_bind_with_factory_stores_config() -> None:
     """
-    Bind stores the provided config on the returned BoundEvent.
+    Bind stores the provided config on the returned FactoryBoundEvent.
 
     Given: A distinct config object
-    When: bind is called in direct form with that config
-    Then: The BoundEvent's config should reference the same object
+    When: bind is called with a factory and that config
+    Then: The FactoryBoundEvent's config should reference the same object
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
     config = object()
 
     # Act
-    result = bind(emitter, ev, config=config)
+    result = bind(emitter, ev, factory=_OrderCreated, config=config)
 
     # Assert
     assert result.config is config
 
 
-def test_bind_direct_calling_constructs_schema_and_invokes_emitter(
+def test_bind_with_factory_calling_constructs_schema_and_invokes_emitter(
     mocker: MockerFixture,
 ) -> None:
     """
-    Calling a BoundEvent produced by bind constructs the schema and calls the emitter.
+    Calling a FactoryBoundEvent produced by bind constructs the schema and calls the emitter.
 
-    Given: A BoundEvent produced by bind in direct form
-    When: The BoundEvent is called with arguments
+    Given: A FactoryBoundEvent produced by bind
+    When: The FactoryBoundEvent is called with arguments
     Then: The schema constructor should be called with those arguments and the emitter
-          should receive the constructed payload, the EventConfig, and the config
+          should receive the constructed payload, the Event, and the config
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
-    ev = EventConfig(_OrderCreated, PubSub)
-    bound = bind(emitter, ev, config=None)
+    ev = Event(_OrderCreated, PubSub)
+    bound = bind(emitter, ev, factory=_OrderCreated, config=None)
 
     # Act
     bound(1, "pending")
@@ -125,12 +123,12 @@ def test_bind_direct_calling_constructs_schema_and_invokes_emitter(
     emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
 
 
-def test_bind_direct_returns_emitter_result() -> None:
+def test_bind_with_factory_returns_emitter_result() -> None:
     """
-    Calling a BoundEvent produced by bind returns the emitter's result.
+    Calling a FactoryBoundEvent produced by bind returns the emitter's result.
 
-    Given: A BoundEvent whose emitter echoes the constructed payload
-    When: The BoundEvent is called
+    Given: A FactoryBoundEvent whose emitter echoes the constructed payload
+    When: The FactoryBoundEvent is called
     Then: The return value should match the constructed payload
     """
     # Arrange
@@ -143,8 +141,8 @@ def test_bind_direct_returns_emitter_result() -> None:
 
     emitter.side_effect = _return
 
-    ev = EventConfig(_OrderCreated, PubSub)
-    bound = bind(emitter, ev, config=None)
+    ev = Event(_OrderCreated, PubSub)
+    bound = bind(emitter, ev, factory=_OrderCreated, config=None)
 
     # Act
     result = bound(1, "pending")
@@ -153,39 +151,39 @@ def test_bind_direct_returns_emitter_result() -> None:
     assert result == _OrderCreated(1, "pending")
 
 
-def test_bind_direct_stores_serializer() -> None:
+def test_bind_with_factory_stores_serializer() -> None:
     """
-    Bind stores the provided serializer on the returned BoundEvent.
+    Bind stores the provided serializer on the returned FactoryBoundEvent.
 
     Given: A serializer callable
-    When: bind is called in direct form with that serializer
-    Then: The BoundEvent's serializer should reference the same callable
+    When: bind is called with a factory and that serializer
+    Then: The FactoryBoundEvent's serializer should reference the same callable
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
     serializer = Mock()
 
     # Act
-    result = bind(emitter, ev, config=None, serializer=serializer)
+    result = bind(emitter, ev, factory=_OrderCreated, config=None, serializer=serializer)
 
     # Assert
     assert result.serializer is serializer
 
 
-def test_bind_direct_forwards_serializer_to_emitter() -> None:
+def test_bind_with_factory_forwards_serializer_to_emitter() -> None:
     """
-    Calling a BoundEvent produced by bind forwards the serializer to the emitter.
+    Calling a FactoryBoundEvent produced by bind forwards the serializer to the emitter.
 
-    Given: A BoundEvent produced by bind in direct form with a serializer
-    When: The BoundEvent is called
+    Given: A FactoryBoundEvent produced by bind with a serializer
+    When: The FactoryBoundEvent is called
     Then: The emitter should receive that same serializer
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
     serializer = Mock()
-    bound = bind(emitter, ev, config=None, serializer=serializer)
+    bound = bind(emitter, ev, factory=_OrderCreated, config=None, serializer=serializer)
 
     # Act
     bound(1, "pending")
@@ -194,168 +192,160 @@ def test_bind_direct_forwards_serializer_to_emitter() -> None:
     emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
 
 
-def test_bind_direct_raises_for_async_factory() -> None:
+def test_bind_with_factory_raises_for_async_factory() -> None:
     """
-    Bind raises TypeError when the event's factory is async.
+    Bind raises TypeError when the supplied factory is async.
 
-    Given: An EventConfig whose factory is a coroutine function
-    When: bind is called in direct form
+    Given: An async factory
+    When: bind is called with that factory
     Then: A TypeError should be raised
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
+    ev = Event(_OrderCreated, PubSub)
 
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
         return _OrderCreated(order_id, status)
 
-    ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
-
     # Act / Assert
     with pytest.raises(TypeError):
-        bind(emitter, ev, config=None)
+        bind(emitter, ev, factory=_async_factory, config=None)
 
 
 # endregion
 
-# region: Bind Decorator
+# region: Bind Without Factory
 
 
-def test_bind_decorator_form_returns_callable() -> None:
+def test_bind_without_factory_returns_bound_event() -> None:
     """
-    Bind without an event returns a callable decorator.
+    Bind with no factory returns a BoundEvent.
 
-    Given: An emitter and a config, but no event
-    When: bind is called
-    Then: The result should be callable
-    """
-    # Act
-    emitter = create_autospec(EmitCallable)
-    result = bind(emitter, config=None)
-
-    # Assert
-    assert callable(result)
-
-
-def test_bind_decorator_form_applied_to_event_returns_bound_event() -> None:
-    """
-    The decorator returned by bind produces a BoundEvent when applied to an Event.
-
-    Given: A decorator returned by bind and an Event
-    When: The decorator is applied to the Event
+    Given: An emitter, an Event, and a config, but no factory
+    When: bind is called with just those three
     Then: The result should be a BoundEvent instance
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
 
     # Act
-    result = bind(emitter, config=None)(ev)
+    result = bind(emitter, ev, config=None)
 
     # Assert
     assert isinstance(result, BoundEvent)
 
 
-def test_bind_decorator_form_stores_event() -> None:
+def test_bind_without_factory_stores_event() -> None:
     """
-    The BoundEvent produced by the bind decorator stores the supplied EventConfig.
+    Bind stores the Event on the returned BoundEvent.
 
-    Given: A decorator returned by bind applied to an EventConfig
-    When: The BoundEvent is produced
-    Then: Its event should be the supplied EventConfig
+    Given: An Event
+    When: bind is called with no factory
+    Then: The BoundEvent's event should be the supplied Event
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
 
     # Act
-    result = bind(emitter, config=None)(ev)
+    result = bind(emitter, ev, config=None)
 
     # Assert
     assert result.event is ev
 
 
-def test_bind_decorator_form_stores_config() -> None:
+def test_bind_without_factory_stores_config() -> None:
     """
-    The BoundEvent produced by the bind decorator stores the provided config.
+    Bind stores the provided config on the returned BoundEvent.
 
-    Given: A distinct config object passed to bind
-    When: The decorator is applied to an Event
+    Given: A distinct config object
+    When: bind is called with no factory and that config
     Then: The BoundEvent's config should reference the same object
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
     config = object()
 
     # Act
-    result = bind(emitter, config=config)(ev)
+    result = bind(emitter, ev, config=config)
 
     # Assert
     assert result.config is config
 
 
-def test_bind_decorator_form_stores_serializer() -> None:
+def test_bind_without_factory_calling_forwards_payload_to_emitter() -> None:
     """
-    The BoundEvent produced by the bind decorator stores the provided serializer.
+    Calling a BoundEvent produced by bind forwards an already-built payload.
 
-    Given: A serializer callable passed to bind
-    When: The decorator is applied to an Event
-    Then: The BoundEvent's serializer should reference the same callable
+    Given: A BoundEvent produced by bind with no factory
+    When: The BoundEvent is called with a ready-made payload
+    Then: The emitter should receive that exact payload, the Event, and the config
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
-    serializer = Mock()
+    ev = Event(_OrderCreated, PubSub)
+    bound = bind(emitter, ev, config=None)
+    payload = _OrderCreated(1, "pending")
 
     # Act
-    result = bind(emitter, config=None, serializer=serializer)(ev)
+    bound(payload)
 
     # Assert
-    assert result.serializer is serializer
+    emitter.assert_called_once_with(payload, ev, None, serializer=None)
 
 
-def test_bind_decorator_form_forwards_serializer_to_emitter() -> None:
+def test_bind_without_factory_returns_emitter_result() -> None:
     """
-    Calling a BoundEvent produced by the bind decorator forwards the serializer to the emitter.
+    Calling a BoundEvent produced by bind returns the emitter's result.
 
-    Given: A BoundEvent produced by the bind decorator with a serializer
+    Given: A BoundEvent whose emitter echoes the payload
+    When: The BoundEvent is called
+    Then: The return value should match the payload
+    """
+    # Arrange
+    emitter = create_autospec(EmitCallable)
+
+    def _return(
+        payload: object, event: object, config: object, serializer: object = None
+    ) -> object:
+        return payload
+
+    emitter.side_effect = _return
+
+    ev = Event(_OrderCreated, PubSub)
+    bound = bind(emitter, ev, config=None)
+    payload = _OrderCreated(1, "pending")
+
+    # Act
+    result = bound(payload)
+
+    # Assert
+    assert result is payload
+
+
+def test_bind_without_factory_forwards_serializer_to_emitter() -> None:
+    """
+    Calling a BoundEvent produced by bind forwards the serializer to the emitter.
+
+    Given: A BoundEvent produced by bind with a serializer
     When: The BoundEvent is called
     Then: The emitter should receive that same serializer
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = EventConfig(_OrderCreated, PubSub)
+    ev = Event(_OrderCreated, PubSub)
     serializer = Mock()
-    bound = bind(emitter, config=None, serializer=serializer)(ev)
+    bound = bind(emitter, ev, config=None, serializer=serializer)
+    payload = _OrderCreated(1, "pending")
 
     # Act
-    bound(1, "pending")
+    bound(payload)
 
     # Assert
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
-
-
-def test_bind_decorator_raises_for_async_factory() -> None:
-    """
-    The decorator returned by bind raises TypeError when the event's factory is async.
-
-    Given: An EventConfig whose factory is a coroutine function
-    When: The decorator returned by bind is applied to that event
-    Then: A TypeError should be raised
-    """
-    # Arrange
-    emitter = create_autospec(EmitCallable)
-
-    async def _async_factory(order_id: int, status: str) -> _OrderCreated:
-        await asyncio.sleep(0)
-        return _OrderCreated(order_id, status)
-
-    ev = EventConfig(_async_factory, PubSub, payload_type=_OrderCreated)
-
-    # Act / Assert
-    with pytest.raises(TypeError):
-        bind(emitter, config=None)(ev)
+    emitter.assert_called_once_with(payload, ev, None, serializer=serializer)
 
 
 # endregion
