@@ -30,7 +30,7 @@ import pytest
 from aiormq import connect
 from aiormq.abc import AbstractChannel
 
-from stratae.events import Envelope, EventConfig, PubSub
+from stratae.events import Envelope, Event, PubSub
 from stratae.integrations.events.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
@@ -49,7 +49,7 @@ class Message(msgspec.Struct):
     text: str
 
 
-message_event = EventConfig(Message, PubSub)
+message_event = Event(Message, PubSub)
 
 
 class _Broker:
@@ -115,7 +115,9 @@ async def test_msgspec_round_trip(broker: _Broker):
     async with consumer:
         async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
             send = publisher.bind(
-                message_event, config=RabbitMQConfig(exchange, "", exchange_type="fanout")
+                message_event,
+                factory=Message,
+                config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
             )
             await send(text="hello")
         await _eventually(lambda: len(received) == 1)
@@ -148,7 +150,9 @@ async def test_envelope_survives_the_wire(broker: _Broker):
     async with consumer:
         async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
             send = publisher.bind(
-                message_event, config=RabbitMQConfig(exchange, "", exchange_type="fanout")
+                message_event,
+                factory=Message,
+                config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
             )
             with Envelope.scope() as envelope:
                 await send(text="traced")
@@ -183,7 +187,9 @@ async def test_fanout_delivers_to_every_subscriber(broker: _Broker):
     async with consumer_a, consumer_b:
         async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
             send = publisher.bind(
-                message_event, config=RabbitMQConfig(exchange, "", exchange_type="fanout")
+                message_event,
+                factory=Message,
+                config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
             )
             await send(text="broadcast")
         await _eventually(lambda: len(first) == 1 and len(second) == 1)
@@ -223,7 +229,7 @@ async def test_competing_workers_split_backlog(broker: _Broker):
     # Act
     async with consumer_a, consumer_b:
         async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
-            send = publisher.bind(message_event, config=RabbitMQConfig("", queue))
+            send = publisher.bind(message_event, factory=Message, config=RabbitMQConfig("", queue))
             for index in range(10):
                 await send(text=f"task-{index}")
         await _eventually(lambda: len(first) + len(second) == 10, timeout=10.0)
@@ -258,7 +264,9 @@ async def test_durable_queue_parks_offline_messages(broker: _Broker):
     # Act
     async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
         send = publisher.bind(
-            message_event, config=RabbitMQConfig(exchange, "", exchange_type="fanout")
+            message_event,
+            factory=Message,
+            config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
         )
         await send(text="parked")
     async with consumer:
@@ -287,7 +295,7 @@ async def test_poison_message_dropped_without_redelivery(broker: _Broker):
     # Act
     async with consumer:
         async with RabbitMQPublisher(_URL, serializer=lambda payload: b"not json") as publisher:
-            send = publisher.bind(message_event, config=RabbitMQConfig("", queue))
+            send = publisher.bind(message_event, factory=Message, config=RabbitMQConfig("", queue))
             await send(text="ignored")
         await asyncio.sleep(0.5)
 
