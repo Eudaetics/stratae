@@ -14,8 +14,7 @@ RabbitMQPublisher:
 - emit publishes the pack-serialized payload to the configured exchange
   and routing key.
 - emit uses the binding's serializer when one is provided.
-- bind with a factory returns an AsyncFactoryBoundEvent carrying the routing config.
-- Awaiting the AsyncFactoryBoundEvent constructs and publishes the payload.
+- Awaiting a factory-bound callable produced by bind constructs and publishes the payload.
 - emit declares an exchange_type-carrying config's exchange once, before
   its first publish.
 - emit declares no exchange for configs without an exchange_type.
@@ -35,7 +34,6 @@ from stratae.events import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
-    AsyncFactoryBoundEvent,
     Envelope,
     Event,
     PubSub,
@@ -303,26 +301,12 @@ async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: Async
     assert sent.timestamp is not None
 
 
-def test_bind_returns_async_factory_bound_event(publisher: RabbitMQPublisher):
-    """
-    ``bind`` with a factory should return an AsyncFactoryBoundEvent carrying the routing config.
-
-    Given: A publisher
-    When: bind is called with an Event, a factory, and a RabbitMQConfig
-    Then: An AsyncFactoryBoundEvent holding that config should be returned
-    """
-    bound = publisher.bind(_order_placed, factory=_OrderPlaced, config=_config)
-
-    assert isinstance(bound, AsyncFactoryBoundEvent)
-    assert bound.config is _config
-
-
 async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: AsyncMock):
     """
-    Awaiting the AsyncFactoryBoundEvent should construct the payload and publish it.
+    Awaiting a factory-bound callable produced by bind should construct the payload and publish it.
 
-    Given: A connected publisher and a bound event
-    When: The bound event is awaited with factory arguments
+    Given: A connected publisher and a callable bound with a factory
+    When: The callable is awaited with factory arguments
     Then: The constructed payload should be packed and published
     """
     # Arrange

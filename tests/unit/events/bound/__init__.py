@@ -1,1 +1,1 @@
-"""Test suite for the BoundEvent classes."""
+"""Test suite for bind and abind."""

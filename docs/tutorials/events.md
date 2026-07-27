@@ -156,6 +156,6 @@ await create_book(
 | `MultipleRespondersError` | A `Request` event has more than one registered responder |
 | `NotConnectedError` | A transport adapter (e.g. RabbitMQ) is used before its connection is open — `DirectBus` never raises this |
 
-`bind`/`FactoryBoundEvent` require a sync factory (`TypeError` otherwise, since a sync `__call__` can't await); use `abind`/`AsyncFactoryBoundEvent` for async factories. `DirectBus` similarly rejects async handlers outright — register those on `AsyncDirectBus`.
+`bind` requires a sync factory (`TypeError` otherwise, since its returned callable can't await); use `abind` for async factories. `DirectBus` similarly rejects async handlers outright — register those on `AsyncDirectBus`.
 
 Full signatures and every exported name: {doc}`stratae.events API reference <../apidocs/stratae.events/stratae.events>`.

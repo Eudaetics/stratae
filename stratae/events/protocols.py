@@ -5,9 +5,10 @@ Structural protocols for the stratae event system.
 sides of a bus adapter structurally. Any class with a compatible method
 satisfies the protocol, sync or async, without inheriting from it.
 {py:class}`EmitCallable` describes a single bound emit call. It's
-parameterized over a concrete return type `R`, so a specific binding — e.g. a
-{py:class}`BoundEvent <stratae.events.bound.BoundEvent>`'s `emitter` — can be
-checked against its own return type instead of `Any`.
+parameterized over a concrete return type `R`, so a specific binding — e.g.
+the `emitter` behind a callable returned by
+{py:func}`bind <stratae.events.bound.bind>` — can be checked against its own
+return type instead of `Any`.
 """
 
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -23,8 +24,9 @@ class EmitCallable[S: Any, T: DispatchPattern, C: Any, R: Any](Protocol):
     Captures the call shape of {py:meth}`Producer.emit`: payload, event, and
     config in, some adapter-defined result out. It's parameterized over a
     concrete `R` instead of `Any`, though. That lets a specific binding —
-    e.g. a {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`'s
-    `emitter` — be checked against its own return type.
+    e.g. the `emitter` behind a callable returned by
+    {py:func}`bind <stratae.events.bound.bind>` — be checked against its
+    own return type.
     """
 
     def __call__(
@@ -54,9 +56,9 @@ class Producer(Protocol):
     Structural protocol for the emit side of the event system.
 
     Any class with a compatible `emit` method satisfies this protocol,
-    whether sync or async. {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`
-    calls `emit` when invoked. Adapters implement it to perform the actual
-    dispatch.
+    whether sync or async. A callable returned by
+    {py:func}`bind <stratae.events.bound.bind>` calls `emit` when invoked.
+    Adapters implement it to perform the actual dispatch.
     """
 
     def emit[S: Any, T: DispatchPattern](

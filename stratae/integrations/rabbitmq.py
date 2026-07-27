@@ -94,8 +94,6 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     TIMESTAMP_HEADER,
-    AsyncBoundEvent,
-    AsyncFactoryBoundEvent,
     Envelope,
     Event,
     Handler,
@@ -201,10 +199,8 @@ class RabbitMQPublisher:
     `exchange_type` has its exchange declared before its first publish.
     Bind an {py:class}`Event <stratae.events.event.Event>` to this adapter
     with {py:func}`RabbitMQPublisher.bind`, passing `factory` to construct
-    the payload from the bound call's arguments, which returns an
-    {py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`,
-    or omitting it to forward an already-built payload directly, which
-    returns an {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`.
+    the payload from the bound call's arguments, or omitting it to forward
+    an already-built payload directly.
     """
 
     def __init__(self, url: str, serializer: Callable[[Any], bytes] = pack) -> None:
@@ -249,7 +245,7 @@ class RabbitMQPublisher:
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
         config: RabbitMQConfig,
         serializer: Callable[[S], bytes] | None = None,
-    ) -> AsyncFactoryBoundEvent[P, S, PubSub, RabbitMQConfig, None]: ...
+    ) -> Callable[P, Awaitable[None]]: ...
 
     @overload
     def bind[S: Any](
@@ -258,7 +254,7 @@ class RabbitMQPublisher:
         *,
         config: RabbitMQConfig,
         serializer: Callable[[S], bytes] | None = None,
-    ) -> AsyncBoundEvent[S, PubSub, RabbitMQConfig, None]: ...
+    ) -> Callable[[S], Awaitable[None]]: ...
 
     def bind(
         self,
@@ -267,12 +263,9 @@ class RabbitMQPublisher:
         factory: Callable[..., Any] | None = None,
         config: RabbitMQConfig,
         serializer: Callable[[Any], bytes] | None = None,
-    ) -> (
-        AsyncFactoryBoundEvent[Any, Any, PubSub, RabbitMQConfig, None]
-        | AsyncBoundEvent[Any, PubSub, RabbitMQConfig, None]
-    ):
+    ) -> Callable[..., Awaitable[None]]:
         """
-        Return an AsyncBoundEvent or AsyncFactoryBoundEvent publishing through this adapter.
+        Return an awaitable callable publishing through this adapter.
 
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             this binding publishes.
@@ -282,10 +275,9 @@ class RabbitMQPublisher:
         :param config: The exchange and routing key to publish to.
         :param serializer: Encodes the payload to bytes before publishing.
             Overrides the adapter's `serializer` for this binding only.
-        :returns: An
-            {py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`
-            when `factory` is given, otherwise an
-            {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`.
+        :returns: A callable that builds the payload via `factory` when
+            given, otherwise one that forwards an already-built payload
+            straight through; either way publishing it once awaited.
 
         """
         return abind(self.emit, event, factory=factory, config=config, serializer=serializer)

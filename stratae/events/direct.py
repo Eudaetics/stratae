@@ -10,17 +10,15 @@ when it has more than one.
 
 {py:class}`DirectBus` dispatches synchronously. Bind its `emit` method to an
 {py:class}`Event <stratae.events.event.Event>` via
-{py:func}`bind <stratae.events.bound.bind>` to get a
-{py:class}`BoundEvent <stratae.events.bound.BoundEvent>` or
-{py:class}`FactoryBoundEvent <stratae.events.bound.FactoryBoundEvent>`
-callable facade. Registering an async handler on it raises `TypeError`,
-since there is no way to await one from inside synchronous dispatch.
+{py:func}`bind <stratae.events.bound.bind>` to get a callable that
+dispatches through it, optionally building the payload from a factory.
+Registering an async handler on it raises `TypeError`, since there is no
+way to await one from inside synchronous dispatch.
 
 {py:class}`AsyncDirectBus` dispatches through `asyncio` instead. Bind its
 `emit` method via {py:func}`abind <stratae.events.bound.abind>` to get an
-{py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>` or
-{py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`.
-It accepts a mix of sync and async handlers, running
+awaitable callable the same way. It accepts a mix of sync and async
+handlers, running
 {py:class}`PubSub <stratae.events.event.PubSub>` handlers concurrently with
 `asyncio.gather`.
 
@@ -106,14 +104,7 @@ from collections import defaultdict
 from inspect import iscoroutinefunction
 from typing import Any, Awaitable, Callable, Protocol, overload
 
-from stratae.events.bound import (
-    AsyncBoundEvent,
-    AsyncFactoryBoundEvent,
-    BoundEvent,
-    FactoryBoundEvent,
-    abind,
-    bind,
-)
+from stratae.events.bound import abind, bind
 from stratae.events.envelope import Envelope
 from stratae.events.event import Event, PubSub, Request, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
@@ -227,35 +218,33 @@ class DirectBus(BaseDirectBus):
     @overload
     def bind[**P, S: Any, R](
         self, event: Event[S, Request[R]], *, factory: Callable[P, S]
-    ) -> FactoryBoundEvent[P, S, Request[R], None, R]: ...
+    ) -> Callable[P, R]: ...
 
     @overload
     def bind[**P, S: Any](
         self, event: Event[S, PubSub], *, factory: Callable[P, S]
-    ) -> FactoryBoundEvent[P, S, PubSub, None, None]: ...
+    ) -> Callable[P, None]: ...
 
     @overload
-    def bind[S: Any, R](
-        self, event: Event[S, Request[R]]
-    ) -> BoundEvent[S, Request[R], None, R]: ...
+    def bind[S: Any, R](self, event: Event[S, Request[R]]) -> Callable[[S], R]: ...
 
     @overload
-    def bind[S: Any](self, event: Event[S, PubSub]) -> BoundEvent[S, PubSub, None, None]: ...
+    def bind[S: Any](self, event: Event[S, PubSub]) -> Callable[[S], None]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
-    ) -> FactoryBoundEvent[Any, Any, Any, None, Any] | BoundEvent[Any, Any, None, Any]:
+    ) -> Callable[..., Any]:
         """
-        Return a BoundEvent or FactoryBoundEvent for this bus, with config=None.
+        Return a callable bound to this bus's `emit` and `event`, with config=None.
 
         :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
         :param factory: Builds the payload from the bound call's arguments.
             Omit it to pass an already-built payload straight through
             instead.
-        :returns: A {py:class}`FactoryBoundEvent <stratae.events.bound.FactoryBoundEvent>`
-            when `factory` is given, otherwise a
-            {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`, both
-            wrapping this bus's `emit` and `event`.
+        :returns: A callable that builds the payload via `factory` when
+            given, otherwise one that forwards an already-built payload
+            straight through; either way wrapping this bus's `emit` and
+            `event`.
         """
         return bind(self.emit, event, factory=factory, config=None, serializer=None)
 
@@ -441,7 +430,7 @@ class AsyncDirectBus(BaseDirectBus):
         event: Event[S, Request[R]],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
-    ) -> AsyncFactoryBoundEvent[P, S, Request[R], None, R]: ...
+    ) -> Callable[P, Awaitable[R]]: ...
 
     @overload
     def bind[**P, S: Any](
@@ -449,31 +438,28 @@ class AsyncDirectBus(BaseDirectBus):
         event: Event[S, PubSub],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
-    ) -> AsyncFactoryBoundEvent[P, S, PubSub, None, None]: ...
+    ) -> Callable[P, Awaitable[None]]: ...
 
     @overload
-    def bind[S: Any, R](
-        self, event: Event[S, Request[R]]
-    ) -> AsyncBoundEvent[S, Request[R], None, R]: ...
+    def bind[S: Any, R](self, event: Event[S, Request[R]]) -> Callable[[S], Awaitable[R]]: ...
 
     @overload
-    def bind[S: Any](self, event: Event[S, PubSub]) -> AsyncBoundEvent[S, PubSub, None, None]: ...
+    def bind[S: Any](self, event: Event[S, PubSub]) -> Callable[[S], Awaitable[None]]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
-    ) -> AsyncFactoryBoundEvent[Any, Any, Any, None, Any] | AsyncBoundEvent[Any, Any, None, Any]:
+    ) -> Callable[..., Awaitable[Any]]:
         """
-        Return an AsyncBoundEvent or AsyncFactoryBoundEvent for this bus, with config=None.
+        Return an awaitable callable bound to this bus's `emit` and `event`, with config=None.
 
         :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
         :param factory: Builds the payload from the bound call's arguments,
             sync or async. Omit it to pass an already-built payload
             straight through instead.
-        :returns: An
-            py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`
-            when `factory` is given, otherwise an
-            {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`,
-            both wrapping this bus's `emit` and `event`.
+        :returns: A callable that builds the payload via `factory`, sync or
+            async, when given, otherwise one that forwards an already-built
+            payload straight through; either way wrapping this bus's `emit`
+            and `event`, and resolving to its result once awaited.
         """
         return abind(self.emit, event, factory=factory, config=None, serializer=None)
 

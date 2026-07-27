@@ -13,13 +13,9 @@ marks request/reply, where emit blocks until a responder returns.
 {py:func}`bind <stratae.events.bound.bind>` and
 {py:func}`abind <stratae.events.bound.abind>` attach an emitter and
 adapter-specific routing config to an `Event`. Passed a `factory`, each
-returns a {py:class}`FactoryBoundEvent <stratae.events.bound.FactoryBoundEvent>`
-or {py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`,
-which build the payload from the call's arguments. Omitting `factory`
-returns a {py:class}`BoundEvent <stratae.events.bound.BoundEvent>` or
-{py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>` instead,
-which forward an already-built payload straight through. Each is a callable
-facade that forwards to the emitter either way.
+returns a callable that builds the payload from the call's arguments before
+forwarding it to the emitter. Omitting `factory` returns a callable that
+takes an already-built payload directly and forwards it the same way.
 
 Emitters and handler registries are described structurally by the
 {py:class}`Producer <stratae.events.protocols.Producer>` and
@@ -98,14 +94,7 @@ See {py:class}`DirectBus <stratae.events.direct.DirectBus>`,
 
 """
 
-from .bound import (
-    AsyncBoundEvent,
-    AsyncFactoryBoundEvent,
-    BoundEvent,
-    FactoryBoundEvent,
-    abind,
-    bind,
-)
+from .bound import abind, bind
 from .direct import AsyncDirectBus, DirectBus
 from .envelope import (
     CAUSATION_ID_HEADER,
@@ -126,10 +115,7 @@ from .handler import Handler
 from .protocols import Consumer, EmitCallable, Producer
 
 __all__ = [
-    "AsyncBoundEvent",
     "AsyncDirectBus",
-    "AsyncFactoryBoundEvent",
-    "BoundEvent",
     "CAUSATION_ID_HEADER",
     "CORRELATION_ID_HEADER",
     "Consumer",
@@ -138,7 +124,6 @@ __all__ = [
     "EmitCallable",
     "Envelope",
     "Event",
-    "FactoryBoundEvent",
     "Handler",
     "MESSAGE_ID_HEADER",
     "Producer",

@@ -4,9 +4,7 @@ Unit tests for the DirectBus adapter.
 This test suite verifies the following behaviors:
 
 DirectBus:
-- bind with a factory returns a FactoryBoundEvent.
-- bind with no factory returns a BoundEvent.
-- Calling the FactoryBoundEvent dispatches the constructed payload to a registered handler.
+- Calling a factory-bound callable dispatches the constructed payload to a registered handler.
 - All handlers registered on a channel receive the payload.
 - Handlers on different channels are isolated from each other.
 - handle returns a Handler.
@@ -22,7 +20,7 @@ DirectBus:
 
 DirectBus (request events):
 - emit returns the responder's reply.
-- A FactoryBoundEvent for a request event returns the reply when called.
+- A callable bound with a factory for a request event returns the reply when called.
 - emit raises NoResponderError when no responder is registered.
 - emit raises MultipleRespondersError when several responders are registered.
 - A responder's exception propagates directly, not as an ExceptionGroup.
@@ -42,13 +40,11 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.events import (
-    BoundEvent,
     Consumer,
     DirectBus,
     EmitCallable,
     Envelope,
     Event,
-    FactoryBoundEvent,
     Producer,
     PubSub,
     Request,
@@ -127,40 +123,18 @@ def test_bus_satisfies_consumer_protocol(bus: DirectBus):
     assert isinstance(bus, Consumer)
 
 
-def test_bind_with_factory_returns_factory_bound_event(bus: DirectBus):
-    """
-    ``bind`` with a factory should return a FactoryBoundEvent bound to bus.emit.
-
-    Given: A DirectBus
-    When: bind is called with an Event and a factory
-    Then: A FactoryBoundEvent should be returned
-    """
-    assert isinstance(bus.bind(_task_created, factory=_TaskCreated), FactoryBoundEvent)
-
-
-def test_bind_without_factory_returns_bound_event(bus: DirectBus):
-    """
-    ``bind`` with no factory should return a BoundEvent bound to bus.emit.
-
-    Given: A DirectBus
-    When: bind is called with an Event and no factory
-    Then: A BoundEvent should be returned
-    """
-    assert isinstance(bus.bind(_task_created), BoundEvent)
-
-
 def test_calling_bound_event_forwards_payload_to_handler(bus: DirectBus):
     """
-    Calling a BoundEvent should dispatch an already-built payload to registered handlers.
+    Calling a callable bound with no factory should dispatch an already-built payload.
 
-    Given: A handler registered via bus.handle, and a BoundEvent with no factory
-    When: The BoundEvent is called with a ready-made payload
+    Given: A handler registered via bus.handle, and a callable bound with no factory
+    When: The callable is called with a ready-made payload
     Then: The handler should be called with that payload
     """
     # Arrange
     handler = Mock()
     emit = bus.bind(_task_created)
-    bus.handle(emit.event, handler)
+    bus.handle(_task_created, handler)
 
     # Act
     emit(_TaskCreated(1))
@@ -171,16 +145,16 @@ def test_calling_bound_event_forwards_payload_to_handler(bus: DirectBus):
 
 def test_calling_factory_bound_event_dispatches_to_handler(bus: DirectBus):
     """
-    Calling a FactoryBoundEvent should dispatch the constructed payload to registered handlers.
+    Calling a callable bound with a factory should dispatch the constructed payload.
 
     Given: A handler registered via bus.handle
-    When: The FactoryBoundEvent is called
+    When: The callable bound with a factory is called
     Then: The handler should be called with the constructed payload
     """
     # Arrange
     handler = Mock()
     emit = bus.bind(_task_created, factory=_TaskCreated)
-    bus.handle(emit.event, handler)
+    bus.handle(_task_created, handler)
 
     # Act
     emit(task_id=1)
@@ -201,8 +175,8 @@ def test_dispatches_to_all_handlers_on_channel(bus: DirectBus):
     handler_a = Mock()
     handler_b = Mock()
     emit = bus.bind(_task_created, factory=_TaskCreated)
-    bus.handle(emit.event, handler_a)
-    bus.handle(emit.event, handler_b)
+    bus.handle(_task_created, handler_a)
+    bus.handle(_task_created, handler_b)
 
     # Act
     emit(task_id=2)
@@ -246,8 +220,7 @@ def test_handle_returns_handler(bus: DirectBus):
     Then: The returned Handler should wrap that callable
     """
     fn = Mock()
-    emit = bus.bind(_task_created, factory=_TaskCreated)
-    handle = bus.handle(emit.event, fn)
+    handle = bus.handle(_task_created, fn)
 
     assert handle.call is fn
 
@@ -298,7 +271,7 @@ def test_remove_prevents_further_dispatch(bus: DirectBus):
     # Arrange
     handler = Mock()
     emit = bus.bind(_task_created, factory=_TaskCreated)
-    handle = bus.handle(emit.event, handler)
+    handle = bus.handle(_task_created, handler)
     bus.remove(handle)
 
     # Act
@@ -319,8 +292,8 @@ def test_same_callable_registered_twice_called_twice(bus: DirectBus):
     # Arrange
     handler = Mock()
     emit = bus.bind(_task_created, factory=_TaskCreated)
-    bus.handle(emit.event, handler)
-    bus.handle(emit.event, handler)
+    bus.handle(_task_created, handler)
+    bus.handle(_task_created, handler)
 
     # Act
     emit(task_id=5)
@@ -339,12 +312,11 @@ def test_emit_dispatches_payload(bus: DirectBus):
     """
     # Arrange
     handler = Mock()
-    emit = bus.bind(_task_created, factory=_TaskCreated)
-    bus.handle(emit.event, handler)
+    bus.handle(_task_created, handler)
     payload = _TaskCreated(6)
 
     # Act
-    bus.emit(payload, emit.event, None)
+    bus.emit(payload, _task_created, None)
 
     # Assert
     handler.assert_called_once_with(payload)
@@ -361,13 +333,12 @@ def test_emit_invokes_all_handlers(bus: DirectBus):
     # Arrange
     handler_a = Mock()
     handler_b = Mock()
-    emit = bus.bind(_task_created, factory=_TaskCreated)
-    bus.handle(emit.event, handler_a)
-    bus.handle(emit.event, handler_b)
+    bus.handle(_task_created, handler_a)
+    bus.handle(_task_created, handler_b)
     payload = _TaskCreated(7)
 
     # Act
-    bus.emit(payload, emit.event)
+    bus.emit(payload, _task_created)
 
     # Assert
     handler_a.assert_called_once_with(payload)
@@ -384,14 +355,13 @@ def test_raising_handler_does_not_prevent_other_handlers(bus: DirectBus):
     """
     # Arrange
     second_handler = Mock()
-    emit = bus.bind(_task_created, factory=_TaskCreated)
-    bus.handle(emit.event, Mock(side_effect=ValueError("boom")))
-    bus.handle(emit.event, second_handler)
+    bus.handle(_task_created, Mock(side_effect=ValueError("boom")))
+    bus.handle(_task_created, second_handler)
     payload = _TaskCreated(10)
 
     # Act
     with pytest.raises(ExceptionGroup):
-        bus.emit(payload, emit.event)
+        bus.emit(payload, _task_created)
 
     # Assert
     second_handler.assert_called_once_with(payload)
@@ -408,14 +378,13 @@ def test_handler_exceptions_collected_into_exception_group(bus: DirectBus):
     # Arrange
     error_a = ValueError("first")
     error_b = RuntimeError("second")
-    emit = bus.bind(_task_created, factory=_TaskCreated)
-    bus.handle(emit.event, Mock(side_effect=error_a))
-    bus.handle(emit.event, Mock(side_effect=error_b))
+    bus.handle(_task_created, Mock(side_effect=error_a))
+    bus.handle(_task_created, Mock(side_effect=error_b))
     payload = _TaskCreated(11)
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exc_info:
-        bus.emit(payload, emit.event)
+        bus.emit(payload, _task_created)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
 
@@ -436,18 +405,17 @@ def test_handler_removing_registration_during_dispatch_does_not_break_other_hand
     """
     # Arrange
     other_handlers = [Mock() for _ in range(20)]
-    emit = bus.bind(_task_created, factory=_TaskCreated)
 
     def self_removing(_: object) -> None:
         bus.remove(first_handle)
 
-    first_handle = bus.handle(emit.event, self_removing)
+    first_handle = bus.handle(_task_created, self_removing)
     for handler in other_handlers:
-        bus.handle(emit.event, handler)
+        bus.handle(_task_created, handler)
     payload = _TaskCreated(12)
 
     # Act
-    bus.emit(payload, emit.event)
+    bus.emit(payload, _task_created)
 
     # Assert
     for handler in other_handlers:
@@ -476,16 +444,16 @@ def test_request_emit_returns_responder_reply(bus: DirectBus):
 
 def test_bound_request_event_returns_reply(bus: DirectBus):
     """
-    Calling a FactoryBoundEvent for a request event should return the responder's reply.
+    Calling a callable bound with a factory for a request event should return the responder's reply.
 
     Given: A responder registered to a request Event bound via bus.bind
-    When: The FactoryBoundEvent is called
+    When: The callable is called
     Then: The responder's return value should be returned
     """
     # Arrange
     reply = _BookResult("Dune")
     find_book = bus.bind(_find_book, factory=_BookQuery)
-    bus.handle(find_book.event, Mock(return_value=reply))
+    bus.handle(_find_book, Mock(return_value=reply))
 
     # Act
     result = find_book(query="dune")
@@ -581,7 +549,7 @@ def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: DirectBu
         assert envelope is not None
         captured.append(envelope)
 
-    bus_with_envelope.handle(emit.event, handler)
+    bus_with_envelope.handle(_task_created, handler)
 
     # Act
     emit(task_id=1)
@@ -608,7 +576,7 @@ def test_each_emission_creates_independent_envelope(bus_with_envelope: DirectBus
         assert envelope is not None
         captured.append(envelope)
 
-    bus_with_envelope.handle(emit.event, handler)
+    bus_with_envelope.handle(_task_created, handler)
 
     # Act
     emit(task_id=1)
@@ -668,7 +636,7 @@ def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: DirectBus):
     # Arrange
     emit = bus_with_envelope.bind(_task_created, factory=_TaskCreated)
 
-    @bus_with_envelope.handle(emit.event)
+    @bus_with_envelope.handle(_task_created)
     def _(_: _TaskCreated) -> None: ...
 
     # Act
