@@ -4,10 +4,10 @@
 
 ## Defining an event
 
-An event is a factory (usually a class) paired with a dispatch pattern:
+An event is a payload schema (usually a class) paired with a dispatch pattern:
 
 ```python
-from stratae.events import event, PubSub, Request
+from stratae.events import Event, PubSub, Request
 
 
 class BookCreated:
@@ -27,15 +27,15 @@ class BookQuery:
         self.title = title
 
 
-book_created = event(BookCreated, PubSub)
-book_query = event(BookQuery, Request[Book])
+book_created = Event(BookCreated, PubSub)
+book_query = Event(BookQuery, Request[Book])
 ```
 
-`PubSub` is fire-and-forget: any number of handlers, no reply. `Request[Reply]` expects exactly one handler ("responder") and blocks for its return value — it must be subscripted with the reply type, since there's no other way to recover it at runtime. `event(...)` infers the payload type from `factory` when it's a plain class; for a plain function factory, or anything async, pass `payload_type` explicitly.
+`PubSub` is fire-and-forget: any number of handlers, no reply. `Request[Reply]` expects exactly one handler ("responder") and blocks for its return value — it must be subscripted with the reply type, since there's no other way to recover it at runtime. `Event(schema, pattern)` just pairs the payload type with the pattern; give it an optional `name` to override the default of `schema.__name__`.
 
 ## Wiring up a bus
 
-`DirectBus` (and its async counterpart `AsyncDirectBus`) dispatches in-process, with no broker involved — the batteries-included adapter for tests and single-process apps. `.bind(event)` turns an event definition into a callable, so producers don't construct payloads or talk to the bus directly:
+`DirectBus` (and its async counterpart `AsyncDirectBus`) dispatches in-process, with no broker involved — the batteries-included adapter for tests and single-process apps. `.bind(event, factory=...)` turns an event definition into a callable that builds the payload from its arguments, so producers don't construct payloads or talk to the bus directly; omit `factory` to forward an already-built payload instead:
 
 ```python
 from stratae.events import DirectBus
@@ -43,8 +43,8 @@ from stratae.events import DirectBus
 bus = DirectBus()
 catalog: dict[str, Book] = {}
 
-create_book = bus.bind(book_created)
-query_book = bus.bind(book_query)
+create_book = bus.bind(book_created, factory=BookCreated)
+query_book = bus.bind(book_query, factory=BookQuery)
 
 
 @bus.handle(book_created)
@@ -68,7 +68,8 @@ A `Request` event needs exactly one registered responder at emit time: zero rais
 A handler is just a plain callable, so an `@inject`-decorated function works as one directly — the bus doesn't need to know anything about DI:
 
 ```python
-from stratae.depends import Depends, Injected, inject
+from typing import Annotated
+from stratae.depends import Depends, inject
 from stratae.lifecycle import Lifecycle, Scope
 
 lifecycle = Lifecycle([Scope("application", isolation="shared")])
@@ -80,22 +81,22 @@ def order_store() -> dict[int, dict]:
     return {}
 
 
-order_placed = event(OrderPlaced, PubSub)
-price_order = event(PriceOrder, Request[Quote])
+order_placed = Event(OrderPlaced, PubSub)
+price_order = Event(PriceOrder, Request[Quote])
 
-place_order = bus.bind(order_placed)
-request_quote = bus.bind(price_order)
+place_order = bus.bind(order_placed, factory=OrderPlaced)
+request_quote = bus.bind(price_order, factory=PriceOrder)
 
 
 @bus.handle(order_placed)
 @inject
-def _(order: OrderPlaced, store: Injected[dict, Depends(order_store)]) -> None:
+def _(order: OrderPlaced, store: Annotated[dict, Depends(order_store)]) -> None:
     store[order.order_id] = {"status": "placed"}
 
 
 @bus.handle(price_order)
 @inject
-def _(request: PriceOrder, store: Injected[dict, Depends(order_store)]) -> Quote:
+def _(request: PriceOrder, store: Annotated[dict, Depends(order_store)]) -> Quote:
     return Quote(order_id=request.order_id, total=100)
 
 
@@ -155,6 +156,6 @@ await create_book(
 | `MultipleRespondersError` | A `Request` event has more than one registered responder |
 | `NotConnectedError` | A transport adapter (e.g. RabbitMQ) is used before its connection is open — `DirectBus` never raises this |
 
-`bind`/`BoundEvent` require a sync factory (`TypeError` otherwise, since a sync `__call__` can't await); use `abind`/`AsyncBoundEvent` for async factories. `DirectBus` similarly rejects async handlers outright — register those on `AsyncDirectBus`.
+`bind`/`FactoryBoundEvent` require a sync factory (`TypeError` otherwise, since a sync `__call__` can't await); use `abind`/`AsyncFactoryBoundEvent` for async factories. `DirectBus` similarly rejects async handlers outright — register those on `AsyncDirectBus`.
 
 Full signatures and every exported name: {doc}`stratae.events API reference <../apidocs/stratae.events/stratae.events>`.

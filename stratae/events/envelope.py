@@ -18,7 +18,7 @@ one, or a fresh root envelope otherwise.
 
 ````{example} Tracing a chained event through envelopes
 ```{code-block} python
-from stratae.events import DirectBus, PubSub, event
+from stratae.events import DirectBus, Event, PubSub
 from stratae.events.envelope import Envelope
 
 class OrderPlaced:
@@ -29,12 +29,12 @@ class ShipmentScheduled:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_placed_event = event(OrderPlaced, PubSub)
-shipment_scheduled_event = event(ShipmentScheduled, PubSub)
+order_placed_event = Event(OrderPlaced, PubSub)
+shipment_scheduled_event = Event(ShipmentScheduled, PubSub)
 
 bus = DirectBus(use_envelope=True)
-place_order = bus.bind(order_placed_event)
-schedule_shipment = bus.bind(shipment_scheduled_event)
+place_order = bus.bind(order_placed_event, factory=OrderPlaced)
+schedule_shipment = bus.bind(shipment_scheduled_event, factory=ShipmentScheduled)
 
 @bus.handle(order_placed_event)
 def on_order_placed(order: OrderPlaced) -> None:

@@ -120,7 +120,7 @@ So far `add_user` and `list_users` run the query themselves. `stratae.events` mo
 
 ````{example} Driving the writes and reads through events
 ```{code-block} python
-from stratae.events import DirectBus, PubSub, Request, event
+from stratae.events import DirectBus, Event, PubSub, Request
 
 class UserAdded:
     def __init__(self, name: str) -> None:
@@ -129,12 +129,12 @@ class UserAdded:
 class UsersRequested:
     pass
 
-user_added = event(UserAdded, PubSub)
-users_requested = event(UsersRequested, Request[list[tuple[int, str]]])
+user_added = Event(UserAdded, PubSub)
+users_requested = Event(UsersRequested, Request[list[tuple[int, str]]])
 
 bus = DirectBus()
-add_user = bus.bind(user_added)
-list_users = bus.bind(users_requested)
+add_user = bus.bind(user_added, factory=UserAdded)
+list_users = bus.bind(users_requested, factory=UsersRequested)
 
 @bus.handle(user_added)
 @inject

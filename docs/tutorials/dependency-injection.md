@@ -4,10 +4,11 @@
 
 ## Marking and injecting
 
-A provider is any callable, sync or async, wrapped in `Depends`. Mark the parameter that should receive its result with `Injected[T, Depends(provider)]`, and decorate the function with `@inject`:
+A provider is any callable, sync or async, wrapped in `Depends`. Mark the parameter that should receive its result with `Annotated[T, Depends(provider)]`, and decorate the function with `@inject`:
 
 ```python
-from stratae.depends import Depends, Injected, inject
+from typing import Annotated
+from stratae.depends import Depends, inject
 
 
 def get_tax_rate() -> float:
@@ -15,7 +16,7 @@ def get_tax_rate() -> float:
 
 
 @inject
-def total_with_tax(subtotal: float, tax_rate: Injected[float, Depends(get_tax_rate)]) -> float:
+def total_with_tax(subtotal: float, tax_rate: Annotated[float, Depends(get_tax_rate)]) -> float:
     return subtotal + subtotal * tax_rate
 
 
@@ -24,10 +25,10 @@ total_with_tax(100.0)  # 108.0 -- tax_rate is resolved, not passed
 
 `@inject` inspects the signature once, at decoration time, and generates a wrapper whose visible signature drops the injected parameters entirely — callers never see or pass `tax_rate`. If a function has no injected parameters, `@inject` returns it unchanged, so it's safe to apply broadly.
 
-`Injected` is just `Annotated` under a friendlier name; `Injected[T, Depends(provider)]` and `Annotated[T, Depends(provider)]` are interchangeable. A common ergonomic pattern is a type alias for a dependency used in several places:
+A common ergonomic pattern is a type alias for a dependency used in several places:
 
 ```python
-type TaxRate = Injected[float, Depends(get_tax_rate)]
+type TaxRate = Annotated[float, Depends(get_tax_rate)]
 
 
 @inject
@@ -42,12 +43,12 @@ Providers can themselves take injected parameters, resolved recursively when the
 def get_config() -> Config: ...
 
 
-def get_database(config: Injected[Config, Depends(get_config)]) -> Database:
+def get_database(config: Annotated[Config, Depends(get_config)]) -> Database:
     return Database(config.dsn)
 
 
 @inject
-def create_user(name: str, db: Injected[Database, Depends(get_database)]) -> User: ...
+def create_user(name: str, db: Annotated[Database, Depends(get_database)]) -> User: ...
 ```
 
 Only `create_user` needs `@inject` — the whole chain (`create_user` → `get_database` → `get_config`) is wired up the moment `create_user` is decorated. A cycle anywhere in that chain raises `CircularDependencyError` at decoration time, rather than surfacing as a buried `RecursionError`.
@@ -68,12 +69,12 @@ This is a deliberate boundary, not an oversight: `stratae.depends` only wires va
 Async functions can depend on a mix of sync and async providers — `@inject` awaits the async ones and calls the sync ones directly. Sync functions can only depend on sync providers; depending on an async provider from a sync function raises `InjectionSignatureError` at decoration time, since there's no way to await inside a sync call.
 
 ```python
-async def get_current_user(user_id: Injected[int, Depends(get_user_id)]) -> User:
+async def get_current_user(user_id: Annotated[int, Depends(get_user_id)]) -> User:
     return await db.fetch_user(user_id)
 
 
 @inject
-async def handle_request(user: Injected[User, Depends(get_current_user)]) -> Response: ...
+async def handle_request(user: Annotated[User, Depends(get_current_user)]) -> Response: ...
 ```
 
 Generator and async-generator functions can be injection targets too, not just plain functions and coroutines.
@@ -94,7 +95,7 @@ def get_database() -> Database:
 
 
 @inject
-def create_user(name: str, db: Injected[Database, Depends(get_database)]) -> User: ...
+def create_user(name: str, db: Annotated[Database, Depends(get_database)]) -> User: ...
 
 
 with lifecycle.start("application"):

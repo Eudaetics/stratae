@@ -1,25 +1,25 @@
 """
 Event system combining event definitions, bound-event facades, buses, and dispatch protocols.
 
-{py:func}`event <stratae.events.event.event>` takes a payload factory and an
-{py:class}`EventType <stratae.events.event.EventType>` discriminant and returns
-an {py:class}`EventConfig <stratae.events.event.EventConfig>` binding the two
-(or an {py:class}`AsyncEventConfig <stratae.events.event.AsyncEventConfig>`
-when the factory is async).
-{py:class}`PubSub <stratae.events.event.PubSub>` marks fire-and-forget
-dispatch. {py:class}`Request <stratae.events.event.Request>` marks
-request/reply, where emit blocks until a responder returns.
+{py:class}`Event <stratae.events.event.Event>` binds a payload schema to a
+{py:class}`DispatchPattern <stratae.events.event.DispatchPattern>`
+discriminant. {py:class}`PubSub <stratae.events.event.PubSub>` marks
+fire-and-forget dispatch. {py:class}`Request <stratae.events.event.Request>`
+marks request/reply, where emit blocks until a responder returns.
 {py:func}`is_request <stratae.events.event.is_request>` and
 {py:func}`reply_type <stratae.events.event.reply_type>` inspect an
-`EventConfig`'s discriminant.
+`Event`'s discriminant.
 
 {py:func}`bind <stratae.events.bound.bind>` and
 {py:func}`abind <stratae.events.bound.abind>` attach an emitter and
-adapter-specific routing config to an `EventConfig`. The result is a
-callable facade: {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`
-for a sync emitter, {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`
-for an async one. Calling it constructs the payload and forwards it to the
-emitter.
+adapter-specific routing config to an `Event`. Passed a `factory`, each
+returns a {py:class}`FactoryBoundEvent <stratae.events.bound.FactoryBoundEvent>`
+or {py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`,
+which build the payload from the call's arguments. Omitting `factory`
+returns a {py:class}`BoundEvent <stratae.events.bound.BoundEvent>` or
+{py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>` instead,
+which forward an already-built payload straight through. Each is a callable
+facade that forwards to the emitter either way.
 
 Emitters and handler registries are described structurally by the
 {py:class}`Producer <stratae.events.protocols.Producer>` and
@@ -46,7 +46,7 @@ adapters that cross a real transport.
 
 ````{example} Create event triggering a logging event
 ```{code-block} python
-from stratae.events import DirectBus, Envelope, PubSub, Request, event
+from stratae.events import DirectBus, Envelope, Event, PubSub, Request
 
 class LogMessage:
     def __init__(self, text: str) -> None:
@@ -60,12 +60,12 @@ class User:
     def __init__(self, username: str) -> None:
         self.username = username
 
-log_message_event = event(LogMessage, PubSub)
-create_user_event = event(CreateUserSchema, Request[User])
+log_message_event = Event(LogMessage, PubSub)
+create_user_event = Event(CreateUserSchema, Request[User])
 
 bus = DirectBus(use_envelope=True)
-log = bus.bind(log_message_event)
-create = bus.bind(create_user_event)
+log = bus.bind(log_message_event, factory=LogMessage)
+create = bus.bind(create_user_event, factory=CreateUserSchema)
 
 @bus.handle(log_message_event)
 def write_to_log(entry: LogMessage) -> None:

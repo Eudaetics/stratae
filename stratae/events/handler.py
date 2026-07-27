@@ -17,15 +17,15 @@ expose `handle` and `remove`.
 
 ````{example} Using a returned Handler to unregister it later
 ```{code-block} python
-from stratae.events import DirectBus, PubSub, event
+from stratae.events import DirectBus, Event, PubSub
 
 class LogMessage:
     def __init__(self, text: str) -> None:
         self.text = text
 
-log_message_event = event(LogMessage, PubSub)
+log_message_event = Event(LogMessage, PubSub)
 bus = DirectBus()
-log = bus.bind(log_message_event)
+log = bus.bind(log_message_event, factory=LogMessage)
 
 @bus.handle(log_message_event)
 def write_to_log(entry: LogMessage) -> None:

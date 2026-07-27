@@ -12,12 +12,13 @@ from stratae.integrations.rabbitmq import RabbitMQPublisher, RabbitMQConfig
 async with RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher:
     place_order = publisher.bind(
         order_placed,
+        factory=OrderPlaced,
         config=RabbitMQConfig(exchange="events", routing_key="order.placed", exchange_type="topic"),
     )
     await place_order(order_id=42)
 ```
 
-`.bind(event, config=...)` returns the same kind of callable `bus.bind`/`abind` return elsewhere in `stratae.events` — `publisher.emit` is just the underlying `Producer`. `RabbitMQConfig` pairs an exchange and routing key; give it `exchange_type` to have the exchange declared automatically before the first publish (skip it if the exchange is already declared elsewhere). Using the publisher before entering its `async with` block raises `NotConnectedError`.
+`.bind(event, factory=..., config=...)` returns the same kind of callable `bus.bind`/`abind` return elsewhere in `stratae.events` — `publisher.emit` is just the underlying `Producer`. `RabbitMQConfig` pairs an exchange and routing key; give it `exchange_type` to have the exchange declared automatically before the first publish (skip it if the exchange is already declared elsewhere). Using the publisher before entering its `async with` block raises `NotConnectedError`.
 
 ## Consuming: work queues vs. fan-out
 

@@ -100,8 +100,8 @@ class BoundEvent[S: Any, T: DispatchPattern, RoutingConfig: Any, Resp]:
         """
         Bind an event and emitter with routing config, with no factory.
 
-        :param emitter: A callable that receives the payload and this
-            `BoundEvent`, and returns `Resp`.
+        :param emitter: A callable that receives the payload and the
+            `Event` this binding delivers, and returns `Resp`.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             this binding delivers.
         :param config: The adapter-specific routing config for this binding.
@@ -154,7 +154,7 @@ class FactoryBoundEvent[**P, S: Any, T: DispatchPattern, RoutingConfig: Any, Res
         Bind an event, factory, and emitter with routing config.
 
         :param emitter: A callable that receives the constructed payload and
-            this `FactoryBoundEvent`, and returns `Resp`.
+            the `Event` this binding delivers, and returns `Resp`.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             this binding delivers.
         :param factory: Builds the payload from the bound call's arguments.
@@ -214,8 +214,8 @@ class AsyncBoundEvent[S: Any, T: DispatchPattern, RoutingConfig: Any, Resp]:
         Bind an event and async emitter with routing config, with no factory.
 
         :param emitter: A coroutine callable that receives the payload and
-            this `AsyncBoundEvent`, and returns an awaitable resolving to
-            `Resp`.
+            the `Event` this binding delivers, and returns an awaitable
+            resolving to `Resp`.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             this binding delivers.
         :param config: The adapter-specific routing config for this binding.
@@ -265,7 +265,7 @@ class AsyncFactoryBoundEvent[**P, S: Any, T: DispatchPattern, RoutingConfig: Any
         Bind an event, factory, and async emitter with routing config.
 
         :param emitter: A coroutine callable that receives the constructed
-            payload and this `AsyncFactoryBoundEvent`, and returns an
+            payload and the `Event` this binding delivers, and returns an
             awaitable resolving to `Resp`.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             this binding delivers.
@@ -337,8 +337,8 @@ def bind(
     """
     Bind a sync emitter to an event, with a factory, or without one for passthrough.
 
-    :param emitter: A callable that receives the payload and the resulting
-        bound event, and returns `R`.
+    :param emitter: A callable that receives the payload and the `Event`
+        being bound, and returns `R`.
     :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
     :param factory: Builds the payload from the bound call's arguments. When
         omitted, the returned facade instead forwards an already-built
@@ -391,7 +391,7 @@ def abind(
     Bind an async emitter to an event, with a factory, or without one for passthrough.
 
     :param emitter: A coroutine callable that receives the payload and the
-        resulting bound event, and returns an awaitable resolving to `R`.
+        `Event` being bound, and returns an awaitable resolving to `R`.
     :param event: The {py:class}`Event <stratae.events.event.Event>` to
         bind.
     :param factory: Builds the payload from the bound call's arguments, sync

@@ -209,7 +209,7 @@ A guard that only blocks and says nothing is a missed signal. `stratae.events` d
 
 ````{example} Logging access and alerting on a blocked attempt
 ```{code-block} python
-from stratae.events import DirectBus, PubSub, event
+from stratae.events import DirectBus, Event, PubSub
 
 class ReportViewed:
     def __init__(self, caller: str) -> None:
@@ -219,12 +219,12 @@ class AccessDenied:
     def __init__(self, caller: str) -> None:
         self.caller = caller
 
-report_viewed = event(ReportViewed, PubSub)
-access_denied = event(AccessDenied, PubSub)
+report_viewed = Event(ReportViewed, PubSub)
+access_denied = Event(AccessDenied, PubSub)
 
 bus = DirectBus()
-notify_viewed = bus.bind(report_viewed)
-notify_denied = bus.bind(access_denied)
+notify_viewed = bus.bind(report_viewed, factory=ReportViewed)
+notify_denied = bus.bind(access_denied, factory=AccessDenied)
 
 @bus.handle(report_viewed)
 def log_access(e: ReportViewed) -> None:

@@ -45,11 +45,12 @@ except RuntimeError as exc:
 Because `Context.__call__` takes no required arguments, a `Context` instance can be passed straight to `Depends()` — no adapter needed:
 
 ```python
-from stratae.depends import Depends, Injected, inject
+from typing import Annotated
+from stratae.depends import Depends, inject
 
 
 @inject
-def audit_log(action: str, user: Injected[str, Depends(current_user)]) -> None:
+def audit_log(action: str, user: Annotated[str, Depends(current_user)]) -> None:
     print(f"{user}: {action}")
 
 

@@ -27,7 +27,7 @@ Here's all three working together end to end. Once it's wired up, the calling co
 from typing import Annotated, Protocol
 from stratae.context import Context
 from stratae.depends import Depends, inject
-from stratae.events import DirectBus, PubSub, Request, event
+from stratae.events import DirectBus, Event, PubSub, Request
 from stratae.lifecycle import Lifecycle, Scope, resource
 
 class FetchFile:
@@ -39,8 +39,8 @@ class FileAccessed:
         self.filename = filename
         self.source = source
 
-fetch_file_event = event(FetchFile, Request[str])
-file_accessed_event = event(FileAccessed, PubSub)
+fetch_file_event = Event(FetchFile, Request[str])
+file_accessed_event = Event(FileAccessed, PubSub)
 lifecycle = Lifecycle([Scope("application", "shared")])
 
 class AuditLog:
@@ -76,8 +76,8 @@ storage = Context[Storage]("storage", default=LocalDisk())
 current_user = Context("current_user", default="guest")
 
 bus = DirectBus()
-fetch_file = bus.bind(fetch_file_event)
-notify_accessed = bus.bind(file_accessed_event)
+fetch_file = bus.bind(fetch_file_event, factory=FetchFile)
+notify_accessed = bus.bind(file_accessed_event, factory=FileAccessed)
 
 @bus.handle(fetch_file_event)
 @inject
