@@ -4,6 +4,7 @@
 :maxdepth: 1
 :hidden:
 getting-started
+walkthrough
 dependency-injection
 lifecycle
 events
@@ -13,7 +14,7 @@ serde
 integrations/index
 ```
 
-New to Stratae? See [Getting Started](getting-started) to walk through installation and see a working example.
+New to Stratae? See [Getting Started](getting-started) for installation, then the [Project Walkthrough](walkthrough) for a working example that grows from a simple script into one using each piece of Stratae.
 
 ## The core
 
@@ -48,44 +49,29 @@ print(total_with_tax(100.0))
 
 [Lifecycle](lifecycle.md) scopes caching and cleanup to a unit of work, such as a request, a background job, or an application run. `.cache` registers a function to run once and be reused for the life of an active scope. Wrap a generator in `resource` to also clean it up automatically: the code after `yield` runs when the scope exits, not when the function returns.
 
-````{example} Caching and committing a transaction within a scope
+````{example} Caching and cleaning up a batch within a scope
 ```{code-block} python
 from stratae.lifecycle import Lifecycle, Scope, resource
 
-lifecycle = Lifecycle([Scope("request")])
+lifecycle = Lifecycle([Scope("batch")])
 
-class Transaction:
-    def __init__(self) -> None:
-        print("opening transaction")
-        self._operations: list[str] = []
-
-    def record(self, operation: str) -> None:
-        self._operations.append(operation)
-
-    def commit(self) -> None:
-        print(f"committing {len(self._operations)} operations")
-
-    def rollback(self) -> None:
-        print("rolling back")
-
-@lifecycle.cache("request")
+@lifecycle.cache("batch")
 @resource
-def get_transaction():
-    txn = Transaction()
+def get_batch():
+    print("opening batch")
+    items: list[str] = []
     try:
-        yield txn
-        txn.commit()
-    except Exception:
-        txn.rollback()
-        raise
+        yield items
+    finally:
+        print(f"processed {len(items)} items: {items}")
 
-with lifecycle.start("request"):
-    get_transaction().record("insert order")
-    get_transaction().record("insert line item")
+with lifecycle.start("batch"):
+    get_batch().append("order-1")
+    get_batch().append("order-2")
 ```
 ```{output}
-opening transaction
-committing 2 operations
+opening batch
+processed 2 items: ['order-1', 'order-2']
 ```
 ````
 
