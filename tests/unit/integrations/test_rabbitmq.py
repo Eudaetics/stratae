@@ -14,8 +14,8 @@ RabbitMQPublisher:
 - emit publishes the pack-serialized payload to the configured exchange
   and routing key.
 - emit uses the binding's serializer when one is provided.
-- bind returns an AsyncBoundEvent carrying the routing config.
-- Awaiting the AsyncBoundEvent constructs and publishes the payload.
+- bind with a factory returns an AsyncFactoryBoundEvent carrying the routing config.
+- Awaiting the AsyncFactoryBoundEvent constructs and publishes the payload.
 - emit declares an exchange_type-carrying config's exchange once, before
   its first publish.
 - emit declares no exchange for configs without an exchange_type.
@@ -35,9 +35,9 @@ from stratae.events import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
-    AsyncBoundEvent,
+    AsyncFactoryBoundEvent,
     Envelope,
-    EventConfig,
+    Event,
     PubSub,
 )
 from stratae.events.exceptions import NotConnectedError
@@ -55,7 +55,7 @@ class _OrderPlaced:
         return {"order_id": self.order_id}
 
 
-_order_placed = EventConfig(_OrderPlaced, PubSub)
+_order_placed = Event(_OrderPlaced, PubSub)
 _config = RabbitMQConfig("events", "order.placed")
 
 
@@ -230,7 +230,9 @@ async def test_emit_declares_exchange_once(publisher: RabbitMQPublisher, channel
         await publisher.emit(_OrderPlaced(2), _order_placed, config)
 
     # Assert
-    channel.exchange_declare.assert_awaited_once_with("events", exchange_type="fanout")
+    channel.exchange_declare.assert_awaited_once_with(
+        "events", exchange_type="fanout", durable=False
+    )
     assert channel.basic_publish.await_count == 2
 
 
@@ -301,30 +303,30 @@ async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: Async
     assert sent.timestamp is not None
 
 
-def test_bind_returns_async_bound_event(publisher: RabbitMQPublisher):
+def test_bind_returns_async_factory_bound_event(publisher: RabbitMQPublisher):
     """
-    ``bind`` should return an AsyncBoundEvent carrying the routing config.
+    ``bind`` with a factory should return an AsyncFactoryBoundEvent carrying the routing config.
 
     Given: A publisher
-    When: bind is called with an EventConfig and a RabbitMQConfig
-    Then: An AsyncBoundEvent holding that config should be returned
+    When: bind is called with an Event, a factory, and a RabbitMQConfig
+    Then: An AsyncFactoryBoundEvent holding that config should be returned
     """
-    bound = publisher.bind(_order_placed, config=_config)
+    bound = publisher.bind(_order_placed, factory=_OrderPlaced, config=_config)
 
-    assert isinstance(bound, AsyncBoundEvent)
+    assert isinstance(bound, AsyncFactoryBoundEvent)
     assert bound.config is _config
 
 
 async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: AsyncMock):
     """
-    Awaiting the AsyncBoundEvent should construct the payload and publish it.
+    Awaiting the AsyncFactoryBoundEvent should construct the payload and publish it.
 
     Given: A connected publisher and a bound event
     When: The bound event is awaited with factory arguments
     Then: The constructed payload should be packed and published
     """
     # Arrange
-    order_placed = publisher.bind(_order_placed, config=_config)
+    order_placed = publisher.bind(_order_placed, factory=_OrderPlaced, config=_config)
 
     # Act
     async with publisher:

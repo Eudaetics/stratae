@@ -4,8 +4,8 @@ RabbitMQ async publish and consume adapters.
 {py:class}`RabbitMQPublisher` and {py:class}`RabbitMQConsumer` are async
 adapters implementing the {py:class}`Producer <stratae.events.protocols.Producer>`
 and {py:class}`Consumer <stratae.events.protocols.Consumer>` protocols over
-`aiormq`. Bind an {py:class}`EventConfig <stratae.events.event.EventConfig>`
-to a publisher with {py:func}`RabbitMQPublisher.bind`, using a
+`aiormq`. Bind an {py:class}`Event <stratae.events.event.Event>` to a
+publisher with {py:func}`RabbitMQPublisher.bind`, using a
 {py:class}`RabbitMQConfig` to name the exchange and routing key. Register
 handlers on a consumer with {py:func}`RabbitMQConsumer.handle`, using a
 {py:class}`RabbitMQConsumeConfig` to name the queue or exchange to consume
@@ -23,7 +23,7 @@ handlers this way, without extra plumbing.
 <!--- skip: next -->
 ```{code-block} python
 import asyncio
-from stratae.events import PubSub, event
+from stratae.events import Event, PubSub
 from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
@@ -38,7 +38,7 @@ class OrderPlaced:
     def to_dict(self) -> dict[str, int]:
         return {"order_id": self.order_id}
 
-order_placed_event = event(OrderPlaced, PubSub)
+order_placed_event = Event(OrderPlaced, PubSub)
 
 consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
 
@@ -60,7 +60,9 @@ async def main() -> None:
         RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher,
     ):
         place_order = publisher.bind(
-            order_placed_event, config=RabbitMQConfig("events", "order.placed")
+            order_placed_event,
+            factory=OrderPlaced,
+            config=RabbitMQConfig("events", "order.placed"),
         )
         await place_order(order_id=42)
 
@@ -83,7 +85,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from copy import copy
-from typing import TYPE_CHECKING, Any, Callable, Coroutine, Iterable, Protocol, overload
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Iterable, Protocol, overload
 
 from aiormq import connect
 from pamqp.commands import Basic
@@ -93,8 +95,9 @@ from stratae.events import (
     MESSAGE_ID_HEADER,
     TIMESTAMP_HEADER,
     AsyncBoundEvent,
+    AsyncFactoryBoundEvent,
     Envelope,
-    EventConfig,
+    Event,
     Handler,
     PubSub,
     abind,
@@ -196,9 +199,12 @@ class RabbitMQPublisher:
     when one is given, falling back to the adapter-wide `serializer`
     ({py:func}`stratae.serde.pack` by default). A config carrying an
     `exchange_type` has its exchange declared before its first publish.
-    Bind an {py:class}`EventConfig <stratae.events.event.EventConfig>` to
-    this adapter with {py:func}`RabbitMQPublisher.bind`, which returns an
-    {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`.
+    Bind an {py:class}`Event <stratae.events.event.Event>` to this adapter
+    with {py:func}`RabbitMQPublisher.bind`, passing `factory` to construct
+    the payload from the bound call's arguments, which returns an
+    {py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`,
+    or omitting it to forward an already-built payload directly, which
+    returns an {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`.
     """
 
     def __init__(self, url: str, serializer: Callable[[Any], bytes] = pack) -> None:
@@ -235,31 +241,59 @@ class RabbitMQPublisher:
             self._channel = None
             self._declared.clear()
 
+    @overload
     def bind[**P, S: Any](
         self,
-        event: EventConfig[P, S, PubSub],
+        event: Event[S, PubSub],
+        *,
+        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+        config: RabbitMQConfig,
+        serializer: Callable[[S], bytes] | None = None,
+    ) -> AsyncFactoryBoundEvent[P, S, PubSub, RabbitMQConfig, None]: ...
+
+    @overload
+    def bind[S: Any](
+        self,
+        event: Event[S, PubSub],
         *,
         config: RabbitMQConfig,
         serializer: Callable[[S], bytes] | None = None,
-    ) -> AsyncBoundEvent[P, S, PubSub, RabbitMQConfig, None]:
-        """
-        Return an AsyncBoundEvent publishing through this adapter.
+    ) -> AsyncBoundEvent[S, PubSub, RabbitMQConfig, None]: ...
 
-        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
-            whose factory constructs the payload.
+    def bind(
+        self,
+        event: Event[Any, PubSub],
+        *,
+        factory: Callable[..., Any] | None = None,
+        config: RabbitMQConfig,
+        serializer: Callable[[Any], bytes] | None = None,
+    ) -> (
+        AsyncFactoryBoundEvent[Any, Any, PubSub, RabbitMQConfig, None]
+        | AsyncBoundEvent[Any, PubSub, RabbitMQConfig, None]
+    ):
+        """
+        Return an AsyncBoundEvent or AsyncFactoryBoundEvent publishing through this adapter.
+
+        :param event: The {py:class}`Event <stratae.events.event.Event>`
+            this binding publishes.
+        :param factory: Builds the payload from the bound call's arguments.
+            Omit it to pass an already-built payload straight through
+            instead.
         :param config: The exchange and routing key to publish to.
         :param serializer: Encodes the payload to bytes before publishing.
             Overrides the adapter's `serializer` for this binding only.
-        :returns: An {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`
-            wrapping this adapter's `emit` and `event`.
+        :returns: An
+            {py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`
+            when `factory` is given, otherwise an
+            {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`.
 
         """
-        return abind(self.emit, event, config=config, serializer=serializer)
+        return abind(self.emit, event, factory=factory, config=config, serializer=serializer)
 
-    async def emit[**P, S: Any](
+    async def emit[S: Any](
         self,
         payload: S,
-        event: EventConfig[P, S, PubSub],
+        event: Event[S, PubSub],
         config: RabbitMQConfig,
         *,
         serializer: Callable[[S], bytes] | None = None,
@@ -268,7 +302,7 @@ class RabbitMQPublisher:
         Serialize the payload and publish it to the configured exchange.
 
         :param payload: The constructed payload instance to publish.
-        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+        :param event: The {py:class}`Event <stratae.events.event.Event>`
             being emitted; carried for adapter-uniform emit signatures, not
             used for routing.
         :param config: The exchange and routing key to publish to.
@@ -377,7 +411,7 @@ class _Registration:
 
     def __init__(
         self,
-        event: EventConfig[Any, Any, PubSub],
+        event: Event[Any, PubSub],
         handler: Handler[[Any], RabbitMQConsumeConfig, Any],
         deserializer: Unpacker | None,
     ) -> None:
@@ -409,8 +443,8 @@ class RabbitMQConsumer:
 
     Message bodies are decoded with the consumer's `deserializer`, an
     {py:class}`Unpacker <stratae.serde.Unpacker>` called as
-    `deserializer(body, type=payload_type)` with each event's `payload_type`.
-    The default, {py:func}`stratae.serde.unpack_json`, decodes JSON and
+    `deserializer(body, type=schema)` with each event's `schema`. The
+    default, {py:func}`stratae.serde.unpack_json`, decodes JSON and
     constructs the type from keyword arguments. Pass a compatible decoder
     such as `msgspec.json.decode` to swap the format adapter-wide. A
     per-registration `deserializer` overrides it for one queue. Sync and
@@ -433,7 +467,7 @@ class RabbitMQConsumer:
 
         :param url: AMQP connection URL, e.g. `"amqp://guest:guest@localhost/"`.
         :param deserializer: Decodes message bodies into each event's
-            `payload_type`, called as `deserializer(body, type=payload_type)`.
+            `schema`, called as `deserializer(body, type=schema)`.
             Defaults to {py:func}`stratae.serde.unpack_json`.
         :param prefetch_count: Channel QoS: the number of unacked messages
             the broker delivers ahead. `1` gives fair dispatch between
@@ -477,9 +511,9 @@ class RabbitMQConsumer:
             registration.consumer_tag = None
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        event: EventConfig[P, S, PubSub],
+        event: Event[S, PubSub],
         fn: Callable[[S], R],
         *,
         config: RabbitMQConsumeConfig,
@@ -487,9 +521,9 @@ class RabbitMQConsumer:
     ) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
 
     @overload
-    def handle[**P, S: Any](
+    def handle[S: Any](
         self,
-        event: EventConfig[P, S, PubSub],
+        event: Event[S, PubSub],
         fn: None = None,
         *,
         config: RabbitMQConsumeConfig,
@@ -498,7 +532,7 @@ class RabbitMQConsumer:
 
     def handle(
         self,
-        event: EventConfig[Any, Any, PubSub],
+        event: Event[Any, PubSub],
         fn: Callable[[Any], Any] | None = None,
         *,
         config: RabbitMQConsumeConfig,
@@ -512,8 +546,8 @@ class RabbitMQConsumer:
         Returns the {py:class}`Handler <stratae.events.handler.Handler>`
         instance in both forms so callers can pass it to `remove` later.
 
-        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
-            whose payload type the handler receives.
+        :param event: The {py:class}`Event <stratae.events.event.Event>`
+            whose schema the handler receives.
         :param fn: When supplied, registers `fn` directly and returns its
             `Handler`. When omitted, returns a decorator that registers and
             returns the `Handler`.
@@ -551,7 +585,7 @@ class RabbitMQConsumer:
 
     def _register(
         self,
-        event: EventConfig[Any, Any, PubSub],
+        event: Event[Any, PubSub],
         fn: Callable[[Any], Any],
         config: RabbitMQConsumeConfig,
         deserializer: Unpacker | None,
@@ -614,7 +648,7 @@ class RabbitMQConsumer:
     def _deserialize(self, registration: _Registration, body: bytes) -> Any:
         """Decode a message body with the registration's deserializer, or the consumer's default."""
         unpacker = registration.deserializer or self._deserializer
-        return unpacker(body, type=registration.event.payload_type)
+        return unpacker(body, type=registration.event.schema)
 
     def _on_message(
         self, registration: _Registration

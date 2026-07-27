@@ -137,8 +137,7 @@ with lifecycle.start("request"), user_id.use(123):
 Stratae events separate what an event is from how it is dispatched. An event pairs a payload with a dispatch pattern: `PubSub` for fire-and-forget fan-out, or `Request[Reply]` for a blocking call answered by exactly one responder. Emitting a payload for the event dispatches it to the registered handlers.
 
 ```python
-from stratae.events import EventConfig, PubSub
-from stratae.events.adapters import DirectBus
+from stratae.events import DirectBus, Event, PubSub
 
 bus = DirectBus()
 
@@ -148,7 +147,7 @@ class OrderPlaced:
         self.order_id = order_id
 
 
-order_placed = EventConfig(OrderPlaced, PubSub)
+order_placed = Event(OrderPlaced, PubSub)
 
 
 @bus.handle(order_placed)
@@ -160,21 +159,21 @@ bus.emit(OrderPlaced(42), order_placed)
 # Order 42 placed
 ```
 
-`bind` is an optional helper that wraps `emit` in a callable: calling the bound event constructs the payload from its arguments and forwards it to the same `emit`, so emission can be passed around like an ordinary function.
+`bind` is an optional helper that wraps `emit` in a callable. Pass `factory` to have the bound event construct the payload from its arguments before forwarding to `emit`; omit it to forward an already-built payload directly.
 
 ```python
-place_order = bus.bind(order_placed)
+place_order = bus.bind(order_placed, factory=OrderPlaced)
 
 place_order(order_id=42)
 # Order 42 placed
 ```
 
-The `EventConfig` is the shareable definition of the event. What `bind` and `handle` take beyond that is adapter-specific, and the two sides are independent: the direct buses need no routing config and use the event definition itself as the handler key, while a broker adapter might bind an emitter with an exchange and routing key and register handlers against a queue.
+The `Event` is the shareable definition of the event. What `bind` and `handle` take beyond that is adapter-specific, and the two sides are independent: the direct buses need no routing config and use the event definition itself as the handler key, while a broker adapter might bind an emitter with an exchange and routing key and register handlers against a queue.
 
 Request events block until their responder returns, and the reply is fully typed:
 
 ```python
-from stratae.events import EventConfig, Request
+from stratae.events import Event, Request
 
 
 class Quote:
@@ -187,7 +186,7 @@ class PriceOrder:
         self.order_id = order_id
 
 
-price_order = EventConfig(PriceOrder, Request[Quote])
+price_order = Event(PriceOrder, Request[Quote])
 
 
 @bus.handle(price_order)

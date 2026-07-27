@@ -5,7 +5,7 @@ from typing import Annotated, Any
 import pytest
 
 from stratae.depends import Depends, inject
-from stratae.events import DirectBus, EventConfig, PubSub, Request
+from stratae.events import DirectBus, Event, PubSub, Request
 from stratae.lifecycle import Lifecycle, Scope
 
 
@@ -43,10 +43,10 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
     def order_store() -> dict[int, dict[str, Any]]:
         return {}
 
-    order_placed = EventConfig(OrderPlaced, PubSub)
-    price_order = EventConfig(PriceOrder, Request[Quote])
-    place_order = bus.bind(order_placed)
-    request_quote = bus.bind(price_order)
+    order_placed = Event(OrderPlaced, PubSub)
+    price_order = Event(PriceOrder, Request[Quote])
+    place_order = bus.bind(order_placed, factory=OrderPlaced)
+    request_quote = bus.bind(price_order, factory=PriceOrder)
 
     @bus.handle(order_placed)
     @inject

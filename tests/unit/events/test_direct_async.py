@@ -4,9 +4,10 @@ Unit tests for the AsyncDirectBus adapter.
 This test suite verifies the following behaviors:
 
 AsyncDirectBus:
-- bind returns an AsyncBoundEvent.
-- Awaiting the AsyncBoundEvent dispatches the payload to a registered sync handler.
-- Awaiting the AsyncBoundEvent dispatches the payload to a registered async handler.
+- bind with a factory returns an AsyncFactoryBoundEvent.
+- bind with no factory returns an AsyncBoundEvent.
+- Awaiting the AsyncFactoryBoundEvent dispatches the payload to a registered sync handler.
+- Awaiting the AsyncFactoryBoundEvent dispatches the payload to a registered async handler.
 - Mixed sync and async handlers on the same channel both receive the payload.
 - All handlers on a channel receive the payload.
 - Handlers on different channels are isolated from each other.
@@ -21,7 +22,7 @@ AsyncDirectBus:
 AsyncDirectBus (request events):
 - emit awaits and returns an async responder's reply.
 - emit returns a sync responder's reply.
-- An AsyncBoundEvent for a request event resolves to the reply when awaited.
+- An AsyncFactoryBoundEvent for a request event resolves to the reply when awaited.
 - emit raises NoResponderError when no responder is registered.
 - emit raises MultipleRespondersError when several responders are registered.
 - A responder's exception propagates directly, not as an ExceptionGroup.
@@ -43,10 +44,11 @@ import pytest
 from stratae.events import (
     AsyncBoundEvent,
     AsyncDirectBus,
+    AsyncFactoryBoundEvent,
     Consumer,
     EmitCallable,
     Envelope,
-    EventConfig,
+    Event,
     Producer,
     PubSub,
     Request,
@@ -74,7 +76,7 @@ class _BookResult:
         self.title = title
 
 
-_find_book = EventConfig(_BookQuery, Request[_BookResult])
+_find_book = Event(_BookQuery, Request[_BookResult])
 
 
 @pytest.fixture
@@ -122,30 +124,63 @@ def test_bus_satisfies_consumer_protocol(bus: AsyncDirectBus):
     assert isinstance(bus, Consumer)
 
 
-def test_bind_returns_async_bound_event(bus: AsyncDirectBus):
+def test_bind_with_factory_returns_async_factory_bound_event(bus: AsyncDirectBus):
     """
-    ``bind`` should return an AsyncBoundEvent bound to bus.emit.
+    ``bind`` with a factory should return an AsyncFactoryBoundEvent bound to bus.emit.
 
     Given: An AsyncDirectBus
-    When: bind is called with an EventConfig
+    When: bind is called with an Event and a factory
+    Then: An AsyncFactoryBoundEvent should be returned
+    """
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
+
+    assert isinstance(emit, AsyncFactoryBoundEvent)
+
+
+def test_bind_without_factory_returns_async_bound_event(bus: AsyncDirectBus):
+    """
+    ``bind`` with no factory should return an AsyncBoundEvent bound to bus.emit.
+
+    Given: An AsyncDirectBus
+    When: bind is called with an Event and no factory
     Then: An AsyncBoundEvent should be returned
     """
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub))
 
     assert isinstance(emit, AsyncBoundEvent)
 
 
+async def test_awaiting_bound_event_forwards_payload_to_handler(bus: AsyncDirectBus):
+    """
+    Awaiting a passthrough AsyncBoundEvent should dispatch an already-built payload.
+
+    Given: A handler registered via bus.handle, and an AsyncBoundEvent with no factory
+    When: The AsyncBoundEvent is awaited with a ready-made payload
+    Then: The handler should be called with that payload
+    """
+    # Arrange
+    handler = Mock()
+    emit = bus.bind(Event(_TaskCreated, PubSub))
+    bus.handle(emit.event, handler)
+
+    # Act
+    await emit(_TaskCreated(1))
+
+    # Assert
+    handler.assert_called_once_with(_TaskCreated(1))
+
+
 async def test_dispatches_to_sync_handler(bus: AsyncDirectBus):
     """
-    Awaiting an AsyncBoundEvent should dispatch the payload to a registered sync handler.
+    Awaiting an AsyncFactoryBoundEvent should dispatch the payload to a registered sync handler.
 
     Given: A sync handler registered via bus.handle
-    When: The AsyncBoundEvent is awaited
+    When: The AsyncFactoryBoundEvent is awaited
     Then: The handler should be called with the constructed payload
     """
     # Arrange
     handler = Mock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, handler)
 
     # Act
@@ -157,15 +192,15 @@ async def test_dispatches_to_sync_handler(bus: AsyncDirectBus):
 
 async def test_dispatches_to_async_handler(bus: AsyncDirectBus):
     """
-    Awaiting an AsyncBoundEvent should dispatch the payload to a registered async handler.
+    Awaiting an AsyncFactoryBoundEvent should dispatch the payload to a registered async handler.
 
     Given: An async handler registered via bus.handle
-    When: The AsyncBoundEvent is awaited
+    When: The AsyncFactoryBoundEvent is awaited
     Then: The handler should be called with the constructed payload
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, handler)
 
     # Act
@@ -177,16 +212,16 @@ async def test_dispatches_to_async_handler(bus: AsyncDirectBus):
 
 async def test_dispatches_to_mixed_handlers(bus: AsyncDirectBus):
     """
-    Both sync and async handlers registered to the same EventConfig should receive the payload.
+    Both sync and async handlers registered to the same Event should receive the payload.
 
-    Given: A sync and an async handler registered to the same EventConfig
+    Given: A sync and an async handler registered to the same Event
     When: An event is emitted
     Then: Both handlers should be called with the payload
     """
     # Arrange
     sync_handler = Mock()
     async_handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, sync_handler)
     bus.handle(emit.event, async_handler)
 
@@ -200,16 +235,16 @@ async def test_dispatches_to_mixed_handlers(bus: AsyncDirectBus):
 
 async def test_dispatches_to_all_handlers_on_channel(bus: AsyncDirectBus):
     """
-    All handlers registered on the same EventConfig should receive the payload.
+    All handlers registered on the same Event should receive the payload.
 
-    Given: Two async handlers registered to the same EventConfig
+    Given: Two async handlers registered to the same Event
     When: An event is emitted
     Then: Both handlers should be called with the payload
     """
     # Arrange
     handler_a = AsyncMock()
     handler_b = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, handler_a)
     bus.handle(emit.event, handler_b)
 
@@ -223,16 +258,16 @@ async def test_dispatches_to_all_handlers_on_channel(bus: AsyncDirectBus):
 
 async def test_channel_isolation(bus: AsyncDirectBus):
     """
-    Handlers registered to one EventConfig should not receive events emitted on another.
+    Handlers registered to one Event should not receive events emitted on another.
 
-    Given: Two handlers each registered to a different EventConfig
-    When: An event is emitted on one EventConfig
-    Then: Only the handler for that EventConfig should be called
+    Given: Two handlers each registered to a different Event
+    When: An event is emitted on one Event
+    Then: Only the handler for that Event should be called
     """
     # Arrange
-    task_event = EventConfig(_TaskCreated, PubSub)
-    order_event = EventConfig(_TaskCreated, PubSub)
-    emit_task = bus.bind(task_event)
+    task_event = Event(_TaskCreated, PubSub)
+    order_event = Event(_TaskCreated, PubSub)
+    emit_task = bus.bind(task_event, factory=_TaskCreated)
     task_handler = AsyncMock()
     order_handler = AsyncMock()
     bus.handle(task_event, task_handler)
@@ -255,7 +290,7 @@ def test_handle_returns_handler(bus: AsyncDirectBus):
     Then: The returned Handler should wrap that callable
     """
     fn = Mock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     handler = bus.handle(emit.event, fn)
 
     assert handler.call is fn
@@ -271,7 +306,7 @@ async def test_remove_prevents_further_dispatch(bus: AsyncDirectBus):
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     handle = bus.handle(emit.event, handler)
     bus.remove(handle)
 
@@ -286,13 +321,13 @@ async def test_same_callable_registered_twice_called_twice(bus: AsyncDirectBus):
     """
     Registering the same callable twice should produce two independent registrations.
 
-    Given: The same callable registered to an EventConfig twice
+    Given: The same callable registered to an Event twice
     When: An event is emitted
     Then: The callable should be invoked twice
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, handler)
     bus.handle(emit.event, handler)
 
@@ -307,13 +342,13 @@ async def test_emit_dispatches_directly(bus: AsyncDirectBus):
     """
     ``emit`` should dispatch the payload directly to all registered handlers.
 
-    Given: A handler registered to an EventConfig
-    When: emit is called directly with that EventConfig
+    Given: A handler registered to an Event
+    When: emit is called directly with that Event
     Then: The handler should receive the payload
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, handler)
     payload = _TaskCreated(8)
 
@@ -326,16 +361,16 @@ async def test_emit_dispatches_directly(bus: AsyncDirectBus):
 
 async def test_dispatch_invokes_all_handlers(bus: AsyncDirectBus):
     """
-    ``dispatch`` should invoke every handler registered for the given EventConfig.
+    ``dispatch`` should invoke every handler registered for the given Event.
 
-    Given: Two handlers registered to an EventConfig
+    Given: Two handlers registered to an Event
     When: dispatch is called directly
     Then: Both handlers should receive the payload
     """
     # Arrange
     handler_a = AsyncMock()
     handler_b = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, handler_a)
     bus.handle(emit.event, handler_b)
     payload = _TaskCreated(9)
@@ -352,13 +387,13 @@ async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncDirectB
     """
     A handler that raises should not prevent subsequent handlers from running.
 
-    Given: Two handlers registered to an EventConfig, the first of which raises
+    Given: Two handlers registered to an Event, the first of which raises
     When: an event is emitted
     Then: The second handler should still be called
     """
     # Arrange
     second_handler = AsyncMock()
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, AsyncMock(side_effect=ValueError("boom")))
     bus.handle(emit.event, second_handler)
     payload = _TaskCreated(10)
@@ -375,14 +410,14 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncDirec
     """
     All handler exceptions should be collected and raised together as an ExceptionGroup.
 
-    Given: Two handlers registered to an EventConfig, both of which raise
+    Given: Two handlers registered to an Event, both of which raise
     When: an event is emitted
     Then: An ExceptionGroup containing both exceptions should be raised
     """
     # Arrange
     error_a = ValueError("first")
     error_b = RuntimeError("second")
-    emit = bus.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus.handle(emit.event, AsyncMock(side_effect=error_a))
     bus.handle(emit.event, AsyncMock(side_effect=error_b))
     payload = _TaskCreated(11)
@@ -398,8 +433,8 @@ async def test_request_emit_returns_async_responder_reply(bus: AsyncDirectBus):
     """
     ``emit`` should await and return an async responder's reply for a request event.
 
-    Given: An async responder registered to a request EventConfig
-    When: emit is awaited with that EventConfig
+    Given: An async responder registered to a request Event
+    When: emit is awaited with that Event
     Then: The responder's resolved return value should be returned
     """
     # Arrange
@@ -417,8 +452,8 @@ async def test_request_emit_returns_sync_responder_reply(bus: AsyncDirectBus):
     """
     ``emit`` should return a sync responder's reply for a request event.
 
-    Given: A sync responder registered to a request EventConfig
-    When: emit is awaited with that EventConfig
+    Given: A sync responder registered to a request Event
+    When: emit is awaited with that Event
     Then: The responder's return value should be returned
     """
     # Arrange
@@ -434,15 +469,15 @@ async def test_request_emit_returns_sync_responder_reply(bus: AsyncDirectBus):
 
 async def test_bound_request_event_resolves_to_reply(bus: AsyncDirectBus):
     """
-    Awaiting an AsyncBoundEvent for a request event should resolve to the responder's reply.
+    Awaiting an AsyncFactoryBoundEvent for a request event should resolve to the responder's reply.
 
-    Given: An async responder registered to a request EventConfig bound via bus.bind
-    When: The AsyncBoundEvent is awaited
+    Given: An async responder registered to a request Event bound via bus.bind
+    When: The AsyncFactoryBoundEvent is awaited
     Then: The responder's resolved return value should be returned
     """
     # Arrange
     reply = _BookResult("Dune")
-    find_book = bus.bind(_find_book)
+    find_book = bus.bind(_find_book, factory=_BookQuery)
     bus.handle(find_book.event, AsyncMock(return_value=reply))
 
     # Act
@@ -456,8 +491,8 @@ async def test_request_emit_raises_without_responder(bus: AsyncDirectBus):
     """
     ``emit`` should raise NoResponderError when a request event has no responder.
 
-    Given: A request EventConfig with no registered responder
-    When: emit is awaited with that EventConfig
+    Given: A request Event with no registered responder
+    When: emit is awaited with that Event
     Then: A NoResponderError should be raised
     """
     with pytest.raises(NoResponderError):
@@ -468,8 +503,8 @@ async def test_request_emit_raises_with_multiple_responders(bus: AsyncDirectBus)
     """
     ``emit`` should raise MultipleRespondersError when several responders are registered.
 
-    Given: Two responders registered to a request EventConfig
-    When: emit is awaited with that EventConfig
+    Given: Two responders registered to a request Event
+    When: emit is awaited with that Event
     Then: A MultipleRespondersError should be raised
     """
     # Arrange
@@ -485,8 +520,8 @@ async def test_request_responder_exception_propagates_directly(bus: AsyncDirectB
     """
     A responder's exception should propagate to the emitter unwrapped.
 
-    Given: An async responder that raises, registered to a request EventConfig
-    When: emit is awaited with that EventConfig
+    Given: An async responder that raises, registered to a request Event
+    When: emit is awaited with that Event
     Then: The responder's exception should be raised directly, not as an ExceptionGroup
     """
     # Arrange
@@ -504,8 +539,8 @@ async def test_request_responder_registered_via_decorator(bus: AsyncDirectBus):
     """
     An async responder registered via the decorator form of handle should serve requests.
 
-    Given: An async responder registered with @bus.handle on a request EventConfig
-    When: emit is awaited with that EventConfig
+    Given: An async responder registered with @bus.handle on a request Event
+    When: emit is awaited with that Event
     Then: The responder's resolved return value should be returned
     """
     # Arrange
@@ -531,7 +566,7 @@ async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: As
     Then: The captured value should be an Envelope instance
     """
     # Arrange
-    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus_with_envelope.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     captured: list[Envelope] = []
 
     @bus_with_envelope.handle(emit.event)
@@ -557,7 +592,7 @@ async def test_each_emission_creates_independent_envelope(bus_with_envelope: Asy
     Then: Each emission should have a distinct correlation id
     """
     # Arrange
-    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus_with_envelope.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     captured: list[Envelope] = []
 
     @bus_with_envelope.handle(emit.event)
@@ -578,16 +613,16 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncD
     """
     A handler that emits an event should receive a child envelope linked to the outer one.
 
-    Given: An outer handler that emits on a second EventConfig, and an inner handler on that event
+    Given: An outer handler that emits on a second Event, and an inner handler on that event
     When: The outer event is emitted
     Then: The inner envelope should share the outer correlation id and
           have the outer message id as its causation id
     """
     # Arrange
-    outer_event = EventConfig(_TaskCreated, PubSub)
-    inner_event = EventConfig(_TaskCreated, PubSub)
-    emit_outer = bus_with_envelope.bind(outer_event)
-    emit_inner = bus_with_envelope.bind(inner_event)
+    outer_event = Event(_TaskCreated, PubSub)
+    inner_event = Event(_TaskCreated, PubSub)
+    emit_outer = bus_with_envelope.bind(outer_event, factory=_TaskCreated)
+    emit_inner = bus_with_envelope.bind(inner_event, factory=_TaskCreated)
     outer_envelopes: list[Envelope] = []
     inner_envelopes: list[Envelope] = []
 
@@ -622,7 +657,7 @@ async def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: AsyncDirect
     Then: Accessing the current envelope should return None
     """
     # Arrange
-    emit = bus_with_envelope.bind(EventConfig(_TaskCreated, PubSub))
+    emit = bus_with_envelope.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
     bus_with_envelope.handle(emit.event, AsyncMock())
 
     # Act
@@ -636,8 +671,8 @@ async def test_request_reply_returned_with_envelope(bus_with_envelope: AsyncDire
     """
     A request event should resolve to its reply when envelope tracking is enabled.
 
-    Given: An async responder registered to a request EventConfig on an envelope-tracking bus
-    When: emit is awaited with that EventConfig
+    Given: An async responder registered to a request Event on an envelope-tracking bus
+    When: emit is awaited with that Event
     Then: The responder's resolved return value should be returned
     """
     # Arrange

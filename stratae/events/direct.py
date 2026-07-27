@@ -9,21 +9,23 @@ responder, and {py:exc}`MultipleRespondersError <stratae.events.exceptions.Multi
 when it has more than one.
 
 {py:class}`DirectBus` dispatches synchronously. Bind its `emit` method to an
-{py:class}`EventConfig <stratae.events.event.EventConfig>` via
+{py:class}`Event <stratae.events.event.Event>` via
 {py:func}`bind <stratae.events.bound.bind>` to get a
-{py:class}`BoundEvent <stratae.events.bound.BoundEvent>` callable facade.
-Registering an async handler on it raises `TypeError`, since there is no way
-to await one from inside synchronous dispatch.
+{py:class}`BoundEvent <stratae.events.bound.BoundEvent>` or
+{py:class}`FactoryBoundEvent <stratae.events.bound.FactoryBoundEvent>`
+callable facade. Registering an async handler on it raises `TypeError`,
+since there is no way to await one from inside synchronous dispatch.
 
 {py:class}`AsyncDirectBus` dispatches through `asyncio` instead. Bind its
 `emit` method via {py:func}`abind <stratae.events.bound.abind>` to get an
-{py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`. It accepts
-a mix of sync and async handlers, running
+{py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>` or
+{py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`.
+It accepts a mix of sync and async handlers, running
 {py:class}`PubSub <stratae.events.event.PubSub>` handlers concurrently with
 `asyncio.gather`.
 
-Both adapters register handlers with `handle`, using the same `EventConfig`
-as the routing key, and can open a scoped
+Both adapters register handlers with `handle`, using the same `Event` as
+the routing key, and can open a scoped
 {py:class}`Envelope <stratae.events.envelope.Envelope>` for each emission when
 constructed with `use_envelope=True`.
 
@@ -32,7 +34,7 @@ constructed with `use_envelope=True`.
 from itertools import count
 from types import SimpleNamespace
 from stratae.events.direct import DirectBus
-from stratae.events.event import PubSub, Request, event
+from stratae.events.event import Event, PubSub, Request
 
 class PlaceOrder:
     def __init__(self, customer: str, item: str) -> None:
@@ -55,14 +57,14 @@ inventory = {"widget": 5}
 reservations: list[str] = []
 shipments: list[str] = []
 
-place_order_event = event(PlaceOrder, Request[Order])
-order_placed_event = event(OrderPlaced, PubSub)
+place_order_event = Event(PlaceOrder, Request[Order])
+order_placed_event = Event(OrderPlaced, PubSub)
 
 # Grouping the events for later simplicity
 order = SimpleNamespace(
     # DirectBus.bind doesn't need a separate routing config
-    place=bus.bind(place_order_event),
-    placed=bus.bind(order_placed_event),
+    place=bus.bind(place_order_event, factory=PlaceOrder),
+    placed=bus.bind(order_placed_event, factory=OrderPlaced),
 )
 
 @bus.handle(order_placed_event)
@@ -106,16 +108,18 @@ from typing import Any, Awaitable, Callable, Protocol, overload
 
 from stratae.events.bound import (
     AsyncBoundEvent,
+    AsyncFactoryBoundEvent,
     BoundEvent,
+    FactoryBoundEvent,
     abind,
     bind,
 )
 from stratae.events.envelope import Envelope
-from stratae.events.event import EventConfig, PubSub, Request, is_request
+from stratae.events.event import Event, PubSub, Request, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.handler import Handler
 
-_AnyEventConfig = EventConfig[Any, Any, Any]
+_AnyEvent = Event[Any, Any]
 
 _ASYNC_HANDLER_REJECTED = (
     "DirectBus dispatches synchronously and cannot await async handlers;"
@@ -126,8 +130,8 @@ _ASYNC_HANDLER_REJECTED = (
 class _HandlerDecorator[S: Any](Protocol):
     """Decorator form of handle for pub/sub events: registers and returns the Handler."""
 
-    def __call__[R](self, fn: Callable[[S], R]) -> Handler[[S], _AnyEventConfig, R]:
-        """Register fn as a handler and return its Handler."""
+    def __call__[R](self, fn: Callable[[S], R]) -> Handler[[S], _AnyEvent, R]:
+        """Register `fn` as a handler and return its `Handler`."""
         ...
 
 
@@ -137,9 +141,9 @@ class _AsyncResponderDecorator[S: Any, R](Protocol):
     @overload
     def __call__(
         self, fn: Callable[[S], Awaitable[R]]
-    ) -> Handler[[S], _AnyEventConfig, Awaitable[R]]: ...
+    ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
     @overload
-    def __call__(self, fn: Callable[[S], R]) -> Handler[[S], _AnyEventConfig, R]: ...
+    def __call__(self, fn: Callable[[S], R]) -> Handler[[S], _AnyEvent, R]: ...
 
 
 class BaseDirectBus:
@@ -155,19 +159,15 @@ class BaseDirectBus:
 
     def __init__(self) -> None:
         """Initialise the handler registry."""
-        self._handlers: dict[_AnyEventConfig, set[Handler[Any, _AnyEventConfig, Any]]] = (
-            defaultdict(set)
-        )
+        self._handlers: dict[_AnyEvent, set[Handler[Any, _AnyEvent, Any]]] = defaultdict(set)
 
-    def _register[**P, R](
-        self, config: _AnyEventConfig, fn: Callable[P, R]
-    ) -> Handler[P, _AnyEventConfig, R]:
+    def _register[**P, R](self, config: _AnyEvent, fn: Callable[P, R]) -> Handler[P, _AnyEvent, R]:
         """Wrap fn as a Handler and store it in the registry under config."""
-        handler: Handler[P, _AnyEventConfig, R] = Handler(fn, config)
+        handler: Handler[P, _AnyEvent, R] = Handler(fn, config)
         self._handlers[config].add(handler)
         return handler
 
-    def remove(self, handler: Handler[Any, _AnyEventConfig, Any]) -> None:
+    def remove(self, handler: Handler[Any, _AnyEvent, Any]) -> None:
         """
         Remove a previously registered handler.
 
@@ -176,7 +176,7 @@ class BaseDirectBus:
         """
         self._handlers[handler.config].discard(handler)
 
-    def _single_responder(self, event: _AnyEventConfig) -> Handler[Any, _AnyEventConfig, Any]:
+    def _single_responder(self, event: _AnyEvent) -> Handler[Any, _AnyEvent, Any]:
         """Return event's sole registered responder, or raise if there isn't exactly one."""
         responders = self._handlers.get(event)
         if not responders:
@@ -194,12 +194,12 @@ class DirectBus(BaseDirectBus):
     """
     In-process, synchronous event bus with no routing config.
 
-    Bind `DirectBus.emit` to an {py:class}`EventConfig <stratae.events.event.EventConfig>`
-    via `bind` to create a callable that constructs payloads and dispatches
-    them to registered handlers. Register handlers with `handle`, using the
-    same `EventConfig` as the routing key. Each `handle` call is an
-    independent registration; the same callable may be registered multiple
-    times.
+    Bind `DirectBus.emit` to an {py:class}`Event <stratae.events.event.Event>`
+    via `bind` to create a callable that dispatches payloads to registered
+    handlers, optionally building them from a factory. Register handlers
+    with `handle`, using the same `Event` as the routing key. Each `handle`
+    call is an independent registration; the same callable may be
+    registered multiple times.
 
     {py:class}`PubSub <stratae.events.event.PubSub>` events fan out to every
     registered handler and emit returns `None`.
@@ -220,46 +220,60 @@ class DirectBus(BaseDirectBus):
     def __init__(self, *, use_envelope: bool = False) -> None:
         """Initialise the bus with optional envelope tracking."""
         super().__init__()
-        self._dispatch: Callable[[Any, _AnyEventConfig], Any] = (
+        self._dispatch: Callable[[Any, _AnyEvent], Any] = (
             self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
 
     @overload
     def bind[**P, S: Any, R](
-        self, event: EventConfig[P, S, Request[R]]
-    ) -> BoundEvent[P, S, Request[R], None, R]: ...
+        self, event: Event[S, Request[R]], *, factory: Callable[P, S]
+    ) -> FactoryBoundEvent[P, S, Request[R], None, R]: ...
 
     @overload
     def bind[**P, S: Any](
-        self, event: EventConfig[P, S, PubSub]
-    ) -> BoundEvent[P, S, PubSub, None, None]: ...
-
-    def bind(self, event: _AnyEventConfig) -> BoundEvent[Any, Any, Any, None, Any]:
-        """
-        Return a BoundEvent pre-populated with this bus's emit and config=None.
-
-        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
-            to bind.
-        :returns: A {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`
-            wrapping this bus's `emit` and `event`.
-        """
-        return bind(self.emit, event, config=None, serializer=None)
+        self, event: Event[S, PubSub], *, factory: Callable[P, S]
+    ) -> FactoryBoundEvent[P, S, PubSub, None, None]: ...
 
     @overload
-    def emit[**P, S: Any, R](
+    def bind[S: Any, R](
+        self, event: Event[S, Request[R]]
+    ) -> BoundEvent[S, Request[R], None, R]: ...
+
+    @overload
+    def bind[S: Any](self, event: Event[S, PubSub]) -> BoundEvent[S, PubSub, None, None]: ...
+
+    def bind(
+        self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
+    ) -> FactoryBoundEvent[Any, Any, Any, None, Any] | BoundEvent[Any, Any, None, Any]:
+        """
+        Return a BoundEvent or FactoryBoundEvent for this bus, with config=None.
+
+        :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+        :param factory: Builds the payload from the bound call's arguments.
+            Omit it to pass an already-built payload straight through
+            instead.
+        :returns: A {py:class}`FactoryBoundEvent <stratae.events.bound.FactoryBoundEvent>`
+            when `factory` is given, otherwise a
+            {py:class}`BoundEvent <stratae.events.bound.BoundEvent>`, both
+            wrapping this bus's `emit` and `event`.
+        """
+        return bind(self.emit, event, factory=factory, config=None, serializer=None)
+
+    @overload
+    def emit[S: Any, R](
         self,
         payload: S,
-        event: EventConfig[P, S, Request[R]],
+        event: Event[S, Request[R]],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> R: ...
 
     @overload
-    def emit[**P, S: Any](
+    def emit[S: Any](
         self,
         payload: S,
-        event: EventConfig[P, S, PubSub],
+        event: Event[S, PubSub],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -268,7 +282,7 @@ class DirectBus(BaseDirectBus):
     def emit(
         self,
         payload: Any,
-        event: _AnyEventConfig,
+        event: _AnyEvent,
         config: None = None,  # noqa: S1172
         *,
         serializer: Callable[..., Any] | None = None,  # noqa: S1172
@@ -283,7 +297,7 @@ class DirectBus(BaseDirectBus):
         and propagate its exceptions directly.
 
         :param payload: The constructed payload instance to dispatch.
-        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+        :param event: The {py:class}`Event <stratae.events.event.Event>`
             used as the handler lookup key.
         :param config: Unused; `DirectBus` requires no routing config.
         :param serializer: Unused; `DirectBus` requires no serializer.
@@ -296,36 +310,36 @@ class DirectBus(BaseDirectBus):
         return self._dispatch(payload, event)
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEventConfig, R]: ...
+    ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: None = None,
-    ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEventConfig, R]]: ...
+    ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, PubSub],
+        config: Event[S, PubSub],
         fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEventConfig, R]: ...
+    ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[**P, S: Any](
+    def handle[S: Any](
         self,
-        config: EventConfig[P, S, PubSub],
+        config: Event[S, PubSub],
         fn: None = None,
     ) -> _HandlerDecorator[S]: ...
 
     def handle(
         self,
-        config: _AnyEventConfig,
+        config: _AnyEvent,
         fn: Callable[..., Any] | None = None,
     ) -> Any:
         """
@@ -340,7 +354,7 @@ class DirectBus(BaseDirectBus):
         Returns the {py:class}`Handler <stratae.events.handler.Handler>`
         instance in both forms so callers can pass it to `remove` later.
 
-        :param config: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+        :param config: The {py:class}`Event <stratae.events.event.Event>`
             used as the handler routing key.
         :param fn: When supplied, registers `fn` directly and returns its
             `Handler`. When omitted, returns a decorator that registers and
@@ -349,27 +363,25 @@ class DirectBus(BaseDirectBus):
         if fn is not None:
             return self._register(config, fn)
 
-        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEventConfig, Any]:
+        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEvent, Any]:
             return self._register(config, f)
 
         return decorator
 
-    def _register[**P, R](
-        self, config: _AnyEventConfig, fn: Callable[P, R]
-    ) -> Handler[P, _AnyEventConfig, R]:
+    def _register[**P, R](self, config: _AnyEvent, fn: Callable[P, R]) -> Handler[P, _AnyEvent, R]:
         """Wrap fn as a Handler, rejecting it with TypeError if it's async."""
         if iscoroutinefunction(fn):
             raise TypeError(_ASYNC_HANDLER_REJECTED)
         return super()._register(config, fn)
 
-    def _dispatch_plain(self, payload: Any, event: _AnyEventConfig) -> Any:
+    def _dispatch_plain(self, payload: Any, event: _AnyEvent) -> Any:
         """Dispatch payload as a request or pub/sub fan-out, without an envelope scope."""
         if is_request(event):
             return self._dispatch_request(payload, event)
         self._dispatch_fanout(payload, event)
         return None
 
-    def _dispatch_fanout(self, payload: Any, event: _AnyEventConfig) -> None:
+    def _dispatch_fanout(self, payload: Any, event: _AnyEvent) -> None:
         """Call every handler registered for event, gathering their failures into one group."""
         exceptions: list[Exception] = []
         handlers = list(self._handlers.get(event, ()))
@@ -381,11 +393,11 @@ class DirectBus(BaseDirectBus):
         if exceptions:
             raise ExceptionGroup("Handler Errors", exceptions)
 
-    def _dispatch_request(self, payload: Any, event: _AnyEventConfig) -> Any:
+    def _dispatch_request(self, payload: Any, event: _AnyEvent) -> Any:
         """Call event's sole responder with payload and return its reply."""
         return self._single_responder(event)(payload)
 
-    def _dispatch_in_envelope(self, payload: Any, event: _AnyEventConfig) -> Any:
+    def _dispatch_in_envelope(self, payload: Any, event: _AnyEvent) -> Any:
         """Dispatch payload for event inside a freshly opened envelope scope."""
         with Envelope.scope():
             return self._dispatch_plain(payload, event)
@@ -395,13 +407,13 @@ class AsyncDirectBus(BaseDirectBus):
     """
     In-process, asynchronous event bus with no routing config.
 
-    Bind `AsyncDirectBus.emit` to an {py:class}`EventConfig <stratae.events.event.EventConfig>`
-    via `abind` to create a callable that constructs payloads and dispatches
-    them to registered handlers. Register handlers with `handle`, using the
-    same `EventConfig` as the routing key. Sync and async handlers are both
-    supported; all are dispatched concurrently via `asyncio.gather`. Each
-    `handle` call is an independent registration; the same callable may be
-    registered multiple times.
+    Bind `AsyncDirectBus.emit` to an {py:class}`Event <stratae.events.event.Event>`
+    via `abind` to create a callable that dispatches payloads to registered
+    handlers, optionally building them from a factory. Register handlers
+    with `handle`, using the same `Event` as the routing key. Sync and
+    async handlers are both supported; all are dispatched concurrently via
+    `asyncio.gather`. Each `handle` call is an independent registration; the
+    same callable may be registered multiple times.
 
     {py:class}`PubSub <stratae.events.event.PubSub>` events fan out to every
     registered handler and emit resolves to `None`.
@@ -425,40 +437,61 @@ class AsyncDirectBus(BaseDirectBus):
 
     @overload
     def bind[**P, S: Any, R](
-        self, event: EventConfig[P, S, Request[R]]
-    ) -> AsyncBoundEvent[P, S, Request[R], None, R]: ...
+        self,
+        event: Event[S, Request[R]],
+        *,
+        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+    ) -> AsyncFactoryBoundEvent[P, S, Request[R], None, R]: ...
 
     @overload
     def bind[**P, S: Any](
-        self, event: EventConfig[P, S, PubSub]
-    ) -> AsyncBoundEvent[P, S, PubSub, None, None]: ...
-
-    def bind(self, event: _AnyEventConfig) -> AsyncBoundEvent[Any, Any, Any, None, Any]:
-        """
-        Return an AsyncBoundEvent pre-populated with this bus's emit and config=None.
-
-        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
-            to bind.
-        :returns: An {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`
-            wrapping this bus's `emit` and `event`.
-        """
-        return abind(self.emit, event, config=None, serializer=None)
+        self,
+        event: Event[S, PubSub],
+        *,
+        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+    ) -> AsyncFactoryBoundEvent[P, S, PubSub, None, None]: ...
 
     @overload
-    async def emit[**P, S: Any, R](
+    def bind[S: Any, R](
+        self, event: Event[S, Request[R]]
+    ) -> AsyncBoundEvent[S, Request[R], None, R]: ...
+
+    @overload
+    def bind[S: Any](self, event: Event[S, PubSub]) -> AsyncBoundEvent[S, PubSub, None, None]: ...
+
+    def bind(
+        self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
+    ) -> AsyncFactoryBoundEvent[Any, Any, Any, None, Any] | AsyncBoundEvent[Any, Any, None, Any]:
+        """
+        Return an AsyncBoundEvent or AsyncFactoryBoundEvent for this bus, with config=None.
+
+        :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+        :param factory: Builds the payload from the bound call's arguments,
+            sync or async. Omit it to pass an already-built payload
+            straight through instead.
+        :returns: An
+            py:class}`AsyncFactoryBoundEvent <stratae.events.bound.AsyncFactoryBoundEvent>`
+            when `factory` is given, otherwise an
+            {py:class}`AsyncBoundEvent <stratae.events.bound.AsyncBoundEvent>`,
+            both wrapping this bus's `emit` and `event`.
+        """
+        return abind(self.emit, event, factory=factory, config=None, serializer=None)
+
+    @overload
+    async def emit[S: Any, R](
         self,
         payload: S,
-        event: EventConfig[P, S, Request[R]],
+        event: Event[S, Request[R]],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> R: ...
 
     @overload
-    async def emit[**P, S: Any](
+    async def emit[S: Any](
         self,
         payload: S,
-        event: EventConfig[P, S, PubSub],
+        event: Event[S, PubSub],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -467,7 +500,7 @@ class AsyncDirectBus(BaseDirectBus):
     async def emit(
         self,
         payload: Any,
-        event: _AnyEventConfig,
+        event: _AnyEvent,
         config: None = None,  # noqa: S1172
         *,
         serializer: Callable[..., Any] | None = None,  # noqa: S1172
@@ -488,7 +521,7 @@ class AsyncDirectBus(BaseDirectBus):
         directly.
 
         :param payload: The constructed payload instance to dispatch.
-        :param event: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+        :param event: The {py:class}`Event <stratae.events.event.Event>`
             used as the handler lookup key.
         :param config: Unused; `AsyncDirectBus` requires no routing config.
         :param serializer: Unused; `AsyncDirectBus` requires no serializer.
@@ -496,7 +529,7 @@ class AsyncDirectBus(BaseDirectBus):
         :raises NoResponderError: When a request event has no registered
             responder.
         :raises MultipleRespondersError: When a request event has more than
-            one registered responder.
+            one responder.
         """
         if self._use_envelope:
             with Envelope.scope():
@@ -504,43 +537,43 @@ class AsyncDirectBus(BaseDirectBus):
         return await self._dispatch(payload, event)
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: Callable[[S], Awaitable[R]],
-    ) -> Handler[[S], _AnyEventConfig, Awaitable[R]]: ...
+    ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEventConfig, R]: ...
+    ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, Request[R]],
+        config: Event[S, Request[R]],
         fn: None = None,
     ) -> _AsyncResponderDecorator[S, R]: ...
 
     @overload
-    def handle[**P, S: Any, R](
+    def handle[S: Any, R](
         self,
-        config: EventConfig[P, S, PubSub],
+        config: Event[S, PubSub],
         fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEventConfig, R]: ...
+    ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[**P, S: Any](
+    def handle[S: Any](
         self,
-        config: EventConfig[P, S, PubSub],
+        config: Event[S, PubSub],
         fn: None = None,
     ) -> _HandlerDecorator[S]: ...
 
     def handle(
         self,
-        config: _AnyEventConfig,
+        config: _AnyEvent,
         fn: Callable[..., Any] | None = None,
     ) -> Any:
         """
@@ -554,7 +587,7 @@ class AsyncDirectBus(BaseDirectBus):
         Returns the {py:class}`Handler <stratae.events.handler.Handler>`
         instance in both forms so callers can pass it to `remove` later.
 
-        :param config: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+        :param config: The {py:class}`Event <stratae.events.event.Event>`
             used as the handler routing key.
         :param fn: When supplied, registers `fn` directly and returns its
             `Handler`. When omitted, returns a decorator that registers and
@@ -563,41 +596,41 @@ class AsyncDirectBus(BaseDirectBus):
         if fn is not None:
             return self._register(config, fn)
 
-        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEventConfig, Any]:
+        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEvent, Any]:
             return self._register(config, f)
 
         return decorator
 
-    async def _dispatch(self, payload: Any, event: _AnyEventConfig) -> Any:
+    async def _dispatch(self, payload: Any, event: _AnyEvent) -> Any:
         """Dispatch payload as a request or pub/sub fan-out for event."""
         if is_request(event):
             return await self._dispatch_request(payload, event)
         await self.dispatch(payload, config=event)
         return None
 
-    async def _dispatch_request(self, payload: Any, event: _AnyEventConfig) -> Any:
+    async def _dispatch_request(self, payload: Any, event: _AnyEvent) -> Any:
         """Call event's sole responder with payload, awaiting it if it's async."""
         responder = self._single_responder(event)
         if responder.is_async:
             return await responder(payload)
         return responder(payload)
 
-    async def dispatch(self, payload: Any, *, config: _AnyEventConfig) -> None:
+    async def dispatch(self, payload: Any, *, config: _AnyEvent) -> None:
         """
-        Invoke every handler registered for the given EventConfig concurrently.
+        Invoke every handler registered for the given Event concurrently.
 
         Sync handlers are called directly; async handlers are awaited. Both
         are dispatched via `asyncio.gather`.
 
         :param payload: The constructed payload instance to dispatch.
-        :param config: The {py:class}`EventConfig <stratae.events.event.EventConfig>`
+        :param config: The {py:class}`Event <stratae.events.event.Event>`
             used as the handler lookup key.
         :raises ExceptionGroup: If any handler raises. Gathers every
             handler's failure, since all handlers run regardless of earlier
             ones failing.
         """
 
-        async def _call(handler: Handler[Any, _AnyEventConfig, Any]) -> None:
+        async def _call(handler: Handler[Any, _AnyEvent, Any]) -> None:
             if handler.is_async:
                 await handler(payload)
             else:
