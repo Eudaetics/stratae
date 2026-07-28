@@ -104,7 +104,7 @@ from collections import defaultdict
 from inspect import iscoroutinefunction
 from typing import Any, Awaitable, Callable, Protocol, overload
 
-from stratae.events.bound import abind, bind
+from stratae.events.bound import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
 from stratae.events.event import DispatchPattern, Event, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
@@ -134,7 +134,10 @@ class BaseDirectBus:
     Hold the handler registry and responder resolution shared by both direct bus adapters.
 
     {py:class}`DirectBus` and {py:class}`AsyncDirectBus` each own their
-    emit/bind surfaces, typed `handle` overloads, and dispatch semantics.
+    `emit` surface, typed `handle` overloads, and dispatch semantics, and
+    inherit `bind` from
+    {py:class}`BindMixin <stratae.events.bound.BindMixin>` or
+    {py:class}`AsyncBindMixin <stratae.events.bound.AsyncBindMixin>`.
     Both delegate registration to `_register` and share the config-keyed
     handler dict and single-responder lookup for
     {py:class}`Request <stratae.events.event.Request>` events defined here.
@@ -173,7 +176,7 @@ class BaseDirectBus:
         return responder
 
 
-class DirectBus(BaseDirectBus):
+class DirectBus(BaseDirectBus, BindMixin[None]):
     """
     In-process, synchronous event bus with no routing config.
 
@@ -206,31 +209,6 @@ class DirectBus(BaseDirectBus):
         self._dispatch: Callable[[Any, _AnyEvent], Any] = (
             self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
-
-    @overload
-    def bind[**P, S, R](
-        self, event: Event[DispatchPattern[R, Any], S], *, factory: Callable[P, S]
-    ) -> Callable[P, R]: ...
-
-    @overload
-    def bind[S, R](self, event: Event[DispatchPattern[R, Any], S]) -> Callable[[S], R]: ...
-
-    def bind(
-        self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
-    ) -> Callable[..., Any]:
-        """
-        Return a callable bound to this bus's `emit` and `event`, with config=None.
-
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
-        :param factory: Builds the payload from the bound call's arguments.
-            Omit it to pass an already-built payload straight through
-            instead.
-        :returns: A callable that builds the payload via `factory` when
-            given, otherwise one that forwards an already-built payload
-            straight through; either way wrapping this bus's `emit` and
-            `event`.
-        """
-        return bind(event, self.emit, factory=factory, config=None, serializer=None)
 
     def emit[S, R](
         self,
@@ -342,7 +320,7 @@ class DirectBus(BaseDirectBus):
             return self._dispatch_plain(payload, event)
 
 
-class AsyncDirectBus(BaseDirectBus):
+class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
     """
     In-process, asynchronous event bus with no routing config.
 
@@ -373,36 +351,6 @@ class AsyncDirectBus(BaseDirectBus):
         """Initialise the bus with optional envelope tracking."""
         super().__init__()
         self._use_envelope = use_envelope
-
-    @overload
-    def bind[**P, S, R](
-        self,
-        event: Event[DispatchPattern[R, Any], S],
-        *,
-        factory: Callable[P, S] | Callable[P, Awaitable[S]],
-    ) -> Callable[P, Awaitable[R]]: ...
-
-    @overload
-    def bind[S, R](
-        self, event: Event[DispatchPattern[R, Any], S]
-    ) -> Callable[[S], Awaitable[R]]: ...
-
-    def bind(
-        self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
-    ) -> Callable[..., Awaitable[Any]]:
-        """
-        Return an awaitable callable bound to this bus's `emit` and `event`, with config=None.
-
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
-        :param factory: Builds the payload from the bound call's arguments,
-            sync or async. Omit it to pass an already-built payload
-            straight through instead.
-        :returns: A callable that builds the payload via `factory`, sync or
-            async, when given, otherwise one that forwards an already-built
-            payload straight through; either way wrapping this bus's `emit`
-            and `event`, and resolving to its result once awaited.
-        """
-        return abind(event, self.emit, factory=factory, config=None, serializer=None)
 
     async def emit[S, R](
         self,

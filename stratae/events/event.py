@@ -8,10 +8,11 @@ dispatch pattern, independent of any bus, factory, or routing config.
 request/reply; subscript it with the reply type, e.g. `Request[BookFound]`.
 
 {py:class}`Event` binds a payload schema to a `DispatchPattern`
-discriminant. {py:func}`is_request` and {py:func}`reply_type` inspect an
-`Event`'s discriminant: {py:func}`is_request` reports whether it's a
-subscripted `Request`, and {py:func}`reply_type` recovers the reply type
-from one.
+discriminant. Omitting the schema leaves it `None`, for events whose
+occurrence is the whole message. {py:func}`is_request` and
+{py:func}`reply_type` inspect an `Event`'s discriminant:
+{py:func}`is_request` reports whether it's a subscripted `Request`, and
+{py:func}`reply_type` recovers the reply type from one.
 
 ````{example} Reusing one event definition across bus instances
 ```{code-block} python
@@ -49,6 +50,7 @@ the rest of the module's API.
 
 from __future__ import annotations
 
+from types import NoneType
 from typing import Any, cast, get_args, get_origin
 
 _UNSUBSCRIPTED_REQUEST = "Request must be subscripted with its reply type (e.g. Request[BookFound])"
@@ -98,6 +100,11 @@ class Event[T: DispatchPattern[Any, Any], E]:
     dispatch pattern, independent of any bus, factory, or routing config.
     It's the shareable definition that both a producer's `bind` and a
     consumer's `handle` reference.
+
+    Omitting `schema` leaves it `None`, defining an event that carries no
+    payload at all. Its occurrence is the whole message: a heartbeat, a
+    cache invalidation, a shutdown notice. Binding one produces a callable
+    taking no arguments, since there's nothing to pass.
     """
 
     __slots__ = ("name", "_pattern", "schema")
@@ -105,7 +112,7 @@ class Event[T: DispatchPattern[Any, Any], E]:
     def __init__(
         self,
         pattern: type[T],
-        schema: type[E],
+        schema: type[E] = NoneType,
         *,
         name: str | None = None,
     ) -> None:
@@ -113,7 +120,8 @@ class Event[T: DispatchPattern[Any, Any], E]:
         Define an event with a dispatch pattern and schema type.
 
         :param pattern: The dispatch pattern discriminant class.
-        :param schema: The payload type this event carries.
+        :param schema: The payload type this event carries. Omit it for a
+            payload-less event, leaving the schema `None`.
         :param name: Human-readable identifier for this event. Defaults to
             `schema.__name__`.
         :raises TypeError: If `pattern` is an unsubscripted `Request`.
