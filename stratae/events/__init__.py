@@ -56,8 +56,8 @@ class User:
     def __init__(self, username: str) -> None:
         self.username = username
 
-log_message_event = Event(LogMessage, PubSub)
-create_user_event = Event(CreateUserSchema, Request[User])
+log_message_event = Event(PubSub, LogMessage)
+create_user_event = Event(Request[User], CreateUserSchema)
 
 bus = DirectBus(use_envelope=True)
 log = bus.bind(log_message_event, factory=LogMessage)

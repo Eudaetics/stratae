@@ -43,8 +43,8 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
     def order_store() -> dict[int, dict[str, Any]]:
         return {}
 
-    order_placed = Event(OrderPlaced, PubSub)
-    price_order = Event(PriceOrder, Request[Quote])
+    order_placed = Event(PubSub, OrderPlaced)
+    price_order = Event(Request[Quote], PriceOrder)
     place_order = bus.bind(order_placed, factory=OrderPlaced)
     request_quote = bus.bind(price_order, factory=PriceOrder)
 

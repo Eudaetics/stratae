@@ -38,7 +38,7 @@ class OrderPlaced:
     def to_dict(self) -> dict[str, int]:
         return {"order_id": self.order_id}
 
-order_placed_event = Event(OrderPlaced, PubSub)
+order_placed_event = Event(PubSub, OrderPlaced)
 
 consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
 
@@ -240,7 +240,7 @@ class RabbitMQPublisher:
     @overload
     def bind[**P, S](
         self,
-        event: Event[S, PubSub],
+        event: Event[PubSub, S],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
         config: RabbitMQConfig,
@@ -250,7 +250,7 @@ class RabbitMQPublisher:
     @overload
     def bind[S](
         self,
-        event: Event[S, PubSub],
+        event: Event[PubSub, S],
         *,
         config: RabbitMQConfig,
         serializer: Callable[[S], bytes] | None = None,
@@ -258,7 +258,7 @@ class RabbitMQPublisher:
 
     def bind(
         self,
-        event: Event[Any, PubSub],
+        event: Event[PubSub, Any],
         *,
         factory: Callable[..., Any] | None = None,
         config: RabbitMQConfig,
@@ -285,7 +285,7 @@ class RabbitMQPublisher:
     async def emit[S](
         self,
         payload: S,
-        event: Event[S, PubSub],
+        event: Event[PubSub, S],
         config: RabbitMQConfig,
         *,
         serializer: Callable[[S], bytes] | None = None,
@@ -403,7 +403,7 @@ class _Registration:
 
     def __init__(
         self,
-        event: Event[Any, PubSub],
+        event: Event[PubSub, Any],
         handler: Handler[[Any], RabbitMQConsumeConfig, Any],
         deserializer: Unpacker | None,
     ) -> None:
@@ -505,7 +505,7 @@ class RabbitMQConsumer:
     @overload
     def handle[S, R](
         self,
-        event: Event[S, PubSub],
+        event: Event[PubSub, S],
         fn: Callable[[S], R],
         *,
         config: RabbitMQConsumeConfig,
@@ -515,7 +515,7 @@ class RabbitMQConsumer:
     @overload
     def handle[S](
         self,
-        event: Event[S, PubSub],
+        event: Event[PubSub, S],
         fn: None = None,
         *,
         config: RabbitMQConsumeConfig,
@@ -524,7 +524,7 @@ class RabbitMQConsumer:
 
     def handle(
         self,
-        event: Event[Any, PubSub],
+        event: Event[PubSub, Any],
         fn: Callable[[Any], Any] | None = None,
         *,
         config: RabbitMQConsumeConfig,
@@ -577,7 +577,7 @@ class RabbitMQConsumer:
 
     def _register(
         self,
-        event: Event[Any, PubSub],
+        event: Event[PubSub, Any],
         fn: Callable[[Any], Any],
         config: RabbitMQConsumeConfig,
         deserializer: Unpacker | None,

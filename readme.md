@@ -147,7 +147,7 @@ class OrderPlaced:
         self.order_id = order_id
 
 
-order_placed = Event(OrderPlaced, PubSub)
+order_placed = Event(PubSub, OrderPlaced)
 
 
 @bus.handle(order_placed)
@@ -186,7 +186,7 @@ class PriceOrder:
         self.order_id = order_id
 
 
-price_order = Event(PriceOrder, Request[Quote])
+price_order = Event(Request[Quote], PriceOrder)
 
 
 @bus.handle(price_order)

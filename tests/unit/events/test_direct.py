@@ -62,7 +62,7 @@ class _TaskCreated:
         return self.task_id == other.task_id
 
 
-_task_created = Event(_TaskCreated, PubSub)
+_task_created = Event(PubSub, _TaskCreated)
 
 
 class _BookQuery:
@@ -75,7 +75,7 @@ class _BookResult:
         self.title = title
 
 
-_find_book = Event(_BookQuery, Request[_BookResult])
+_find_book = Event(Request[_BookResult], _BookQuery)
 
 
 @pytest.fixture
@@ -195,8 +195,8 @@ def test_channel_isolation(bus: DirectBus):
     Then: Only the handler for that Event should be called
     """
     # Arrange
-    task_event = Event(_TaskCreated, PubSub)
-    order_event = Event(_TaskCreated, PubSub)
+    task_event = Event(PubSub, _TaskCreated)
+    order_event = Event(PubSub, _TaskCreated)
     emit_task = bus.bind(task_event, factory=_TaskCreated)
     task_handler = Mock()
     order_handler = Mock()
@@ -596,8 +596,8 @@ def test_nested_emission_produces_child_envelope(bus_with_envelope: DirectBus):
           have the outer message id as its causation id
     """
     # Arrange
-    outer_event = Event(_TaskCreated, PubSub)
-    inner_event = Event(_TaskCreated, PubSub)
+    outer_event = Event(PubSub, _TaskCreated)
+    inner_event = Event(PubSub, _TaskCreated)
     emit_outer = bus_with_envelope.bind(outer_event, factory=_TaskCreated)
     emit_inner = bus_with_envelope.bind(inner_event, factory=_TaskCreated)
     outer_envelopes: list[Envelope] = []

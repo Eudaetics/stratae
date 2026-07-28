@@ -107,7 +107,7 @@ class OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_placed_event = Event(OrderPlaced, PubSub)
+order_placed_event = Event(PubSub, OrderPlaced)
 
 bus = DirectBus()
 place_order = bus.bind(order_placed_event, factory=OrderPlaced)
@@ -244,7 +244,7 @@ from stratae.integrations.rabbitmq import (
 class OrderPlaced(msgspec.Struct):
     order_id: int
 
-order_placed_event = Event(OrderPlaced, PubSub)
+order_placed_event = Event(PubSub, OrderPlaced)
 
 consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
 

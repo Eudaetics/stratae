@@ -129,8 +129,8 @@ class UserAdded:
 class UsersRequested:
     pass
 
-user_added = Event(UserAdded, PubSub)
-users_requested = Event(UsersRequested, Request[list[tuple[int, str]]])
+user_added = Event(PubSub, UserAdded)
+users_requested = Event(Request[list[tuple[int, str]]], UsersRequested)
 
 bus = DirectBus()
 add_user = bus.bind(user_added, factory=UserAdded)

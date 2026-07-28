@@ -52,7 +52,7 @@ def test_bind_with_factory_calling_constructs_schema_and_invokes_emitter(
     # Arrange
     emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     bound = bind(emitter, ev, factory=_OrderCreated, config=None)
 
     # Act
@@ -81,7 +81,7 @@ def test_bind_with_factory_returns_emitter_result() -> None:
 
     emitter.side_effect = _return
 
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     bound = bind(emitter, ev, factory=_OrderCreated, config=None)
 
     # Act
@@ -101,7 +101,7 @@ def test_bind_with_factory_forwards_serializer_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     serializer = Mock()
     bound = bind(emitter, ev, factory=_OrderCreated, config=None, serializer=serializer)
 
@@ -122,7 +122,7 @@ def test_bind_with_factory_raises_for_async_factory() -> None:
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
 
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
@@ -148,7 +148,7 @@ def test_bind_without_factory_calling_forwards_payload_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     bound = bind(emitter, ev, config=None)
     payload = _OrderCreated(1, "pending")
 
@@ -177,7 +177,7 @@ def test_bind_without_factory_returns_emitter_result() -> None:
 
     emitter.side_effect = _return
 
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     bound = bind(emitter, ev, config=None)
     payload = _OrderCreated(1, "pending")
 
@@ -198,7 +198,7 @@ def test_bind_without_factory_forwards_serializer_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     serializer = Mock()
     bound = bind(emitter, ev, config=None, serializer=serializer)
     payload = _OrderCreated(1, "pending")

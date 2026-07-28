@@ -39,8 +39,8 @@ class FileAccessed:
         self.filename = filename
         self.source = source
 
-fetch_file_event = Event(FetchFile, Request[str])
-file_accessed_event = Event(FileAccessed, PubSub)
+fetch_file_event = Event(Request[str], FetchFile)
+file_accessed_event = Event(PubSub, FileAccessed)
 lifecycle = Lifecycle([Scope("application", "shared")])
 
 class AuditLog:

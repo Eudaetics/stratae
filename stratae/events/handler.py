@@ -23,7 +23,7 @@ class LogMessage:
     def __init__(self, text: str) -> None:
         self.text = text
 
-log_message_event = Event(LogMessage, PubSub)
+log_message_event = Event(PubSub, LogMessage)
 bus = DirectBus()
 log = bus.bind(log_message_event, factory=LogMessage)
 

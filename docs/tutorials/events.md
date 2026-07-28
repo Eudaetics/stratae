@@ -27,11 +27,11 @@ class BookQuery:
         self.title = title
 
 
-book_created = Event(BookCreated, PubSub)
-book_query = Event(BookQuery, Request[Book])
+book_created = Event(PubSub, BookCreated)
+book_query = Event(Request[Book], BookQuery)
 ```
 
-`PubSub` is fire-and-forget: any number of handlers, no reply. `Request[Reply]` expects exactly one handler ("responder") and blocks for its return value — it must be subscripted with the reply type, since there's no other way to recover it at runtime. `Event(schema, pattern)` just pairs the payload type with the pattern; give it an optional `name` to override the default of `schema.__name__`.
+`PubSub` is fire-and-forget: any number of handlers, no reply. `Request[Reply]` expects exactly one handler ("responder") and blocks for its return value — it must be subscripted with the reply type, since there's no other way to recover it at runtime. `Event(pattern, schema)` just pairs the dispatch pattern with the payload type; give it an optional `name` to override the default of `schema.__name__`.
 
 ## Wiring up a bus
 
@@ -81,8 +81,8 @@ def order_store() -> dict[int, dict]:
     return {}
 
 
-order_placed = Event(OrderPlaced, PubSub)
-price_order = Event(PriceOrder, Request[Quote])
+order_placed = Event(PubSub, OrderPlaced)
+price_order = Event(Request[Quote], PriceOrder)
 
 place_order = bus.bind(order_placed, factory=OrderPlaced)
 request_quote = bus.bind(price_order, factory=PriceOrder)

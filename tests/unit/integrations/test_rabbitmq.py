@@ -53,7 +53,7 @@ class _OrderPlaced:
         return {"order_id": self.order_id}
 
 
-_order_placed = Event(_OrderPlaced, PubSub)
+_order_placed = Event(PubSub, _OrderPlaced)
 _config = RabbitMQConfig("events", "order.placed")
 
 

@@ -29,8 +29,8 @@ class ShipmentScheduled:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_placed_event = Event(OrderPlaced, PubSub)
-shipment_scheduled_event = Event(ShipmentScheduled, PubSub)
+order_placed_event = Event(PubSub, OrderPlaced)
+shipment_scheduled_event = Event(PubSub, ShipmentScheduled)
 
 bus = DirectBus(use_envelope=True)
 place_order = bus.bind(order_placed_event, factory=OrderPlaced)

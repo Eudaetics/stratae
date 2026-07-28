@@ -219,8 +219,8 @@ class AccessDenied:
     def __init__(self, caller: str) -> None:
         self.caller = caller
 
-report_viewed = Event(ReportViewed, PubSub)
-access_denied = Event(AccessDenied, PubSub)
+report_viewed = Event(PubSub, ReportViewed)
+access_denied = Event(PubSub, AccessDenied)
 
 bus = DirectBus()
 notify_viewed = bus.bind(report_viewed, factory=ReportViewed)

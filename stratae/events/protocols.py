@@ -17,7 +17,7 @@ from stratae.events.event import DispatchPattern, Event
 
 
 @runtime_checkable
-class EmitCallable[S, T: DispatchPattern, C, R](Protocol):
+class EmitCallable[T: DispatchPattern, S, C, R](Protocol):
     """
     Structural protocol for a single bound emit call.
 
@@ -32,7 +32,7 @@ class EmitCallable[S, T: DispatchPattern, C, R](Protocol):
     def __call__(
         self,
         payload: S,
-        event: Event[S, T],
+        event: Event[T, S],
         config: C,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -61,10 +61,10 @@ class Producer(Protocol):
     Adapters implement it to perform the actual dispatch.
     """
 
-    def emit[S, T: DispatchPattern](
+    def emit[T: DispatchPattern, S](
         self,
         payload: S,
-        event: Event[S, T],
+        event: Event[T, S],
         config: Any,
         *,
         serializer: Callable[[S], Any] | None = None,

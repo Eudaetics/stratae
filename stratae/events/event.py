@@ -21,7 +21,7 @@ class LogMessage:
     def __init__(self, text: str) -> None:
         self.text = text
 
-log_message_event = Event(LogMessage, PubSub)
+log_message_event = Event(PubSub, LogMessage)
 
 # The same Event carries no bus-specific state, so it binds to any
 # number of different bus instances.
@@ -90,7 +90,7 @@ def _validate_pattern(pattern: type[DispatchPattern]):
         raise TypeError(_UNSUBSCRIPTED_REQUEST)
 
 
-class Event[E, T: DispatchPattern]:
+class Event[T: DispatchPattern, E]:
     """
     Bus-agnostic event definition binding a schema to a dispatch pattern.
 
@@ -104,28 +104,28 @@ class Event[E, T: DispatchPattern]:
 
     def __init__(
         self,
-        schema: type[E],
         pattern: type[T],
+        schema: type[E],
         *,
         name: str | None = None,
     ) -> None:
         """
-        Define an event with a schema type and dispatch pattern.
+        Define an event with a dispatch pattern and schema type.
 
-        :param schema: The payload type this event carries.
         :param pattern: The dispatch pattern discriminant class.
+        :param schema: The payload type this event carries.
         :param name: Human-readable identifier for this event. Defaults to
             `schema.__name__`.
         :raises TypeError: If `pattern` is an unsubscripted `Request`.
 
         """
         _validate_pattern(pattern)
-        self.schema = schema
         self.pattern = pattern
+        self.schema = schema
         self.name = name if name is not None else schema.__name__
 
 
-def is_request[S, T: DispatchPattern](event: Event[S, T]) -> bool:
+def is_request[T: DispatchPattern, S](event: Event[T, S]) -> bool:
     """
     Report whether the event carries a subscripted Request discriminant.
 
@@ -141,7 +141,7 @@ def is_request[S, T: DispatchPattern](event: Event[S, T]) -> bool:
     return isinstance(origin, type) and issubclass(origin, Request)
 
 
-def reply_type[S, R](event: Event[S, Request[R]]) -> type[R]:
+def reply_type[R, S](event: Event[Request[R], S]) -> type[R]:
     """
     Recover the reply type from a request event's discriminant.
 

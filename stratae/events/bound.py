@@ -27,14 +27,14 @@ class Order:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_created = Event(CreateOrder, Request[Order])
+order_created = Event(Request[Order], CreateOrder)
 
 # A generic emitter only needs to match EmitCallable's shape: payload,
 # event, and config in, some result out. This one does the work
 # directly, using config as the destination label to route to.
 def emit(
     payload: CreateOrder,
-    event: Event[CreateOrder, Request[Order]],
+    event: Event[Request[Order], CreateOrder],
     config: str,
     *,
     serializer: Callable[[CreateOrder], Any] | None = None,
@@ -69,9 +69,9 @@ _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outsi
 
 
 @overload
-def bind[**P, S, T: DispatchPattern, C, R](
-    emitter: EmitCallable[S, T, C, R],
-    event: Event[S, T],
+def bind[**P, T: DispatchPattern, S, C, R](
+    emitter: EmitCallable[T, S, C, R],
+    event: Event[T, S],
     *,
     factory: Callable[P, S],
     config: C,
@@ -80,9 +80,9 @@ def bind[**P, S, T: DispatchPattern, C, R](
 
 
 @overload
-def bind[S, T: DispatchPattern, C, R](
-    emitter: EmitCallable[S, T, C, R],
-    event: Event[S, T],
+def bind[T: DispatchPattern, S, C, R](
+    emitter: EmitCallable[T, S, C, R],
+    event: Event[T, S],
     *,
     factory: None = None,
     config: C,
@@ -134,9 +134,9 @@ def bind(
 
 
 @overload
-def abind[**P, S, T: DispatchPattern, C, R](
-    emitter: EmitCallable[S, T, C, Awaitable[R]],
-    event: Event[S, T],
+def abind[**P, T: DispatchPattern, S, C, R](
+    emitter: EmitCallable[T, S, C, Awaitable[R]],
+    event: Event[T, S],
     *,
     factory: Callable[P, S] | Callable[P, Awaitable[S]],
     config: C,
@@ -145,9 +145,9 @@ def abind[**P, S, T: DispatchPattern, C, R](
 
 
 @overload
-def abind[S, T: DispatchPattern, C, R](
-    emitter: EmitCallable[S, T, C, Awaitable[R]],
-    event: Event[S, T],
+def abind[T: DispatchPattern, S, C, R](
+    emitter: EmitCallable[T, S, C, Awaitable[R]],
+    event: Event[T, S],
     *,
     factory: None = None,
     config: C,

@@ -49,7 +49,7 @@ class Message(msgspec.Struct):
     text: str
 
 
-message_event = Event(Message, PubSub)
+message_event = Event(PubSub, Message)
 
 
 class _Broker:

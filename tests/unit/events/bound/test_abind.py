@@ -51,7 +51,7 @@ async def test_abind_with_factory_calling_constructs_schema_and_awaits_emitter()
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     bound = abind(emitter, ev, factory=_OrderCreated, config=None)
 
     # Act
@@ -78,7 +78,7 @@ async def test_abind_with_factory_returns_emitter_result() -> None:
         return payload
 
     emitter.side_effect = _return
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     bound = abind(emitter, ev, factory=_OrderCreated, config=None)
 
     # Act
@@ -98,7 +98,7 @@ async def test_abind_with_factory_forwards_serializer_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     serializer = Mock()
     bound = abind(emitter, ev, factory=_OrderCreated, config=None, serializer=serializer)
 
@@ -119,7 +119,7 @@ async def test_abind_with_factory_awaits_async_factory_then_awaits_emitter() -> 
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
 
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
@@ -149,7 +149,7 @@ async def test_abind_without_factory_calling_forwards_payload_to_emitter() -> No
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     bound = abind(emitter, ev, config=None)
     payload = _OrderCreated(1, "pending")
 
@@ -177,7 +177,7 @@ async def test_abind_without_factory_returns_emitter_result() -> None:
         return payload
 
     emitter.side_effect = _return
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     bound = abind(emitter, ev, config=None)
     payload = _OrderCreated(1, "pending")
 
@@ -198,7 +198,7 @@ async def test_abind_without_factory_forwards_serializer_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(_OrderCreated, PubSub)
+    ev = Event(PubSub, _OrderCreated)
     serializer = Mock()
     bound = abind(emitter, ev, config=None, serializer=serializer)
     payload = _OrderCreated(1, "pending")

@@ -87,7 +87,7 @@ class OrderPlaced:
     def __init__(self, order_id: str) -> None:
         self.order_id = order_id
 
-order_placed = Event(OrderPlaced, PubSub)
+order_placed = Event(PubSub, OrderPlaced)
 
 bus = DirectBus()
 notify_order_placed = bus.bind(order_placed, factory=OrderPlaced)

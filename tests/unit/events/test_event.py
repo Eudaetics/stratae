@@ -55,7 +55,7 @@ def test_event_stores_schema_and_pattern() -> None:
     When: An Event is created
     Then: The schema and pattern attributes should reference the supplied objects
     """
-    ev = Event(_OrderPlaced, PubSub)
+    ev = Event(PubSub, _OrderPlaced)
 
     assert ev.schema is _OrderPlaced
     assert ev.pattern is PubSub
@@ -69,7 +69,7 @@ def test_event_derives_name_from_schema() -> None:
     When: An Event is created without an explicit name
     Then: name should equal the schema's __name__
     """
-    ev = Event(_OrderPlaced, PubSub)
+    ev = Event(PubSub, _OrderPlaced)
 
     assert ev.name == "_OrderPlaced"
 
@@ -82,7 +82,7 @@ def test_event_accepts_explicit_name() -> None:
     When: An Event is created with name provided
     Then: name should equal the supplied string
     """
-    ev = Event(_OrderPlaced, PubSub, name="order_placed")
+    ev = Event(PubSub, _OrderPlaced, name="order_placed")
 
     assert ev.name == "order_placed"
 
@@ -117,7 +117,7 @@ def test_event_accepts_subscripted_request() -> None:
     When: An Event is created
     Then: pattern should equal the subscripted discriminant
     """
-    ev = Event(_FindBook, Request[_BookFound])
+    ev = Event(Request[_BookFound], _FindBook)
 
     assert ev.pattern == Request[_BookFound]
 
@@ -131,7 +131,7 @@ def test_event_raises_for_bare_request() -> None:
     Then: A TypeError should be raised
     """
     with pytest.raises(TypeError):
-        Event(_FindBook, Request)
+        Event(Request, _FindBook)
 
 
 def test_is_request_true_for_request_event() -> None:
@@ -142,7 +142,7 @@ def test_is_request_true_for_request_event() -> None:
     When: is_request is called with the event
     Then: The result should be True
     """
-    find_book = Event(_FindBook, Request[_BookFound])
+    find_book = Event(Request[_BookFound], _FindBook)
 
     assert is_request(find_book) is True
 
@@ -155,7 +155,7 @@ def test_is_request_false_for_pubsub_event() -> None:
     When: is_request is called with the event
     Then: The result should be False
     """
-    order_placed = Event(_OrderPlaced, PubSub)
+    order_placed = Event(PubSub, _OrderPlaced)
 
     assert is_request(order_placed) is False
 
@@ -168,7 +168,7 @@ def test_reply_type_returns_subscripted_reply() -> None:
     When: reply_type is called with the event
     Then: The result should be the reply type class
     """
-    find_book = Event(_FindBook, Request[_BookFound])
+    find_book = Event(Request[_BookFound], _FindBook)
 
     recovered = reply_type(find_book)
 
@@ -183,8 +183,8 @@ def test_reply_type_raises_for_non_request_discriminant() -> None:
     When: reply_type is called with the event
     Then: A TypeError should be raised
     """
-    ev = Event(_OrderPlaced, PubSub)
-    mistyped = cast(Event[_OrderPlaced, Request[object]], ev)
+    ev = Event(PubSub, _OrderPlaced)
+    mistyped = cast(Event[Request[object], _OrderPlaced], ev)
 
     with pytest.raises(TypeError):
         reply_type(mistyped)

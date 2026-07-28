@@ -72,7 +72,7 @@ class _OrderPlaced:
         self.order_id = order_id
 
 
-_order_placed = Event(_OrderPlaced, PubSub)
+_order_placed = Event(PubSub, _OrderPlaced)
 _config = RabbitMQConsumeConfig("orders")
 
 

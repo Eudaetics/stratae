@@ -55,8 +55,8 @@ inventory = {"widget": 5}
 reservations: list[str] = []
 shipments: list[str] = []
 
-place_order_event = Event(PlaceOrder, Request[Order])
-order_placed_event = Event(OrderPlaced, PubSub)
+place_order_event = Event(Request[Order], PlaceOrder)
+order_placed_event = Event(PubSub, OrderPlaced)
 
 # Grouping the events for later simplicity
 order = SimpleNamespace(
@@ -217,19 +217,19 @@ class DirectBus(BaseDirectBus):
 
     @overload
     def bind[**P, S, R](
-        self, event: Event[S, Request[R]], *, factory: Callable[P, S]
+        self, event: Event[Request[R], S], *, factory: Callable[P, S]
     ) -> Callable[P, R]: ...
 
     @overload
     def bind[**P, S](
-        self, event: Event[S, PubSub], *, factory: Callable[P, S]
+        self, event: Event[PubSub, S], *, factory: Callable[P, S]
     ) -> Callable[P, None]: ...
 
     @overload
-    def bind[S, R](self, event: Event[S, Request[R]]) -> Callable[[S], R]: ...
+    def bind[S, R](self, event: Event[Request[R], S]) -> Callable[[S], R]: ...
 
     @overload
-    def bind[S](self, event: Event[S, PubSub]) -> Callable[[S], None]: ...
+    def bind[S](self, event: Event[PubSub, S]) -> Callable[[S], None]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
@@ -252,7 +252,7 @@ class DirectBus(BaseDirectBus):
     def emit[S, R](
         self,
         payload: S,
-        event: Event[S, Request[R]],
+        event: Event[Request[R], S],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -262,7 +262,7 @@ class DirectBus(BaseDirectBus):
     def emit[S](
         self,
         payload: S,
-        event: Event[S, PubSub],
+        event: Event[PubSub, S],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -301,28 +301,28 @@ class DirectBus(BaseDirectBus):
     @overload
     def handle[S, R](
         self,
-        config: Event[S, Request[R]],
+        config: Event[Request[R], S],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[S, Request[R]],
+        config: Event[Request[R], S],
         fn: None = None,
     ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[S, PubSub],
+        config: Event[PubSub, S],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S](
         self,
-        config: Event[S, PubSub],
+        config: Event[PubSub, S],
         fn: None = None,
     ) -> _HandlerDecorator[S]: ...
 
@@ -427,7 +427,7 @@ class AsyncDirectBus(BaseDirectBus):
     @overload
     def bind[**P, S, R](
         self,
-        event: Event[S, Request[R]],
+        event: Event[Request[R], S],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
     ) -> Callable[P, Awaitable[R]]: ...
@@ -435,16 +435,16 @@ class AsyncDirectBus(BaseDirectBus):
     @overload
     def bind[**P, S](
         self,
-        event: Event[S, PubSub],
+        event: Event[PubSub, S],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
     ) -> Callable[P, Awaitable[None]]: ...
 
     @overload
-    def bind[S, R](self, event: Event[S, Request[R]]) -> Callable[[S], Awaitable[R]]: ...
+    def bind[S, R](self, event: Event[Request[R], S]) -> Callable[[S], Awaitable[R]]: ...
 
     @overload
-    def bind[S](self, event: Event[S, PubSub]) -> Callable[[S], Awaitable[None]]: ...
+    def bind[S](self, event: Event[PubSub, S]) -> Callable[[S], Awaitable[None]]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
@@ -467,7 +467,7 @@ class AsyncDirectBus(BaseDirectBus):
     async def emit[S, R](
         self,
         payload: S,
-        event: Event[S, Request[R]],
+        event: Event[Request[R], S],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -477,7 +477,7 @@ class AsyncDirectBus(BaseDirectBus):
     async def emit[S](
         self,
         payload: S,
-        event: Event[S, PubSub],
+        event: Event[PubSub, S],
         config: None = None,
         *,
         serializer: Callable[[S], Any] | None = None,
@@ -525,35 +525,35 @@ class AsyncDirectBus(BaseDirectBus):
     @overload
     def handle[S, R](
         self,
-        config: Event[S, Request[R]],
+        config: Event[Request[R], S],
         fn: Callable[[S], Awaitable[R]],
     ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[S, Request[R]],
+        config: Event[Request[R], S],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[S, Request[R]],
+        config: Event[Request[R], S],
         fn: None = None,
     ) -> _AsyncResponderDecorator[S, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[S, PubSub],
+        config: Event[PubSub, S],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S](
         self,
-        config: Event[S, PubSub],
+        config: Event[PubSub, S],
         fn: None = None,
     ) -> _HandlerDecorator[S]: ...
 
