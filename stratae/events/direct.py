@@ -230,7 +230,7 @@ class DirectBus(BaseDirectBus):
             straight through; either way wrapping this bus's `emit` and
             `event`.
         """
-        return bind(self.emit, event, factory=factory, config=None, serializer=None)
+        return bind(event, self.emit, factory=factory, config=None, serializer=None)
 
     def emit[S, R](
         self,
@@ -402,7 +402,7 @@ class AsyncDirectBus(BaseDirectBus):
             payload straight through; either way wrapping this bus's `emit`
             and `event`, and resolving to its result once awaited.
         """
-        return abind(self.emit, event, factory=factory, config=None, serializer=None)
+        return abind(event, self.emit, factory=factory, config=None, serializer=None)
 
     async def emit[S, R](
         self,

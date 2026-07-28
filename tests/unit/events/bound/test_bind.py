@@ -53,7 +53,7 @@ def test_bind_with_factory_calling_constructs_schema_and_invokes_emitter(
     emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
     ev = Event(PubSub, _OrderCreated)
-    bound = bind(emitter, ev, factory=_OrderCreated, config=None)
+    bound = bind(ev, emitter, factory=_OrderCreated, config=None)
 
     # Act
     bound(1, "pending")
@@ -82,7 +82,7 @@ def test_bind_with_factory_returns_emitter_result() -> None:
     emitter.side_effect = _return
 
     ev = Event(PubSub, _OrderCreated)
-    bound = bind(emitter, ev, factory=_OrderCreated, config=None)
+    bound = bind(ev, emitter, factory=_OrderCreated, config=None)
 
     # Act
     result = bound(1, "pending")
@@ -103,7 +103,7 @@ def test_bind_with_factory_forwards_serializer_to_emitter() -> None:
     emitter = create_autospec(EmitCallable)
     ev = Event(PubSub, _OrderCreated)
     serializer = Mock()
-    bound = bind(emitter, ev, factory=_OrderCreated, config=None, serializer=serializer)
+    bound = bind(ev, emitter, factory=_OrderCreated, config=None, serializer=serializer)
 
     # Act
     bound(1, "pending")
@@ -130,7 +130,7 @@ def test_bind_with_factory_raises_for_async_factory() -> None:
 
     # Act / Assert
     with pytest.raises(TypeError):
-        bind(emitter, ev, factory=_async_factory, config=None)
+        bind(ev, emitter, factory=_async_factory, config=None)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 # endregion
@@ -149,7 +149,7 @@ def test_bind_without_factory_calling_forwards_payload_to_emitter() -> None:
     # Arrange
     emitter = create_autospec(EmitCallable)
     ev = Event(PubSub, _OrderCreated)
-    bound = bind(emitter, ev, config=None)
+    bound = bind(ev, emitter, config=None)
     payload = _OrderCreated(1, "pending")
 
     # Act
@@ -178,7 +178,7 @@ def test_bind_without_factory_returns_emitter_result() -> None:
     emitter.side_effect = _return
 
     ev = Event(PubSub, _OrderCreated)
-    bound = bind(emitter, ev, config=None)
+    bound = bind(ev, emitter, config=None)
     payload = _OrderCreated(1, "pending")
 
     # Act
@@ -200,7 +200,7 @@ def test_bind_without_factory_forwards_serializer_to_emitter() -> None:
     emitter = create_autospec(EmitCallable)
     ev = Event(PubSub, _OrderCreated)
     serializer = Mock()
-    bound = bind(emitter, ev, config=None, serializer=serializer)
+    bound = bind(ev, emitter, config=None, serializer=serializer)
     payload = _OrderCreated(1, "pending")
 
     # Act

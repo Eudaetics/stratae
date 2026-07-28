@@ -280,7 +280,7 @@ class RabbitMQPublisher:
             straight through; either way publishing it once awaited.
 
         """
-        return abind(self.emit, event, factory=factory, config=config, serializer=serializer)
+        return abind(event, self.emit, factory=factory, config=config, serializer=serializer)
 
     async def emit[S](
         self,

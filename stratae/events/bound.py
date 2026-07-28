@@ -1,9 +1,9 @@
 """
 Callable facades that bind an event definition to a concrete emitter and routing config.
 
-{py:func}`bind` and {py:func}`abind` attach a sync or async emitter,
-respectively, along with adapter-specific routing config, to an
-{py:class}`Event <stratae.events.event.Event>`. Passed a `factory`, each
+{py:func}`bind` and {py:func}`abind` bind an
+{py:class}`Event <stratae.events.event.Event>` to a sync or async emitter,
+respectively, along with adapter-specific routing config. Passed a `factory`, each
 returns a callable that builds the payload from the call's arguments and
 forwards it to the emitter. Omitting `factory` returns a callable that
 takes an already-built payload directly and forwards it the same way.
@@ -42,7 +42,7 @@ def emit(
     print(f"[{config}] creating order {payload.order_id}")
     return Order(order_id=payload.order_id)
 
-create_order = bind(emit, order_created, factory=CreateOrder, config="orders")
+create_order = bind(order_created, emit, factory=CreateOrder, config="orders")
 
 created = create_order(order_id=42)
 print(f"created order: {created.order_id}")
@@ -70,8 +70,8 @@ _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outsi
 
 @overload
 def bind[**P, T: DispatchPattern[Any, Any], S, C, R](
-    emitter: EmitCallable[T, S, C, R],
     event: Event[T, S],
+    emitter: EmitCallable[T, S, C, R],
     *,
     factory: Callable[P, S],
     config: C,
@@ -81,8 +81,8 @@ def bind[**P, T: DispatchPattern[Any, Any], S, C, R](
 
 @overload
 def bind[T: DispatchPattern[Any, Any], S, C, R](
-    emitter: EmitCallable[T, S, C, R],
     event: Event[T, S],
+    emitter: EmitCallable[T, S, C, R],
     *,
     factory: None = None,
     config: C,
@@ -91,19 +91,19 @@ def bind[T: DispatchPattern[Any, Any], S, C, R](
 
 
 def bind(
-    emitter: EmitCallable[Any, Any, Any, Any],
     event: Event[Any, Any],
+    emitter: EmitCallable[Any, Any, Any, Any],
     *,
     factory: Callable[..., Any] | None = None,
     config: Any,
     serializer: Callable[[Any], Any] | None = None,
 ) -> Callable[..., Any]:
     """
-    Bind a sync emitter to an event, with a factory, or without one for passthrough.
+    Bind an event to a sync emitter, with a factory, or without one for passthrough.
 
+    :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
     :param emitter: A callable that receives the `Event` being bound and
         the payload, and returns `R`.
-    :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
     :param factory: Builds the payload from the bound call's arguments. When
         omitted, the returned callable instead forwards an already-built
         payload straight through.
@@ -135,8 +135,8 @@ def bind(
 
 @overload
 def abind[**P, T: DispatchPattern[Any, Any], S, C, R](
-    emitter: EmitCallable[T, S, C, Awaitable[R]],
     event: Event[T, S],
+    emitter: EmitCallable[T, S, C, Awaitable[R]],
     *,
     factory: Callable[P, S] | Callable[P, Awaitable[S]],
     config: C,
@@ -146,8 +146,8 @@ def abind[**P, T: DispatchPattern[Any, Any], S, C, R](
 
 @overload
 def abind[T: DispatchPattern[Any, Any], S, C, R](
-    emitter: EmitCallable[T, S, C, Awaitable[R]],
     event: Event[T, S],
+    emitter: EmitCallable[T, S, C, Awaitable[R]],
     *,
     factory: None = None,
     config: C,
@@ -156,20 +156,20 @@ def abind[T: DispatchPattern[Any, Any], S, C, R](
 
 
 def abind(
-    emitter: EmitCallable[Any, Any, Any, Awaitable[Any]],
     event: Event[Any, Any],
+    emitter: EmitCallable[Any, Any, Any, Awaitable[Any]],
     *,
     factory: Callable[..., Any] | Callable[..., Awaitable[Any]] | None = None,
     config: Any,
     serializer: Callable[[Any], Any] | None = None,
 ) -> Callable[..., Awaitable[Any]]:
     """
-    Bind an async emitter to an event, with a factory, or without one for passthrough.
+    Bind an event to an async emitter, with a factory, or without one for passthrough.
 
-    :param emitter: A coroutine callable that receives the `Event` being
-        bound and the payload, and returns an awaitable resolving to `R`.
     :param event: The {py:class}`Event <stratae.events.event.Event>` to
         bind.
+    :param emitter: A coroutine callable that receives the `Event` being
+        bound and the payload, and returns an awaitable resolving to `R`.
     :param factory: Builds the payload from the bound call's arguments, sync
         or async. When omitted, the returned callable instead forwards an
         already-built payload straight through.
