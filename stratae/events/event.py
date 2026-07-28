@@ -55,21 +55,21 @@ _UNSUBSCRIPTED_REQUEST = "Request must be subscripted with its reply type (e.g. 
 _NOT_A_REQUEST = "event does not carry a subscripted Request discriminant"
 
 
-class DispatchPattern[R]:
-    """Marker base class for dispatch pattern discriminants, parameterized by the reply type."""
+class DispatchPattern[EmitR, HandleR]:
+    """Marker base class for dispatch pattern discriminants."""
 
 
-class PubSub(DispatchPattern[None]):
+class PubSub(DispatchPattern[None, Any]):
     """
     Fire-and-forget dispatch pattern discriminant.
 
     Emitting an event with this discriminant returns immediately; there is
-    no reply to wait for. Pass it as the `pattern` argument to
-    {py:class}`Event`.
+    no reply to wait for. A handler's return value is unconstrained and
+    ignored. Pass it as the `pattern` argument to {py:class}`Event`.
     """
 
 
-class Request[Reply](DispatchPattern[Reply]):
+class Request[Reply](DispatchPattern[Reply, Reply]):
     """
     Request/reply dispatch pattern discriminant.
 
@@ -84,13 +84,13 @@ class Request[Reply](DispatchPattern[Reply]):
     """
 
 
-def _validate_pattern(pattern: type[DispatchPattern[Any]]):
+def _validate_pattern(pattern: type[DispatchPattern[Any, Any]]):
     """Raise `TypeError` if `pattern` is an unsubscripted `Request`."""
     if get_origin(pattern) is None and issubclass(pattern, Request):
         raise TypeError(_UNSUBSCRIPTED_REQUEST)
 
 
-class Event[T: DispatchPattern[Any], E]:
+class Event[T: DispatchPattern[Any, Any], E]:
     """
     Bus-agnostic event definition binding a schema to a dispatch pattern.
 
@@ -130,7 +130,7 @@ class Event[T: DispatchPattern[Any], E]:
         return self._pattern
 
 
-def is_request[T: DispatchPattern[Any], S](event: Event[T, S]) -> bool:
+def is_request[T: DispatchPattern[Any, Any], S](event: Event[T, S]) -> bool:
     """
     Report whether the event carries a subscripted Request discriminant.
 

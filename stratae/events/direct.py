@@ -106,7 +106,7 @@ from typing import Any, Awaitable, Callable, Protocol, overload
 
 from stratae.events.bound import abind, bind
 from stratae.events.envelope import Envelope
-from stratae.events.event import DispatchPattern, Event, PubSub, Request, is_request
+from stratae.events.event import DispatchPattern, Event, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.handler import Handler
 
@@ -118,16 +118,8 @@ _ASYNC_HANDLER_REJECTED = (
 )
 
 
-class _HandlerDecorator[S: Any](Protocol):
-    """Decorator form of handle for pub/sub events: registers and returns the Handler."""
-
-    def __call__[R](self, fn: Callable[[S], R]) -> Handler[[S], _AnyEvent, R]:
-        """Register `fn` as a handler and return its `Handler`."""
-        ...
-
-
-class _AsyncResponderDecorator[S: Any, R](Protocol):
-    """Decorator form of handle for request events: registers and returns the Handler."""
+class _AsyncHandlerDecorator[S: Any, R](Protocol):
+    """Decorator form of handle: registers and returns the Handler, sync or async fn."""
 
     @overload
     def __call__(
@@ -217,11 +209,11 @@ class DirectBus(BaseDirectBus):
 
     @overload
     def bind[**P, S, R](
-        self, event: Event[DispatchPattern[R], S], *, factory: Callable[P, S]
+        self, event: Event[DispatchPattern[R, Any], S], *, factory: Callable[P, S]
     ) -> Callable[P, R]: ...
 
     @overload
-    def bind[S, R](self, event: Event[DispatchPattern[R], S]) -> Callable[[S], R]: ...
+    def bind[S, R](self, event: Event[DispatchPattern[R, Any], S]) -> Callable[[S], R]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
@@ -242,7 +234,7 @@ class DirectBus(BaseDirectBus):
 
     def emit[S, R](
         self,
-        event: Event[DispatchPattern[R], S],
+        event: Event[DispatchPattern[R, Any], S],
         config: None,  # noqa: S1172
         payload: S,
         *,
@@ -273,30 +265,16 @@ class DirectBus(BaseDirectBus):
     @overload
     def handle[S, R](
         self,
-        config: Event[Request[R], S],
+        config: Event[DispatchPattern[Any, R], S],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[Request[R], S],
+        config: Event[DispatchPattern[Any, R], S],
         fn: None = None,
     ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
-
-    @overload
-    def handle[S, R](
-        self,
-        config: Event[PubSub, S],
-        fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEvent, R]: ...
-
-    @overload
-    def handle[S](
-        self,
-        config: Event[PubSub, S],
-        fn: None = None,
-    ) -> _HandlerDecorator[S]: ...
 
     def handle(
         self,
@@ -399,13 +377,15 @@ class AsyncDirectBus(BaseDirectBus):
     @overload
     def bind[**P, S, R](
         self,
-        event: Event[DispatchPattern[R], S],
+        event: Event[DispatchPattern[R, Any], S],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
     ) -> Callable[P, Awaitable[R]]: ...
 
     @overload
-    def bind[S, R](self, event: Event[DispatchPattern[R], S]) -> Callable[[S], Awaitable[R]]: ...
+    def bind[S, R](
+        self, event: Event[DispatchPattern[R, Any], S]
+    ) -> Callable[[S], Awaitable[R]]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
@@ -426,7 +406,7 @@ class AsyncDirectBus(BaseDirectBus):
 
     async def emit[S, R](
         self,
-        event: Event[DispatchPattern[R], S],
+        event: Event[DispatchPattern[R, Any], S],
         config: None,  # noqa: S1172
         payload: S,
         *,
@@ -466,37 +446,23 @@ class AsyncDirectBus(BaseDirectBus):
     @overload
     def handle[S, R](
         self,
-        config: Event[Request[R], S],
+        config: Event[DispatchPattern[Any, R], S],
         fn: Callable[[S], Awaitable[R]],
     ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[Request[R], S],
+        config: Event[DispatchPattern[Any, R], S],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[Request[R], S],
+        config: Event[DispatchPattern[Any, R], S],
         fn: None = None,
-    ) -> _AsyncResponderDecorator[S, R]: ...
-
-    @overload
-    def handle[S, R](
-        self,
-        config: Event[PubSub, S],
-        fn: Callable[[S], R],
-    ) -> Handler[[S], _AnyEvent, R]: ...
-
-    @overload
-    def handle[S](
-        self,
-        config: Event[PubSub, S],
-        fn: None = None,
-    ) -> _HandlerDecorator[S]: ...
+    ) -> _AsyncHandlerDecorator[S, R]: ...
 
     def handle(
         self,
