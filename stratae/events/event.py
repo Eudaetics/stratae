@@ -49,17 +49,17 @@ the rest of the module's API.
 
 from __future__ import annotations
 
-from typing import cast, get_args, get_origin
+from typing import Any, cast, get_args, get_origin
 
 _UNSUBSCRIPTED_REQUEST = "Request must be subscripted with its reply type (e.g. Request[BookFound])"
 _NOT_A_REQUEST = "event does not carry a subscripted Request discriminant"
 
 
-class DispatchPattern:
-    """Marker base class for dispatch pattern discriminants."""
+class DispatchPattern[R]:
+    """Marker base class for dispatch pattern discriminants, parameterized by the reply type."""
 
 
-class PubSub(DispatchPattern):
+class PubSub(DispatchPattern[None]):
     """
     Fire-and-forget dispatch pattern discriminant.
 
@@ -69,7 +69,7 @@ class PubSub(DispatchPattern):
     """
 
 
-class Request[Reply](DispatchPattern):
+class Request[Reply](DispatchPattern[Reply]):
     """
     Request/reply dispatch pattern discriminant.
 
@@ -84,13 +84,13 @@ class Request[Reply](DispatchPattern):
     """
 
 
-def _validate_pattern(pattern: type[DispatchPattern]):
+def _validate_pattern(pattern: type[DispatchPattern[Any]]):
     """Raise `TypeError` if `pattern` is an unsubscripted `Request`."""
     if get_origin(pattern) is None and issubclass(pattern, Request):
         raise TypeError(_UNSUBSCRIPTED_REQUEST)
 
 
-class Event[T: DispatchPattern, E]:
+class Event[T: DispatchPattern[Any], E]:
     """
     Bus-agnostic event definition binding a schema to a dispatch pattern.
 
@@ -100,7 +100,7 @@ class Event[T: DispatchPattern, E]:
     consumer's `handle` reference.
     """
 
-    __slots__ = ("name", "pattern", "schema")
+    __slots__ = ("name", "_pattern", "schema")
 
     def __init__(
         self,
@@ -120,12 +120,17 @@ class Event[T: DispatchPattern, E]:
 
         """
         _validate_pattern(pattern)
-        self.pattern = pattern
+        self._pattern = pattern
         self.schema = schema
         self.name = name if name is not None else schema.__name__
 
+    @property
+    def pattern(self) -> type[T]:
+        """The dispatch pattern discriminant, read-only so pyright can infer `T` as covariant."""
+        return self._pattern
 
-def is_request[T: DispatchPattern, S](event: Event[T, S]) -> bool:
+
+def is_request[T: DispatchPattern[Any], S](event: Event[T, S]) -> bool:
     """
     Report whether the event carries a subscripted Request discriminant.
 
@@ -155,7 +160,7 @@ def reply_type[R, S](event: Event[Request[R], S]) -> type[R]:
         defined.
     :raises TypeError: If the event's discriminant is not a subscripted
         `Request`. Unreachable for type-checked callers; guards dynamic
-        construction paths.
+            construction paths.
     """
     if not is_request(event):
         raise TypeError(_NOT_A_REQUEST)

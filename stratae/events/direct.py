@@ -106,7 +106,7 @@ from typing import Any, Awaitable, Callable, Protocol, overload
 
 from stratae.events.bound import abind, bind
 from stratae.events.envelope import Envelope
-from stratae.events.event import Event, PubSub, Request, is_request
+from stratae.events.event import DispatchPattern, Event, PubSub, Request, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.handler import Handler
 
@@ -217,19 +217,11 @@ class DirectBus(BaseDirectBus):
 
     @overload
     def bind[**P, S, R](
-        self, event: Event[Request[R], S], *, factory: Callable[P, S]
+        self, event: Event[DispatchPattern[R], S], *, factory: Callable[P, S]
     ) -> Callable[P, R]: ...
 
     @overload
-    def bind[**P, S](
-        self, event: Event[PubSub, S], *, factory: Callable[P, S]
-    ) -> Callable[P, None]: ...
-
-    @overload
-    def bind[S, R](self, event: Event[Request[R], S]) -> Callable[[S], R]: ...
-
-    @overload
-    def bind[S](self, event: Event[PubSub, S]) -> Callable[[S], None]: ...
+    def bind[S, R](self, event: Event[DispatchPattern[R], S]) -> Callable[[S], R]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
@@ -248,34 +240,14 @@ class DirectBus(BaseDirectBus):
         """
         return bind(self.emit, event, factory=factory, config=None, serializer=None)
 
-    @overload
     def emit[S, R](
         self,
-        event: Event[Request[R], S],
-        config: None,
-        payload: S,
-        *,
-        serializer: Callable[[S], Any] | None = None,
-    ) -> R: ...
-
-    @overload
-    def emit[S](
-        self,
-        event: Event[PubSub, S],
-        config: None,
-        payload: S,
-        *,
-        serializer: Callable[[S], Any] | None = None,
-    ) -> None: ...
-
-    def emit(
-        self,
-        event: _AnyEvent,
+        event: Event[DispatchPattern[R], S],
         config: None,  # noqa: S1172
-        payload: Any,
+        payload: S,
         *,
-        serializer: Callable[..., Any] | None = None,  # noqa: S1172
-    ) -> Any:
+        serializer: Callable[[S], Any] | None = None,  # noqa: S1172
+    ) -> R:
         """
         Dispatch the payload to registered handlers, opening an envelope scope if configured.
 
@@ -427,24 +399,13 @@ class AsyncDirectBus(BaseDirectBus):
     @overload
     def bind[**P, S, R](
         self,
-        event: Event[Request[R], S],
+        event: Event[DispatchPattern[R], S],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
     ) -> Callable[P, Awaitable[R]]: ...
 
     @overload
-    def bind[**P, S](
-        self,
-        event: Event[PubSub, S],
-        *,
-        factory: Callable[P, S] | Callable[P, Awaitable[S]],
-    ) -> Callable[P, Awaitable[None]]: ...
-
-    @overload
-    def bind[S, R](self, event: Event[Request[R], S]) -> Callable[[S], Awaitable[R]]: ...
-
-    @overload
-    def bind[S](self, event: Event[PubSub, S]) -> Callable[[S], Awaitable[None]]: ...
+    def bind[S, R](self, event: Event[DispatchPattern[R], S]) -> Callable[[S], Awaitable[R]]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
@@ -463,34 +424,14 @@ class AsyncDirectBus(BaseDirectBus):
         """
         return abind(self.emit, event, factory=factory, config=None, serializer=None)
 
-    @overload
     async def emit[S, R](
         self,
-        event: Event[Request[R], S],
-        config: None,
-        payload: S,
-        *,
-        serializer: Callable[[S], Any] | None = None,
-    ) -> R: ...
-
-    @overload
-    async def emit[S](
-        self,
-        event: Event[PubSub, S],
-        config: None,
-        payload: S,
-        *,
-        serializer: Callable[[S], Any] | None = None,
-    ) -> None: ...
-
-    async def emit(
-        self,
-        event: _AnyEvent,
+        event: Event[DispatchPattern[R], S],
         config: None,  # noqa: S1172
-        payload: Any,
+        payload: S,
         *,
-        serializer: Callable[..., Any] | None = None,  # noqa: S1172
-    ) -> Any:
+        serializer: Callable[[S], Any] | None = None,  # noqa: S1172
+    ) -> R:
         """
         Dispatch the payload to registered handlers, opening an envelope scope if configured.
 
