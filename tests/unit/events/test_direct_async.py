@@ -324,7 +324,7 @@ async def test_emit_dispatches_directly(bus: AsyncDirectBus):
     payload = _TaskCreated(8)
 
     # Act
-    await bus.emit(payload, _task_created)
+    await bus.emit(_task_created, None, payload)
 
     # Assert
     handler.assert_called_once_with(payload)
@@ -410,7 +410,7 @@ async def test_request_emit_returns_async_responder_reply(bus: AsyncDirectBus):
     bus.handle(_find_book, AsyncMock(return_value=reply))
 
     # Act
-    result = await bus.emit(_BookQuery("dune"), _find_book)
+    result = await bus.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -429,7 +429,7 @@ async def test_request_emit_returns_sync_responder_reply(bus: AsyncDirectBus):
     bus.handle(_find_book, Mock(return_value=reply))
 
     # Act
-    result = await bus.emit(_BookQuery("dune"), _find_book)
+    result = await bus.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -464,7 +464,7 @@ async def test_request_emit_raises_without_responder(bus: AsyncDirectBus):
     Then: A NoResponderError should be raised
     """
     with pytest.raises(NoResponderError):
-        await bus.emit(_BookQuery("dune"), _find_book)
+        await bus.emit(_find_book, None, _BookQuery("dune"))
 
 
 async def test_request_emit_raises_with_multiple_responders(bus: AsyncDirectBus):
@@ -481,7 +481,7 @@ async def test_request_emit_raises_with_multiple_responders(bus: AsyncDirectBus)
 
     # Act / Assert
     with pytest.raises(MultipleRespondersError):
-        await bus.emit(_BookQuery("dune"), _find_book)
+        await bus.emit(_find_book, None, _BookQuery("dune"))
 
 
 async def test_request_responder_exception_propagates_directly(bus: AsyncDirectBus):
@@ -498,7 +498,7 @@ async def test_request_responder_exception_propagates_directly(bus: AsyncDirectB
 
     # Act / Assert
     with pytest.raises(ValueError) as exc_info:
-        await bus.emit(_BookQuery("dune"), _find_book)
+        await bus.emit(_find_book, None, _BookQuery("dune"))
 
     assert exc_info.value is error
 
@@ -519,7 +519,7 @@ async def test_request_responder_registered_via_decorator(bus: AsyncDirectBus):
         return reply
 
     # Act
-    result = await bus.emit(_BookQuery("dune"), _find_book)
+    result = await bus.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -648,7 +648,7 @@ async def test_request_reply_returned_with_envelope(bus_with_envelope: AsyncDire
     bus_with_envelope.handle(_find_book, AsyncMock(return_value=reply))
 
     # Act
-    result = await bus_with_envelope.emit(_BookQuery("dune"), _find_book)
+    result = await bus_with_envelope.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply

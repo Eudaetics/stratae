@@ -23,7 +23,7 @@ from stratae.events import Event, PubSub, abind
 
 
 async def _async_emit(
-    payload: Any, event: Event[Any, Any], config: Any, serializer: Any = None
+    event: Event[Any, Any], config: Any, payload: Any, serializer: Any = None
 ): ...
 
 
@@ -47,7 +47,7 @@ async def test_abind_with_factory_calling_constructs_schema_and_awaits_emitter()
 
     Given: A factory-bound callable produced by abind
     When: The callable is called with arguments
-    Then: The emitter should receive the constructed payload, the Event, and the config
+    Then: The emitter should receive the Event, the config, and the constructed payload
     """
     # Arrange
     emitter = create_autospec(_async_emit)
@@ -58,7 +58,7 @@ async def test_abind_with_factory_calling_constructs_schema_and_awaits_emitter()
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
+    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)
 
 
 async def test_abind_with_factory_returns_emitter_result() -> None:
@@ -73,7 +73,7 @@ async def test_abind_with_factory_returns_emitter_result() -> None:
     emitter = create_autospec(_async_emit)
 
     def _return(
-        payload: object, event: object, config: object, serializer: object = None
+        event: object, config: object, payload: object, serializer: object = None
     ) -> object:
         return payload
 
@@ -106,7 +106,7 @@ async def test_abind_with_factory_forwards_serializer_to_emitter() -> None:
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
+    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"), serializer=serializer)
 
 
 async def test_abind_with_factory_awaits_async_factory_then_awaits_emitter() -> None:
@@ -131,7 +131,7 @@ async def test_abind_with_factory_awaits_async_factory_then_awaits_emitter() -> 
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
+    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)
 
 
 # endregion
@@ -145,7 +145,7 @@ async def test_abind_without_factory_calling_forwards_payload_to_emitter() -> No
 
     Given: A passthrough callable produced by abind with no factory
     When: The callable is called with a ready-made payload
-    Then: The emitter should receive that exact payload, the Event, and the config
+    Then: The emitter should receive the Event, the config, and that exact payload
     """
     # Arrange
     emitter = create_autospec(_async_emit)
@@ -157,7 +157,7 @@ async def test_abind_without_factory_calling_forwards_payload_to_emitter() -> No
     await bound(payload)
 
     # Assert
-    emitter.assert_awaited_once_with(payload, ev, None, serializer=None)
+    emitter.assert_awaited_once_with(ev, None, payload, serializer=None)
 
 
 async def test_abind_without_factory_returns_emitter_result() -> None:
@@ -172,7 +172,7 @@ async def test_abind_without_factory_returns_emitter_result() -> None:
     emitter = create_autospec(_async_emit)
 
     def _return(
-        payload: object, event: object, config: object, serializer: object = None
+        event: object, config: object, payload: object, serializer: object = None
     ) -> object:
         return payload
 
@@ -207,7 +207,7 @@ async def test_abind_without_factory_forwards_serializer_to_emitter() -> None:
     await bound(payload)
 
     # Assert
-    emitter.assert_awaited_once_with(payload, ev, None, serializer=serializer)
+    emitter.assert_awaited_once_with(ev, None, payload, serializer=serializer)
 
 
 # endregion

@@ -161,7 +161,7 @@ async def test_emit_without_connection_raises(publisher: RabbitMQPublisher):
     Then: A NotConnectedError should be raised
     """
     with pytest.raises(NotConnectedError):
-        await publisher.emit(_OrderPlaced(1), _order_placed, _config)
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
 
 
 async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, channel: AsyncMock):
@@ -178,7 +178,7 @@ async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, chann
 
     # Act
     async with publisher:
-        await publisher.emit(payload, _order_placed, _config)
+        await publisher.emit(_order_placed, _config, payload)
 
     # Assert
     call = channel.basic_publish.await_args
@@ -202,7 +202,7 @@ async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel
 
     # Act
     async with publisher:
-        await publisher.emit(_OrderPlaced(7), _order_placed, _config, serializer=to_bytes)
+        await publisher.emit(_order_placed, _config, _OrderPlaced(7), serializer=to_bytes)
 
     # Assert
     call = channel.basic_publish.await_args
@@ -224,8 +224,8 @@ async def test_emit_declares_exchange_once(publisher: RabbitMQPublisher, channel
 
     # Act
     async with publisher:
-        await publisher.emit(_OrderPlaced(1), _order_placed, config)
-        await publisher.emit(_OrderPlaced(2), _order_placed, config)
+        await publisher.emit(_order_placed, config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, config, _OrderPlaced(2))
 
     # Assert
     channel.exchange_declare.assert_awaited_once_with(
@@ -246,7 +246,7 @@ async def test_emit_skips_declaration_without_exchange_type(
     """
     # Act
     async with publisher:
-        await publisher.emit(_OrderPlaced(1), _order_placed, _config)
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
 
     # Assert
     channel.exchange_declare.assert_not_awaited()
@@ -267,7 +267,7 @@ async def test_emit_publishes_with_properties(publisher: RabbitMQPublisher, chan
 
     # Act
     async with publisher:
-        await publisher.emit(_OrderPlaced(7), _order_placed, config)
+        await publisher.emit(_order_placed, config, _OrderPlaced(7))
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]
@@ -289,7 +289,7 @@ async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: Async
     # Act
     with Envelope.scope() as envelope:
         async with publisher:
-            await publisher.emit(_OrderPlaced(7), _order_placed, _config)
+            await publisher.emit(_order_placed, _config, _OrderPlaced(7))
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]

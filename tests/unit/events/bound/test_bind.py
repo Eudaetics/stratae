@@ -47,7 +47,7 @@ def test_bind_with_factory_calling_constructs_schema_and_invokes_emitter(
     Given: A factory-bound callable produced by bind
     When: The callable is called with arguments
     Then: The schema constructor should be called with those arguments and the emitter
-          should receive the constructed payload, the Event, and the config
+          should receive the Event, the config, and the constructed payload
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
@@ -60,7 +60,7 @@ def test_bind_with_factory_calling_constructs_schema_and_invokes_emitter(
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None, serializer=None)
+    emitter.assert_called_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)
 
 
 def test_bind_with_factory_returns_emitter_result() -> None:
@@ -75,7 +75,7 @@ def test_bind_with_factory_returns_emitter_result() -> None:
     emitter = create_autospec(EmitCallable)
 
     def _return(
-        payload: object, event: object, config: object, serializer: object = None
+        event: object, config: object, payload: object, serializer: object = None
     ) -> object:
         return payload
 
@@ -109,7 +109,7 @@ def test_bind_with_factory_forwards_serializer_to_emitter() -> None:
     bound(1, "pending")
 
     # Assert
-    emitter.assert_called_once_with(_OrderCreated(1, "pending"), ev, None, serializer=serializer)
+    emitter.assert_called_once_with(ev, None, _OrderCreated(1, "pending"), serializer=serializer)
 
 
 def test_bind_with_factory_raises_for_async_factory() -> None:
@@ -144,7 +144,7 @@ def test_bind_without_factory_calling_forwards_payload_to_emitter() -> None:
 
     Given: A passthrough callable produced by bind with no factory
     When: The callable is called with a ready-made payload
-    Then: The emitter should receive that exact payload, the Event, and the config
+    Then: The emitter should receive the Event, the config, and that exact payload
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
@@ -156,7 +156,7 @@ def test_bind_without_factory_calling_forwards_payload_to_emitter() -> None:
     bound(payload)
 
     # Assert
-    emitter.assert_called_once_with(payload, ev, None, serializer=None)
+    emitter.assert_called_once_with(ev, None, payload, serializer=None)
 
 
 def test_bind_without_factory_returns_emitter_result() -> None:
@@ -171,7 +171,7 @@ def test_bind_without_factory_returns_emitter_result() -> None:
     emitter = create_autospec(EmitCallable)
 
     def _return(
-        payload: object, event: object, config: object, serializer: object = None
+        event: object, config: object, payload: object, serializer: object = None
     ) -> object:
         return payload
 
@@ -207,7 +207,7 @@ def test_bind_without_factory_forwards_serializer_to_emitter() -> None:
     bound(payload)
 
     # Assert
-    emitter.assert_called_once_with(payload, ev, None, serializer=serializer)
+    emitter.assert_called_once_with(ev, None, payload, serializer=serializer)
 
 
 # endregion

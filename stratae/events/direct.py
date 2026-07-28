@@ -251,9 +251,9 @@ class DirectBus(BaseDirectBus):
     @overload
     def emit[S, R](
         self,
-        payload: S,
         event: Event[Request[R], S],
-        config: None = None,
+        config: None,
+        payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> R: ...
@@ -261,18 +261,18 @@ class DirectBus(BaseDirectBus):
     @overload
     def emit[S](
         self,
-        payload: S,
         event: Event[PubSub, S],
-        config: None = None,
+        config: None,
+        payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> None: ...
 
     def emit(
         self,
-        payload: Any,
         event: _AnyEvent,
-        config: None = None,  # noqa: S1172
+        config: None,  # noqa: S1172
+        payload: Any,
         *,
         serializer: Callable[..., Any] | None = None,  # noqa: S1172
     ) -> Any:
@@ -285,10 +285,10 @@ class DirectBus(BaseDirectBus):
         events dispatch to exactly one responder, block until it returns,
         and propagate its exceptions directly.
 
-        :param payload: The constructed payload instance to dispatch.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             used as the handler lookup key.
         :param config: Unused; `DirectBus` requires no routing config.
+        :param payload: The constructed payload instance to dispatch.
         :param serializer: Unused; `DirectBus` requires no serializer.
         :returns: The responder's reply for request events; `None` for pub/sub.
         :raises NoResponderError: When a request event has no registered
@@ -466,9 +466,9 @@ class AsyncDirectBus(BaseDirectBus):
     @overload
     async def emit[S, R](
         self,
-        payload: S,
         event: Event[Request[R], S],
-        config: None = None,
+        config: None,
+        payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> R: ...
@@ -476,18 +476,18 @@ class AsyncDirectBus(BaseDirectBus):
     @overload
     async def emit[S](
         self,
-        payload: S,
         event: Event[PubSub, S],
-        config: None = None,
+        config: None,
+        payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> None: ...
 
     async def emit(
         self,
-        payload: Any,
         event: _AnyEvent,
-        config: None = None,  # noqa: S1172
+        config: None,  # noqa: S1172
+        payload: Any,
         *,
         serializer: Callable[..., Any] | None = None,  # noqa: S1172
     ) -> Any:
@@ -506,10 +506,10 @@ class AsyncDirectBus(BaseDirectBus):
         exactly one responder, await its reply, and propagate its exceptions
         directly.
 
-        :param payload: The constructed payload instance to dispatch.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             used as the handler lookup key.
         :param config: Unused; `AsyncDirectBus` requires no routing config.
+        :param payload: The constructed payload instance to dispatch.
         :param serializer: Unused; `AsyncDirectBus` requires no serializer.
         :returns: The responder's reply for request events; `None` for pub/sub.
         :raises NoResponderError: When a request event has no registered

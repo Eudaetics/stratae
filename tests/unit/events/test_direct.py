@@ -316,7 +316,7 @@ def test_emit_dispatches_payload(bus: DirectBus):
     payload = _TaskCreated(6)
 
     # Act
-    bus.emit(payload, _task_created, None)
+    bus.emit(_task_created, None, payload)
 
     # Assert
     handler.assert_called_once_with(payload)
@@ -338,7 +338,7 @@ def test_emit_invokes_all_handlers(bus: DirectBus):
     payload = _TaskCreated(7)
 
     # Act
-    bus.emit(payload, _task_created)
+    bus.emit(_task_created, None, payload)
 
     # Assert
     handler_a.assert_called_once_with(payload)
@@ -361,7 +361,7 @@ def test_raising_handler_does_not_prevent_other_handlers(bus: DirectBus):
 
     # Act
     with pytest.raises(ExceptionGroup):
-        bus.emit(payload, _task_created)
+        bus.emit(_task_created, None, payload)
 
     # Assert
     second_handler.assert_called_once_with(payload)
@@ -384,7 +384,7 @@ def test_handler_exceptions_collected_into_exception_group(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exc_info:
-        bus.emit(payload, _task_created)
+        bus.emit(_task_created, None, payload)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
 
@@ -415,7 +415,7 @@ def test_handler_removing_registration_during_dispatch_does_not_break_other_hand
     payload = _TaskCreated(12)
 
     # Act
-    bus.emit(payload, _task_created)
+    bus.emit(_task_created, None, payload)
 
     # Assert
     for handler in other_handlers:
@@ -436,7 +436,7 @@ def test_request_emit_returns_responder_reply(bus: DirectBus):
     payload = _BookQuery("dune")
 
     # Act
-    result = bus.emit(payload, _find_book)
+    result = bus.emit(_find_book, None, payload)
 
     # Assert
     assert result is reply
@@ -471,7 +471,7 @@ def test_request_emit_raises_without_responder(bus: DirectBus):
     Then: A NoResponderError should be raised
     """
     with pytest.raises(NoResponderError):
-        bus.emit(_BookQuery("dune"), _find_book)
+        bus.emit(_find_book, None, _BookQuery("dune"))
 
 
 def test_request_emit_raises_with_multiple_responders(bus: DirectBus):
@@ -488,7 +488,7 @@ def test_request_emit_raises_with_multiple_responders(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(MultipleRespondersError):
-        bus.emit(_BookQuery("dune"), _find_book)
+        bus.emit(_find_book, None, _BookQuery("dune"))
 
 
 def test_request_responder_exception_propagates_directly(bus: DirectBus):
@@ -505,7 +505,7 @@ def test_request_responder_exception_propagates_directly(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(ValueError) as exc_info:
-        bus.emit(_BookQuery("dune"), _find_book)
+        bus.emit(_find_book, None, _BookQuery("dune"))
 
     assert exc_info.value is error
 
@@ -526,7 +526,7 @@ def test_request_responder_registered_via_decorator(bus: DirectBus):
         return reply
 
     # Act
-    result = bus.emit(_BookQuery("dune"), _find_book)
+    result = bus.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -659,7 +659,7 @@ def test_request_reply_returned_with_envelope(bus_with_envelope: DirectBus):
     bus_with_envelope.handle(_find_book, Mock(return_value=reply))
 
     # Act
-    result = bus_with_envelope.emit(_BookQuery("dune"), _find_book)
+    result = bus_with_envelope.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply

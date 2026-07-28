@@ -284,20 +284,20 @@ class RabbitMQPublisher:
 
     async def emit[S](
         self,
-        payload: S,
         event: Event[PubSub, S],
         config: RabbitMQConfig,
+        payload: S,
         *,
         serializer: Callable[[S], bytes] | None = None,
     ) -> None:
         """
         Serialize the payload and publish it to the configured exchange.
 
-        :param payload: The constructed payload instance to publish.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             being emitted; carried for adapter-uniform emit signatures, not
             used for routing.
         :param config: The exchange and routing key to publish to.
+        :param payload: The constructed payload instance to publish.
         :param serializer: Encodes the payload to bytes before publishing.
             Overrides the adapter's `serializer` for this call only.
         :raises NotConnectedError: When the publisher's connection is not open.

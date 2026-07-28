@@ -21,8 +21,8 @@ class EmitCallable[T: DispatchPattern, S, C, R](Protocol):
     """
     Structural protocol for a single bound emit call.
 
-    Captures the call shape of {py:meth}`Producer.emit`: payload, event, and
-    config in, some adapter-defined result out. It's parameterized over a
+    Captures the call shape of {py:meth}`Producer.emit`: event, config, and
+    payload in, some adapter-defined result out. It's parameterized over a
     concrete `R` instead of `Any`, though. That lets a specific binding —
     e.g. the `emitter` behind a callable returned by
     {py:func}`bind <stratae.events.bound.bind>` — be checked against its
@@ -31,19 +31,19 @@ class EmitCallable[T: DispatchPattern, S, C, R](Protocol):
 
     def __call__(
         self,
-        payload: S,
         event: Event[T, S],
         config: C,
+        payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> R:
         """
         Dispatch a payload.
 
-        :param payload: The constructed payload instance to dispatch.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             definition being emitted.
         :param config: Adapter-specific routing configuration.
+        :param payload: The constructed payload instance to dispatch.
         :param serializer: Serializer the payload will be sent to prior to routing.
         :returns: Adapter-defined result of dispatching the payload.
         """
@@ -63,19 +63,19 @@ class Producer(Protocol):
 
     def emit[T: DispatchPattern, S](
         self,
-        payload: S,
         event: Event[T, S],
         config: Any,
+        payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
     ) -> Any:
         """
         Dispatch a payload.
 
-        :param payload: The constructed payload instance to dispatch.
         :param event: The {py:class}`Event <stratae.events.event.Event>`
             definition being emitted.
         :param config: Adapter-specific routing configuration.
+        :param payload: The constructed payload instance to dispatch.
         :param serializer: Encodes `payload` before dispatch. Format is
             adapter-defined (bytes, a JSON string, etc.). When omitted,
             the adapter falls back to its own default serializer, if any.

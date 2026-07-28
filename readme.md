@@ -155,7 +155,7 @@ def notify(order: OrderPlaced) -> None:
     print(f"Order {order.order_id} placed")
 
 
-bus.emit(OrderPlaced(42), order_placed)
+bus.emit(order_placed, None, OrderPlaced(42))
 # Order 42 placed
 ```
 
@@ -194,7 +194,7 @@ def price(order: PriceOrder) -> Quote:
     return Quote(total=100)
 
 
-quote = bus.emit(PriceOrder(42), price_order)  # typed as Quote
+quote = bus.emit(price_order, None, PriceOrder(42))  # typed as Quote
 ```
 
 `AsyncDirectBus` offers the same surface for async code, accepting both sync and async handlers. Handlers are ordinary functions, so `@inject` and lifecycle-cached dependencies compose with them unchanged.

@@ -29,13 +29,13 @@ class Order:
 
 order_created = Event(Request[Order], CreateOrder)
 
-# A generic emitter only needs to match EmitCallable's shape: payload,
-# event, and config in, some result out. This one does the work
+# A generic emitter only needs to match EmitCallable's shape: event,
+# config, and payload in, some result out. This one does the work
 # directly, using config as the destination label to route to.
 def emit(
-    payload: CreateOrder,
     event: Event[Request[Order], CreateOrder],
     config: str,
+    payload: CreateOrder,
     *,
     serializer: Callable[[CreateOrder], Any] | None = None,
 ) -> Order:
@@ -101,8 +101,8 @@ def bind(
     """
     Bind a sync emitter to an event, with a factory, or without one for passthrough.
 
-    :param emitter: A callable that receives the payload and the `Event`
-        being bound, and returns `R`.
+    :param emitter: A callable that receives the `Event` being bound and
+        the payload, and returns `R`.
     :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
     :param factory: Builds the payload from the bound call's arguments. When
         omitted, the returned callable instead forwards an already-built
@@ -120,7 +120,7 @@ def bind(
     if factory is None:
 
         def passthrough(payload: Any) -> Any:
-            return emitter(payload, event, config, serializer=serializer)
+            return emitter(event, config, payload, serializer=serializer)
 
         return passthrough
 
@@ -128,7 +128,7 @@ def bind(
         raise TypeError(_SYNC_FACTORY_REQUIRED)
 
     def construct(*args: Any, **kwargs: Any) -> Any:
-        return emitter(factory(*args, **kwargs), event, config, serializer=serializer)
+        return emitter(event, config, factory(*args, **kwargs), serializer=serializer)
 
     return construct
 
@@ -166,8 +166,8 @@ def abind(
     """
     Bind an async emitter to an event, with a factory, or without one for passthrough.
 
-    :param emitter: A coroutine callable that receives the payload and the
-        `Event` being bound, and returns an awaitable resolving to `R`.
+    :param emitter: A coroutine callable that receives the `Event` being
+        bound and the payload, and returns an awaitable resolving to `R`.
     :param event: The {py:class}`Event <stratae.events.event.Event>` to
         bind.
     :param factory: Builds the payload from the bound call's arguments, sync
@@ -186,7 +186,7 @@ def abind(
     if factory is None:
 
         async def passthrough(payload: Any) -> Any:
-            return await emitter(payload, event, config, serializer=serializer)
+            return await emitter(event, config, payload, serializer=serializer)
 
         return passthrough
 
@@ -197,6 +197,6 @@ def abind(
             payload = await async_factory(*args, **kwargs)
         else:
             payload = factory(*args, **kwargs)
-        return await emitter(payload, event, config, serializer=serializer)
+        return await emitter(event, config, payload, serializer=serializer)
 
     return construct
