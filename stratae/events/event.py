@@ -49,7 +49,7 @@ the rest of the module's API.
 
 from __future__ import annotations
 
-from typing import Any, cast, get_args, get_origin
+from typing import cast, get_args, get_origin
 
 _UNSUBSCRIPTED_REQUEST = "Request must be subscripted with its reply type (e.g. Request[BookFound])"
 _NOT_A_REQUEST = "event does not carry a subscripted Request discriminant"
@@ -90,7 +90,7 @@ def _validate_pattern(pattern: type[DispatchPattern]):
         raise TypeError(_UNSUBSCRIPTED_REQUEST)
 
 
-class Event[E: Any, T: DispatchPattern]:
+class Event[E, T: DispatchPattern]:
     """
     Bus-agnostic event definition binding a schema to a dispatch pattern.
 
@@ -125,7 +125,7 @@ class Event[E: Any, T: DispatchPattern]:
         self.name = name if name is not None else schema.__name__
 
 
-def is_request[S: Any, T: DispatchPattern](event: Event[S, T]) -> bool:
+def is_request[S, T: DispatchPattern](event: Event[S, T]) -> bool:
     """
     Report whether the event carries a subscripted Request discriminant.
 
@@ -141,7 +141,7 @@ def is_request[S: Any, T: DispatchPattern](event: Event[S, T]) -> bool:
     return isinstance(origin, type) and issubclass(origin, Request)
 
 
-def reply_type[S: Any, R](event: Event[S, Request[R]]) -> type[R]:
+def reply_type[S, R](event: Event[S, Request[R]]) -> type[R]:
     """
     Recover the reply type from a request event's discriminant.
 

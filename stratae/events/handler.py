@@ -46,10 +46,10 @@ log: first
 """
 
 from inspect import iscoroutinefunction
-from typing import Any, Callable
+from typing import Callable
 
 
-class Handler[**P, HandlerConfig: Any, R]:
+class Handler[**P, HandlerConfig, R]:
     """
     Wrap an event handler callable with async detection and identity semantics.
 

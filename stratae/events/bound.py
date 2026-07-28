@@ -69,7 +69,7 @@ _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outsi
 
 
 @overload
-def bind[**P, S: Any, T: DispatchPattern, C, R](
+def bind[**P, S, T: DispatchPattern, C, R](
     emitter: EmitCallable[S, T, C, R],
     event: Event[S, T],
     *,
@@ -80,7 +80,7 @@ def bind[**P, S: Any, T: DispatchPattern, C, R](
 
 
 @overload
-def bind[S: Any, T: DispatchPattern, C, R](
+def bind[S, T: DispatchPattern, C, R](
     emitter: EmitCallable[S, T, C, R],
     event: Event[S, T],
     *,
@@ -134,7 +134,7 @@ def bind(
 
 
 @overload
-def abind[**P, S: Any, T: DispatchPattern, C, R](
+def abind[**P, S, T: DispatchPattern, C, R](
     emitter: EmitCallable[S, T, C, Awaitable[R]],
     event: Event[S, T],
     *,
@@ -145,7 +145,7 @@ def abind[**P, S: Any, T: DispatchPattern, C, R](
 
 
 @overload
-def abind[S: Any, T: DispatchPattern, C, R](
+def abind[S, T: DispatchPattern, C, R](
     emitter: EmitCallable[S, T, C, Awaitable[R]],
     event: Event[S, T],
     *,

@@ -216,20 +216,20 @@ class DirectBus(BaseDirectBus):
         )
 
     @overload
-    def bind[**P, S: Any, R](
+    def bind[**P, S, R](
         self, event: Event[S, Request[R]], *, factory: Callable[P, S]
     ) -> Callable[P, R]: ...
 
     @overload
-    def bind[**P, S: Any](
+    def bind[**P, S](
         self, event: Event[S, PubSub], *, factory: Callable[P, S]
     ) -> Callable[P, None]: ...
 
     @overload
-    def bind[S: Any, R](self, event: Event[S, Request[R]]) -> Callable[[S], R]: ...
+    def bind[S, R](self, event: Event[S, Request[R]]) -> Callable[[S], R]: ...
 
     @overload
-    def bind[S: Any](self, event: Event[S, PubSub]) -> Callable[[S], None]: ...
+    def bind[S](self, event: Event[S, PubSub]) -> Callable[[S], None]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
@@ -249,7 +249,7 @@ class DirectBus(BaseDirectBus):
         return bind(self.emit, event, factory=factory, config=None, serializer=None)
 
     @overload
-    def emit[S: Any, R](
+    def emit[S, R](
         self,
         payload: S,
         event: Event[S, Request[R]],
@@ -259,7 +259,7 @@ class DirectBus(BaseDirectBus):
     ) -> R: ...
 
     @overload
-    def emit[S: Any](
+    def emit[S](
         self,
         payload: S,
         event: Event[S, PubSub],
@@ -299,28 +299,28 @@ class DirectBus(BaseDirectBus):
         return self._dispatch(payload, event)
 
     @overload
-    def handle[S: Any, R](
+    def handle[S, R](
         self,
         config: Event[S, Request[R]],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[S: Any, R](
+    def handle[S, R](
         self,
         config: Event[S, Request[R]],
         fn: None = None,
     ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
 
     @overload
-    def handle[S: Any, R](
+    def handle[S, R](
         self,
         config: Event[S, PubSub],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[S: Any](
+    def handle[S](
         self,
         config: Event[S, PubSub],
         fn: None = None,
@@ -425,7 +425,7 @@ class AsyncDirectBus(BaseDirectBus):
         self._use_envelope = use_envelope
 
     @overload
-    def bind[**P, S: Any, R](
+    def bind[**P, S, R](
         self,
         event: Event[S, Request[R]],
         *,
@@ -433,7 +433,7 @@ class AsyncDirectBus(BaseDirectBus):
     ) -> Callable[P, Awaitable[R]]: ...
 
     @overload
-    def bind[**P, S: Any](
+    def bind[**P, S](
         self,
         event: Event[S, PubSub],
         *,
@@ -441,10 +441,10 @@ class AsyncDirectBus(BaseDirectBus):
     ) -> Callable[P, Awaitable[None]]: ...
 
     @overload
-    def bind[S: Any, R](self, event: Event[S, Request[R]]) -> Callable[[S], Awaitable[R]]: ...
+    def bind[S, R](self, event: Event[S, Request[R]]) -> Callable[[S], Awaitable[R]]: ...
 
     @overload
-    def bind[S: Any](self, event: Event[S, PubSub]) -> Callable[[S], Awaitable[None]]: ...
+    def bind[S](self, event: Event[S, PubSub]) -> Callable[[S], Awaitable[None]]: ...
 
     def bind(
         self, event: _AnyEvent, *, factory: Callable[..., Any] | None = None
@@ -464,7 +464,7 @@ class AsyncDirectBus(BaseDirectBus):
         return abind(self.emit, event, factory=factory, config=None, serializer=None)
 
     @overload
-    async def emit[S: Any, R](
+    async def emit[S, R](
         self,
         payload: S,
         event: Event[S, Request[R]],
@@ -474,7 +474,7 @@ class AsyncDirectBus(BaseDirectBus):
     ) -> R: ...
 
     @overload
-    async def emit[S: Any](
+    async def emit[S](
         self,
         payload: S,
         event: Event[S, PubSub],
@@ -523,35 +523,35 @@ class AsyncDirectBus(BaseDirectBus):
         return await self._dispatch(payload, event)
 
     @overload
-    def handle[S: Any, R](
+    def handle[S, R](
         self,
         config: Event[S, Request[R]],
         fn: Callable[[S], Awaitable[R]],
     ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
 
     @overload
-    def handle[S: Any, R](
+    def handle[S, R](
         self,
         config: Event[S, Request[R]],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[S: Any, R](
+    def handle[S, R](
         self,
         config: Event[S, Request[R]],
         fn: None = None,
     ) -> _AsyncResponderDecorator[S, R]: ...
 
     @overload
-    def handle[S: Any, R](
+    def handle[S, R](
         self,
         config: Event[S, PubSub],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
-    def handle[S: Any](
+    def handle[S](
         self,
         config: Event[S, PubSub],
         fn: None = None,

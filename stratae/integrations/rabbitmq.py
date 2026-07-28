@@ -238,7 +238,7 @@ class RabbitMQPublisher:
             self._declared.clear()
 
     @overload
-    def bind[**P, S: Any](
+    def bind[**P, S](
         self,
         event: Event[S, PubSub],
         *,
@@ -248,7 +248,7 @@ class RabbitMQPublisher:
     ) -> Callable[P, Awaitable[None]]: ...
 
     @overload
-    def bind[S: Any](
+    def bind[S](
         self,
         event: Event[S, PubSub],
         *,
@@ -282,7 +282,7 @@ class RabbitMQPublisher:
         """
         return abind(self.emit, event, factory=factory, config=config, serializer=serializer)
 
-    async def emit[S: Any](
+    async def emit[S](
         self,
         payload: S,
         event: Event[S, PubSub],
@@ -503,7 +503,7 @@ class RabbitMQConsumer:
             registration.consumer_tag = None
 
     @overload
-    def handle[S: Any, R](
+    def handle[S, R](
         self,
         event: Event[S, PubSub],
         fn: Callable[[S], R],
@@ -513,7 +513,7 @@ class RabbitMQConsumer:
     ) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
 
     @overload
-    def handle[S: Any](
+    def handle[S](
         self,
         event: Event[S, PubSub],
         fn: None = None,
