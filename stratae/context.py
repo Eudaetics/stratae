@@ -50,8 +50,6 @@ protocol, so {py:func}`Context.set` alone gives the same ergonomics as
 {py:func}`Context.use`:
 <!--- skip: next if(__import__("sys").version_info < (3, 14), "needs Python 3.14+") -->
 ```{code-block} python
-:caption: Using set() directly as a context manager (Python 3.14+)
-
 from stratae.context import Context
 
 user_id = Context[int]("user_id")

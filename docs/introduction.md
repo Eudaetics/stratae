@@ -39,8 +39,12 @@ class FileAccessed:
         self.filename = filename
         self.source = source
 
+bus = DirectBus()
 fetch_file_event = Event(Request[str], FetchFile)
 file_accessed_event = Event(PubSub, FileAccessed)
+fetch_file = bus.bind(fetch_file_event, factory=FetchFile)
+notify_accessed = bus.bind(file_accessed_event, factory=FileAccessed)
+
 lifecycle = Lifecycle([Scope("application", "shared")])
 
 class AuditLog:
@@ -74,10 +78,6 @@ class S3:
 
 storage = Context[Storage]("storage", default=LocalDisk())
 current_user = Context("current_user", default="guest")
-
-bus = DirectBus()
-fetch_file = bus.bind(fetch_file_event, factory=FetchFile)
-notify_accessed = bus.bind(file_accessed_event, factory=FileAccessed)
 
 @bus.handle(fetch_file_event)
 @inject

@@ -168,8 +168,8 @@ def unpack_json[S](data: bytes, /, *, type: type[S]) -> S:
     """
     Deserialize JSON bytes by constructing `type` from keyword arguments.
 
-    The default {py:class}`Unpacker` — the inverse of {py:func}`pack`'s
-    default — covering plain keyword-constructible classes and dataclasses.
+    The default {py:class}`Unpacker`, the inverse of {py:func}`pack`'s
+    default, covering plain keyword-constructible classes and dataclasses.
 
     :param data: The raw JSON bytes to decode.
     :param type: The type to reconstruct.

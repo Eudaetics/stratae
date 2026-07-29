@@ -3,13 +3,13 @@ Unit tests for bind.
 
 This test suite verifies the following behaviors:
 
-bind — with a factory:
+bind with a factory:
 - Calling the returned callable constructs the payload via the factory and invokes the emitter.
 - Calling the returned callable returns the emitter's result.
 - The serializer is forwarded to the emitter.
 - Raises TypeError when the factory is async.
 
-bind — without a factory:
+bind without a factory:
 - Calling the returned callable forwards an already-built payload to the emitter.
 - Calling the returned callable returns the emitter's result.
 - The serializer is forwarded to the emitter.

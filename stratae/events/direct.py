@@ -10,13 +10,13 @@ when it has more than one.
 
 {py:class}`DirectBus` dispatches synchronously. Bind its `emit` method to an
 {py:class}`Event <stratae.events.event.Event>` via
-{py:func}`bind <stratae.events.bound.bind>` to get a callable that
+{py:func}`bind <stratae.events.bind.bind>` to get a callable that
 dispatches through it, optionally building the payload from a factory.
 Registering an async handler on it raises `TypeError`, since there is no
 way to await one from inside synchronous dispatch.
 
 {py:class}`AsyncDirectBus` dispatches through `asyncio` instead. Bind its
-`emit` method via {py:func}`abind <stratae.events.bound.abind>` to get an
+`emit` method via {py:func}`abind <stratae.events.bind.abind>` to get an
 awaitable callable the same way. It accepts a mix of sync and async
 handlers, running
 {py:class}`PubSub <stratae.events.event.PubSub>` handlers concurrently with
@@ -104,7 +104,7 @@ from collections import defaultdict
 from inspect import iscoroutinefunction
 from typing import Any, Awaitable, Callable, Protocol, overload
 
-from stratae.events.bound import AsyncBindMixin, BindMixin
+from stratae.events.bind import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
 from stratae.events.event import DispatchPattern, Event, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
@@ -136,8 +136,8 @@ class BaseDirectBus:
     {py:class}`DirectBus` and {py:class}`AsyncDirectBus` each own their
     `emit` surface, typed `handle` overloads, and dispatch semantics, and
     inherit `bind` from
-    {py:class}`BindMixin <stratae.events.bound.BindMixin>` or
-    {py:class}`AsyncBindMixin <stratae.events.bound.AsyncBindMixin>`.
+    {py:class}`BindMixin <stratae.events.bind.BindMixin>` or
+    {py:class}`AsyncBindMixin <stratae.events.bind.AsyncBindMixin>`.
     Both delegate registration to `_register` and share the config-keyed
     handler dict and single-responder lookup for
     {py:class}`Request <stratae.events.event.Request>` events defined here.

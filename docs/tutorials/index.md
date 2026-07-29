@@ -138,10 +138,6 @@ Use [Events](events.md)'s `PubSub` dispatch pattern: define the event once, then
 [Events](events.md) buses are swappable by design. Bind to `DirectBus` locally or in tests, and to [RabbitMQ](integrations/rabbitmq) in production, with no change to the event definitions or handlers.
 :::
 
-:::{dropdown} I need the current user or tenant deep inside my code.
-Use [Context](context.md) to carry it as a `ContextVar`-backed value. Take it further by wrapping that context object as a Dependency Injection provider, so it's injected like any other dependency instead of imported and called directly.
-:::
-
 :::{dropdown} I need a connection to close automatically, even on error.
 Use [Lifecycle](lifecycle.md)'s `resource` to wrap a generator so the cleanup code after `yield` runs when the scope exits, regardless of how it ended.
 :::

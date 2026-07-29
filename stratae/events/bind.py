@@ -11,13 +11,12 @@ same way.
 
 Omitting `factory` for a payload-less event, one whose schema is `None`,
 returns a {py:class}`BoundSignal` instead, callable with no arguments at
-all. There is nothing to build and nothing to pass.
+all.
 
-Both returned callables forward themselves, along with the payload, to the
+Both returned callables send the payload and associated settings to the
 emitter, returning whatever the emitter produces. `bind` requires a sync
-factory, since there's no way to await one from inside its synchronous
-result. `abind` accepts either a sync or async factory, awaiting it either
-way.
+factory, since there isn't a simple way to await one from inside its
+synchronous result. `abind` accepts either a sync or async factory.
 
 ````{example} Binding an event to a generic emitter
 ```{code-block} python
@@ -58,39 +57,10 @@ created order: 42
 ```
 ````
 
-````{example} Binding a payload-less event
-```{code-block} python
-from typing import Any, Callable
-from stratae.events import Event, PubSub, bind
-
-# No schema, so the event's occurrence is the entire message.
-heartbeat = Event(PubSub, name="heartbeat")
-
-def emit(
-    event: Event[PubSub, None],
-    config: str,
-    payload: None,
-    *,
-    serializer: Callable[[None], Any] | None = None,
-) -> None:
-    print(f"[{config}] {event.name}")
-
-beat = bind(heartbeat, emit, config="health")
-
-# Nothing to build, nothing to pass.
-beat()
-```
-```{output}
-[health] heartbeat
-```
-````
-
 {py:class}`BindMixin` and {py:class}`AsyncBindMixin` give an adapter a
-typed `bind` method of its own, wrapping its `emit`. A method's declared
-signature is what resolves at the call site, so an adapter that wrote its
-own `bind` couldn't defer to the overloads of what it delegates to.
-Inheriting one of these mixins carries the overloads and the implementation
-together, stating them once instead of per adapter.
+typed `bind` method of its own, wrapping its `emit`. Inheriting one of
+these mixins carries the overloads and the implementation together,
+stating them once instead of per adapter.
 
 See {py:func}`bind` and {py:func}`abind` for the rest of the module's API.
 
@@ -304,13 +274,6 @@ class BindMixin[C](ABC):
     `C` is the adapter's routing config type. Inherit `BindMixin[None]` for
     an adapter needing no config, where `config` can then be omitted at the
     call site, or `BindMixin[SomeConfig]` for one that routes.
-
-    The adapter inherits `bind` rather than defining it. Overload
-    resolution doesn't pass through a wrapper, so an adapter that wrote its
-    own `bind` method would have to restate all three overloads, and would
-    otherwise be stuck declaring `Callable[..., Any]`, which type-checks
-    nothing at any call site. Carrying the overloads and the implementation
-    together here states them once for every adapter.
 
     Subclasses supply `emit`. It's abstract so the mixin can call it, and
     so an adapter that inherits this without providing one fails at

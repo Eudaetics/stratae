@@ -3,13 +3,13 @@ Unit tests for abind.
 
 This test suite verifies the following behaviors:
 
-abind — with a factory:
+abind with a factory:
 - Calling the returned callable constructs the payload via the factory and awaits the emitter.
 - Calling the returned callable returns the emitter's result.
 - The serializer is forwarded to the emitter.
 - An async factory is awaited before its result is forwarded to the emitter.
 
-abind — without a factory:
+abind without a factory:
 - Calling the returned callable forwards an already-built payload to the emitter.
 - Calling the returned callable returns the emitter's result.
 - The serializer is forwarded to the emitter.

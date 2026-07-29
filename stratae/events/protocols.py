@@ -5,9 +5,9 @@ Structural protocols for the stratae event system.
 sides of a bus adapter structurally. Any class with a compatible method
 satisfies the protocol, sync or async, without inheriting from it.
 {py:class}`EmitCallable` describes a single bound emit call. It's
-parameterized over a concrete return type `R`, so a specific binding — e.g.
+parameterized over a concrete return type `R`, so a specific binding, e.g.
 the `emitter` behind a callable returned by
-{py:func}`bind <stratae.events.bound.bind>` — can be checked against its own
+{py:func}`bind <stratae.events.bind.bind>`, can be checked against its own
 return type instead of `Any`.
 """
 
@@ -23,9 +23,9 @@ class EmitCallable[T: DispatchPattern[Any, Any], S, C, R](Protocol):
 
     Captures the call shape of {py:meth}`Producer.emit`: event, config, and
     payload in, some adapter-defined result out. It's parameterized over a
-    concrete `R` instead of `Any`, though. That lets a specific binding —
+    concrete `R` instead of `Any`, though. That lets a specific binding,
     e.g. the `emitter` behind a callable returned by
-    {py:func}`bind <stratae.events.bound.bind>` — be checked against its
+    {py:func}`bind <stratae.events.bind.bind>`, be checked against its
     own return type.
     """
 
@@ -57,7 +57,7 @@ class Producer(Protocol):
 
     Any class with a compatible `emit` method satisfies this protocol,
     whether sync or async. A callable returned by
-    {py:func}`bind <stratae.events.bound.bind>` calls `emit` when invoked.
+    {py:func}`bind <stratae.events.bind.bind>` calls `emit` when invoked.
     Adapters implement it to perform the actual dispatch.
     """
 

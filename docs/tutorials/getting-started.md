@@ -85,7 +85,9 @@ from typing import Annotated
 from stratae.depends import Depends, inject
 
 @inject
-def get_cursor(conn: Annotated[sqlite3.Connection, Depends(get_connection)]) -> sqlite3.Cursor:
+def get_cursor(
+    conn: Annotated[sqlite3.Connection, Depends(get_connection)]
+) -> sqlite3.Cursor:
     return conn.cursor()
 
 type Cursor = Annotated[sqlite3.Cursor, Depends(get_cursor)]

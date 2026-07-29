@@ -12,7 +12,7 @@ The registration only takes effect once this module has actually been
 imported, since {py:func}`pack <stratae.serde.pack>` is a
 `functools.singledispatch` function and only dispatches to implementations
 from modules the interpreter has run. Import `stratae.integrations.msgspec`
-once, for its side effect, before packing any `msgspec.Struct` — installing
+once, for its side effect, before packing any `msgspec.Struct`. Installing
 `msgspec` itself is not enough. Without that import, `pack` still runs on a
 `msgspec.Struct` by falling back to its generic `json.dumps`-based path,
 so the fallback can go unnoticed rather than failing loudly.

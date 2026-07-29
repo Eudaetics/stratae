@@ -41,7 +41,6 @@ async def get_cursor():
     try:
         yield cur
         conn.commit()
-        print("committed")
     finally:
         cur.close()
 
