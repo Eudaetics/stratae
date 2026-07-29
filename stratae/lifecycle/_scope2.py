@@ -7,7 +7,7 @@ bookkeeping `cache()` will use. `Scope` and `AsyncScope` are the concrete, usabl
 subclasses, differing only in which exit stack type they use.
 """
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import get_args
 
 from stratae.lifecycle._scope import (
@@ -15,11 +15,12 @@ from stratae.lifecycle._scope import (
     AsyncExitStack,
     ExitStack,
     ScopeVar,
+    SharedToken,
     SharedVar,
     SlotDict,
     SlotStorage,
 )
-from stratae.lifecycle.exceptions import LifecycleConfigurationError
+from stratae.lifecycle.exceptions import LifecycleConfigurationError, ScopeActivationError
 from stratae.lifecycle.scope import IsolationType, StorageType
 
 
@@ -89,9 +90,9 @@ class BaseScope:
             require another `"shared"` scope, since a `"context"` scope's activity is
             per-execution-context and there's no single answer to "is it active" that
             would hold for every context concurrently sharing the requiring scope.
-        :raises LifecycleConfigurationError: If `name` is not a valid Python identifier,
-            `isolation`/`storage` is not one of their allowed values, or this scope is
-            `"shared"` while `requires` is a `"context"`-isolated scope.
+        :raises LifecycleConfigurationError: If `isolation`/`storage` is not one of their
+            allowed values, or this scope is `"shared"` while `requires` is a
+            `"context"`-isolated scope.
 
         """
         if isolation not in frozenset(get_args(IsolationType)):
@@ -107,9 +108,9 @@ class BaseScope:
         self._isolation = isolation
         self._storage = storage
         self._requires = requires
-        self._template = [UNSET] if storage == "dense" else SlotDict()
+        self._template = [UNSET, 0] if storage == "dense" else SlotDict({1: 0})
         self._var = ContextVar(name) if isolation == "context" else SharedVar(name)
-        self._counter = 1
+        self._counter = 2
         self._free_slots = []
 
     @property
@@ -127,6 +128,66 @@ class BaseScope:
         """The scope that must be active before this one can activate, if any."""
         return self._requires
 
+    def is_active(self) -> bool:
+        """Whether this scope has a live activation in the calling context."""
+        return self._var.get(UNSET) is not UNSET
+
+
+class Activation:
+    """
+    The token `Scope.activate()` returns - use directly as `with`, or pass to `deactivate()`.
+
+    Returned by {py:meth}`Scope.activate`, not constructed directly.
+    """
+
+    __slots__ = ("_scope", "token", "depends_on_active")
+
+    def __init__(
+        self,
+        scope: "Scope",
+        token: "Token[SlotStorage] | SharedToken",
+        depends_on_active: bool,
+    ) -> None:
+        self._scope = scope
+        self.token = token
+        self.depends_on_active = depends_on_active
+
+    def __enter__(self) -> "Activation":
+        """Return self - the scope was already activated by `activate()`."""
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        """Deactivate the scope this token belongs to."""
+        self._scope.deactivate(self)
+
+
+class AsyncActivation:
+    """
+    The token `AsyncScope.activate()` returns - use as `async with`, or pass to `deactivate()`.
+
+    Returned by {py:meth}`AsyncScope.activate`, not constructed directly.
+    """
+
+    __slots__ = ("_scope", "token", "depends_on_active")
+
+    def __init__(
+        self,
+        scope: "AsyncScope",
+        token: "Token[SlotStorage] | SharedToken",
+        depends_on_active: bool,
+    ) -> None:
+        self._scope = scope
+        self.token = token
+        self.depends_on_active = depends_on_active
+
+    async def __aenter__(self) -> "AsyncActivation":
+        """Return self - the scope was already activated by `activate()`."""
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        """Deactivate the scope this token belongs to."""
+        await self._scope.deactivate(self)
+
 
 class Scope(BaseScope):
     """A sync-flavored scope - activated with `with`, caches sync functions."""
@@ -135,6 +196,68 @@ class Scope(BaseScope):
 
     _exit_stack_cls = ExitStack
 
+    def activate(self, *, force: bool = False) -> Activation:
+        """
+        Activate this scope, returning a token usable as `with` or passed to `deactivate()`.
+
+        :param force: Skip the check that `requires` (if set) is currently active. The
+            check exists to fail at the point of misuse rather than later, wherever the
+            missing scope actually gets touched - `force` is for cases that legitimately
+            don't want the full chain active, e.g. testing this scope's own behavior in
+            isolation. It does not make the requirement disappear: code that reaches into
+            `requires` while it's genuinely inactive still fails there, same as always.
+        :returns: An `Activation` - enter it directly (`with scope.activate():`) or hold
+            onto it and call {py:meth}`Scope.deactivate` manually, for split-callback
+            lifecycles where activation and deactivation happen in different functions.
+        :raises ScopeActivationError: If `requires` is set, not active, and `force` is
+            not given.
+        """
+        depends_on_active = False
+        if self._requires is not None:
+            if self._requires.is_active():
+                self._requires._var.get()[1] += 1
+                depends_on_active = True
+            elif not force:
+                raise ScopeActivationError(
+                    f"Cannot activate {self.name!r}: required scope "
+                    f"{self._requires.name!r} is not active."
+                )
+        token = self._var.set(self._template.copy())
+        return Activation(self, token, depends_on_active)
+
+    def deactivate(self, activation: Activation) -> None:
+        """
+        Deactivate the scope activation identified by the given token.
+
+        :param activation: The `Activation` returned by the matching
+            {py:meth}`Scope.activate` call.
+        :raises ScopeActivationError: If the scope is not currently active, or a scope
+            requiring this one is still active.
+        """
+        token = activation.token
+        var = token.var
+        try:
+            slots = var.get()
+        except LookupError:
+            raise ScopeActivationError(
+                f"Cannot deactivate {self.name!r}: scope is not active."
+            ) from None
+        if slots[1] > 0:
+            raise ScopeActivationError(
+                f"Cannot deactivate {self.name!r}: a scope requiring it is still active."
+            )
+        if isinstance(token, SharedToken):
+            token.var.clear()
+        else:
+            token.var.reset(token)
+        try:
+            stack = slots[0]
+            if stack is not UNSET:
+                stack.close()
+        finally:
+            if activation.depends_on_active and self._requires is not None:
+                self._requires._var.get()[1] -= 1
+
 
 class AsyncScope(BaseScope):
     """An async-flavored scope - activated with `async with`, caches sync and async functions."""
@@ -142,3 +265,66 @@ class AsyncScope(BaseScope):
     __slots__ = ()
 
     _exit_stack_cls = AsyncExitStack
+
+    def activate(self, *, force: bool = False) -> AsyncActivation:
+        """
+        Activate this scope, returning a token usable as `async with` or passed to `deactivate()`.
+
+        :param force: Skip the check that `requires` (if set) is currently active. The
+            check exists to fail at the point of misuse rather than later, wherever the
+            missing scope actually gets touched - `force` is for cases that legitimately
+            don't want the full chain active, e.g. testing this scope's own behavior in
+            isolation. It does not make the requirement disappear: code that reaches into
+            `requires` while it's genuinely inactive still fails there, same as always.
+        :returns: An `AsyncActivation` - enter it directly (`async with scope.activate():`)
+            or hold onto it and call {py:meth}`AsyncScope.deactivate` manually, for
+            split-callback lifecycles where activation and deactivation happen in
+            different functions.
+        :raises ScopeActivationError: If `requires` is set, not active, and `force` is
+            not given.
+        """
+        depends_on_active = False
+        if self._requires is not None:
+            if self._requires.is_active():
+                self._requires._var.get()[1] += 1
+                depends_on_active = True
+            elif not force:
+                raise ScopeActivationError(
+                    f"Cannot activate {self.name!r}: required scope "
+                    f"{self._requires.name!r} is not active."
+                )
+        token = self._var.set(self._template.copy())
+        return AsyncActivation(self, token, depends_on_active)
+
+    async def deactivate(self, activation: AsyncActivation) -> None:
+        """
+        Deactivate the scope activation identified by the given token.
+
+        :param activation: The `AsyncActivation` returned by the matching
+            {py:meth}`AsyncScope.activate` call.
+        :raises ScopeActivationError: If the scope is not currently active, or a scope
+            requiring this one is still active.
+        """
+        token = activation.token
+        var = token.var
+        try:
+            slots = var.get()
+        except LookupError:
+            raise ScopeActivationError(
+                f"Cannot deactivate {self.name!r}: scope is not active."
+            ) from None
+        if slots[1] > 0:
+            raise ScopeActivationError(
+                f"Cannot deactivate {self.name!r}: a scope requiring it is still active."
+            )
+        if isinstance(token, SharedToken):
+            token.var.clear()
+        else:
+            token.var.reset(token)
+        try:
+            stack = slots[0]
+            if stack is not UNSET:
+                await stack.aclose()
+        finally:
+            if activation.depends_on_active and self._requires is not None:
+                self._requires._var.get()[1] -= 1
