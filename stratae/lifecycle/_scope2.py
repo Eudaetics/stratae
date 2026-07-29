@@ -136,6 +136,18 @@ class BaseScope:
         """Whether this scope has a live activation in the calling context."""
         return self._var.get(UNSET) is not UNSET
 
+    def is_shared(self) -> bool:
+        """Whether this scope's activation holder is a SharedVar, needing lock-guarded access."""
+        return isinstance(self._var, SharedVar)
+
+    def activation_var(self) -> ScopeVar:
+        """
+        Return the scope's raw activation holder - a ContextVar or SharedVar.
+
+        :returns: The scope's `ContextVar`/`SharedVar`.
+        """
+        return self._var
+
     def get_slots(self) -> SlotStorage:
         """
         Get this scope's live slot storage for the current activation.
