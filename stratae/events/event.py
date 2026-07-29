@@ -55,6 +55,9 @@ from typing import Any, cast, get_args, get_origin
 
 _UNSUBSCRIPTED_REQUEST = "Request must be subscripted with its reply type (e.g. Request[BookFound])"
 _NOT_A_REQUEST = "event does not carry a subscripted Request discriminant"
+_NOT_A_DISPATCH_PATTERN = (
+    "pattern must be a DispatchPattern subclass (e.g. PubSub or Request[...]), got {!r}"
+)
 
 
 class DispatchPattern[EmitR, HandleR]:
@@ -86,9 +89,22 @@ class Request[Reply](DispatchPattern[Reply, Reply]):
     """
 
 
+def _is_dispatch_pattern(discriminant: object) -> bool:
+    """Return whether `discriminant` is a `DispatchPattern` subclass."""
+    return isinstance(discriminant, type) and issubclass(discriminant, DispatchPattern)
+
+
+def _is_unsubscripted_request(pattern: type[DispatchPattern[Any, Any]], origin: object) -> bool:
+    """Return whether `pattern` is the bare, unsubscripted `Request` (sub)class."""
+    return origin is None and issubclass(pattern, Request)
+
+
 def _validate_pattern(pattern: type[DispatchPattern[Any, Any]]):
-    """Raise `TypeError` if `pattern` is an unsubscripted `Request`."""
-    if get_origin(pattern) is None and issubclass(pattern, Request):
+    """Raise `TypeError` if `pattern` isn't a valid `DispatchPattern` subclass."""
+    origin = get_origin(pattern)
+    if not _is_dispatch_pattern(origin or pattern):
+        raise TypeError(_NOT_A_DISPATCH_PATTERN.format(pattern))
+    if _is_unsubscripted_request(pattern, origin):
         raise TypeError(_UNSUBSCRIPTED_REQUEST)
 
 

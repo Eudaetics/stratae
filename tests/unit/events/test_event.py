@@ -9,6 +9,7 @@ Event:
 - name accepts an explicit override.
 - Accepts a subscripted Request discriminant.
 - Raises TypeError for a bare Request discriminant.
+- Raises TypeError for a pattern that isn't a DispatchPattern subclass.
 
 PubSub:
 - Is a subclass of DispatchPattern.
@@ -132,6 +133,19 @@ def test_event_raises_for_bare_request() -> None:
     """
     with pytest.raises(TypeError):
         Event(Request, _FindBook)
+
+
+def test_event_raises_for_non_dispatch_pattern() -> None:
+    """
+    Test that Event rejects a pattern that isn't a DispatchPattern subclass.
+
+    Given: A schema class passed where the dispatch pattern belongs, as
+        would happen if a caller swapped the constructor's argument order
+    When: An Event is created with that class as its pattern
+    Then: A TypeError should be raised
+    """
+    with pytest.raises(TypeError):
+        Event(_FindBook, _BookFound)  #  pyright: ignore[reportArgumentType]
 
 
 def test_is_request_true_for_request_event() -> None:
