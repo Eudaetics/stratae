@@ -8,8 +8,9 @@ subclasses, differing only in which exit stack type they use.
 """
 
 from contextvars import ContextVar, Token
-from typing import get_args
+from typing import Callable, Hashable, get_args
 
+from stratae.lifecycle._decorators2 import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._scope import (
     UNSET,
     AsyncExitStack,
@@ -336,6 +337,32 @@ class Scope(BaseScope):
             if activation.depends_on_active and self._requires is not None:
                 self._requires._var.get()[1] -= 1
 
+    def cache(
+        self,
+        *,
+        cache_key: Callable[..., Hashable] | None = None,
+        ignore_params: bool = False,
+    ) -> CacheDecorator:
+        """
+        Create a decorator that caches a function's result within this scope.
+
+        A {py:func}`resource <stratae.lifecycle.resource.resource>`-tagged function is
+        entered automatically. Its yielded value is cached in place of the context manager
+        itself, and exited when this scope's activation ends.
+
+        :param cache_key: Callable deriving a hashable cache key from the decorated
+            function's arguments. When omitted, the key is the arguments themselves.
+            Mutually exclusive with `ignore_params`.
+        :param ignore_params: Cache a single value per scope activation regardless of
+            arguments, instead of keying by argument values. Mutually exclusive with
+            `cache_key`.
+        :returns: A decorator, applied to the function whose result should be cached.
+        :raises ValueError: If both `cache_key` and `ignore_params` are given.
+        """
+        if ignore_params and cache_key is not None:
+            raise ValueError("Cannot use both ignore_params and cache_key together.")
+        return CacheDecorator(self, cache_key, ignore_params)
+
 
 class AsyncScope(BaseScope):
     """An async-flavored scope - activated with `async with`, caches sync and async functions."""
@@ -411,3 +438,32 @@ class AsyncScope(BaseScope):
         finally:
             if activation.depends_on_active and self._requires is not None:
                 self._requires._var.get()[1] -= 1
+
+    def cache(
+        self,
+        *,
+        cache_key: Callable[..., Hashable] | None = None,
+        ignore_params: bool = False,
+    ) -> AsyncCacheDecorator:
+        """
+        Create a decorator that caches a function's result within this scope.
+
+        Accepts sync functions, async functions, and
+        {py:func}`resource <stratae.lifecycle.resource.resource>`/
+        {py:func}`async_resource <stratae.lifecycle.resource.async_resource>`-tagged
+        context managers of either flavor. A tagged function is entered automatically. Its
+        yielded value is cached in place of the context manager itself, and exited when
+        this scope's activation ends.
+
+        :param cache_key: Callable deriving a hashable cache key from the decorated
+            function's arguments. When omitted, the key is the arguments themselves.
+            Mutually exclusive with `ignore_params`.
+        :param ignore_params: Cache a single value per scope activation regardless of
+            arguments, instead of keying by argument values. Mutually exclusive with
+            `cache_key`.
+        :returns: A decorator, applied to the function whose result should be cached.
+        :raises ValueError: If both `cache_key` and `ignore_params` are given.
+        """
+        if ignore_params and cache_key is not None:
+            raise ValueError("Cannot use both ignore_params and cache_key together.")
+        return AsyncCacheDecorator(self, cache_key, ignore_params)
