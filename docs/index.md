@@ -1,6 +1,6 @@
 # Stratae
 
-A toolkit for Python 3.12+, not a framework: dependency injection, lifecycle-scoped caching/cleanup, and event handling. Each piece is simple enough to use alone, or compose them together to enable powerful features.
+A toolkit for Python 3.12+, not a framework: dependency injection, lifecycle-scoped caching/cleanup, and event handling. Each piece is simple enough to use alone, or compose them together to build features like A/B testing, feature flags, or multi-tenancy.
 
 ::::{container} hero-buttons
 
@@ -36,7 +36,7 @@ GitHub
 
 {octicon}`plug;1.2em` **Dependency Injection**
 ^^^
-Works like a normal Python function. No container to configure, no registration step. Swap a dependency out for tests without restructuring your code.
+Works like a normal Python function. No container to configure, no extra registration steps. Swap a dependency out for tests without restructuring your code.
 :::
 
 :::{grid-item-card}
@@ -44,7 +44,7 @@ Works like a normal Python function. No container to configure, no registration 
 
 {octicon}`sync;1.2em` **Lifecycle**
 ^^^
-Cache expensive calls and clean up resources automatically, scoped to blocks you define. You decide where a scope starts and ends; nothing gets inferred from global state or a request object.
+Cache expensive calls and clean up resources automatically, scoped to blocks you define. You decide where a scope starts and ends. Nothing gets inferred from global state or a request object.
 :::
 
 :::{grid-item-card}
@@ -60,7 +60,7 @@ Decouple your code with events, in-process by default. Both pub/sub and request/
 
 {octicon}`package;1.2em` **Zero Dependencies**
 ^^^
-Pure Python, no external packages. Nothing else gets added to your dependency tree along with Stratae, and the core modules don't depend on each other either. Dependency injection doesn't pull in lifecycle or events.
+Pure Python, no external packages. Nothing else gets added along with Stratae, and the core modules don't depend on each other either. Dependency injection doesn't pull in lifecycle or events.
 :::
 
 :::{grid-item-card}
@@ -76,7 +76,7 @@ No framework required. Every piece is a plain callable, so it drops into a scrip
 
 {octicon}`unlock;1.2em` **No Lock-In**
 ^^^
-There is no container or registry to stand up first. Add dependency injection, a cached scope, or an event to only where it is needed. Back out the same way by inlining or reverting to the previous design.
+There is no container to stand up first. Add dependency injection, a cached scope, or an event only where it is needed. Back out the same way by inlining or reverting to the previous design.
 :::
 
 ::::

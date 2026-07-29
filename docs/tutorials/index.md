@@ -14,11 +14,11 @@ serde
 integrations/index
 ```
 
-New to Stratae? See [Getting Started](getting-started) for installation, then the [Project Walkthrough](walkthrough) for a working example that grows from a simple script into one using each piece of Stratae.
+New to Stratae? See [Getting Started](getting-started) for installation and examples, then the [Project Walkthrough](walkthrough) for a working example that grows from a simple script into one using each piece of Stratae.
 
 ## The core
 
-[Dependency Injection](dependency-injection), [Lifecycle](lifecycle.md), and [Events](events.md) are fully independent. Read whichever one matches the problem you have. Each tutorial shows how it combines with the other two.
+[Dependency Injection](dependency-injection), [Lifecycle](lifecycle.md), and [Events](events.md) are the core elements and are fully independent. Read whichever one matches the problem you have. Each tutorial shows how it combines with the other two.
 
 ### Dependency Injection
 

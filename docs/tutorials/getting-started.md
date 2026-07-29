@@ -23,7 +23,7 @@ pip install stratae
 
 ## Example
 
-A connection's lifetime, the code that reads and writes, and whatever reacts to those reads and writes tend to get tangled together. Stratae helps keep them apart: Lifecycle owns the connection, Dependency Injection hands functions a cursor, and Events triggers and handles the actual reads and writes separately.
+The example below builds a small script that stores and lists users in a sqlite database, introducing Lifecycle, Dependency Injection, and Events in turn.
 
 ### Lifecycle
 
