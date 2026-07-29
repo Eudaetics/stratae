@@ -20,7 +20,11 @@ from stratae.lifecycle._scope import (
     SlotDict,
     SlotStorage,
 )
-from stratae.lifecycle.exceptions import LifecycleConfigurationError, ScopeActivationError
+from stratae.lifecycle.exceptions import (
+    LifecycleConfigurationError,
+    ScopeActivationError,
+    ScopeInactiveError,
+)
 from stratae.lifecycle.scope import IsolationType, StorageType
 
 
@@ -132,6 +136,63 @@ class BaseScope:
         """Whether this scope has a live activation in the calling context."""
         return self._var.get(UNSET) is not UNSET
 
+    def get_slots(self) -> SlotStorage:
+        """
+        Get this scope's live slot storage for the current activation.
+
+        :returns: The scope's live slot storage.
+        :raises ScopeInactiveError: If the scope has no active activation in the calling
+            context.
+        """
+        try:
+            return self._var.get()
+        except LookupError:
+            raise ScopeInactiveError(f"Scope {self.name!r} is not active.") from None
+
+    def exit_stack_type(self) -> type[ExitStack] | type[AsyncExitStack]:
+        """
+        Return this scope's exit stack type, for codegen that lazily initializes exit stacks.
+
+        :returns: `ExitStack` for a `Scope`, `AsyncExitStack` for an `AsyncScope`.
+        """
+        return self._exit_stack_cls
+
+    def allocate_slot(self) -> int:
+        """
+        Allocate a dedicated slot for a cached function - a value directly, or a dict entry.
+
+        Internal to the cache decorators; not meant to be called directly. Slots 0 and 1
+        are reserved (the exit stack and the live-dependent count), so the first allocated
+        slot is 2.
+
+        :returns: The allocated slot's index/key, to be passed to
+            {py:meth}`BaseScope.release_slot` once the owning wrapper is garbage collected.
+        """
+        if free := self._free_slots:
+            return free.pop()
+        if isinstance(self._template, SlotDict):
+            slot = self._counter
+            self._counter = slot + 1
+            return slot
+        self._template.append(UNSET)
+        active = self._var.get(UNSET)
+        if isinstance(active, list):
+            active.append(UNSET)
+        return len(self._template) - 1
+
+    def release_slot(self, slot: int) -> None:
+        """
+        Return a slot to the free pool once its owning cache wrapper is gone.
+
+        :param slot: The slot index/key returned by {py:meth}`BaseScope.allocate_slot`.
+        """
+        active = self._var.get(UNSET)
+        if isinstance(active, list):
+            active[slot] = UNSET
+        elif active is not UNSET:
+            active.pop(slot, None)
+        self._free_slots.append(slot)
+
 
 class Activation:
     """
@@ -206,6 +267,11 @@ class Scope(BaseScope):
             don't want the full chain active, e.g. testing this scope's own behavior in
             isolation. It does not make the requirement disappear: code that reaches into
             `requires` while it's genuinely inactive still fails there, same as always.
+            Dangerous: a force-activated activation is never counted as depending on
+            `requires`, even if `requires` becomes active later during this activation's
+            lifetime - `requires` can deactivate out from under it at any point, with no
+            protection, for this activation's entire life, not just at the moment of
+            activation.
         :returns: An `Activation` - enter it directly (`with scope.activate():`) or hold
             onto it and call {py:meth}`Scope.deactivate` manually, for split-callback
             lifecycles where activation and deactivation happen in different functions.
@@ -276,6 +342,11 @@ class AsyncScope(BaseScope):
             don't want the full chain active, e.g. testing this scope's own behavior in
             isolation. It does not make the requirement disappear: code that reaches into
             `requires` while it's genuinely inactive still fails there, same as always.
+            Dangerous: a force-activated activation is never counted as depending on
+            `requires`, even if `requires` becomes active later during this activation's
+            lifetime - `requires` can deactivate out from under it at any point, with no
+            protection, for this activation's entire life, not just at the moment of
+            activation.
         :returns: An `AsyncActivation` - enter it directly (`async with scope.activate():`)
             or hold onto it and call {py:meth}`AsyncScope.deactivate` manually, for
             split-callback lifecycles where activation and deactivation happen in
