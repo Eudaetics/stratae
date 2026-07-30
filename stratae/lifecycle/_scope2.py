@@ -139,13 +139,10 @@ class BaseScope:
         "_template",
         "_counter",
         "_free_slots",
-        "_activation_cls",
-        "_parent_sparse",
     )
 
     _exit_stack_cls: type[ExitStack] | type[AsyncExitStack]
-    _dense_activation_cls: Callable[..., Any]
-    _sparse_activation_cls: Callable[..., Any]
+    _activation_cls: Callable[..., Any]
     _isolation: IsolationType
     _storage: StorageType
     _requires: "BaseScope | None"
@@ -153,8 +150,6 @@ class BaseScope:
     _template: SlotStorage
     _counter: int
     _free_slots: list[int]
-    _activation_cls: Callable[..., Any]
-    _parent_sparse: bool
 
     def __init__(
         self,
@@ -193,14 +188,10 @@ class BaseScope:
         self._isolation = isolation
         self._storage = storage
         self._requires = requires
-        self._template = [UNSET, 0] if storage == "dense" else SlotDict()
+        self._template = [UNSET, 0] if storage == "dense" else SlotDict({1: 0})
         self._var = ContextVar(name) if isolation == "context" else SharedVar(name)
         self._counter = 2
         self._free_slots = []
-        self._parent_sparse = requires is not None and requires._storage == "sparse"
-        self._activation_cls = (
-            self._sparse_activation_cls if storage == "sparse" else self._dense_activation_cls
-        )
 
     @property
     def isolation(self) -> IsolationType:
@@ -293,11 +284,11 @@ class BaseScope:
 
 class Activation:
     """
-    The token a dense `Scope.activate()` returns - use as `with`, or pass to `deactivate()`.
+    The token `Scope.activate()` returns - use as `with`, or pass to `deactivate()`.
 
-    Returned by {py:meth}`Scope.activate`, not constructed directly. See
-    {py:class}`SparseActivation` for the sparse-storage counterpart, which differs only in
-    how it reads the live-dependent count.
+    Returned by {py:meth}`Scope.activate`, not constructed directly. Used for both dense
+    and sparse storage - slot 1 (the live-dependent count) is always present in either
+    case, so no separate sparse-storage variant is needed.
     """
 
     __slots__ = ("var", "token", "slots", "parent_slots")
@@ -326,7 +317,7 @@ class Activation:
         exc_type: type[Exception] | None,
         exc: Exception | None,
         tb: TracebackType | None,
-    ) -> None:
+    ) -> bool | None:
         """
         Deactivate the scope this token belongs to.
 
@@ -339,58 +330,23 @@ class Activation:
             )
         self.var.reset(self.token)
         parent_slots = self.parent_slots
-        if parent_slots is None:
+        try:
             stack = slots[0]
             if stack is not UNSET:
-                stack.close()
-        else:
-            try:
-                stack = slots[0]
-                if stack is not UNSET:
-                    stack.close()
-            finally:
-                parent_slots[1] -= 1
-
-
-class SparseActivation(Activation):
-    """The token a sparse `Scope.activate()` returns, reading slot 1 without materializing it."""
-
-    __slots__ = ()
-
-    def __exit__(
-        self,
-        exc_type: type[Exception] | None,
-        exc: Exception | None,
-        tb: TracebackType | None,
-    ) -> None:
-        """Deactivate the scope, treating an absent slot 1 as a count of zero."""
-        slots = self.slots
-        if 1 in slots and slots[1] > 0:
-            raise ScopeActivationError(
-                f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
-            )
-        self.var.reset(self.token)
-        parent_slots = self.parent_slots
-        if parent_slots is None:
-            stack = slots[0]
-            if stack is not UNSET:
-                stack.close()
-        else:
-            try:
-                stack = slots[0]
-                if stack is not UNSET:
-                    stack.close()
-            finally:
+                return stack.close(exc)
+            return None
+        finally:
+            if parent_slots is not None:
                 parent_slots[1] -= 1
 
 
 class AsyncActivation:
     """
-    The token a dense `AsyncScope.activate()` returns - `async with`, or to `deactivate()`.
+    The token `AsyncScope.activate()` returns - `async with`, or to `deactivate()`.
 
-    Returned by {py:meth}`AsyncScope.activate`, not constructed directly. See
-    {py:class}`AsyncSparseActivation` for the sparse-storage counterpart, which differs
-    only in how it reads the live-dependent count.
+    Returned by {py:meth}`AsyncScope.activate`, not constructed directly. Used for both
+    dense and sparse storage - slot 1 (the live-dependent count) is always present in
+    either case, so no separate sparse-storage variant is needed.
     """
 
     __slots__ = ("var", "token", "slots", "parent_slots")
@@ -419,7 +375,7 @@ class AsyncActivation:
         exc_type: type[Exception] | None,
         exc: Exception | None,
         tb: TracebackType | None,
-    ) -> None:
+    ) -> bool | None:
         """
         Deactivate the scope this token belongs to.
 
@@ -432,48 +388,13 @@ class AsyncActivation:
             )
         self.var.reset(self.token)
         parent_slots = self.parent_slots
-        if parent_slots is None:
+        try:
             stack = slots[0]
             if stack is not UNSET:
-                await stack.aclose()
-        else:
-            try:
-                stack = slots[0]
-                if stack is not UNSET:
-                    await stack.aclose()
-            finally:
-                parent_slots[1] -= 1
-
-
-class AsyncSparseActivation(AsyncActivation):
-    """The token a sparse `AsyncScope.activate()` returns, reading slot 1 without creating it."""
-
-    __slots__ = ()
-
-    async def __aexit__(
-        self,
-        exc_type: type[Exception] | None,
-        exc: Exception | None,
-        tb: TracebackType | None,
-    ) -> None:
-        """Deactivate the scope, treating an absent slot 1 as a count of zero."""
-        slots = self.slots
-        if 1 in slots and slots[1] > 0:
-            raise ScopeActivationError(
-                f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
-            )
-        self.var.reset(self.token)
-        parent_slots = self.parent_slots
-        if parent_slots is None:
-            stack = slots[0]
-            if stack is not UNSET:
-                await stack.aclose()
-        else:
-            try:
-                stack = slots[0]
-                if stack is not UNSET:
-                    await stack.aclose()
-            finally:
+                return await stack.aclose(exc)
+            return None
+        finally:
+            if parent_slots is not None:
                 parent_slots[1] -= 1
 
 
@@ -483,8 +404,7 @@ class Scope(BaseScope):
     __slots__ = ()
 
     _exit_stack_cls = ExitStack
-    _dense_activation_cls = Activation
-    _sparse_activation_cls = SparseActivation
+    _activation_cls = Activation
 
     def activate(self) -> Activation:
         """
@@ -496,22 +416,19 @@ class Scope(BaseScope):
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
         if requires := self._requires:
-            parent_slots = requires._var.get(UNSET)
-            if parent_slots is UNSET:
+            try:
+                parent_slots = requires._var.get()
+                parent_slots[1] += 1
+            except LookupError:
                 raise ScopeActivationError(
                     f"Cannot activate {self.name!r}: required scope "
                     f"{requires.name!r} is not active."
-                )
+                ) from LookupError
         else:
             parent_slots = None
         slots = self._template.copy()
         var = self._var
         token = var.set(slots)
-        if parent_slots is not None:
-            if self._parent_sparse and 1 not in parent_slots:
-                parent_slots[1] = 1
-            else:
-                parent_slots[1] += 1
         return self._activation_cls(var, token, slots, parent_slots)
 
     def deactivate(self, activation: Activation) -> None:
@@ -574,8 +491,7 @@ class AsyncScope(BaseScope):
     __slots__ = ()
 
     _exit_stack_cls = AsyncExitStack
-    _dense_activation_cls = AsyncActivation
-    _sparse_activation_cls = AsyncSparseActivation
+    _activation_cls = AsyncActivation
 
     def activate(self) -> AsyncActivation:
         """
@@ -587,24 +503,20 @@ class AsyncScope(BaseScope):
             different functions.
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        requires = self._requires
-        if requires is None:
-            parent_slots = None
-        else:
-            parent_slots = requires._var.get(UNSET)
-            if parent_slots is UNSET:
+        if requires := self._requires:
+            try:
+                parent_slots = requires._var.get()
+                parent_slots[1] += 1
+            except LookupError:
                 raise ScopeActivationError(
                     f"Cannot activate {self.name!r}: required scope "
                     f"{requires.name!r} is not active."
-                )
+                ) from LookupError
+        else:
+            parent_slots = None
         slots = self._template.copy()
         var = self._var
         token = var.set(slots)
-        if parent_slots is not None:
-            if self._parent_sparse and 1 not in parent_slots:
-                parent_slots[1] = 1
-            else:
-                parent_slots[1] += 1
         return self._activation_cls(var, token, slots, parent_slots)
 
     async def deactivate(self, activation: AsyncActivation) -> None:
