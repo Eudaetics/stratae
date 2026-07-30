@@ -7,7 +7,8 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.lifecycle import Lifecycle, Scope
-from stratae.lifecycle._scope import UNSET, ExitStack
+from stratae.lifecycle._scope import UNSET
+from stratae.lifecycle._stack import ExitStack
 
 
 def test_context_behavior():

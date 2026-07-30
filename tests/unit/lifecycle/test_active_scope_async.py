@@ -6,7 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.lifecycle import AsyncLifecycle, Scope
-from stratae.lifecycle._scope import AsyncExitStack
+from stratae.lifecycle._stack import AsyncExitStack
 
 
 async def test_context_behavior():

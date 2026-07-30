@@ -1,27 +1,107 @@
 """
-New scope classes - a parallel implementation, not yet wired into the rest of the package.
+Scope activation and per-scope function-result caching.
 
-`BaseScope` holds the state a scope owns directly: the `ContextVar`/`SharedVar` for its
-activation, the empty-slot template copied on activation, and the slot-allocation
-bookkeeping `cache()` will use. `Scope` and `AsyncScope` are the concrete, usable
-subclasses, differing only in which exit stack type they use.
+{py:class}`Scope` (sync) and {py:class}`AsyncScope` (async) hold the isolation, storage,
+and cached results for one scope. {py:meth}`Scope.activate` returns a context manager
+(`async with` for {py:class}`AsyncScope`) that activates the scope for its duration.
+`@scope.cache()` (via {py:meth}`Scope.cache`/{py:meth}`AsyncScope.cache`) decorates a
+function so its result is cached for the lifetime of that scope's active activation. A
+{py:func}`resource <stratae.lifecycle.resource.resource>`/
+{py:func}`async_resource <stratae.lifecycle.resource.async_resource>`-tagged function is
+entered automatically when cached. Its yielded value is cached in place of the context
+manager itself.
+
+Each scope chooses its own isolation and storage independently. `isolation="shared"`
+uses one cache visible to every thread and task while the scope is active. Use it for
+application-wide state like a connection pool. `isolation="context"` (the default)
+isolates the cache per execution context through a `contextvars.ContextVar`. Use it for
+request- or session-scoped state. `storage="dense"` (the default) indexes slots directly
+by position. `storage="sparse"` allocates slots lazily. Use sparse storage for a scope
+that registers many functions but touches only a handful per activation.
+
+A scope can declare another scope as a parent with `requires`. {py:meth}`Scope.activate`
+raises immediately unless that scope is already active.
+
+````{example} Three scope tiers working together: application, request, and block
+```{code-block} python
+import asyncio
+from itertools import count
+from stratae.lifecycle._scope2 import AsyncScope
+
+application = AsyncScope("application", isolation="shared")
+request = AsyncScope("request", storage="sparse", requires=application)
+block = AsyncScope("block")
+
+class ConnectionPool:
+    def __init__(self):
+        print("Opening connection pool")
+
+@application.cache()
+async def get_pool() -> ConnectionPool:
+    return ConnectionPool()
+
+_next_request_id = count(1)
+
+@request.cache()
+async def get_request_id() -> int:
+    return next(_next_request_id)
+
+_next_block_id = count(1)
+
+@block.cache()
+async def get_block_id() -> int:
+    return next(_next_block_id)
+
+async def process_order(order_id: int) -> None:
+    async with block.activate():
+        await get_pool()
+        req_id, block_id = await get_request_id(), await get_block_id()
+        print(f"request {req_id} block {block_id}: processing {order_id}")
+
+async def log_audit(order_id: int) -> None:
+    async with block.activate():
+        await get_pool()
+        req_id, block_id = await get_request_id(), await get_block_id()
+        print(f"request {req_id} block {block_id}: logging {order_id}")
+
+async def handle_order(order_id: int) -> None:
+    async with request.activate():
+        req_id = await get_request_id()
+        print(f"request {req_id}: handling {order_id}")
+        await asyncio.gather(process_order(order_id), log_audit(order_id))
+
+async def main() -> None:
+    async with application.activate():
+        # Activating a scope doesn't eagerly cache anything. get_pool() runs
+        # on its first real call, inside process_order below.
+        await handle_order(101)
+        await handle_order(102)
+
+asyncio.run(main())
+```
+```{output}
+request 1: handling 101
+Opening connection pool
+request 1 block 1: processing 101
+request 1 block 2: logging 101
+request 2: handling 102
+request 2 block 3: processing 102
+request 2 block 4: logging 102
+```
+````
+
+See {py:class}`BaseScope`, {py:class}`Scope`, and {py:class}`AsyncScope` for the rest of
+the module's API.
 """
 
+import threading
 from contextvars import ContextVar
 from types import TracebackType
 from typing import Any, Callable, Hashable, get_args
 
+from stratae.lifecycle._async_lock import AsyncRLock
 from stratae.lifecycle._decorators2 import AsyncCacheDecorator, CacheDecorator
-from stratae.lifecycle._scope import (
-    UNSET,
-    AsyncExitStack,
-    ExitStack,
-    ScopeVar,
-    SharedToken,
-    SharedVar,
-    SlotDict,
-    SlotStorage,
-)
+from stratae.lifecycle._stack import AsyncExitStack, ExitStack
 from stratae.lifecycle.exceptions import (
     LifecycleConfigurationError,
     ScopeActivationError,
@@ -29,26 +109,66 @@ from stratae.lifecycle.exceptions import (
 )
 from stratae.lifecycle.scope import IsolationType, StorageType
 
+UNSET: Any = object()
+_MISSING: Any = object()
 
-class SharedVar2(SharedVar):
-    """
-    A SharedVar that rejects re-entrant activation and stale-token deactivation.
 
-    The base SharedVar always returns the same reused token from set(), and reset()
-    unconditionally clears storage regardless of which token is passed - fine for the old
-    Lifecycle, which never calls reset() on a SharedToken (it always calls clear()
-    directly). This subclass mints a genuinely distinct token per activation and
-    validates it in reset(), so activate()/deactivate() can detect re-entrant activation
-    and stale/mismatched deactivation instead of silently corrupting a concurrent
-    activation's state - and it lets deactivate() call reset(token) uniformly for both
-    var flavors, without an isinstance check, the same way ContextVar already behaves.
-    """
+class SlotDict(dict[int, Any]):
+    """Dict-backed slot storage - missing slots read as UNSET without inserting them."""
 
-    __slots__ = ("_current_token",)
+    __slots__ = ()
+
+    def __missing__(self, key: int) -> Any:
+        """Return UNSET for a slot that was never written, without inserting it."""
+        return UNSET
+
+    def copy(self) -> "SlotDict":
+        """Return a shallow copy, preserving the `__missing__` behavior."""
+        return SlotDict(self)
+
+
+class SharedToken:
+    """Activation token for a shared scope, mirroring contextvars.Token's .var backref."""
+
+    __slots__ = ("var",)
+
+    var: "SharedVar"
+
+    def __init__(self, var: "SharedVar") -> None:
+        self.var = var
+
+
+SlotStorage = list[Any] | SlotDict
+
+
+class SharedVar:
+    """A SharedVar that rejects re-entrant activation and stale-token deactivation."""
+
+    __slots__ = (
+        "name",
+        "storage",
+        "_token",
+        "lock",
+        "async_lock",
+        "_current_token",
+    )
 
     def __init__(self, name: str) -> None:
-        super().__init__(name)
+        self.name = name
+        self.storage: SlotStorage = UNSET
+        self._token = SharedToken(self)
+        self.lock = threading.RLock()
+        self.async_lock = AsyncRLock()
         self._current_token: SharedToken | None = None
+
+    def get(self, default: Any = _MISSING) -> SlotStorage:
+        """Return the live storage, or default when inactive, else raise LookupError."""
+        value = self.storage
+        if value is not UNSET:
+            return value
+        if default is _MISSING:
+            raise LookupError(self.name)
+        return default
 
     def set(self, value: SlotStorage) -> SharedToken:
         """Activate the scope, raising if it's already active."""
@@ -72,18 +192,28 @@ class SharedVar2(SharedVar):
         self._current_token = None
 
 
+ScopeVar = ContextVar[SlotStorage] | SharedVar
+
+
+def _validate_types(name: str, isolation: IsolationType, storage: StorageType) -> None:
+    if isolation not in frozenset(get_args(IsolationType)):
+        raise LifecycleConfigurationError(f"Invalid scope isolation given for {name}.")
+    if storage not in frozenset(get_args(StorageType)):
+        raise LifecycleConfigurationError(f"Invalid scope storage given for {name}.")
+
+
+def _validate_requires(name: str, isolation: IsolationType, requires: "BaseScope | None") -> None:
+    if requires and isolation == "shared" and requires.isolation == "context":
+        raise LifecycleConfigurationError(
+            f"Shared scope {name!r} cannot require context-isolated scope {requires.name!r}."
+        )
+
+
 class BaseScope:
     """
     Shared state and validation behind Scope and AsyncScope.
 
     See {py:class}`Scope` and {py:class}`AsyncScope` for the concrete, usable classes.
-
-    Storage defaults to dense. Below ~50 registered functions, dense wins outright
-    regardless of touched count - allocating a dict already costs more than copying the
-    whole list. Above that, it's the touched/registered ratio that decides: dense and
-    sparse roughly break even around 1-4% touched (2% at 1,000 registered / 20 touched),
-    sparse pulling ahead below it (~4x faster at 1,000 registered / 0 touched) and dense
-    pulling ahead above it (~1.5x faster at 1,000 registered / 90 touched).
     """
 
     __slots__ = (
@@ -125,45 +255,32 @@ class BaseScope:
         :param name: Identifier for the scope (e.g. `"request"`, `"application"`). Must
             be a valid Python identifier.
         :param isolation: Cache isolation strategy for this scope, one of the
-            {py:data}`IsolationType` values. `"shared"` uses a single cache visible to all
-            concurrent tasks/threads while the scope is active, regardless of execution
-            context - suitable for application-wide state such as database pools.
-            `"context"` (the default) isolates the cache per execution context, backed by
-            a `contextvars.ContextVar`, so concurrent contexts (e.g. concurrent requests)
-            each see their own cache - suitable for request- or session-scoped state.
+            {py:data}`IsolationType` values. `"shared"` uses a single cache visible to
+            every concurrent task/thread while the scope is active. `"context"` (the
+            default) isolates the cache per execution context, backed by a
+            `contextvars.ContextVar`.
         :param storage: Slot storage strategy for this scope's cached values, one of the
             {py:data}`StorageType` values. `"dense"` (the default) indexes slots directly
-            by position - the cheapest per-access cost, but every activation pays to
-            copy/reset the full slot list, so it fits scopes with few registered
-            functions or where most of them get used per activation. `"sparse"` allocates
-            slots lazily and resets in O(touched) rather than O(registered) - the fit for
-            scopes registering many functions where a given activation only touches a
-            handful, e.g. a large API's per-resource caches.
+            by position. `"sparse"` allocates slots lazily.
         :param requires: The scope that must be active before this one can activate, or
-            `None` for a scope with no such requirement. A `"shared"` scope may only
-            require another `"shared"` scope, since a `"context"` scope's activity is
-            per-execution-context and there's no single answer to "is it active" that
-            would hold for every context concurrently sharing the requiring scope.
+            `None` for no such requirement. A `"shared"` scope cannot require a
+            `"context"`-isolated scope: a context scope's activity is per-execution-context,
+            so there's no single active/inactive answer for a shared scope's concurrent
+            callers to all rely on.
         :raises LifecycleConfigurationError: If `isolation`/`storage` is not one of their
             allowed values, or this scope is `"shared"` while `requires` is a
             `"context"`-isolated scope.
 
         """
-        if isolation not in frozenset(get_args(IsolationType)):
-            raise LifecycleConfigurationError(f"Invalid scope isolation given for {name}.")
-        if storage not in frozenset(get_args(StorageType)):
-            raise LifecycleConfigurationError(f"Invalid scope storage given for {name}.")
-        if requires is not None and isolation == "shared" and requires.isolation == "context":
-            raise LifecycleConfigurationError(
-                f"Shared scope {name!r} cannot require context-isolated scope {requires.name!r}."
-            )
+        _validate_types(name, isolation, storage)
+        _validate_requires(name, isolation, requires)
 
         self.name = name
         self._isolation = isolation
         self._storage = storage
         self._requires = requires
         self._template = [UNSET, 0] if storage == "dense" else SlotDict()
-        self._var = ContextVar(name) if isolation == "context" else SharedVar2(name)
+        self._var = ContextVar(name) if isolation == "context" else SharedVar(name)
         self._counter = 2
         self._free_slots = []
         self._parent_sparse = requires is not None and requires._storage == "sparse"
@@ -272,15 +389,7 @@ class Activation:
     __slots__ = ("var", "token", "slots", "parent_slots")
 
     slots: Any
-    """
-    The activation's live slot storage, declared `Any` rather than `SlotStorage`.
-
-    Every subclass reads slot 1 the way its own storage flavor reads cheapest - a list
-    subscript here, a `dict.get` in {py:class}`SparseActivation` - and a union-typed
-    attribute would force a narrowing call at each read to satisfy the checker. The
-    storage flavor is fixed when the owning scope picks the activation class, so the
-    narrowing would never actually be deciding anything at runtime.
-    """
+    """The activation's live slot storage, declared `Any` rather than `SlotStorage`."""
 
     def __init__(
         self,
@@ -307,21 +416,7 @@ class Activation:
         """
         Deactivate the scope this token belongs to.
 
-        The only copy of the sync deactivation logic - `Scope.deactivate` delegates here
-        rather than inlining its own, so the guard lives in one place per storage flavor
-        instead of being duplicated across both entry points. `parent_slots` was already
-        resolved in `activate()` (legitimate there - it's a BaseScope method touching
-        another BaseScope's state), so this never needs to reach across into the parent
-        scope itself. `parent_slots is None` skips the `try`/`finally` entirely - it exists
-        only to guarantee the decrement runs even if `stack.close()` raises, so it's pure
-        overhead for a scope nothing requires.
-
-        The three exception arguments are named rather than collected with `*exc_info`:
-        `with` passes them positionally, so named parameters land straight in the frame's
-        locals, where varargs would build a throwaway tuple on every deactivation. The
-        scope's var is held directly rather than reached through `token.var`, which is a
-        descriptor call on a real `contextvars.Token`, and the name for the error message
-        comes off the var instead of costing a slot for a backref to the scope.
+        :raises ScopeActivationError: If a scope requiring this one is still active.
         """
         slots = self.slots
         if slots[1] > 0:
@@ -344,23 +439,7 @@ class Activation:
 
 
 class SparseActivation(Activation):
-    """
-    The token a sparse `Scope.activate()` returns, reading slot 1 without materializing it.
-
-    A sparse scope's template is an empty `SlotDict`, so an activation nothing depends on
-    never allocates a hash table at all - the property that makes sparse storage worth
-    choosing. Reserving slot 1 for the live-dependent count in the template would undo
-    that, charging every activation of every sparse scope a table allocation and an insert
-    for a counter most of them never use. So the count is written only when a requiring
-    scope actually activates, and read here as `1 in slots and slots[1]` - a `__contains__`
-    check does not route an absent key through `SlotDict.__missing__`, and it short-circuits
-    before the subscript on the overwhelmingly common no-dependents path.
-
-    Not `dict.get`. Measured on this benchmark, `get` is slower than both a bare subscript
-    and a membership test followed by one, enough to swamp what avoiding `__missing__`
-    saves. Slot 0 is left as a plain `slots[0]` for the same reason: it is present whenever
-    the activation entered a resource, so a `get` there is pure loss.
-    """
+    """The token a sparse `Scope.activate()` returns, reading slot 1 without materializing it."""
 
     __slots__ = ()
 
@@ -403,11 +482,7 @@ class AsyncActivation:
     __slots__ = ("var", "token", "slots", "parent_slots")
 
     slots: Any
-    """
-    The activation's live slot storage, declared `Any` rather than `SlotStorage`.
-
-    See {py:attr}`Activation.slots` - same reasoning, same trade.
-    """
+    """The activation's live slot storage, declared `Any` rather than `SlotStorage`."""
 
     def __init__(
         self,
@@ -434,21 +509,7 @@ class AsyncActivation:
         """
         Deactivate the scope this token belongs to.
 
-        The only copy of the async deactivation logic - `AsyncScope.deactivate` delegates
-        here rather than inlining its own, so the guard lives in one place per storage
-        flavor instead of being duplicated across both entry points. `parent_slots` was
-        already resolved in `activate()` (legitimate there - it's a BaseScope method
-        touching another BaseScope's state), so this never needs to reach across into the
-        parent scope itself. `parent_slots is None` skips the `try`/`finally` entirely - it
-        exists only to guarantee the decrement runs even if `stack.aclose()` raises, so
-        it's pure overhead for a scope nothing requires.
-
-        The three exception arguments are named rather than collected with `*exc_info`:
-        `async with` passes them positionally, so named parameters land straight in the
-        frame's locals, where varargs would build a throwaway tuple on every deactivation.
-        The scope's var is held directly rather than reached through `token.var`, which is
-        a descriptor call on a real `contextvars.Token`, and the name for the error message
-        comes off the var instead of costing a slot for a backref to the scope.
+        :raises ScopeActivationError: If a scope requiring this one is still active.
         """
         slots = self.slots
         if slots[1] > 0:
@@ -471,12 +532,7 @@ class AsyncActivation:
 
 
 class AsyncSparseActivation(AsyncActivation):
-    """
-    The token a sparse `AsyncScope.activate()` returns, reading slot 1 without creating it.
-
-    See {py:class}`SparseActivation` for why the live-dependent count is absent from a
-    sparse scope's template and read with `dict.get` here.
-    """
+    """The token a sparse `AsyncScope.activate()` returns, reading slot 1 without creating it."""
 
     __slots__ = ()
 
@@ -520,17 +576,9 @@ class Scope(BaseScope):
         """
         Activate this scope, returning a token usable as `with` or passed to `deactivate()`.
 
-        :param force: Skip the check that `requires` (if set) is currently active. The
-            check exists to fail at the point of misuse rather than later, wherever the
-            missing scope actually gets touched - `force` is for cases that legitimately
-            don't want the full chain active, e.g. testing this scope's own behavior in
-            isolation. It does not make the requirement disappear: code that reaches into
-            `requires` while it's genuinely inactive still fails there, same as always.
-            Dangerous: a force-activated activation is never counted as depending on
-            `requires`, even if `requires` becomes active later during this activation's
-            lifetime - `requires` can deactivate out from under it at any point, with no
-            protection, for this activation's entire life, not just at the moment of
-            activation.
+        :param force: Activate even if the parent scope `requires` isn't currently active,
+            instead of raising `ScopeActivationError`. Note that trying to access any
+            function cached in the parent will still raise.
         :returns: An `Activation` - enter it directly (`with scope.activate():`) or hold
             onto it and call {py:meth}`Scope.deactivate` manually, for split-callback
             lifecycles where activation and deactivation happen in different functions.
@@ -562,12 +610,6 @@ class Scope(BaseScope):
         """
         Deactivate the scope activation identified by the given token.
 
-        Delegates to the activation's own `__exit__` rather than keeping a second copy of
-        the deactivation logic: the guard on slot 1 differs between dense and sparse
-        storage, and duplicating it here would mean four copies to keep in step instead of
-        two. The extra call costs a frame, which this split-callback path can afford in a
-        way the `with` path could not.
-
         :param activation: The `Activation` returned by the matching
             {py:meth}`Scope.activate` call.
         :raises ScopeActivationError: If the scope is not currently active, or a scope
@@ -587,6 +629,22 @@ class Scope(BaseScope):
         A {py:func}`resource <stratae.lifecycle.resource.resource>`-tagged function is
         entered automatically. Its yielded value is cached in place of the context manager
         itself, and exited when this scope's activation ends.
+
+        ```{note}
+        Cache keying behaves like `functools.lru_cache`: unless `ignore_params` is set, a
+        function that takes parameters gets one cached value per distinct set of arguments (or
+        per `cache_key` result), not one cached value for the whole scope activation. Calling it
+        again with different arguments computes and caches a separate value rather than reusing
+        the first one. A function that takes no parameters has only one possible argument set,
+        so it always uses the same fast slot path as `ignore_params=True`.
+        ```
+
+        ```{tip}
+        If you know a function's result won't actually vary within a scope activation, even
+        though it still accepts parameters, pass `ignore_params=True`. That caches the value
+        directly in the function's slot instead of a keyed dict, trading per-argument caching
+        for a single, faster slot lookup.
+        ```
 
         :param cache_key: Callable deriving a hashable cache key from the decorated
             function's arguments. When omitted, the key is the arguments themselves.
@@ -615,17 +673,9 @@ class AsyncScope(BaseScope):
         """
         Activate this scope, returning a token usable as `async with` or passed to `deactivate()`.
 
-        :param force: Skip the check that `requires` (if set) is currently active. The
-            check exists to fail at the point of misuse rather than later, wherever the
-            missing scope actually gets touched - `force` is for cases that legitimately
-            don't want the full chain active, e.g. testing this scope's own behavior in
-            isolation. It does not make the requirement disappear: code that reaches into
-            `requires` while it's genuinely inactive still fails there, same as always.
-            Dangerous: a force-activated activation is never counted as depending on
-            `requires`, even if `requires` becomes active later during this activation's
-            lifetime - `requires` can deactivate out from under it at any point, with no
-            protection, for this activation's entire life, not just at the moment of
-            activation.
+        :param force: Activate even if `requires` isn't currently active, instead of
+            raising `ScopeActivationError`. The activation isn't linked to `requires`, so
+            deactivating `requires` later won't be blocked by it.
         :returns: An `AsyncActivation` - enter it directly (`async with scope.activate():`)
             or hold onto it and call {py:meth}`AsyncScope.deactivate` manually, for
             split-callback lifecycles where activation and deactivation happen in
@@ -657,12 +707,6 @@ class AsyncScope(BaseScope):
     async def deactivate(self, activation: AsyncActivation) -> None:
         """
         Deactivate the scope activation identified by the given token.
-
-        Delegates to the activation's own `__aexit__` rather than keeping a second copy of
-        the deactivation logic: the guard on slot 1 differs between dense and sparse
-        storage, and duplicating it here would mean four copies to keep in step instead of
-        two. The extra call costs a frame, which this split-callback path can afford in a
-        way the `async with` path could not.
 
         :param activation: The `AsyncActivation` returned by the matching
             {py:meth}`AsyncScope.activate` call.

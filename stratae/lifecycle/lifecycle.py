@@ -112,13 +112,12 @@ from stratae.lifecycle._context import AsyncLifecycleContext, LifecycleContext
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._scope import (
     UNSET,
-    AsyncExitStack,
-    ExitStack,
     SharedToken,
     SlotDict,
     SlotStorage,
     build_lifecycle_state,
 )
+from stratae.lifecycle._stack import AsyncExitStack, ExitStack
 from stratae.lifecycle._validation import validate_config
 from stratae.lifecycle.exceptions import (
     ScopeActivationError,
