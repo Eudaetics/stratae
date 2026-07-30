@@ -1,10 +1,6 @@
 """
 Wrappers for scope-managed functions and context managers - a parallel implementation.
 
-Adapted from `_wrappers.py`, binding a `Scope`/`AsyncScope` object directly instead of a
-`(lifecycle, scope_name)` pair - no name-keyed lookup, since the scope object already
-carries everything the wrapper needs.
-
 Wrapper bodies are generated as source text and compiled rather than written as a
 generic ``*args/**kwargs`` shim, so the compiled wrapper's signature and defaults
 exactly match the original callable's, and so a cache hit costs one slot read

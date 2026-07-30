@@ -47,7 +47,7 @@ def _is_auto_async_cm[**P, T, U](
     return getattr(unwrap(f), "__auto_enter__", None) == AUTO_ENTER_ASYNC
 
 
-def _claim_for_cache(func: Callable[..., Any], scope: "BaseScope") -> None:
+def _mark_as_scoped(func: Callable[..., Any], scope: "BaseScope") -> None:
     """
     Mark func's underlying identity as cached in scope, raising if it's already claimed.
 
@@ -128,7 +128,7 @@ class CacheDecorator:
             LifecycleConfigurationError: If `func` is already cached in some scope.
 
         """
-        _claim_for_cache(func, self._scope)
+        _mark_as_scoped(func, self._scope)
 
         def add_scope_to_func(
             f: Callable[P, T | AbstractContextManager[T]],
@@ -217,7 +217,7 @@ class AsyncCacheDecorator:
             LifecycleConfigurationError: If `func` is already cached in some scope.
 
         """
-        _claim_for_cache(func, self._scope)
+        _mark_as_scoped(func, self._scope)
 
         def add_scope_to_func(
             f: Callable[
