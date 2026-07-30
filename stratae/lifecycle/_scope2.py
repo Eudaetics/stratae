@@ -8,6 +8,7 @@ subclasses, differing only in which exit stack type they use.
 """
 
 from contextvars import ContextVar
+from types import TracebackType
 from typing import Any, Callable, Hashable, get_args
 
 from stratae.lifecycle._decorators2 import AsyncCacheDecorator, CacheDecorator
@@ -256,16 +257,16 @@ class Activation:
     Returned by {py:meth}`Scope.activate`, not constructed directly.
     """
 
-    __slots__ = ("_scope", "token", "slots", "parent_slots")
+    __slots__ = ("var", "token", "slots", "parent_slots")
 
     def __init__(
         self,
-        scope: "Scope",
+        var: ScopeVar,
         token: Any,
         slots: SlotStorage,
         parent_slots: SlotStorage | None,
     ) -> None:
-        self._scope = scope
+        self.var = var
         self.token = token
         self.slots = slots
         self.parent_slots = parent_slots
@@ -274,7 +275,12 @@ class Activation:
         """Return self - the scope was already activated by `activate()`."""
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[Exception] | None,
+        exc: Exception | None,
+        tb: TracebackType | None,
+    ) -> None:
         """
         Deactivate the scope this token belongs to.
 
@@ -286,14 +292,20 @@ class Activation:
         needs to reach across into the parent scope itself. `parent_slots is None` skips the
         `try`/`finally` entirely - it exists only to guarantee the decrement runs even if
         `stack.close()` raises, so it's pure overhead for a scope nothing requires.
+
+        The three exception arguments are named rather than collected with `*exc_info`:
+        `with` passes them positionally, so named parameters land straight in the frame's
+        locals, where varargs would build a throwaway tuple on every deactivation. The
+        scope's var is held directly rather than reached through `token.var`, which is a
+        descriptor call on a real `contextvars.Token`, and the name for the error message
+        comes off the var instead of costing a slot for a backref to the scope.
         """
         slots = self.slots
         if slots[1] > 0:
             raise ScopeActivationError(
-                f"Cannot deactivate {self._scope.name!r}: a scope requiring it is still active."
+                f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
             )
-        token = self.token
-        token.var.reset(token)
+        self.var.reset(self.token)
         parent_slots = self.parent_slots
         if parent_slots is None:
             stack = slots[0]
@@ -315,16 +327,16 @@ class AsyncActivation:
     Returned by {py:meth}`AsyncScope.activate`, not constructed directly.
     """
 
-    __slots__ = ("_scope", "token", "slots", "parent_slots")
+    __slots__ = ("var", "token", "slots", "parent_slots")
 
     def __init__(
         self,
-        scope: "AsyncScope",
+        var: ScopeVar,
         token: Any,
         slots: SlotStorage,
         parent_slots: SlotStorage | None,
     ) -> None:
-        self._scope = scope
+        self.var = var
         self.token = token
         self.slots = slots
         self.parent_slots = parent_slots
@@ -333,7 +345,12 @@ class AsyncActivation:
         """Return self - the scope was already activated by `activate()`."""
         return self
 
-    async def __aexit__(self, *exc_info: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[Exception] | None,
+        exc: Exception | None,
+        tb: TracebackType | None,
+    ) -> None:
         """
         Deactivate the scope this token belongs to.
 
@@ -346,14 +363,20 @@ class AsyncActivation:
         None` skips the `try`/`finally` entirely - it exists only to guarantee the
         decrement runs even if `stack.aclose()` raises, so it's pure overhead for a scope
         nothing requires.
+
+        The three exception arguments are named rather than collected with `*exc_info`:
+        `async with` passes them positionally, so named parameters land straight in the
+        frame's locals, where varargs would build a throwaway tuple on every deactivation.
+        The scope's var is held directly rather than reached through `token.var`, which is
+        a descriptor call on a real `contextvars.Token`, and the name for the error message
+        comes off the var instead of costing a slot for a backref to the scope.
         """
         slots = self.slots
         if slots[1] > 0:
             raise ScopeActivationError(
-                f"Cannot deactivate {self._scope.name!r}: a scope requiring it is still active."
+                f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
             )
-        token = self.token
-        token.var.reset(token)
+        self.var.reset(self.token)
         parent_slots = self.parent_slots
         if parent_slots is None:
             stack = slots[0]
@@ -397,19 +420,22 @@ class Scope(BaseScope):
             not given.
         """
         parent_slots = None
-        if self._requires is not None:
-            if self._requires.is_active():
-                parent_slots = self._requires._var.get()
-            elif not force:
-                raise ScopeActivationError(
-                    f"Cannot activate {self.name!r}: required scope "
-                    f"{self._requires.name!r} is not active."
-                )
+        requires = self._requires
+        if requires is not None:
+            parent_slots = requires._var.get(UNSET)
+            if parent_slots is UNSET:
+                parent_slots = None
+                if not force:
+                    raise ScopeActivationError(
+                        f"Cannot activate {self.name!r}: required scope "
+                        f"{requires.name!r} is not active."
+                    )
         slots = self._template.copy()
-        token = self._var.set(slots)
+        var = self._var
+        token = var.set(slots)
         if parent_slots is not None:
             parent_slots[1] += 1
-        return Activation(self, token, slots, parent_slots)
+        return Activation(var, token, slots, parent_slots)
 
     def deactivate(self, activation: Activation) -> None:
         """
@@ -425,8 +451,7 @@ class Scope(BaseScope):
             raise ScopeActivationError(
                 f"Cannot deactivate {self.name!r}: a scope requiring it is still active."
             )
-        token = activation.token
-        token.var.reset(token)
+        activation.var.reset(activation.token)
         parent_slots = activation.parent_slots
         if parent_slots is None:
             stack = slots[0]
@@ -497,19 +522,22 @@ class AsyncScope(BaseScope):
             not given.
         """
         parent_slots = None
-        if self._requires is not None:
-            if self._requires.is_active():
-                parent_slots = self._requires._var.get()
-            elif not force:
-                raise ScopeActivationError(
-                    f"Cannot activate {self.name!r}: required scope "
-                    f"{self._requires.name!r} is not active."
-                )
+        requires = self._requires
+        if requires is not None:
+            parent_slots = requires._var.get(UNSET)
+            if parent_slots is UNSET:
+                parent_slots = None
+                if not force:
+                    raise ScopeActivationError(
+                        f"Cannot activate {self.name!r}: required scope "
+                        f"{requires.name!r} is not active."
+                    )
         slots = self._template.copy()
-        token = self._var.set(slots)
+        var = self._var
+        token = var.set(slots)
         if parent_slots is not None:
             parent_slots[1] += 1
-        return AsyncActivation(self, token, slots, parent_slots)
+        return AsyncActivation(var, token, slots, parent_slots)
 
     async def deactivate(self, activation: AsyncActivation) -> None:
         """
@@ -525,8 +553,7 @@ class AsyncScope(BaseScope):
             raise ScopeActivationError(
                 f"Cannot deactivate {self.name!r}: a scope requiring it is still active."
             )
-        token = activation.token
-        token.var.reset(token)
+        activation.var.reset(activation.token)
         parent_slots = activation.parent_slots
         if parent_slots is None:
             stack = slots[0]
