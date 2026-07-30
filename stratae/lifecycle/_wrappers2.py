@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Hash
 
 from stratae.codegen import Writer, render_parameters
 from stratae.codegen.util import wrapper_filename
-from stratae.lifecycle._scope import UNSET, SharedVar
+from stratae.lifecycle._slots import UNSET, SharedVar
 
 if TYPE_CHECKING:
     from stratae.lifecycle._scope2 import AsyncScope, BaseScope, Scope

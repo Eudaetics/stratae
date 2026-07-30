@@ -94,13 +94,12 @@ See {py:class}`BaseScope`, {py:class}`Scope`, and {py:class}`AsyncScope` for the
 the module's API.
 """
 
-import threading
 from contextvars import ContextVar
 from types import TracebackType
 from typing import Any, Callable, Hashable, get_args
 
-from stratae.lifecycle._async_lock import AsyncRLock
 from stratae.lifecycle._decorators2 import AsyncCacheDecorator, CacheDecorator
+from stratae.lifecycle._slots import UNSET, ScopeVar, SharedVar, SlotDict, SlotStorage
 from stratae.lifecycle._stack import AsyncExitStack, ExitStack
 from stratae.lifecycle.exceptions import (
     LifecycleConfigurationError,
@@ -108,91 +107,6 @@ from stratae.lifecycle.exceptions import (
     ScopeInactiveError,
 )
 from stratae.lifecycle.scope import IsolationType, StorageType
-
-UNSET: Any = object()
-_MISSING: Any = object()
-
-
-class SlotDict(dict[int, Any]):
-    """Dict-backed slot storage - missing slots read as UNSET without inserting them."""
-
-    __slots__ = ()
-
-    def __missing__(self, key: int) -> Any:
-        """Return UNSET for a slot that was never written, without inserting it."""
-        return UNSET
-
-    def copy(self) -> "SlotDict":
-        """Return a shallow copy, preserving the `__missing__` behavior."""
-        return SlotDict(self)
-
-
-class SharedToken:
-    """Activation token for a shared scope, mirroring contextvars.Token's .var backref."""
-
-    __slots__ = ("var",)
-
-    var: "SharedVar"
-
-    def __init__(self, var: "SharedVar") -> None:
-        self.var = var
-
-
-SlotStorage = list[Any] | SlotDict
-
-
-class SharedVar:
-    """A SharedVar that rejects re-entrant activation and stale-token deactivation."""
-
-    __slots__ = (
-        "name",
-        "storage",
-        "_token",
-        "lock",
-        "async_lock",
-        "_current_token",
-    )
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-        self.storage: SlotStorage = UNSET
-        self._token = SharedToken(self)
-        self.lock = threading.RLock()
-        self.async_lock = AsyncRLock()
-        self._current_token: SharedToken | None = None
-
-    def get(self, default: Any = _MISSING) -> SlotStorage:
-        """Return the live storage, or default when inactive, else raise LookupError."""
-        value = self.storage
-        if value is not UNSET:
-            return value
-        if default is _MISSING:
-            raise LookupError(self.name)
-        return default
-
-    def set(self, value: SlotStorage) -> SharedToken:
-        """Activate the scope, raising if it's already active."""
-        if self.storage is not UNSET:
-            raise ScopeActivationError(
-                f"Cannot activate shared scope {self.name!r}: already active."
-            )
-        token = SharedToken(self)
-        self.storage = value
-        self._current_token = token
-        return token
-
-    def reset(self, token: SharedToken) -> None:
-        """Deactivate the scope, raising if token isn't the current activation."""
-        if token is not self._current_token:
-            raise ScopeActivationError(
-                f"Cannot deactivate shared scope {self.name!r}: "
-                "token is not the current activation."
-            )
-        self.storage = UNSET
-        self._current_token = None
-
-
-ScopeVar = ContextVar[SlotStorage] | SharedVar
 
 
 def _validate_types(name: str, isolation: IsolationType, storage: StorageType) -> None:
@@ -572,30 +486,24 @@ class Scope(BaseScope):
     _dense_activation_cls = Activation
     _sparse_activation_cls = SparseActivation
 
-    def activate(self, *, force: bool = False) -> Activation:
+    def activate(self) -> Activation:
         """
         Activate this scope, returning a token usable as `with` or passed to `deactivate()`.
 
-        :param force: Activate even if the parent scope `requires` isn't currently active,
-            instead of raising `ScopeActivationError`. Note that trying to access any
-            function cached in the parent will still raise.
         :returns: An `Activation` - enter it directly (`with scope.activate():`) or hold
             onto it and call {py:meth}`Scope.deactivate` manually, for split-callback
             lifecycles where activation and deactivation happen in different functions.
-        :raises ScopeActivationError: If `requires` is set, not active, and `force` is
-            not given.
+        :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        parent_slots: Any = None
-        requires = self._requires
-        if requires is not None:
+        if requires := self._requires:
             parent_slots = requires._var.get(UNSET)
             if parent_slots is UNSET:
-                parent_slots = None
-                if not force:
-                    raise ScopeActivationError(
-                        f"Cannot activate {self.name!r}: required scope "
-                        f"{requires.name!r} is not active."
-                    )
+                raise ScopeActivationError(
+                    f"Cannot activate {self.name!r}: required scope "
+                    f"{requires.name!r} is not active."
+                )
+        else:
+            parent_slots = None
         slots = self._template.copy()
         var = self._var
         token = var.set(slots)
@@ -669,31 +577,26 @@ class AsyncScope(BaseScope):
     _dense_activation_cls = AsyncActivation
     _sparse_activation_cls = AsyncSparseActivation
 
-    def activate(self, *, force: bool = False) -> AsyncActivation:
+    def activate(self) -> AsyncActivation:
         """
         Activate this scope, returning a token usable as `async with` or passed to `deactivate()`.
 
-        :param force: Activate even if `requires` isn't currently active, instead of
-            raising `ScopeActivationError`. The activation isn't linked to `requires`, so
-            deactivating `requires` later won't be blocked by it.
         :returns: An `AsyncActivation` - enter it directly (`async with scope.activate():`)
             or hold onto it and call {py:meth}`AsyncScope.deactivate` manually, for
             split-callback lifecycles where activation and deactivation happen in
             different functions.
-        :raises ScopeActivationError: If `requires` is set, not active, and `force` is
-            not given.
+        :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        parent_slots: Any = None
         requires = self._requires
-        if requires is not None:
+        if requires is None:
+            parent_slots = None
+        else:
             parent_slots = requires._var.get(UNSET)
             if parent_slots is UNSET:
-                parent_slots = None
-                if not force:
-                    raise ScopeActivationError(
-                        f"Cannot activate {self.name!r}: required scope "
-                        f"{requires.name!r} is not active."
-                    )
+                raise ScopeActivationError(
+                    f"Cannot activate {self.name!r}: required scope "
+                    f"{requires.name!r} is not active."
+                )
         slots = self._template.copy()
         var = self._var
         token = var.set(slots)
