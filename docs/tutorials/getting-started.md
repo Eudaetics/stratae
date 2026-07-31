@@ -41,6 +41,7 @@ job = Scope("job")
 def get_connection():
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("CREATE TABLE audit_log (admin TEXT, name TEXT)")
     try:
         yield conn
         conn.commit()
@@ -56,7 +57,7 @@ def get_connection():
 
 `@job.cache()` ties `get_connection` to that scope. Call it once inside a `job` activation and it runs. Call it again inside the same activation and it returns the same connection instead of opening a new one.
 
-`resource` marks `get_connection` as a generator instead of a plain function. Wrapped this way, whatever comes after `yield` runs automatically when the `"job"` scope ends. Cleanup doesn't have to be called by hand. If the scope ends cleanly, that's a commit. If something raised instead, that's a rollback. Either way, the connection closes.
+`resource` serves two purposes. It's an alias for creating a `contextmanager` and noting it should be entered automatically. Wrapped this way, the function returns the actual cached value instead of a generator. Cleanup doesn't have to be called by hand. If the scope ends cleanly, that's a commit. If something raised instead, that's a rollback. Either way, the connection closes.
 
 ````{example} A failing job rolls back instead of committing
 ```{code-block} python
@@ -118,34 +119,46 @@ with job.activate():
 
 ### Events
 
-So far `add_user` and `list_users` run the query themselves. `stratae.events` moves that. `add_user` and `list_users` become the event, and a handler registered separately is what actually touches the cursor. Neither one calls `get_cursor` anymore:
+So far `add_user` decides how a user gets stored. It is coupled to a Cursor object, and only runs the `INSERT` itself. `stratae.events` can separate those concerns. `add_user` becomes a command, add this user, and anything registered can decide what to do in response.
 
-````{example} Driving the writes and reads through events
+````{example} Decoupling the command to add a user from how it gets written
 ```{code-block} python
+from stratae.context import Context
 from stratae.events import DirectBus, Event, PubSub, Request
 
-class UserAdded:
+class AddUser:
     def __init__(self, name: str) -> None:
         self.name = name
 
-user_added = Event(PubSub, UserAdded)
+add_user_event = Event(PubSub, AddUser)
 users_requested = Event(Request[list[tuple[int, str]]])
 
 bus = DirectBus()
-add_user = bus.bind(user_added, factory=UserAdded)
+add_user = bus.bind(add_user_event, factory=AddUser)
 list_users = bus.bind(users_requested)
 
-@bus.handle(user_added)
+current_user = Context[str]("cur_user")
+
+@bus.handle(add_user_event)
 @inject
-def _(e: UserAdded, cursor: Cursor) -> None:
-    cursor.execute("INSERT INTO users (name) VALUES (?)", (e.name,))
+def persist_user(cmd: AddUser, cursor: Cursor) -> None:
+    cursor.execute("INSERT INTO users (name) VALUES (?)", (cmd.name,))
+
+@bus.handle(add_user_event)
+@inject
+def record_audit(
+    cmd: AddUser, cursor: Cursor, admin: Annotated[str, Depends(current_user)]
+) -> None:
+    cursor.execute(
+        "INSERT INTO audit_log (admin, name) VALUES (?, ?)", (admin, cmd.name)
+    )
 
 @bus.handle(users_requested)
 @inject
-def _(cursor: Cursor) -> list[tuple[int, str]]:
+def fetch_users(cursor: Cursor) -> list[tuple[int, str]]:
     return cursor.execute("SELECT id, name FROM users").fetchall()
 
-with job.activate():
+with job.activate(), current_user.use("Steve"):
     add_user(name="Alice")
     add_user(name="Bob")
     print(list_users())
@@ -155,6 +168,10 @@ with job.activate():
 ```
 ````
 
-`add_user(name="Alice")` no longer runs an `INSERT` inline. It constructs a `UserAdded` payload and hands it to the bus, which calls whatever's registered for it. `PubSub` fans a fire-and-forget write out to any number of handlers; `Request[list[tuple[int, str]]]` requires exactly one responder and blocks for its return value, which is how `list_users()` still gets rows back. Swapping `DirectBus` for a real broker, or adding a second `user_added` handler, doesn't touch `add_user` or `list_users` at all.
+`add_user(name="Alice")` no longer runs an `INSERT` itself. It declares the intent, "add this user," and hands it to the bus as an `AddUser` command. What happens next, and how many things happen, is up to whatever's registered for `add_user_event`. `persist_user` does the actual write; `record_audit` writes a row to `audit_log` through the same `cursor`. Neither knows the other exists, and `add_user` doesn't know about either of them.
 
-For a longer worked example that grows from a plain script into one using each of these modules, plus `Checks`, see the [Project Walkthrough](walkthrough). The [API reference](../api-reference) has the full signature-level detail.
+## Conclusion
+
+With Lifecycle, Injection, and Events in place, extending this script is a matter of adding, not editing: a new handler can subscribe to `add_user_event` without touching `persist_user`, and a new provider can replace `get_connection` without touching `add_user` or `list_users`.
+
+For a longer worked example that grows from a plain script into one using each of these modules, see the [Project Walkthrough](walkthrough). The [API reference](../api-reference) has the full signature-level detail.
