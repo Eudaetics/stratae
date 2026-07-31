@@ -36,7 +36,7 @@ order_created = Event(Request[Order], CreateOrder)
 # config, and payload in, some result out. This one does the work
 # directly, using config as the destination label to route to.
 def emit(
-    event: Event[Request[Order], CreateOrder],
+    event: Event[Request[Order], CreateOrder, Any],
     config: str,
     payload: CreateOrder,
     *,
