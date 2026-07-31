@@ -12,7 +12,7 @@ Python's native features, it works anywhere: APIs, CLIs, workers, and tests.
 import pytest
 from typing import Annotated
 from stratae.depends import Depends, inject
-from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle import Scope
 
 class Database:
     def __init__(self, url: str):
@@ -23,9 +23,10 @@ class Database:
         self.users.add(name)
         return name
 
-lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "shared")])
+application = Scope("application", isolation="shared")
+request = Scope("request", isolation="shared")
 
-@lifecycle.cache("application")
+@application.cache()
 def get_database() -> Database:
     return Database(url="postgresql://localhost/app")
 
@@ -38,15 +39,15 @@ def get_user(name: str, db: Annotated[Database, Depends(get_database)]) -> str:
     assert name in db.users, f"no such user: {name}"
     return name
 
-with lifecycle.start("application"):
-    with lifecycle.start("request"):
+with application.activate():
+    with request.activate():
         user = create_user("Alice")
     assert get_user("Alice") == "Alice"
 
     with pytest.raises(AssertionError, match="no such user"):
         get_user("Bob")
 
-with lifecycle.start("application"), pytest.raises(AssertionError, match="no such user"):
+with application.activate(), pytest.raises(AssertionError, match="no such user"):
     get_user("Alice")
 ```
 """

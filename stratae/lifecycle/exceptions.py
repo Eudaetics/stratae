@@ -2,12 +2,12 @@
 Exceptions for errors in lifecycle management.
 
 All inherit from {py:exc}`LifecycleException`. {py:exc}`LifecycleConfigurationError`
-is raised for invalid scope configuration, such as a duplicate or malformed
-scope declaration. {py:exc}`ScopeNotFoundError` and {py:exc}`ScopeInactiveError`
-are raised when looking up a scope that was never declared, or one that has
-no active activation in the calling context, respectively.
-{py:exc}`ScopeActivationError` is raised when deactivating a scope whose
-activation has already ended.
+is raised for invalid scope configuration, such as an unrecognized isolation or
+storage value, or a `requires` combination that isn't allowed.
+{py:exc}`ScopeInactiveError` is raised when accessing a scope that has no
+active activation in the calling context. {py:exc}`ScopeActivationError` is
+raised when deactivating a scope whose activation has already ended, or one a
+dependent scope still requires active.
 """
 
 
@@ -17,22 +17,21 @@ class LifecycleException(Exception):
 
 class LifecycleConfigurationError(LifecycleException, ValueError):
     """
-    Exception raised for configuration errors in the lifecycle management.
+    Exception raised for configuration errors in a scope's declaration.
 
-    Covers scope declarations that are invalid on their own terms - a name
-    that isn't a valid Python identifier, an unrecognized isolation or
-    storage kind - as well as configuration errors that only surface across
-    the full set of scopes, such as duplicate names or an empty scope list.
+    Covers a name that isn't a valid Python identifier, an unrecognized
+    isolation or storage kind, and a `requires` combination that isn't
+    allowed - a `"shared"` scope declaring `requires` on a
+    `"context"`-isolated scope.
     """
 
 
 class ScopeNotFoundError(LifecycleException, ValueError):
     """
-    Exception raised when a requested scope is not found in the lifecycle manager.
+    Exception raised when a requested scope cannot be found.
 
-    Raised when a scope name is referenced that was never declared on the
-    lifecycle manager, as distinct from {py:exc}`ScopeInactiveError`, which
-    covers a scope that was declared but has no active activation.
+    Distinct from {py:exc}`ScopeInactiveError`, which covers a scope that
+    exists but has no active activation.
     """
 
 
@@ -50,8 +49,7 @@ class ScopeInactiveError(LifecycleException, RuntimeError):
     """
     Exception raised when attempting to access an inactive scope.
 
-    Raised when a scope is declared on the lifecycle manager but has no
-    active activation in the calling context, as distinct from
-    {py:exc}`ScopeNotFoundError`, which covers a scope name that was never
-    declared at all.
+    Raised when a scope has no active activation in the calling context, as
+    distinct from {py:exc}`ScopeNotFoundError`, which covers a scope
+    reference that can't be found at all.
     """

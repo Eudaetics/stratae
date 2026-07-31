@@ -32,11 +32,11 @@ First, set up a connection that commits when the job succeeds and rolls back aut
 ````{example} Committing on success, rolling back on error
 ```{code-block} python
 import sqlite3
-from stratae.lifecycle import Lifecycle, Scope, resource
+from stratae.lifecycle import Scope, resource
 
-lifecycle = Lifecycle([Scope("job")])
+job = Scope("job")
 
-@lifecycle.cache("job")
+@job.cache()
 @resource
 def get_connection():
     conn = sqlite3.connect(":memory:")
@@ -52,16 +52,16 @@ def get_connection():
 ```
 ````
 
-`Scope("job")` declares a named unit of work. "job" is just a name picked for this example. You can choose anything appropriate to your requirements. Here, it's one activation of the whole script. `Lifecycle` is what starts and stops it, later on, via `lifecycle.start("job")`.
+`Scope("job")` declares a named unit of work. "job" is just a name picked for this example. You can choose anything appropriate to your requirements. Here, it's one activation of the whole script. The scope itself is what starts and stops it, later on, via `job.activate()`.
 
-`@lifecycle.cache("job")` ties `get_connection` to that scope. Call it once inside a `"job"` activation and it runs. Call it again inside the same activation and it returns the same connection instead of opening a new one.
+`@job.cache()` ties `get_connection` to that scope. Call it once inside a `job` activation and it runs. Call it again inside the same activation and it returns the same connection instead of opening a new one.
 
 `resource` marks `get_connection` as a generator instead of a plain function. Wrapped this way, whatever comes after `yield` runs automatically when the `"job"` scope ends. Cleanup doesn't have to be called by hand. If the scope ends cleanly, that's a commit. If something raised instead, that's a rollback. Either way, the connection closes.
 
 ````{example} A failing job rolls back instead of committing
 ```{code-block} python
 try:
-    with lifecycle.start("job"):
+    with job.activate():
         conn = get_connection()
         conn.execute("INSERT INTO users (name) VALUES (?)", ("Alice",))
         raise RuntimeError("something failed before the job finished")
@@ -100,7 +100,7 @@ def add_user(name: str, cursor: Cursor) -> None:
 def list_users(cursor: Cursor) -> list[tuple[int, str]]:
     return cursor.execute("SELECT id, name FROM users").fetchall()
 
-with lifecycle.start("job"):
+with job.activate():
     add_user("Alice")
     add_user("Bob")
     print(list_users())
@@ -148,7 +148,7 @@ def _(e: UserAdded, cursor: Cursor) -> None:
 def _(request: UsersRequested, cursor: Cursor) -> list[tuple[int, str]]:
     return cursor.execute("SELECT id, name FROM users").fetchall()
 
-with lifecycle.start("job"):
+with job.activate():
     add_user(name="Alice")
     add_user(name="Bob")
     print(list_users())

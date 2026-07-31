@@ -70,13 +70,13 @@ A handler is just a plain callable, so an `@inject`-decorated function works as 
 ```python
 from typing import Annotated
 from stratae.depends import Depends, inject
-from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle import Scope
 
-lifecycle = Lifecycle([Scope("application", isolation="shared")])
+application = Scope("application", isolation="shared")
 bus = DirectBus()
 
 
-@lifecycle.cache("application")
+@application.cache()
 def order_store() -> dict[int, dict]:
     return {}
 
@@ -100,12 +100,12 @@ def _(request: PriceOrder, store: Annotated[dict, Depends(order_store)]) -> Quot
     return Quote(order_id=request.order_id, total=100)
 
 
-with lifecycle.start("application"):
+with application.activate():
     place_order(order_id=42)
     request_quote(order_id=42)
 ```
 
-`@bus.handle(...)` goes on the outside, `@inject` on the inside — the bus registers the injectable wrapper, and calls it with just the payload; `@inject` resolves the rest. Both handlers share the same `order_store`, cached once per `lifecycle.start("application")` activation — pub/sub and request/reply handlers can share scoped state with no events-specific plumbing at all. See the [Dependency Injection](dependency-injection) and [Lifecycle](lifecycle) guides for the pieces this is built from.
+`@bus.handle(...)` goes on the outside, `@inject` on the inside — the bus registers the injectable wrapper, and calls it with just the payload; `@inject` resolves the rest. Both handlers share the same `order_store`, cached once per `application.activate()` activation — pub/sub and request/reply handlers can share scoped state with no events-specific plumbing at all. See the [Dependency Injection](dependency-injection) and [Lifecycle](lifecycle) guides for the pieces this is built from.
 
 ## Correlation with Envelope
 

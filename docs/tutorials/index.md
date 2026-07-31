@@ -51,11 +51,11 @@ print(total_with_tax(100.0))
 
 ````{example} Caching and cleaning up a batch within a scope
 ```{code-block} python
-from stratae.lifecycle import Lifecycle, Scope, resource
+from stratae.lifecycle import Scope, resource
 
-lifecycle = Lifecycle([Scope("batch")])
+batch = Scope("batch")
 
-@lifecycle.cache("batch")
+@batch.cache()
 @resource
 def get_batch():
     print("opening batch")
@@ -65,7 +65,7 @@ def get_batch():
     finally:
         print(f"processed {len(items)} items: {items}")
 
-with lifecycle.start("batch"):
+with batch.activate():
     get_batch().append("order-1")
     get_batch().append("order-2")
 ```
@@ -115,7 +115,7 @@ Standalone, no dependency on the core three or on each other:
 
 [Integrations](integrations/index) bridges the core modules to specific third-party tools:
 
-- [FastAPI](integrations/fastapi) — `scoped_route` builds an `APIRoute` subclass that activates an `AsyncLifecycle` scope around each request.
+- [FastAPI](integrations/fastapi) — `scoped_route` builds an `APIRoute` subclass that activates an `AsyncScope` around each request.
 - [Starlette](integrations/starlette) — the same `scoped_route` pattern, built on Starlette's `Route`.
 - [RabbitMQ](integrations/rabbitmq) implements `stratae.events`' bus protocols over AMQP.
 - [msgspec](integrations/msgspec) registers a fast path onto `stratae.serde.pack` for `msgspec.Struct` payloads.

@@ -4,15 +4,15 @@ Decorators marking a generator function as an auto-entered lifecycle resource.
 {py:func}`resource` and {py:func}`async_resource` wrap a generator function
 with `contextlib.contextmanager`/`contextlib.asynccontextmanager`, same as
 calling those directly, but also tags the result with a marker. This marker lets
-{py:meth}`Lifecycle.cache <stratae.lifecycle.lifecycle.Lifecycle.cache>` (or
-{py:meth}`AsyncLifecycle.cache <stratae.lifecycle.lifecycle.AsyncLifecycle.cache>`)
+{py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>` (or
+{py:meth}`AsyncScope.cache <stratae.lifecycle.scope.AsyncScope.cache>`)
 recognize it as a context manager to enter automatically rather than a plain
 value to cache as-is. The entered value is what gets cached; exit is deferred
 to the owning scope's exit stack, which unwinds when that scope deactivates.
 
 ````{example} Caching an auto-entered resource
 ```{code-block} python
-from stratae.lifecycle import Lifecycle, Scope, resource
+from stratae.lifecycle import Scope, resource
 
 class AuditLog:
     def __init__(self, path):
@@ -25,9 +25,9 @@ class AuditLog:
     def close(self):
         print(f"Closing {self.path}")
 
-lifecycle = Lifecycle([Scope("request", "context")])
+request = Scope("request")
 
-@lifecycle.cache("request")
+@request.cache()
 @resource
 def get_audit_log():
     log = AuditLog("audit.log")
@@ -36,7 +36,7 @@ def get_audit_log():
     finally:
         log.close()
 
-with lifecycle.start("request"):
+with request.activate():
     get_audit_log().write("user logged in")
     get_audit_log().write("user viewed dashboard")
 ```
@@ -68,7 +68,7 @@ def resource[**P, T](func: Callable[P, Generator[T, None, None]]):
 
     Wraps `func` with `contextlib.contextmanager`, same as calling that
     directly, and tags the result so
-    {py:meth}`Lifecycle.cache <stratae.lifecycle.lifecycle.Lifecycle.cache>`
+    {py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>`
     enters it automatically instead of caching the raw context manager
     object. Use {py:func}`async_resource` for an async generator function
     instead.
@@ -87,7 +87,7 @@ def async_resource[**P, T](func: Callable[P, AsyncGenerator[T, None]]):
 
     Wraps `func` with `contextlib.asynccontextmanager`, same as calling that
     directly, and tags the result so
-    {py:meth}`AsyncLifecycle.cache <stratae.lifecycle.lifecycle.AsyncLifecycle.cache>`
+    {py:meth}`AsyncScope.cache <stratae.lifecycle.scope.AsyncScope.cache>`
     enters it automatically instead of caching the raw context manager
     object. Use {py:func}`resource` for a sync generator function instead.
 

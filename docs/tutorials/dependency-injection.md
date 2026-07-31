@@ -84,12 +84,12 @@ Generator and async-generator functions can be injection targets too, not just p
 The flagship pattern is a provider cached by `stratae.lifecycle`, then injected normally — `depends` doesn't need to know the value is cached, it just calls whatever callable it's given:
 
 ```python
-from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle import Scope
 
-lifecycle = Lifecycle([Scope("application", isolation="shared")])
+application = Scope("application", isolation="shared")
 
 
-@lifecycle.cache("application")
+@application.cache()
 def get_database() -> Database:
     return Database(connect())
 
@@ -98,7 +98,7 @@ def get_database() -> Database:
 def create_user(name: str, db: Annotated[Database, Depends(get_database)]) -> User: ...
 
 
-with lifecycle.start("application"):
+with application.activate():
     create_user("Alice")  # get_database() runs once per activation, not once per call
     create_user("Bob")  # cached value reused
 ```

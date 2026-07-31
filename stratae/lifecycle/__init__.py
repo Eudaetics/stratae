@@ -1,35 +1,35 @@
 """
 Hierarchical, scope-based caching and resource lifecycles for applications.
 
-Declare {py:class}`Scope <stratae.lifecycle.scope.Scope>` objects (e.g. "application",
-"request") and register them with a {py:class}`Lifecycle <stratae.lifecycle.lifecycle.Lifecycle>`
-(sync) or {py:class}`AsyncLifecycle <stratae.lifecycle.lifecycle.AsyncLifecycle>` (async).
-Activate a scope as a context manager via
-{py:meth}`Lifecycle.start <stratae.lifecycle.lifecycle.Lifecycle.start>`. While active,
-functions decorated with
-{py:meth}`Lifecycle.cache <stratae.lifecycle.lifecycle.Lifecycle.cache>` have their
+Declare {py:class}`Scope <stratae.lifecycle.scope.Scope>` (sync) or
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` (async) objects directly -
+e.g. "application", "request" - and activate one as a context manager via
+{py:meth}`Scope.activate <stratae.lifecycle.scope.Scope.activate>` (`async with` for
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`). While active, functions
+decorated with {py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>` have their
 results cached for the lifetime of that activation, computed once per scope activation
-rather than once per process.
+rather than once per process. A scope can declare another scope as a parent with
+`requires`; activating it then raises unless that parent scope is already active.
 
 Each {py:class}`Scope <stratae.lifecycle.scope.Scope>` chooses its own isolation and
 storage independently:
 
 * `isolation="shared"`: one cache visible to every thread/task while the
   scope is active, suited to application-wide state such as connection pools.
-* `isolation="context"`: a cache isolated per execution context, backed by
+* `isolation="context"` (default): a cache isolated per execution context, backed by
   a `contextvars.ContextVar`, suited to request- or session-scoped state.
 * `storage`: `"dense"` (default) or `"sparse"`; see
   {py:class}`Scope <stratae.lifecycle.scope.Scope>` for the tradeoff between them.
 
 {py:func}`resource <stratae.lifecycle.resource.resource>` and
 {py:func}`async_resource <stratae.lifecycle.resource.async_resource>` mark a generator
-function as a context manager to auto-enter when cached. Exiting the associated
-lifecycle scope causes its cleanup (closing a connection, committing changes) to run
-without every caller having to handle it explicitly.
+function as a context manager to auto-enter when cached. Exiting the associated scope's
+activation causes its cleanup (closing a connection, committing changes) to run without
+every caller having to handle it explicitly.
 
 ````{example} Application- and request-scoped resources
 ```{code-block} python
-from stratae.lifecycle import Lifecycle, Scope, resource
+from stratae.lifecycle import Scope, resource
 
 class Connection:
     def __init__(self):
@@ -45,11 +45,10 @@ class Transaction:
     def close(self):
         print("commit")
 
-lifecycle = Lifecycle(
-    [Scope("application", "shared"), Scope("request", "context")]
-)
+application = Scope("application", isolation="shared")
+request = Scope("request", requires=application)
 
-@lifecycle.cache("application")
+@application.cache()
 @resource
 def get_db():
     conn = Connection()
@@ -58,7 +57,7 @@ def get_db():
     finally:
         conn.close()
 
-@lifecycle.cache("request")
+@request.cache()
 @resource
 def get_transaction():
     txn = Transaction(get_db())
@@ -67,12 +66,12 @@ def get_transaction():
     finally:
         txn.close()
 
-with lifecycle.start("application"):
-    with lifecycle.start("request"):
+with application.activate():
+    with request.activate():
         get_transaction()
         get_transaction()  # same transaction within this request
 
-    with lifecycle.start("request"):
+    with request.activate():
         get_transaction()  # new request, new transaction, same connection
 
 ```
@@ -86,9 +85,8 @@ Closing connection
 ```
 ````
 
-See {py:class}`Lifecycle <stratae.lifecycle.lifecycle.Lifecycle>`,
-{py:class}`AsyncLifecycle <stratae.lifecycle.lifecycle.AsyncLifecycle>`,
-{py:class}`Scope <stratae.lifecycle.scope.Scope>`,
+See {py:class}`Scope <stratae.lifecycle.scope.Scope>`,
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`,
 {py:func}`resource <stratae.lifecycle.resource.resource>`, and
 {py:func}`async_resource <stratae.lifecycle.resource.async_resource>` for the
 rest of the module's API.

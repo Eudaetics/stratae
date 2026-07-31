@@ -1,12 +1,11 @@
 """
 Starlette integration for lifecycle management.
 
-{py:func}`scoped_route` builds a `Route` subclass that activates a
-{py:class}`AsyncLifecycle <stratae.lifecycle.lifecycle.AsyncLifecycle>` scope
-around every request it handles. Pass it in place of `Route` when
-constructing routes. A cached resource then opens once per request and
-closes when the request finishes, even if a handler calls it more than
-once.
+{py:func}`scoped_route` builds a `Route` subclass that activates an
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` around every
+request it handles. Pass it in place of `Route` when constructing routes. A
+cached resource then opens once per request and closes when the request
+finishes, even if a handler calls it more than once.
 
 ````{example} Caching a database connection and a per-request cursor
 ```{code-block} python
@@ -19,13 +18,12 @@ from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 from stratae.depends import Depends, inject
 from stratae.integrations.starlette import scoped_route
-from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
+from stratae.lifecycle import AsyncScope, async_resource
 
-lifecycle = AsyncLifecycle([
-    Scope("application", "shared"), Scope("request")
-])
+application = AsyncScope("application", isolation="shared")
+request = AsyncScope("request", requires=application)
 
-@lifecycle.cache("application")
+@application.cache()
 @async_resource
 async def get_connection():
     conn = sqlite3.connect(":memory:")
@@ -36,7 +34,7 @@ async def get_connection():
     finally:
         conn.close()
 
-@lifecycle.cache("request")
+@request.cache()
 @async_resource
 async def get_cursor():
     conn = await get_connection()
@@ -70,10 +68,10 @@ async def read_product(request: Request, cur: CursorDep) -> JSONResponse:
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    async with lifecycle.start("application"):
+    async with application.activate():
         yield
 
-ScopedRoute = scoped_route(lifecycle, "request")
+ScopedRoute = scoped_route(request)
 app = Starlette(
     lifespan=lifespan,
     routes=[

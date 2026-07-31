@@ -26,7 +26,7 @@ raises immediately unless that scope is already active.
 ```{code-block} python
 import asyncio
 from itertools import count
-from stratae.lifecycle._scope2 import AsyncScope
+from stratae.lifecycle import AsyncScope
 
 application = AsyncScope("application", isolation="shared")
 request = AsyncScope("request", storage="sparse", requires=application)

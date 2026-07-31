@@ -2,7 +2,7 @@
 
 Stratae is a set of developer tools for Python 3.12+. It currently covers dependency injection, lifecycle-scoped caching and cleanup, and events. Each tool works on its own: use lifecycle management without injection, or dependency injection by itself.
 
-These tools work anywhere instead of being tied to a particular framework. A function decorated with @inject is still an ordinary function: callable directly, importable, or wired into a web framework or worker. The same holds for @lifecycle.cache.
+These tools work anywhere instead of being tied to a particular framework. A function decorated with @inject is still an ordinary function: callable directly, importable, or wired into a web framework or worker. The same holds for @scope.cache.
 
 ```bash
 pip install stratae
@@ -13,15 +13,15 @@ pip install stratae
 ```python
 from typing import Annotated
 from stratae.depends import Depends, inject
-from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle import Scope
 
-lifecycle = Lifecycle([Scope("application", "shared")])
+application = Scope("application", isolation="shared")
 
 type Database = dict[str, list[dict[str, str]]]
 
 
 # Simple database connection (just a dict for demo)
-@lifecycle.cache("application")
+@application.cache()
 def get_database() -> Database:
     return {"users": []}
 
@@ -33,7 +33,7 @@ def create_user(name: str, db: Annotated[Database, Depends(get_database)]):
     return user
 
 
-with lifecycle.start("application"):
+with application.activate():
     user = create_user("Alice")
     print(f"Created user: {user['name']}")
 ```
@@ -67,12 +67,13 @@ endpoint()
 Use lifecycle management when you want to cache objects or guarantee resource cleanup for context managers. With managed resources, everything is cleaned up automatically at the end of a lifecycle scope.
 
 ```python
-lifecycle = Lifecycle([Scope("application", "shared"), Scope("request", "shared")])
+application = Scope("application", isolation="shared")
+request = Scope("request", isolation="shared", requires=application)
 
 
 # Cache the yielded value and return it for all calls within a request;
 # @resource marks get_session as a contextmanager to be auto-entered
-@lifecycle.cache("request")
+@request.cache()
 @resource
 def get_session():
     session = Session()
@@ -87,14 +88,14 @@ def get_session():
 
 
 # Set up your lifecycle boundaries
-with lifecycle.start("application"):
-    with lifecycle.start("request"):
+with application.activate():
+    with request.activate():
         # Session is created at first call and cached automatically
         # All get_session calls in this request will return the same session
         db = get_session()
         assert db is get_session()
         db.users.create_user("John")
-    with lifecycle.start("request"):
+    with request.activate():
         # New request, new session
         db = get_session()
 ```
@@ -110,11 +111,11 @@ from typing import Annotated
 from stratae.context import Context
 from stratae.depends import Depends, inject
 
-lifecycle = Lifecycle([Scope("request", "shared")])
+request = Scope("request", isolation="shared")
 user_id = Context[int]("user_id")
 
 
-@lifecycle.cache("request")
+@request.cache()
 @inject
 def get_current_user(uid: Annotated[int, Depends(user_id)]) -> User:
     return fetch_user(uid)
@@ -128,7 +129,7 @@ def create_post(
     return Post(author=user, content=content)
 
 
-with lifecycle.start("request"), user_id.use(123):
+with request.activate(), user_id.use(123):
     post = create_post("Hello world!")
 ```
 
@@ -206,12 +207,13 @@ Stratae is fully async compatible. Injection natively works with sync or async f
 ```python
 from typing import Annotated
 from stratae.depends import Depends, inject
-from stratae.lifecycle import AsyncLifecycle, Scope
+from stratae.lifecycle import AsyncScope
 
-lifecycle = AsyncLifecycle([Scope("application", "shared"), Scope("request", "context")])
+application = AsyncScope("application", isolation="shared")
+request = AsyncScope("request", requires=application)
 
 
-@lifecycle.cache("application")
+@application.cache()
 async def get_database() -> Database:
     return await Database(url="postgresql://...")
 
@@ -224,8 +226,8 @@ async def create_user(
     return await db.users.create(name=name)
 
 
-async with lifecycle.start("application"):
-    async with lifecycle.start("request"):
+async with application.activate():
+    async with request.activate():
         user = await create_user("Alice")
 ```
 
@@ -293,23 +295,23 @@ Sync functions only accept sync checks. Async functions accept a mix of sync and
 
 ### Simple Integrations
 
-The design of Stratae means integrating with other tools or frameworks is typically easy. For FastAPI, an ASGI middleware that starts the request lifecycle is enough to add Stratae's lifecycle management.
+The design of Stratae means integrating with other tools or frameworks is typically easy. For FastAPI, a route class that activates a scope around each request is enough to add Stratae's lifecycle management.
 
 ```python
 from typing import Annotated
 from fastapi import FastAPI
 from stratae.depends import Depends, inject
-from stratae.integrations import RequestLifecycleMiddleware
-from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
+from stratae.integrations.fastapi import scoped_route
+from stratae.lifecycle import AsyncScope, async_resource
 
 
-lifecycle = AsyncLifecycle([Scope("request")])
+request = AsyncScope("request")
 
 app = FastAPI()
-app.router.route_class = scoped_route(lifecycle, "request")
+app.router.route_class = scoped_route(request)
 
 
-@lifecycle.cache("request")
+@request.cache()
 @async_resource
 async def get_session():
     session = AsyncSession()

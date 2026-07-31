@@ -25,8 +25,8 @@ result to whatever declared it as a dependency. A provider runs again on
 every call unless it caches its own result. For singleton or
 scoped values (computed once per request, once per process, etc.),
 layer this with {py:mod}`stratae.lifecycle`. Decorate the provider with
-{py:meth}`Lifecycle.cache <stratae.lifecycle.lifecycle.Lifecycle.cache>`
-(or its {py:class}`AsyncLifecycle <stratae.lifecycle.lifecycle.AsyncLifecycle>`
+{py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>`
+(or its {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`
 counterpart) to compute it once per scope activation, then pass that
 cached provider to {py:func}`Depends` as usual.
 ```

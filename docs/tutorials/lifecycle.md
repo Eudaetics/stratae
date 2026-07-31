@@ -25,38 +25,36 @@ Start with the defaults; reach for `"shared"` and `"sparse"` only when you know 
 
 ## Starting a scope, caching within it
 
-`Lifecycle` (sync) and `AsyncLifecycle` (async) are built from a non-empty list of uniquely-named scopes:
+There's no separate container to build — a `Scope` is used directly. Activate it as a context manager with `.activate()`, and cache a function's result within it with `.cache()`:
 
 ```python
-from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle import Scope
 
-lifecycle = Lifecycle(
-    [
-        Scope("application", isolation="shared"),
-        Scope("request"),
-    ]
-)
+application = Scope("application", isolation="shared")
 
 
-@lifecycle.cache("application")
+@application.cache()
 def get_database() -> Database:
     return Database(connect())
 
 
-with lifecycle.start("application"):
+with application.activate():
     get_database()  # runs the function, caches the result
     get_database()  # returns the cached result
 # activation ends here -- the cache is gone
 ```
 
-`.cache(scope)` behaves like `functools.lru_cache`, scoped to one activation: a function that takes arguments gets one cached value *per distinct argument set* within that activation, not one value overall.
+`.cache()` behaves like `functools.lru_cache`, scoped to one activation: a function that takes arguments gets one cached value *per distinct argument set* within that activation, not one value overall.
 
 ```python
-@lifecycle.cache("request")
+request = Scope("request")
+
+
+@request.cache()
 def get_user(user_id: int) -> User: ...
 
 
-with lifecycle.start("request"):
+with request.activate():
     get_user(1)  # computed
     get_user(1)  # cached
     get_user(2)  # computed separately
@@ -68,7 +66,7 @@ Two keyword-only options adjust this, and are mutually exclusive:
 
 A function that takes no parameters always uses the fast single-value path automatically.
 
-Scopes can be activated in any order — you don't have to start `"application"` before `"request"` — though starting broader scopes first is the natural way to get meaningful sharing between them.
+By default, scopes are independent and can be activated in any order. A scope can declare another as a parent with `requires=`, in which case activating it raises unless that parent scope is already active — see the worked example below.
 
 ## Resources: cleanup on scope exit
 
@@ -78,7 +76,7 @@ Scopes can be activated in any order — you don't have to start `"application"`
 from stratae.lifecycle import resource
 
 
-@lifecycle.cache("application")
+@application.cache()
 @resource
 def get_database():
     conn = Database(connect())
@@ -88,22 +86,18 @@ def get_database():
         conn.close()
 ```
 
-`@lifecycle.cache(...)` must be the outer decorator and `@resource`/`@async_resource` the inner one — cache needs to see the tagged, wrapped function to know to auto-enter it. Skipping `@resource` on a generator function is a real footgun: without it, `.cache()` treats the function as an ordinary callable and caches the unconsumed generator object itself, not the value it would have yielded.
+`@scope.cache(...)` must be the outer decorator and `@resource`/`@async_resource` the inner one — cache needs to see the tagged, wrapped function to know to auto-enter it. Skipping `@resource` on a generator function is a real footgun: without it, `.cache()` treats the function as an ordinary callable and caches the unconsumed generator object itself, not the value it would have yielded.
 
 If a scope has several open resources, they close in LIFO order — the reverse of the order they were entered, same as `contextlib.ExitStack`. If more than one raises while closing, the exceptions are chained into a single `ExceptionGroup` rather than the last one silently winning.
 
 ## A worked example: two-tier app scopes
 
 ```python
-lifecycle = Lifecycle(
-    [
-        Scope("application", isolation="shared"),
-        Scope("request"),
-    ]
-)
+application = Scope("application", isolation="shared")
+request = Scope("request", requires=application)
 
 
-@lifecycle.cache("application")
+@application.cache()
 @resource
 def get_pool():
     pool = ConnectionPool(connect())
@@ -113,40 +107,37 @@ def get_pool():
         pool.close()
 
 
-@lifecycle.cache("request")
+@request.cache()
 def get_request_id() -> str:
     return str(uuid4())
 
 
-with lifecycle.start("application"):
-    with lifecycle.start("request"):
+with application.activate():
+    with request.activate():
         pool = get_pool()  # opened once for the whole application activation
         request_id = get_request_id()  # fresh per request activation
     # request scope exits -- request_id's cache is gone
 # application scope exits -- pool.close() runs here
 ```
 
-Because `"request"` is context-isolated, two concurrent `asyncio` tasks each starting their own `"request"` activation get independent `get_request_id()` values, even though both see the same shared `get_pool()` connection pool from the `"shared"` `"application"` scope underneath them.
+`request`'s `requires=application` means `request.activate()` raises `ScopeActivationError` unless `application` is already active, and `application.activate()`'s exit raises the same error if a `request` activation is still open underneath it. Because `"request"` is context-isolated, two concurrent `asyncio` tasks each starting their own `request` activation get independent `get_request_id()` values, even though both see the same shared `get_pool()` connection pool from the `"shared"` `application` scope underneath them.
 
 ## Sync vs async
 
-| | `Lifecycle` | `AsyncLifecycle` |
+| | `Scope` | `AsyncScope` |
 |---|---|---|
-| Activate | `with lifecycle.start(scope):` | `async with lifecycle.start(scope):` |
+| Activate | `with scope.activate():` | `async with scope.activate():` |
 | Cacheable functions | sync only | sync, async, `resource`, and `async_resource` — all four, auto-detected |
 | Resource decorator | `resource` | `async_resource` (or `resource`, if the cleanup itself is sync) |
 
-`AsyncLifecycle.cache` accepts a plain sync function too, wrapping it to work from async code — a single `.cache("request")` call site works no matter which of the four kinds the decorated function is.
+`AsyncScope.cache` accepts a plain sync function too, wrapping it to work from async code — a single `.cache()` call site works no matter which of the four kinds the decorated function is.
 
 ## Errors
 
 | Exception | Raised when |
 |---|---|
-| `LifecycleConfigurationError` | Invalid scope name/isolation/storage, empty scope list, or duplicate scope names |
-| `ScopeNotFoundError` | Referencing a scope name that was never declared |
-| `ScopeInactiveError` | Referencing a scope that's declared but not currently active in this context |
-| `ScopeActivationError` | Popping a manual activation with a stale or already-used token |
-
-`ScopeNotFoundError` and `ScopeInactiveError` are deliberately distinct — "never declared" and "declared but not started here" are different bugs.
+| `LifecycleConfigurationError` | Invalid scope name/isolation/storage, a `requires` combination that isn't allowed, or caching the same function in more than one scope |
+| `ScopeInactiveError` | Accessing a scope that's not currently active in this context |
+| `ScopeActivationError` | Activating a scope whose `requires` parent isn't active, or deactivating a scope while a scope requiring it is still active |
 
 Full signatures and every exported name: {doc}`stratae.lifecycle API reference <../apidocs/stratae.lifecycle/stratae.lifecycle>`.

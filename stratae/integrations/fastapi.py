@@ -1,11 +1,11 @@
 """
 FastAPI integration for lifecycle management.
 
-{py:func}`scoped_route` builds an `APIRoute` subclass that activates a
-{py:class}`AsyncLifecycle <stratae.lifecycle.lifecycle.AsyncLifecycle>` scope
-around every request it handles. Set it as a router's `route_class`. A
-cached resource then opens once per request and closes when the request
-finishes, even if a handler calls it more than once.
+{py:func}`scoped_route` builds an `APIRoute` subclass that activates an
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` around every
+request it handles. Set it as a router's `route_class`. A cached resource
+then opens once per request and closes when the request finishes, even if a
+handler calls it more than once.
 
 ````{example} Caching a database connection and a per-request cursor
 ```{code-block} python
@@ -16,13 +16,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from stratae.depends import Depends, inject
 from stratae.integrations.fastapi import scoped_route
-from stratae.lifecycle import AsyncLifecycle, Scope, async_resource
+from stratae.lifecycle import AsyncScope, async_resource
 
-lifecycle = AsyncLifecycle([
-    Scope("application", "shared"), Scope("request", "context")
-])
+application = AsyncScope("application", isolation="shared")
+request = AsyncScope("request", requires=application)
 
-@lifecycle.cache("application")
+@application.cache()
 @async_resource
 async def get_connection():
     conn = sqlite3.connect(":memory:")
@@ -33,7 +32,7 @@ async def get_connection():
     finally:
         conn.close()
 
-@lifecycle.cache("request")
+@request.cache()
 @async_resource
 async def get_cursor():
     conn = await get_connection()
@@ -48,11 +47,11 @@ type CursorDep = Annotated[sqlite3.Cursor, Depends(get_cursor)]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with lifecycle.start("application"):
+    async with application.activate():
         yield
 
 app = FastAPI(lifespan=lifespan)
-app.router.route_class = scoped_route(lifecycle, "request")
+app.router.route_class = scoped_route(request)
 
 # inject strips cur from the wrapper's exposed signature, so FastAPI only
 # ever sees product_id/name when it inspects the route.

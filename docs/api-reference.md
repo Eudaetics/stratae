@@ -43,11 +43,11 @@ Welcome, anonymous!
 
 ### Lifecycle
 
-Manage hierarchical, scoped contexts for caching and cleanup. `Lifecycle`/`AsyncLifecycle`, `Scope` describe the blocks and configuration. Use `resource`/`async_resource` for cached resources that need teardown.
+Manage hierarchical, scoped contexts for caching and cleanup. `Scope`/`AsyncScope` describe the blocks and configuration directly - no separate container to build. Use `resource`/`async_resource` for cached resources that need teardown.
 
 ````{example} Committing a transaction, or rolling back if the scope raises
 ```{code-block} python
-from stratae.lifecycle import Lifecycle, Scope, resource
+from stratae.lifecycle import Scope, resource
 
 class Connection:
     def commit(self):
@@ -59,9 +59,9 @@ class Connection:
     def close(self):
         print("closing")
 
-lifecycle = Lifecycle([Scope("request", "context")])
+request = Scope("request")
 
-@lifecycle.cache("request")
+@request.cache()
 @resource
 def get_transaction():
     conn = Connection()
@@ -74,12 +74,12 @@ def get_transaction():
     finally:
         conn.close()
 
-with lifecycle.start("request"):
+with request.activate():
     conn = get_transaction()
     # ... do work using conn ...
 
 try:
-    with lifecycle.start("request"):
+    with request.activate():
         conn = get_transaction()
         raise ValueError("payment failed")
 except ValueError:

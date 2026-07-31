@@ -318,15 +318,15 @@ Inside the `with` block, `bob` still requests the detailed report and still gets
 
 ## Scoping the data source to the whole run
 
-Three separate calls just hit the EU API three times for what should be one report run. `stratae.lifecycle` scopes caching and cleanup to a unit of work, here the whole run rather than each call. Wrap `get_visits` in `resource` and register it with `.cache(scope)`, and the code after `yield` becomes cleanup, run once the scope exits:
+Three separate calls just hit the EU API three times for what should be one report run. `stratae.lifecycle` scopes caching and cleanup to a unit of work, here the whole run rather than each call. Wrap `get_visits` in `resource` and register it with `.cache()` on the scope itself, and the code after `yield` becomes cleanup, run once the scope exits:
 
 ````{example} Caching the visits source for the whole run
 ```{code-block} python
-from stratae.lifecycle import Lifecycle, Scope, resource
+from stratae.lifecycle import Scope, resource
 
-lifecycle = Lifecycle([Scope("run", isolation="shared")])
+run = Scope("run", isolation="shared")
 
-@lifecycle.cache("run")
+@run.cache()
 @resource
 def get_visits():
     print("connecting to the visits store")
@@ -341,7 +341,7 @@ type Visits = Annotated[list[Visit], Depends(get_visits)]
 def generate_report(visits: Visits, build_report: Annotated[ReportBuilder, Depends(get_report_builder)]):
     return build_report(visits)
 
-with lifecycle.start("run"):
+with run.activate():
     print_report(generate_report())
 ```
 ```{output}
