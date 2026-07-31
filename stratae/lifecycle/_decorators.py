@@ -13,6 +13,7 @@ from inspect import iscoroutinefunction, unwrap
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Hashable, TypeGuard, cast, overload
 
 from stratae.lifecycle._wrappers import (
+    Cached,
     create_async_wrapper,
     create_asynccm_wrapper,
     create_sync_in_async_wrapper,
@@ -103,15 +104,17 @@ class CacheDecorator:
         self._ignore_params = ignore_params
 
     @overload
-    def __call__[**P, T](self, func: Callable[P, AbstractContextManager[T]]) -> Callable[P, T]: ...
+    def __call__[**P, T](
+        self, func: Callable[P, AbstractContextManager[T]]
+    ) -> Cached[P, T, AbstractContextManager[T]]: ...
 
     @overload
-    def __call__[**P, T](self, func: Callable[P, T]) -> Callable[P, T]: ...
+    def __call__[**P, T](self, func: Callable[P, T]) -> Cached[P, T, T]: ...
 
     def __call__[**P, T](
         self,
         func: Callable[P, T | AbstractContextManager[T]],
-    ) -> Callable[P, T]:
+    ) -> Cached[P, T, T | AbstractContextManager[T]]:
         """
         Wrap `func` so its result is cached for the lifetime of the scope's activation.
 
@@ -122,7 +125,8 @@ class CacheDecorator:
 
         Returns:
             A wrapper matching `func`'s signature, minus context-manager
-            entry for a `resource`-tagged `func`.
+            entry for a `resource`-tagged `func`. Its `uncached` attribute
+            is `func` itself, callable whether or not the scope is active.
 
         Raises:
             LifecycleConfigurationError: If `func` is already cached in some scope.
@@ -132,11 +136,11 @@ class CacheDecorator:
 
         def add_scope_to_func(
             f: Callable[P, T | AbstractContextManager[T]],
-        ) -> Callable[P, T]:
+        ) -> Cached[P, T, T | AbstractContextManager[T]]:
             if _is_auto_sync_cm(f):
                 return create_synccm_wrapper(f, self._scope, self._cache_key, self._ignore_params)
             return cast(
-                Callable[P, T],
+                Cached[P, T, T | AbstractContextManager[T]],
                 create_sync_wrapper(f, self._scope, self._cache_key, self._ignore_params),
             )
 
@@ -179,25 +183,33 @@ class AsyncCacheDecorator:
         self._ignore_params = ignore_params
 
     @overload
-    def __call__[**P, T](self, func: Callable[P, AbstractContextManager[T]]) -> Callable[P, T]: ...
+    def __call__[**P, T](
+        self, func: Callable[P, AbstractContextManager[T]]
+    ) -> Cached[P, T, AbstractContextManager[T]]: ...
 
     @overload
     def __call__[**P, T](
         self, func: Callable[P, AbstractAsyncContextManager[T]]
-    ) -> Callable[P, Awaitable[T]]: ...
+    ) -> Cached[P, Awaitable[T], AbstractAsyncContextManager[T]]: ...
 
     @overload
-    def __call__[**P, T](self, func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[T]]: ...
+    def __call__[**P, T](
+        self, func: Callable[P, Awaitable[T]]
+    ) -> Cached[P, Awaitable[T], Awaitable[T]]: ...
 
     @overload
-    def __call__[**P, T](self, func: Callable[P, T]) -> Callable[P, T]: ...
+    def __call__[**P, T](self, func: Callable[P, T]) -> Cached[P, T, T]: ...
 
     def __call__[**P, T](
         self,
         func: Callable[
             P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T
         ],
-    ) -> Callable[P, Awaitable[T] | T]:
+    ) -> Cached[
+        P,
+        Awaitable[T] | T,
+        Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T,
+    ]:
         """
         Wrap `func` so its result is cached for the lifetime of the scope's activation.
 
@@ -211,7 +223,8 @@ class AsyncCacheDecorator:
         Returns:
             A wrapper matching `func`'s signature, minus context-manager
             entry for a tagged `func`. Async unless `func` is a plain sync
-            function.
+            function. Its `uncached` attribute is `func` itself, callable
+            whether or not the scope is active.
 
         Raises:
             LifecycleConfigurationError: If `func` is already cached in some scope.
@@ -223,7 +236,11 @@ class AsyncCacheDecorator:
             f: Callable[
                 P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T
             ],
-        ) -> Callable[P, Awaitable[T] | T]:
+        ) -> Cached[
+            P,
+            Awaitable[T] | T,
+            Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T,
+        ]:
             if _is_auto_async_cm(f):
                 return create_asynccm_wrapper(f, self._scope, self._cache_key, self._ignore_params)
             elif _is_auto_sync_cm(f):

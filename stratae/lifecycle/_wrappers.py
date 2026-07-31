@@ -12,7 +12,7 @@ import weakref
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
 from inspect import Parameter, signature
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Hashable, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Hashable, Protocol, cast
 
 from stratae.codegen import Writer, render_parameters
 from stratae.codegen.util import wrapper_filename
@@ -20,6 +20,26 @@ from stratae.lifecycle._slots import UNSET, SharedVar
 
 if TYPE_CHECKING:
     from stratae.lifecycle.scope import AsyncScope, BaseScope, Scope
+
+
+class Cached[**P, T, U](Protocol):
+    """
+    The shape of a function returned by `Scope.cache`/`AsyncScope.cache`.
+
+    Calling it directly (`__call__`) returns the cached value, computing it on the first
+    call within the current scope activation. `uncached` is the original, pre-decoration
+    function itself - unentered (for a `resource`/`async_resource`-tagged function) and
+    uncached, callable whether or not the owning scope is active. Use it for one-off calls
+    where you know the scope won't be active, or don't want the result cached.
+    """
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+        """Return the cached value for the current scope activation."""
+        ...
+
+    def uncached(self, *args: P.args, **kwargs: P.kwargs) -> U:
+        """Call the original function directly, bypassing caching and scope activation."""
+        ...
 
 
 def _is_slot_eligible(
@@ -327,6 +347,7 @@ def _finalize(
     wraps(func)(wrapper)
     wrapper.__defaults__ = _aggregate_defaults(params)
     wrapper.__kwdefaults__ = _aggregate_kwdefaults(params)
+    wrapper.uncached = func
     return wrapper
 
 
@@ -362,7 +383,7 @@ def create_sync_wrapper[**P, T](
     scope: "Scope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Callable[P, T]:
+) -> Cached[P, T, T]:
     """
     Create a synchronous wrapper function that caches based on the scope's activation.
 
@@ -378,11 +399,11 @@ def create_sync_wrapper[**P, T](
     Returns:
         A wrapper matching `func`'s signature that returns the cached value
         for the current scope activation, computing and storing it on the
-        first call.
+        first call. Its `uncached` attribute is `func` itself.
 
     """
     return cast(
-        Callable[P, T],
+        Cached[P, T, T],
         _create_sync_wrapper_impl(func, scope, cache_key, ignore_params),
     )
 
@@ -392,7 +413,7 @@ def create_sync_in_async_wrapper[**P, T](
     scope: "AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Callable[P, T]:
+) -> Cached[P, T, T]:
     """
     Create a synchronous wrapper function for use within an async scope.
 
@@ -408,27 +429,26 @@ def create_sync_in_async_wrapper[**P, T](
     Returns:
         A wrapper matching `func`'s signature that returns the cached value
         for the current scope activation, computing and storing it on the
-        first call.
+        first call. Its `uncached` attribute is `func` itself.
 
     """
     return cast(
-        Callable[P, T],
+        Cached[P, T, T],
         _create_sync_wrapper_impl(func, scope, cache_key, ignore_params),
     )
 
 
 def create_async_wrapper[**P, T](
-    func: Callable[P, Awaitable[T] | AsyncGenerator[T, None]],
+    func: Callable[P, Awaitable[T]],
     scope: "AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Callable[P, Awaitable[T]]:
+) -> Cached[P, Awaitable[T], Awaitable[T]]:
     """
     Create an asynchronous wrapper function that caches based on the scope's activation.
 
     Args:
-        func: The async function, or async generator, whose result should
-            be cached.
+        func: The async function whose result should be cached.
         scope: The `AsyncScope` that owns the cached value.
         cache_key: Callable deriving a hashable cache key from `func`'s
             arguments. When omitted, the key is `func`'s arguments
@@ -439,7 +459,8 @@ def create_async_wrapper[**P, T](
     Returns:
         An async wrapper matching `func`'s signature that returns the
         cached value for the current scope activation, computing and
-        storing it on the first call.
+        storing it on the first call. Its `uncached` attribute is `func`
+        itself.
 
     """
     params = list(signature(func).parameters.values())
@@ -457,7 +478,10 @@ def create_async_wrapper[**P, T](
     namespace = _build_namespace(func, scope, is_async=True)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
-    wrapper = cast(Callable[P, Awaitable[T]], _finalize(writer, func, params, namespace))
+    wrapper = cast(
+        Cached[P, Awaitable[T], Awaitable[T]],
+        _finalize(writer, func, params, namespace),
+    )
     weakref.finalize(wrapper, scope.release_slot, slot)
     return wrapper
 
@@ -562,7 +586,7 @@ def create_synccm_wrapper[**P, T](
     scope: "Scope | AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Callable[P, T]:
+) -> Cached[P, T, AbstractContextManager[T]]:
     """
     Create a wrapper that enters a sync context manager and caches its yielded value.
 
@@ -583,11 +607,12 @@ def create_synccm_wrapper[**P, T](
     Returns:
         A wrapper matching `func`'s signature that returns the entered
         value for the current scope activation, entering the context
-        manager on the first call.
+        manager on the first call. Its `uncached` attribute is `func`
+        itself - the unentered context manager function.
 
     """
     return cast(
-        Callable[P, T],
+        Cached[P, T, AbstractContextManager[T]],
         _create_cm_wrapper_impl(
             func,
             scope,
@@ -604,7 +629,7 @@ def create_asynccm_wrapper[**P, T](
     scope: "AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Callable[P, Awaitable[T]]:
+) -> Cached[P, Awaitable[T], AbstractAsyncContextManager[T]]:
     """
     Create a wrapper that enters an async context manager and caches its yielded value.
 
@@ -625,11 +650,12 @@ def create_asynccm_wrapper[**P, T](
     Returns:
         An async wrapper matching `func`'s signature that returns the
         entered value for the current scope activation, entering the
-        context manager on the first call.
+        context manager on the first call. Its `uncached` attribute is
+        `func` itself - the unentered async context manager function.
 
     """
     return cast(
-        Callable[P, Awaitable[T]],
+        Cached[P, Awaitable[T], AbstractAsyncContextManager[T]],
         _create_cm_wrapper_impl(
             func,
             scope,
