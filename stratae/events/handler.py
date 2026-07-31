@@ -68,17 +68,21 @@ class Handler[**P, HandlerConfig, R]:
 
     __slots__ = ("call", "config", "is_async")
 
-    def __init__(self, call: Callable[P, R], config: HandlerConfig) -> None:
+    def __init__(
+        self, call: Callable[P, R], config: HandlerConfig, is_async: bool | None = None
+    ) -> None:
         """
-        Store the callable and its routing config, detecting async-ness once.
+        Store the callable, its routing config, and whether it's async.
 
         :param call: The sync or async callable to wrap. Must accept a single
             payload instance as its argument.
         :param config: The adapter-specific routing config for this handler.
+        :param is_async: Whether `call` is a coroutine function. When
+            omitted, detected automatically by inspecting `call`.
         """
         self.call = call
         self.config = config
-        self.is_async: bool = iscoroutinefunction(call)
+        self.is_async = iscoroutinefunction(call) if is_async is None else is_async
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """

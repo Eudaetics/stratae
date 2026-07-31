@@ -16,6 +16,7 @@ AsyncDirectBus:
 - dispatch invokes all handlers registered on the channel.
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
+- A schema-less PubSub event's sync and async handlers are called with no arguments.
 
 AsyncDirectBus (request events):
 - emit awaits and returns an async responder's reply.
@@ -25,6 +26,7 @@ AsyncDirectBus (request events):
 - emit raises MultipleRespondersError when several responders are registered.
 - A responder's exception propagates directly, not as an ExceptionGroup.
 - An async responder may be registered via the decorator form of handle.
+- A schema-less Request event's sync and async responders are called with no arguments.
 
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -76,6 +78,9 @@ class _BookResult:
 
 
 _find_book = Event(Request[_BookResult], _BookQuery)
+
+_heartbeat = Event(PubSub, name="heartbeat")
+_ping = Event(Request[str], name="ping")
 
 
 @pytest.fixture
@@ -397,6 +402,54 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncDirec
     assert set(exc_info.value.exceptions) == {error_a, error_b}
 
 
+async def test_signal_pubsub_calls_sync_handler_with_no_arguments(bus: AsyncDirectBus):
+    """
+    A schema-less PubSub event's sync handler should be called with no arguments.
+
+    Given: A sync handler that takes no parameters, registered to a PubSub Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The handler should run, receiving no arguments
+    """
+    # Arrange
+    calls: list[bool] = []
+
+    @bus.handle(_heartbeat)
+    def _() -> None:
+        calls.append(True)
+
+    signal = bus.bind(_heartbeat)
+
+    # Act
+    await signal()
+
+    # Assert
+    assert calls == [True]
+
+
+async def test_signal_pubsub_calls_async_handler_with_no_arguments(bus: AsyncDirectBus):
+    """
+    A schema-less PubSub event's async handler should be called with no arguments.
+
+    Given: An async handler that takes no parameters, registered to a PubSub Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The handler should run, receiving no arguments
+    """
+    # Arrange
+    calls: list[bool] = []
+
+    @bus.handle(_heartbeat)
+    async def _() -> None:
+        calls.append(True)
+
+    signal = bus.bind(_heartbeat)
+
+    # Act
+    await signal()
+
+    # Assert
+    assert calls == [True]
+
+
 async def test_request_emit_returns_async_responder_reply(bus: AsyncDirectBus):
     """
     ``emit`` should await and return an async responder's reply for a request event.
@@ -523,6 +576,52 @@ async def test_request_responder_registered_via_decorator(bus: AsyncDirectBus):
 
     # Assert
     assert result is reply
+
+
+async def test_signal_request_calls_sync_responder_with_no_arguments(bus: AsyncDirectBus):
+    """
+    A schema-less Request event's sync responder should be called with no arguments.
+
+    Given: A sync responder that takes no parameters, registered to a Request Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The responder's return value should be returned
+    """
+
+    # Arrange
+    @bus.handle(_ping)
+    def _() -> str:
+        return "pong"
+
+    ping = bus.bind(_ping)
+
+    # Act
+    result = await ping()
+
+    # Assert
+    assert result == "pong"
+
+
+async def test_signal_request_calls_async_responder_with_no_arguments(bus: AsyncDirectBus):
+    """
+    A schema-less Request event's async responder should be called with no arguments.
+
+    Given: An async responder that takes no parameters, registered to a Request Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The responder's return value should be returned
+    """
+
+    # Arrange
+    @bus.handle(_ping)
+    async def _() -> str:
+        return "pong"
+
+    ping = bus.bind(_ping)
+
+    # Act
+    result = await ping()
+
+    # Assert
+    assert result == "pong"
 
 
 async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: AsyncDirectBus):

@@ -8,7 +8,7 @@ dispatch pattern, independent of any bus, factory, or routing config.
 request/reply; subscript it with the reply type, e.g. `Request[BookFound]`.
 
 {py:class}`Event` binds a payload schema to a `DispatchPattern`
-discriminant. Omitting the schema leaves it `None`, for events whose
+discriminant. Omitting the schema leaves it `NoPayload`, for events whose
 occurrence is the whole message. {py:func}`is_request` and
 {py:func}`reply_type` inspect an `Event`'s discriminant:
 {py:func}`is_request` reports whether it's a subscripted `Request`, and
@@ -50,8 +50,7 @@ the rest of the module's API.
 
 from __future__ import annotations
 
-from types import NoneType
-from typing import Any, cast, get_args, get_origin
+from typing import Any, Literal, cast, get_args, get_origin, overload
 
 _UNSUBSCRIPTED_REQUEST = "Request must be subscripted with its reply type (e.g. Request[BookFound])"
 _NOT_A_REQUEST = "event does not carry a subscripted Request discriminant"
@@ -108,7 +107,18 @@ def _validate_pattern(pattern: type[DispatchPattern[Any, Any]]):
         raise TypeError(_UNSUBSCRIPTED_REQUEST)
 
 
-class Event[T: DispatchPattern[Any, Any], E]:
+class NoPayload:
+    """
+    Sentinel schema for an Event that carries no payload at all.
+
+    Distinct from `None`/`NoneType`, which remain available as an ordinary,
+    if degenerate, payload type. Using a dedicated sentinel lets the type
+    system tell "no payload" and "payload is `None`" apart, which collapsing
+    onto `NoneType` could not.
+    """
+
+
+class Event[T: DispatchPattern[Any, Any], S, Signal: bool]:
     """
     Bus-agnostic event definition binding a schema to a dispatch pattern.
 
@@ -117,18 +127,36 @@ class Event[T: DispatchPattern[Any, Any], E]:
     It's the shareable definition that both a producer's `bind` and a
     consumer's `handle` reference.
 
-    Omitting `schema` leaves it `None`, defining an event that carries no
-    payload at all. Its occurrence is the whole message: a heartbeat, a
+    `Signal` is a phantom type parameter, never read at runtime: `Literal[True]`
+    for a payload-less event, `Literal[False]` for a schema'd one.
+
+    Omitting `schema` leaves it `NoPayload`, defining an event that carries
+    no payload at all. Its occurrence is the whole message: a heartbeat, a
     cache invalidation, a shutdown notice. Binding one produces a callable
     taking no arguments, since there's nothing to pass.
     """
 
     __slots__ = ("name", "_pattern", "schema")
 
+    @overload
+    def __init__[T2: DispatchPattern[Any, Any]](
+        self: Event[T2, NoPayload, Literal[True]],
+        pattern: type[T2],
+        *,
+        name: str | None = None,
+    ) -> None: ...
+    @overload
+    def __init__[T2: DispatchPattern[Any, Any], S2](
+        self: Event[T2, S2, Literal[False]],
+        pattern: type[T2],
+        schema: type[S2],
+        *,
+        name: str | None = None,
+    ) -> None: ...
     def __init__(
         self,
-        pattern: type[T],
-        schema: type[E] = NoneType,
+        pattern: type[Any],
+        schema: type[Any] = NoPayload,
         *,
         name: str | None = None,
     ) -> None:
@@ -137,7 +165,7 @@ class Event[T: DispatchPattern[Any, Any], E]:
 
         :param pattern: The dispatch pattern discriminant class.
         :param schema: The payload type this event carries. Omit it for a
-            payload-less event, leaving the schema `None`.
+            payload-less event, leaving the schema `NoPayload`.
         :param name: Human-readable identifier for this event. Defaults to
             `schema.__name__`.
         :raises TypeError: If `pattern` is an unsubscripted `Request`.
@@ -154,7 +182,7 @@ class Event[T: DispatchPattern[Any, Any], E]:
         return self._pattern
 
 
-def is_request[T: DispatchPattern[Any, Any], S](event: Event[T, S]) -> bool:
+def is_request[T: DispatchPattern[Any, Any], S, Signal: bool](event: Event[T, S, Signal]) -> bool:
     """
     Report whether the event carries a subscripted Request discriminant.
 
@@ -170,7 +198,7 @@ def is_request[T: DispatchPattern[Any, Any], S](event: Event[T, S]) -> bool:
     return isinstance(origin, type) and issubclass(origin, Request)
 
 
-def reply_type[R, S](event: Event[Request[R], S]) -> type[R]:
+def reply_type[R, S, Signal: bool](event: Event[Request[R], S, Signal]) -> type[R]:
     """
     Recover the reply type from a request event's discriminant.
 

@@ -102,15 +102,15 @@ scheduled shipment for order 1
 import asyncio
 from collections import defaultdict
 from inspect import iscoroutinefunction
-from typing import Any, Awaitable, Callable, Protocol, overload
+from typing import Any, Awaitable, Callable, Literal, Protocol, overload
 
 from stratae.events.bind import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
-from stratae.events.event import DispatchPattern, Event, is_request
+from stratae.events.event import DispatchPattern, Event, NoPayload, is_request
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.handler import Handler
 
-_AnyEvent = Event[Any, Any]
+_AnyEvent = Event[Any, Any, Any]
 
 _ASYNC_HANDLER_REJECTED = (
     "DirectBus dispatches synchronously and cannot await async handlers;"
@@ -127,6 +127,15 @@ class _AsyncHandlerDecorator[S: Any, R](Protocol):
     ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
     @overload
     def __call__(self, fn: Callable[[S], R]) -> Handler[[S], _AnyEvent, R]: ...
+
+
+class _AsyncSignalHandlerDecorator[R](Protocol):
+    """Decorator form of handle for a schema-less event: registers and returns the Handler."""
+
+    @overload
+    def __call__(self, fn: Callable[[], Awaitable[R]]) -> Handler[[], _AnyEvent, Awaitable[R]]: ...
+    @overload
+    def __call__(self, fn: Callable[[], R]) -> Handler[[], _AnyEvent, R]: ...
 
 
 class BaseDirectBus:
@@ -147,9 +156,14 @@ class BaseDirectBus:
         """Initialise the handler registry."""
         self._handlers: dict[_AnyEvent, set[Handler[Any, _AnyEvent, Any]]] = defaultdict(set)
 
-    def _register[**P, R](self, config: _AnyEvent, fn: Callable[P, R]) -> Handler[P, _AnyEvent, R]:
+    def _register(self, config: _AnyEvent, fn: Callable[..., Any]) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn as a Handler and store it in the registry under config."""
-        handler: Handler[P, _AnyEvent, R] = Handler(fn, config)
+
+        def call_without_payload(_: Any) -> Any:
+            return fn()
+
+        call: Callable[..., Any] = call_without_payload if config.schema is NoPayload else fn
+        handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, iscoroutinefunction(fn))
         self._handlers[config].add(handler)
         return handler
 
@@ -210,9 +224,9 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
             self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
 
-    def emit[S, R](
+    def emit[S, R, Signal: bool](
         self,
-        event: Event[DispatchPattern[R, Any], S],
+        event: Event[DispatchPattern[R, Any], S, Signal],
         config: None,  # noqa: S1172
         payload: S,
         *,
@@ -241,16 +255,30 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         return self._dispatch(payload, event)
 
     @overload
+    def handle[R](
+        self,
+        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        fn: Callable[[], R],
+    ) -> Handler[[], _AnyEvent, R]: ...
+
+    @overload
+    def handle[R](
+        self,
+        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        fn: None = None,
+    ) -> Callable[[Callable[[], R]], Handler[[], _AnyEvent, R]]: ...
+
+    @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S],
+        config: Event[DispatchPattern[Any, R], S, Literal[False]],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S],
+        config: Event[DispatchPattern[Any, R], S, Literal[False]],
         fn: None = None,
     ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
 
@@ -285,7 +313,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
 
         return decorator
 
-    def _register[**P, R](self, config: _AnyEvent, fn: Callable[P, R]) -> Handler[P, _AnyEvent, R]:
+    def _register(self, config: _AnyEvent, fn: Callable[..., Any]) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn as a Handler, rejecting it with TypeError if it's async."""
         if iscoroutinefunction(fn):
             raise TypeError(_ASYNC_HANDLER_REJECTED)
@@ -352,9 +380,9 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         super().__init__()
         self._use_envelope = use_envelope
 
-    async def emit[S, R](
+    async def emit[S, R, Signal: bool](
         self,
-        event: Event[DispatchPattern[R, Any], S],
+        event: Event[DispatchPattern[R, Any], S, Signal],
         config: None,  # noqa: S1172
         payload: S,
         *,
@@ -392,23 +420,44 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         return await self._dispatch(payload, event)
 
     @overload
+    def handle[R](
+        self,
+        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        fn: Callable[[], Awaitable[R]],
+    ) -> Handler[[], _AnyEvent, Awaitable[R]]: ...
+
+    @overload
+    def handle[R](
+        self,
+        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        fn: Callable[[], R],
+    ) -> Handler[[], _AnyEvent, R]: ...
+
+    @overload
+    def handle[R](
+        self,
+        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        fn: None = None,
+    ) -> _AsyncSignalHandlerDecorator[R]: ...
+
+    @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S],
+        config: Event[DispatchPattern[Any, R], S, Literal[False]],
         fn: Callable[[S], Awaitable[R]],
     ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S],
+        config: Event[DispatchPattern[Any, R], S, Literal[False]],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S],
+        config: Event[DispatchPattern[Any, R], S, Literal[False]],
         fn: None = None,
     ) -> _AsyncHandlerDecorator[S, R]: ...
 

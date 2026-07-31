@@ -26,7 +26,7 @@ reply_type:
 - Raises TypeError when the discriminant is not a subscripted Request.
 """
 
-from typing import cast
+from typing import Literal, cast
 
 import pytest
 
@@ -198,7 +198,7 @@ def test_reply_type_raises_for_non_request_discriminant() -> None:
     Then: A TypeError should be raised
     """
     ev = Event(PubSub, _OrderPlaced)
-    mistyped = cast(Event[Request[object], _OrderPlaced], ev)
+    mistyped = cast(Event[Request[object], _OrderPlaced, Literal[False]], ev)
 
     with pytest.raises(TypeError):
         reply_type(mistyped)

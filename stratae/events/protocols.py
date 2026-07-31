@@ -17,7 +17,7 @@ from stratae.events.event import DispatchPattern, Event
 
 
 @runtime_checkable
-class EmitCallable[T: DispatchPattern[Any, Any], S, C, R](Protocol):
+class EmitCallable[T: DispatchPattern[Any, Any], S, C, R, Signal: bool](Protocol):
     """
     Structural protocol for a single bound emit call.
 
@@ -26,12 +26,12 @@ class EmitCallable[T: DispatchPattern[Any, Any], S, C, R](Protocol):
     concrete `R` instead of `Any`, though. That lets a specific binding,
     e.g. the `emitter` behind a callable returned by
     {py:func}`bind <stratae.events.bind.bind>`, be checked against its
-    own return type.
+    own return type. `Signal` is likewise concrete per binding.
     """
 
     def __call__(
         self,
-        event: Event[T, S],
+        event: Event[T, S, Signal],
         config: C,
         payload: S,
         *,
@@ -61,9 +61,9 @@ class Producer(Protocol):
     Adapters implement it to perform the actual dispatch.
     """
 
-    def emit[T: DispatchPattern[Any, Any], S](
+    def emit[T: DispatchPattern[Any, Any], S, Signal: bool](
         self,
-        event: Event[T, S],
+        event: Event[T, S, Signal],
         config: Any,
         payload: S,
         *,

@@ -85,7 +85,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from copy import copy
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Iterable, Protocol, overload
+from inspect import iscoroutinefunction
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Coroutine,
+    Iterable,
+    Literal,
+    Protocol,
+    cast,
+    overload,
+)
 
 from aiormq import connect
 from pamqp.commands import Basic
@@ -94,12 +105,15 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     TIMESTAMP_HEADER,
+    DispatchPattern,
     Envelope,
     Event,
     Handler,
+    NoPayload,
     PubSub,
-    abind,
+    is_request,
 )
+from stratae.events.bind import AsyncBindMixin
 from stratae.events.exceptions import NotConnectedError
 from stratae.serde import Unpacker, pack, unpack_json
 
@@ -109,6 +123,8 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 _NOT_CONNECTED = "publisher is not connected; open it with 'async with' before emitting"
+
+_REQUEST_REPLY_NOT_IMPLEMENTED = "RabbitMQ request/reply is not yet implemented"
 
 _NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
 
@@ -188,7 +204,7 @@ class RabbitMQConfig:
         self.properties = properties
 
 
-class RabbitMQPublisher:
+class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     """
     Async RabbitMQ publish adapter for pub/sub events.
 
@@ -198,9 +214,11 @@ class RabbitMQPublisher:
     ({py:func}`stratae.serde.pack` by default). A config carrying an
     `exchange_type` has its exchange declared before its first publish.
     Bind an {py:class}`Event <stratae.events.event.Event>` to this adapter
-    with {py:func}`RabbitMQPublisher.bind`, passing `factory` to construct
-    the payload from the bound call's arguments, or omitting it to forward
-    an already-built payload directly.
+    with `bind`, inherited from
+    {py:class}`AsyncBindMixin <stratae.events.bind.AsyncBindMixin>`, passing
+    `factory` to construct the payload from the bound call's arguments, or
+    omitting it to forward an already-built payload directly. Request/reply
+    events raise `NotImplementedError`; only pub/sub is implemented.
     """
 
     def __init__(self, url: str, serializer: Callable[[Any], bytes] = pack) -> None:
@@ -237,59 +255,14 @@ class RabbitMQPublisher:
             self._channel = None
             self._declared.clear()
 
-    @overload
-    def bind[**P, S](
+    async def emit[S, R, Signal: bool](
         self,
-        event: Event[PubSub, S],
-        *,
-        factory: Callable[P, S] | Callable[P, Awaitable[S]],
-        config: RabbitMQConfig,
-        serializer: Callable[[S], bytes] | None = None,
-    ) -> Callable[P, Awaitable[None]]: ...
-
-    @overload
-    def bind[S](
-        self,
-        event: Event[PubSub, S],
-        *,
-        config: RabbitMQConfig,
-        serializer: Callable[[S], bytes] | None = None,
-    ) -> Callable[[S], Awaitable[None]]: ...
-
-    def bind(
-        self,
-        event: Event[PubSub, Any],
-        *,
-        factory: Callable[..., Any] | None = None,
-        config: RabbitMQConfig,
-        serializer: Callable[[Any], bytes] | None = None,
-    ) -> Callable[..., Awaitable[None]]:
-        """
-        Return an awaitable callable publishing through this adapter.
-
-        :param event: The {py:class}`Event <stratae.events.event.Event>`
-            this binding publishes.
-        :param factory: Builds the payload from the bound call's arguments.
-            Omit it to pass an already-built payload straight through
-            instead.
-        :param config: The exchange and routing key to publish to.
-        :param serializer: Encodes the payload to bytes before publishing.
-            Overrides the adapter's `serializer` for this binding only.
-        :returns: A callable that builds the payload via `factory` when
-            given, otherwise one that forwards an already-built payload
-            straight through; either way publishing it once awaited.
-
-        """
-        return abind(event, self.emit, factory=factory, config=config, serializer=serializer)
-
-    async def emit[S](
-        self,
-        event: Event[PubSub, S],
+        event: Event[DispatchPattern[R, Any], S, Signal],
         config: RabbitMQConfig,
         payload: S,
         *,
         serializer: Callable[[S], bytes] | None = None,
-    ) -> None:
+    ) -> R:
         """
         Serialize the payload and publish it to the configured exchange.
 
@@ -301,24 +274,40 @@ class RabbitMQPublisher:
         :param serializer: Encodes the payload to bytes before publishing.
             Overrides the adapter's `serializer` for this call only.
         :raises NotConnectedError: When the publisher's connection is not open.
+        :raises NotImplementedError: When the event is request/reply; only
+            pub/sub is implemented.
 
         """
+        if is_request(event):
+            raise NotImplementedError(_REQUEST_REPLY_NOT_IMPLEMENTED)
         if self._channel is None:
             raise NotConnectedError(_NOT_CONNECTED)
-        if config.exchange_type is not None and config.exchange not in self._declared:
-            await self._channel.exchange_declare(
-                config.exchange,
-                exchange_type=config.exchange_type,
-                durable=config.exchange_durable,
-            )
-            self._declared.add(config.exchange)
-        body = serializer(payload) if serializer is not None else self._serializer(payload)
+        await self._declare_exchange(self._channel, config)
+        body = self._encode(event, payload, serializer)
         await self._channel.basic_publish(
             body,
             exchange=config.exchange,
             routing_key=config.routing_key,
             properties=_stamp(config.properties),
         )
+        return cast(R, None)
+
+    async def _declare_exchange(self, channel: AbstractChannel, config: RabbitMQConfig) -> None:
+        """Declare config's exchange if it carries a type and hasn't been declared yet."""
+        if config.exchange_type is None or config.exchange in self._declared:
+            return
+        await channel.exchange_declare(
+            config.exchange, exchange_type=config.exchange_type, durable=config.exchange_durable
+        )
+        self._declared.add(config.exchange)
+
+    def _encode(
+        self, event: Event[Any, Any, Any], payload: Any, serializer: Callable[[Any], bytes] | None
+    ) -> bytes:
+        """Serialize payload for publishing, or an empty body for a schema-less event."""
+        if event.schema is NoPayload:
+            return b""
+        return serializer(payload) if serializer is not None else self._serializer(payload)
 
 
 class RabbitMQConsumeConfig:
@@ -403,7 +392,7 @@ class _Registration:
 
     def __init__(
         self,
-        event: Event[PubSub, Any],
+        event: Event[PubSub, Any, Any],
         handler: Handler[[Any], RabbitMQConsumeConfig, Any],
         deserializer: Unpacker | None,
     ) -> None:
@@ -417,6 +406,12 @@ class _ConsumeDecorator[S: Any](Protocol):
     """Decorator form of `handle`: registers and returns the resulting Handler."""
 
     def __call__[R](self, fn: Callable[[S], R]) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
+
+
+class _SignalConsumeDecorator(Protocol):
+    """Decorator form of `handle` for a schema-less event: registers and returns the Handler."""
+
+    def __call__[R](self, fn: Callable[[], R]) -> Handler[[], RabbitMQConsumeConfig, R]: ...
 
 
 class RabbitMQConsumer:
@@ -503,9 +498,29 @@ class RabbitMQConsumer:
             registration.consumer_tag = None
 
     @overload
+    def handle[R](
+        self,
+        event: Event[PubSub, NoPayload, Literal[True]],
+        fn: Callable[[], R],
+        *,
+        config: RabbitMQConsumeConfig,
+        deserializer: Unpacker | None = None,
+    ) -> Handler[[], RabbitMQConsumeConfig, R]: ...
+
+    @overload
+    def handle(
+        self,
+        event: Event[PubSub, NoPayload, Literal[True]],
+        fn: None = None,
+        *,
+        config: RabbitMQConsumeConfig,
+        deserializer: Unpacker | None = None,
+    ) -> _SignalConsumeDecorator: ...
+
+    @overload
     def handle[S, R](
         self,
-        event: Event[PubSub, S],
+        event: Event[PubSub, S, Literal[False]],
         fn: Callable[[S], R],
         *,
         config: RabbitMQConsumeConfig,
@@ -515,7 +530,7 @@ class RabbitMQConsumer:
     @overload
     def handle[S](
         self,
-        event: Event[PubSub, S],
+        event: Event[PubSub, S, Literal[False]],
         fn: None = None,
         *,
         config: RabbitMQConsumeConfig,
@@ -524,12 +539,14 @@ class RabbitMQConsumer:
 
     def handle(
         self,
-        event: Event[PubSub, Any],
-        fn: Callable[[Any], Any] | None = None,
+        event: Event[PubSub, Any, Any],
+        fn: Callable[..., Any] | None = None,
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Unpacker | None = None,
-    ) -> Handler[[Any], RabbitMQConsumeConfig, Any] | _ConsumeDecorator[Any]:
+    ) -> (
+        Handler[Any, RabbitMQConsumeConfig, Any] | _ConsumeDecorator[Any] | _SignalConsumeDecorator
+    ):
         """
         Register a handler consuming a queue for an event, as a decorator or direct call.
 
@@ -552,7 +569,7 @@ class RabbitMQConsumer:
         if fn is not None:
             return self._register(event, fn, config, deserializer)
 
-        def decorator(fn: Callable[[Any], Any]) -> Handler[[Any], RabbitMQConsumeConfig, Any]:
+        def decorator(fn: Callable[..., Any]) -> Handler[Any, RabbitMQConsumeConfig, Any]:
             return self._register(event, fn, config, deserializer)
 
         return decorator
@@ -577,13 +594,20 @@ class RabbitMQConsumer:
 
     def _register(
         self,
-        event: Event[PubSub, Any],
-        fn: Callable[[Any], Any],
+        event: Event[PubSub, Any, Any],
+        fn: Callable[..., Any],
         config: RabbitMQConsumeConfig,
         deserializer: Unpacker | None,
     ) -> Handler[[Any], RabbitMQConsumeConfig, Any]:
         """Wrap fn as a Handler and start consuming immediately if the connection is open."""
-        handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(fn, config)
+
+        def call_without_payload(_: Any) -> Any:
+            return fn()
+
+        call: Callable[[Any], Any] = call_without_payload if event.schema is NoPayload else fn
+        handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(
+            call, config, iscoroutinefunction(fn)
+        )
         registration = _Registration(event, handler, deserializer)
         self._registrations[handler] = registration
         channel = self._channel
@@ -639,6 +663,8 @@ class RabbitMQConsumer:
 
     def _deserialize(self, registration: _Registration, body: bytes) -> Any:
         """Decode a message body with the registration's deserializer, or the consumer's default."""
+        if registration.event.schema is NoPayload:
+            return None
         unpacker = registration.deserializer or self._deserializer
         return unpacker(body, type=registration.event.schema)
 

@@ -43,6 +43,7 @@ RabbitMQConsumer:
 - Malformed envelope headers log a warning and scope a fresh envelope
   without blocking the handler.
 - A partial identifying pair is logged before the missing id is minted.
+- A schema-less event's handler is called with no arguments.
 """
 
 import asyncio
@@ -74,6 +75,8 @@ class _OrderPlaced:
 
 _order_placed = Event(PubSub, _OrderPlaced)
 _config = RabbitMQConsumeConfig("orders")
+
+_heartbeat = Event(PubSub, name="heartbeat")
 
 
 def _message(body: bytes, headers: dict[str, Any] | None = None) -> AsyncMock:
@@ -297,6 +300,35 @@ async def test_async_handler_awaited(consumer: RabbitMQConsumer, channel: AsyncM
     # Assert
     assert received[0].order_id == 7
     message.channel.basic_ack.assert_awaited_once_with(11)
+
+
+async def test_signal_handler_called_with_no_arguments(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A schema-less event's handler should be called with no arguments.
+
+    Given: A connected consumer with a zero-parameter handler registered to a schema-less Event
+    When: The registered callback receives a message
+    Then: The handler should run and the message should be acked
+    """
+    # Arrange
+    calls: list[bool] = []
+
+    def on_heartbeat() -> None:
+        calls.append(True)
+
+    consumer.handle(_heartbeat, on_heartbeat, config=_config)
+    message = _message(b"{}")
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert calls == [True]
+    message.channel.basic_ack.assert_awaited_once_with(11)
+    message.channel.basic_nack.assert_not_awaited()
 
 
 async def test_constructor_deserializer_used(connect_mock: AsyncMock, channel: AsyncMock):

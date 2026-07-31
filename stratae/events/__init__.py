@@ -106,6 +106,7 @@ from .envelope import (
 from .event import (
     DispatchPattern,
     Event,
+    NoPayload,
     PubSub,
     Request,
     is_request,
@@ -126,6 +127,7 @@ __all__ = [
     "Event",
     "Handler",
     "MESSAGE_ID_HEADER",
+    "NoPayload",
     "Producer",
     "PubSub",
     "Request",

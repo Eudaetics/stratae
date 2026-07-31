@@ -22,6 +22,8 @@ RabbitMQPublisher:
   mutating the config's properties object.
 - emit stamps envelope ids onto every message as x- headers and native
   fields, chaining a child of the active envelope scope.
+- emit raises NotImplementedError for a request/reply event.
+- emit publishes an empty body for a schema-less event.
 """
 
 from unittest.mock import AsyncMock
@@ -37,6 +39,7 @@ from stratae.events import (
     Envelope,
     Event,
     PubSub,
+    Request,
 )
 from stratae.events.exceptions import NotConnectedError
 from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
@@ -164,6 +167,20 @@ async def test_emit_without_connection_raises(publisher: RabbitMQPublisher):
         await publisher.emit(_order_placed, _config, _OrderPlaced(1))
 
 
+async def test_emit_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
+    """
+    ``emit`` should raise NotImplementedError for a request/reply event.
+
+    Given: A publisher and an Event using the Request dispatch pattern
+    When: emit is awaited with that event
+    Then: A NotImplementedError should be raised
+    """
+    request_event = Event(Request[_OrderPlaced], _OrderPlaced)
+
+    with pytest.raises(NotImplementedError):
+        await publisher.emit(request_event, _config, _OrderPlaced(1))
+
+
 async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, channel: AsyncMock):
     """
     ``emit`` should publish the pack-serialized payload to the configured target.
@@ -185,6 +202,28 @@ async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, chann
     assert call.args[0] == pack(payload)
     assert call.kwargs["exchange"] == "events"
     assert call.kwargs["routing_key"] == "order.placed"
+
+
+async def test_emit_publishes_empty_body_for_signal_event(
+    publisher: RabbitMQPublisher, channel: AsyncMock
+):
+    """
+    ``emit`` should publish an empty body for a schema-less event.
+
+    Given: A connected publisher and a schema-less Event
+    When: emit is awaited with that event
+    Then: An empty body should be published, without invoking the serializer
+    """
+    # Arrange
+    heartbeat_event = Event(PubSub, name="heartbeat")
+
+    # Act
+    async with publisher:
+        await publisher.emit(heartbeat_event, _config, None)
+
+    # Assert
+    call = channel.basic_publish.await_args
+    assert call.args[0] == b""
 
 
 async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel: AsyncMock):

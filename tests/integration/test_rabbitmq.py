@@ -18,6 +18,7 @@ This test suite verifies the following behaviors:
 - A durable named queue parks messages while its consumer is offline.
 - A poison message is dropped without redelivery and without reaching
   the handler.
+- A schema-less event round-trips publisher -> broker -> zero-arg handler.
 """
 
 import asyncio
@@ -50,6 +51,7 @@ class Message(msgspec.Struct):
 
 
 message_event = Event(PubSub, Message)
+heartbeat_event = Event(PubSub, name="heartbeat")
 
 
 class _Broker:
@@ -124,6 +126,38 @@ async def test_msgspec_round_trip(broker: _Broker):
 
     # Assert
     assert received[0] == Message(text="hello")
+
+
+async def test_signal_event_round_trip(broker: _Broker):
+    """
+    A schema-less event should round-trip publisher -> broker -> zero-arg handler.
+
+    Given: A publisher and consumer bound to a schema-less Event
+    When: The event is sent with no payload
+    Then: The zero-parameter handler should run
+    """
+    # Arrange
+    exchange = _unique("stratae-it")
+    broker.exchanges.append(exchange)
+    calls: list[bool] = []
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+
+    def on_heartbeat() -> None:
+        calls.append(True)
+
+    consumer.handle(heartbeat_event, on_heartbeat, config=RabbitMQConsumeConfig(exchange=exchange))
+
+    # Act
+    async with consumer:
+        async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+            send = publisher.bind(
+                heartbeat_event, config=RabbitMQConfig(exchange, "", exchange_type="fanout")
+            )
+            await send()
+        await _eventually(lambda: len(calls) == 1)
+
+    # Assert
+    assert calls == [True]
 
 
 async def test_envelope_survives_the_wire(broker: _Broker):

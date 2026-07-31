@@ -17,6 +17,7 @@ DirectBus:
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
 - A handler that removes a registration during dispatch does not prevent
   other handlers on the same emission from running.
+- A schema-less PubSub event's handler is called with no arguments.
 
 DirectBus (request events):
 - emit returns the responder's reply.
@@ -25,6 +26,7 @@ DirectBus (request events):
 - emit raises MultipleRespondersError when several responders are registered.
 - A responder's exception propagates directly, not as an ExceptionGroup.
 - A responder may be registered via the decorator form of handle.
+- A schema-less Request event's responder is called with no arguments.
 
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -76,6 +78,9 @@ class _BookResult:
 
 
 _find_book = Event(Request[_BookResult], _BookQuery)
+
+_heartbeat = Event(PubSub, name="heartbeat")
+_ping = Event(Request[str], name="ping")
 
 
 @pytest.fixture
@@ -422,6 +427,30 @@ def test_handler_removing_registration_during_dispatch_does_not_break_other_hand
         handler.assert_called_once_with(payload)
 
 
+def test_signal_pubsub_calls_handler_with_no_arguments(bus: DirectBus):
+    """
+    A schema-less PubSub event's handler should be called with no arguments.
+
+    Given: A handler that takes no parameters, registered to a PubSub Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The handler should run, receiving no arguments
+    """
+    # Arrange
+    calls: list[bool] = []
+
+    @bus.handle(_heartbeat)
+    def _() -> None:
+        calls.append(True)
+
+    signal = bus.bind(_heartbeat)
+
+    # Act
+    signal()
+
+    # Assert
+    assert calls == [True]
+
+
 def test_request_emit_returns_responder_reply(bus: DirectBus):
     """
     ``emit`` should return the responder's reply for a request event.
@@ -530,6 +559,29 @@ def test_request_responder_registered_via_decorator(bus: DirectBus):
 
     # Assert
     assert result is reply
+
+
+def test_signal_request_calls_responder_with_no_arguments(bus: DirectBus):
+    """
+    A schema-less Request event's responder should be called with no arguments.
+
+    Given: A responder that takes no parameters, registered to a Request Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The responder's return value should be returned
+    """
+
+    # Arrange
+    @bus.handle(_ping)
+    def _() -> str:
+        return "pong"
+
+    ping = bus.bind(_ping)
+
+    # Act
+    result = ping()
+
+    # Assert
+    assert result == "pong"
 
 
 def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: DirectBus):

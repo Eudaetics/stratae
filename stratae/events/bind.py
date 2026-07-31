@@ -9,9 +9,8 @@ arguments and forwards it to the emitter. Omitting `factory` returns a
 callable that takes an already-built payload directly and forwards it the
 same way.
 
-Omitting `factory` for a payload-less event, one whose schema is `None`,
-returns a {py:class}`BoundSignal` instead, callable with no arguments at
-all.
+Omitting `factory` for a payload-less event, one whose schema is `NoPayload`,
+returns a callable with no arguments at all.
 
 Both returned callables send the payload and associated settings to the
 emitter, returning whatever the emitter produces. `bind` requires a sync
@@ -69,47 +68,19 @@ See {py:func}`bind` and {py:func}`abind` for the rest of the module's API.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, Protocol, overload
+from typing import Any, Awaitable, Callable, Literal, overload
 
 from stratae.events._typeguards import is_async_factory, is_sync_factory
-from stratae.events.event import DispatchPattern, Event
+from stratae.events.event import DispatchPattern, Event, NoPayload
 from stratae.events.protocols import EmitCallable
 
 _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
 
-class BoundSignal[R](Protocol):
-    """
-    Call shape of an event bound with no payload to pass.
-
-    {py:func}`bind` returns one of these when `factory` is omitted for an
-    {py:class}`Event <stratae.events.event.Event>` whose schema is `None`,
-    so the binding is invoked with no arguments.
-
-    `payload` is declared, defaulted to `None`, rather than omitted
-    outright. A bare zero-argument callable would not be assignable to the
-    `Callable[[S], R]` that {py:func}`bind` returns for a schema'd event,
-    and the two overloads would be reported as overlapping with
-    incompatible return types. Keeping the parameter optional makes the
-    returns compatible while still allowing the no-argument call.
-    """
-
-    def __call__(self, payload: None = None, /) -> R:
-        """
-        Dispatch the event.
-
-        :param payload: Always `None`. Present only so this stays
-            assignable to `Callable[[None], R]`; there is no reason to
-            pass it.
-        :returns: Whatever the bound emitter produces.
-        """
-        ...
-
-
 @overload
 def bind[**P, T: DispatchPattern[Any, Any], S, C, R](
-    event: Event[T, S],
-    emitter: EmitCallable[T, S, C, R],
+    event: Event[T, S, Literal[False]],
+    emitter: EmitCallable[T, S, C, R, Literal[False]],
     *,
     factory: Callable[P, S],
     config: C,
@@ -119,19 +90,19 @@ def bind[**P, T: DispatchPattern[Any, Any], S, C, R](
 
 @overload
 def bind[T: DispatchPattern[Any, Any], C, R](
-    event: Event[T, None],
-    emitter: EmitCallable[T, None, C, R],
+    event: Event[T, NoPayload, Literal[True]],
+    emitter: EmitCallable[T, NoPayload, C, R, Literal[True]],
     *,
     factory: None = None,
     config: C,
-    serializer: Callable[[None], Any] | None = None,
-) -> BoundSignal[R]: ...
+    serializer: None = None,
+) -> Callable[[], R]: ...
 
 
 @overload
 def bind[T: DispatchPattern[Any, Any], S, C, R](
-    event: Event[T, S],
-    emitter: EmitCallable[T, S, C, R],
+    event: Event[T, S, Literal[False]],
+    emitter: EmitCallable[T, S, C, R, Literal[False]],
     *,
     factory: None = None,
     config: C,
@@ -140,8 +111,8 @@ def bind[T: DispatchPattern[Any, Any], S, C, R](
 
 
 def bind(
-    event: Event[Any, Any],
-    emitter: EmitCallable[Any, Any, Any, Any],
+    event: Event[Any, Any, Any],
+    emitter: EmitCallable[Any, Any, Any, Any, Any],
     *,
     factory: Callable[..., Any] | None = None,
     config: Any,
@@ -151,8 +122,8 @@ def bind(
     Bind an event to a sync emitter, with a factory, or without one for passthrough.
 
     :param event: The {py:class}`Event <stratae.events.event.Event>` to
-        bind. One whose schema is `None` binds to a
-        {py:class}`BoundSignal`, taking no arguments.
+        bind. One whose schema is `NoPayload` binds to a zero-argument
+        callable.
     :param emitter: A callable that receives the `Event` being bound and
         the payload, and returns `R`.
     :param factory: Builds the payload from the bound call's arguments. When
@@ -164,8 +135,8 @@ def bind(
         emitter falls back to its own default serializer, if any.
     :returns: A callable that builds the payload via `factory` and forwards
         it to `emitter` when `factory` is given, otherwise a callable that
-        forwards an already-built payload straight through, or a
-        `BoundSignal` when the event carries no payload.
+        forwards an already-built payload straight through, or takes no
+        arguments when the event carries no payload.
     :raises TypeError: If `factory` is given and is async.
 
     """
@@ -187,8 +158,8 @@ def bind(
 
 @overload
 def abind[**P, T: DispatchPattern[Any, Any], S, C, R](
-    event: Event[T, S],
-    emitter: EmitCallable[T, S, C, Awaitable[R]],
+    event: Event[T, S, Literal[False]],
+    emitter: EmitCallable[T, S, C, Awaitable[R], Literal[False]],
     *,
     factory: Callable[P, S] | Callable[P, Awaitable[S]],
     config: C,
@@ -198,19 +169,19 @@ def abind[**P, T: DispatchPattern[Any, Any], S, C, R](
 
 @overload
 def abind[T: DispatchPattern[Any, Any], C, R](
-    event: Event[T, None],
-    emitter: EmitCallable[T, None, C, Awaitable[R]],
+    event: Event[T, NoPayload, Literal[True]],
+    emitter: EmitCallable[T, NoPayload, C, Awaitable[R], Literal[True]],
     *,
     factory: None = None,
     config: C,
-    serializer: Callable[[None], Any] | None = None,
-) -> BoundSignal[Awaitable[R]]: ...
+    serializer: None = None,
+) -> Callable[[], Awaitable[R]]: ...
 
 
 @overload
 def abind[T: DispatchPattern[Any, Any], S, C, R](
-    event: Event[T, S],
-    emitter: EmitCallable[T, S, C, Awaitable[R]],
+    event: Event[T, S, Literal[False]],
+    emitter: EmitCallable[T, S, C, Awaitable[R], Literal[False]],
     *,
     factory: None = None,
     config: C,
@@ -219,8 +190,8 @@ def abind[T: DispatchPattern[Any, Any], S, C, R](
 
 
 def abind(
-    event: Event[Any, Any],
-    emitter: EmitCallable[Any, Any, Any, Awaitable[Any]],
+    event: Event[Any, Any, Any],
+    emitter: EmitCallable[Any, Any, Any, Awaitable[Any], Any],
     *,
     factory: Callable[..., Any] | Callable[..., Awaitable[Any]] | None = None,
     config: Any,
@@ -230,8 +201,8 @@ def abind(
     Bind an event to an async emitter, with a factory, or without one for passthrough.
 
     :param event: The {py:class}`Event <stratae.events.event.Event>` to
-        bind. One whose schema is `None` binds to a
-        {py:class}`BoundSignal`, taking no arguments.
+        bind. One whose schema is `NoPayload` binds to a zero-argument
+        callable.
     :param emitter: A coroutine callable that receives the `Event` being
         bound and the payload, and returns an awaitable resolving to `R`.
     :param factory: Builds the payload from the bound call's arguments, sync
@@ -244,7 +215,7 @@ def abind(
     :returns: A callable that builds the payload via `factory`, sync or
         async, and forwards it to `emitter` when `factory` is given,
         otherwise a callable that forwards an already-built payload straight
-        through, or a `BoundSignal` when the event carries no payload.
+        through, or takes no arguments when the event carries no payload.
         Either way, awaiting the callable resolves to `R`.
 
     """
@@ -283,9 +254,9 @@ class BindMixin[C](ABC):
     __slots__ = ()
 
     @abstractmethod
-    def emit[S, R](
+    def emit[S, R, Signal: bool](
         self,
-        event: Event[DispatchPattern[R, Any], S],
+        event: Event[DispatchPattern[R, Any], S, Signal],
         config: C,
         payload: S,
         *,
@@ -305,7 +276,7 @@ class BindMixin[C](ABC):
     @overload
     def bind[**P, S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S],
+        event: Event[DispatchPattern[R, Any], S, Literal[False]],
         *,
         factory: Callable[P, S],
         config: C = ...,
@@ -314,16 +285,16 @@ class BindMixin[C](ABC):
     @overload
     def bind[R](
         self,
-        event: Event[DispatchPattern[R, Any], None],
+        event: Event[DispatchPattern[R, Any], NoPayload, Literal[True]],
         *,
         factory: None = None,
         config: C = ...,
-        serializer: Callable[[None], Any] | None = None,
-    ) -> BoundSignal[R]: ...
+        serializer: None = None,
+    ) -> Callable[[], R]: ...
     @overload
     def bind[S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S],
+        event: Event[DispatchPattern[R, Any], S, Literal[False]],
         *,
         factory: None = None,
         config: C = ...,
@@ -332,7 +303,7 @@ class BindMixin[C](ABC):
 
     def bind(
         self,
-        event: Event[Any, Any],
+        event: Event[Any, Any, Any],
         *,
         factory: Callable[..., Any] | None = None,
         config: Any = None,
@@ -342,8 +313,8 @@ class BindMixin[C](ABC):
         Return a callable bound to this adapter's `emit` and an event.
 
         :param event: The {py:class}`Event <stratae.events.event.Event>` to
-            bind. One whose schema is `None` binds to a
-            {py:class}`BoundSignal`, taking no arguments.
+            bind. One whose schema is `NoPayload` binds to a zero-argument
+            callable.
         :param factory: Builds the payload from the bound call's arguments.
             Omit it to pass an already-built payload straight through
             instead.
@@ -351,8 +322,8 @@ class BindMixin[C](ABC):
         :param serializer: Encodes the payload before dispatch.
         :returns: A callable that builds the payload via `factory` when
             given, otherwise one that forwards an already-built payload
-            straight through, or a `BoundSignal` when the event carries no
-            payload; either way wrapping this adapter's `emit` and `event`.
+            straight through, or takes no arguments when the event carries
+            no payload; either way wrapping this adapter's `emit` and `event`.
         """
         return bind(event, self.emit, factory=factory, config=config, serializer=serializer)
 
@@ -373,9 +344,9 @@ class AsyncBindMixin[C](ABC):
     __slots__ = ()
 
     @abstractmethod
-    def emit[S, R](
+    def emit[S, R, Signal: bool](
         self,
-        event: Event[DispatchPattern[R, Any], S],
+        event: Event[DispatchPattern[R, Any], S, Signal],
         config: C,
         payload: S,
         *,
@@ -399,7 +370,7 @@ class AsyncBindMixin[C](ABC):
     @overload
     def bind[**P, S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S],
+        event: Event[DispatchPattern[R, Any], S, Literal[False]],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
         config: C = ...,
@@ -408,16 +379,16 @@ class AsyncBindMixin[C](ABC):
     @overload
     def bind[R](
         self,
-        event: Event[DispatchPattern[R, Any], None],
+        event: Event[DispatchPattern[R, Any], NoPayload, Literal[True]],
         *,
         factory: None = None,
         config: C = ...,
-        serializer: Callable[[None], Any] | None = None,
-    ) -> BoundSignal[Awaitable[R]]: ...
+        serializer: None = None,
+    ) -> Callable[[], Awaitable[R]]: ...
     @overload
     def bind[S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S],
+        event: Event[DispatchPattern[R, Any], S, Literal[False]],
         *,
         factory: None = None,
         config: C = ...,
@@ -426,7 +397,7 @@ class AsyncBindMixin[C](ABC):
 
     def bind(
         self,
-        event: Event[Any, Any],
+        event: Event[Any, Any, Any],
         *,
         factory: Callable[..., Any] | None = None,
         config: Any = None,
@@ -436,8 +407,8 @@ class AsyncBindMixin[C](ABC):
         Return an awaitable callable bound to this adapter's `emit` and an event.
 
         :param event: The {py:class}`Event <stratae.events.event.Event>` to
-            bind. One whose schema is `None` binds to a
-            {py:class}`BoundSignal`, taking no arguments.
+            bind. One whose schema is `NoPayload` binds to a zero-argument
+            callable.
         :param factory: Builds the payload from the bound call's arguments,
             sync or async. Omit it to pass an already-built payload
             straight through instead.
@@ -445,8 +416,8 @@ class AsyncBindMixin[C](ABC):
         :param serializer: Encodes the payload before dispatch.
         :returns: A callable that builds the payload via `factory` when
             given, otherwise one that forwards an already-built payload
-            straight through, or a `BoundSignal` when the event carries no
-            payload; either way wrapping this adapter's `emit` and `event`,
-            and resolving to its result once awaited.
+            straight through, or takes no arguments when the event carries
+            no payload; either way wrapping this adapter's `emit` and
+            `event`, and resolving to its result once awaited.
         """
         return abind(event, self.emit, factory=factory, config=config, serializer=serializer)

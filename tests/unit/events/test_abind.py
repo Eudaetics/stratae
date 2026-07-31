@@ -23,7 +23,7 @@ from stratae.events import Event, PubSub, abind
 
 
 async def _async_emit(
-    event: Event[Any, Any], config: Any, payload: Any, serializer: Any = None
+    event: Event[Any, Any, Any], config: Any, payload: Any, serializer: Any = None
 ): ...
 
 
