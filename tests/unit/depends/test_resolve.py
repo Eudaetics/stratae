@@ -13,7 +13,7 @@ from stratae.depends.exceptions import (
     CircularDependencyError,
     InjectionSignatureError,
 )
-from stratae.depends.inject import _resolve_function  # pyright: ignore[reportPrivateUsage]
+from stratae.depends.injection import _resolve_function  # pyright: ignore[reportPrivateUsage]
 
 
 class Dependency:

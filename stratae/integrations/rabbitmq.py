@@ -113,7 +113,7 @@ from stratae.events import (
     PubSub,
     is_request,
 )
-from stratae.events.bind import AsyncBindMixin
+from stratae.events.binding import AsyncBindMixin
 from stratae.events.exceptions import NotConnectedError
 from stratae.serde import Unpacker, pack, unpack_json
 
@@ -215,7 +215,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     `exchange_type` has its exchange declared before its first publish.
     Bind an {py:class}`Event <stratae.events.event.Event>` to this adapter
     with `bind`, inherited from
-    {py:class}`AsyncBindMixin <stratae.events.bind.AsyncBindMixin>`, passing
+    {py:class}`AsyncBindMixin <stratae.events.binding.AsyncBindMixin>`, passing
     `factory` to construct the payload from the bound call's arguments, or
     omitting it to forward an already-built payload directly. Request/reply
     events raise `NotImplementedError`; only pub/sub is implemented.

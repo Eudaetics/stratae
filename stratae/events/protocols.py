@@ -7,7 +7,7 @@ satisfies the protocol, sync or async, without inheriting from it.
 {py:class}`EmitCallable` describes a single bound emit call. It's
 parameterized over a concrete return type `R`, so a specific binding, e.g.
 the `emitter` behind a callable returned by
-{py:func}`bind <stratae.events.bind.bind>`, can be checked against its own
+{py:func}`bind <stratae.events.binding.bind>`, can be checked against its own
 return type instead of `Any`.
 """
 
@@ -25,7 +25,7 @@ class EmitCallable[T: DispatchPattern[Any, Any], S, C, R, Signal: bool](Protocol
     payload in, some adapter-defined result out. It's parameterized over a
     concrete `R` instead of `Any`, though. That lets a specific binding,
     e.g. the `emitter` behind a callable returned by
-    {py:func}`bind <stratae.events.bind.bind>`, be checked against its
+    {py:func}`bind <stratae.events.binding.bind>`, be checked against its
     own return type. `Signal` is likewise concrete per binding.
     """
 
@@ -57,7 +57,7 @@ class Producer(Protocol):
 
     Any class with a compatible `emit` method satisfies this protocol,
     whether sync or async. A callable returned by
-    {py:func}`bind <stratae.events.bind.bind>` calls `emit` when invoked.
+    {py:func}`bind <stratae.events.binding.bind>` calls `emit` when invoked.
     Adapters implement it to perform the actual dispatch.
     """
 

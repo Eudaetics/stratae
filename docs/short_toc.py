@@ -2,8 +2,8 @@
 MyST renderer mixin that titles toctree entries with short module names.
 
 Toctree entries are titled with the short module name, so the sidebar shows
-``override`` rather than ``stratae.depends.override``. Page headings keep the
-full dotted name.
+``overriding`` rather than ``stratae.depends.overriding``. Page headings keep
+the full dotted name.
 """
 
 from typing import Iterable

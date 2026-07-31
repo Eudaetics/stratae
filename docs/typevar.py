@@ -2,7 +2,7 @@
 MyST renderer mixin that unqualifies scoped type variable names in annotations.
 
 autodoc2 fully qualifies scoped type variables with their enclosing scope
-(e.g. ``stratae.events.bind.bind.P``), which makes signatures unreadable. A
+(e.g. ``stratae.events.binding.bind.P``), which makes signatures unreadable. A
 scoped type variable is detected by resolution: its dotted name is not in
 autodoc2's analysis database, but its parent scope (the function or class
 declaring it) is. Documented objects resolve as themselves and are left

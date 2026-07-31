@@ -137,12 +137,12 @@ def override(func: Callable[..., Any], value: Any) -> _Override:
     Temporarily replace a single dependency's value within a scope.
 
     :param func: The provider callable that was passed to
-        {py:func}`Depends <stratae.depends.inject.Depends>`.
+        {py:func}`Depends <stratae.depends.injection.Depends>`.
     :param value: Value injected in place of calling the provider. Used
         as-is; it is not called, even if the provider is async.
     :returns: A context manager holding the override between entry and exit.
     :raises DependencyNotFoundError: If `func` was never passed to
-        {py:func}`Depends <stratae.depends.inject.Depends>`.
+        {py:func}`Depends <stratae.depends.injection.Depends>`.
     """
     return _Override(Provider.find(func), value)
 
@@ -152,7 +152,7 @@ def overrides(mapping: _OverrideMap) -> _Overrides:
     Temporarily replace several dependencies' values within one scope.
 
     :param mapping: Map of provider callables, as passed to
-        {py:func}`Depends <stratae.depends.inject.Depends>`, to their
+        {py:func}`Depends <stratae.depends.injection.Depends>`, to their
         replacement values.
     :returns: A context manager applying every override on entry and
         restoring the previous state on exit. If applying one override
@@ -160,7 +160,7 @@ def overrides(mapping: _OverrideMap) -> _Overrides:
         propagates.
     :raises ValueError: If `mapping` is empty.
     :raises DependencyNotFoundError: If any key was never passed to
-        {py:func}`Depends <stratae.depends.inject.Depends>`.
+        {py:func}`Depends <stratae.depends.injection.Depends>`.
     """
     if not mapping:
         raise ValueError("overrides() requires at least one entry.")

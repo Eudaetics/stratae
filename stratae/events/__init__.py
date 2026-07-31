@@ -10,8 +10,8 @@ marks request/reply, where emit blocks until a responder returns.
 {py:func}`reply_type <stratae.events.event.reply_type>` inspect an
 `Event`'s discriminant.
 
-{py:func}`bind <stratae.events.bind.bind>` and
-{py:func}`abind <stratae.events.bind.abind>` attach an emitter and
+{py:func}`bind <stratae.events.binding.bind>` and
+{py:func}`abind <stratae.events.binding.abind>` attach an emitter and
 adapter-specific routing config to an `Event`. Passed a `factory`, each
 returns a callable that builds the payload from the call's arguments before
 forwarding it to the emitter. Omitting `factory` returns a callable that
@@ -89,12 +89,12 @@ created user: ada
 
 See {py:class}`DirectBus <stratae.events.direct.DirectBus>`,
 {py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>`,
-{py:func}`bind <stratae.events.bind.bind>`, and
-{py:func}`abind <stratae.events.bind.abind>` for the rest of the module's API.
+{py:func}`bind <stratae.events.binding.bind>`, and
+{py:func}`abind <stratae.events.binding.abind>` for the rest of the module's API.
 
 """
 
-from .bind import abind, bind
+from .binding import abind, bind
 from .direct import AsyncDirectBus, DirectBus
 from .envelope import (
     CAUSATION_ID_HEADER,

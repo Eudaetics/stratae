@@ -5,9 +5,9 @@ Callable, injectable values backed by contextvars.
 Set a value once with {py:func}`Context.set` or {py:func}`Context.use`,
 and any code running within that section can read it back by calling the
 {py:class}`Context` instance directly. Because {py:class}`Context`
-instances are callable, they work as {py:func}`Depends <stratae.depends.inject.Depends>` providers,
-letting runtime values (a request's user ID, a feature flag, a connection)
-flow into injected functions without changing their signatures.
+instances are callable, they work as {py:func}`Depends <stratae.depends.Depends>`
+providers, letting runtime values (a request's user ID, a feature flag, a
+connection) flow into injected functions without changing their signatures.
 
 ````{example} A/B testing a recommendation model
 ```{code-block} python

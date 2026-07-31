@@ -2,19 +2,19 @@
 Dependency injection via annotated parameters and the `inject` decorator.
 
 Mark a parameter with `Annotated[T, Depends(provider)]` and decorate the
-function with {py:func}`inject <stratae.depends.inject.inject>`. The
+function with {py:func}`inject <stratae.depends.injection.inject>`. The
 parameter is resolved by calling its provider at call time, and callers
 no longer pass it. Providers are plain callables and may declare
 injected parameters of their own, resolved recursively when the injected
-function is decorated. {py:func}`Depends <stratae.depends.inject.Depends>`
+function is decorated. {py:func}`Depends <stratae.depends.injection.Depends>`
 marks a callable as a provider.
 
 Sync functions may only depend on sync providers, validated at
 decoration time. Async functions may mix sync and async providers.
 Generator and async generator functions are supported.
 
-{py:func}`override <stratae.depends.override.override>` and
-{py:func}`overrides <stratae.depends.override.overrides>` temporarily
+{py:func}`override <stratae.depends.overriding.override>` and
+{py:func}`overrides <stratae.depends.overriding.overrides>` temporarily
 replace providers' values within a scope, e.g. substituting a mock
 in tests. Overrides are context-local, so concurrent tasks do
 not interfere with each other.
@@ -55,16 +55,16 @@ Hello, Jane Doe!
 ```
 ````
 
-See {py:func}`Depends <stratae.depends.inject.Depends>`,
-{py:func}`inject <stratae.depends.inject.inject>`,
-{py:func}`override <stratae.depends.override.override>`, and
-{py:func}`overrides <stratae.depends.override.overrides>` for the rest
+See {py:func}`Depends <stratae.depends.injection.Depends>`,
+{py:func}`inject <stratae.depends.injection.inject>`,
+{py:func}`override <stratae.depends.overriding.override>`, and
+{py:func}`overrides <stratae.depends.overriding.overrides>` for the rest
 of the module's API.
 
 """
 
-from .inject import Depends, inject
-from .override import override, overrides
+from .injection import Depends, inject
+from .overriding import override, overrides
 
 __all__ = [
     "Depends",
