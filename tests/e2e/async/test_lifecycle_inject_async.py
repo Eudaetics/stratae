@@ -8,14 +8,14 @@ import pytest
 
 from stratae.context import Context
 from stratae.depends import Depends, inject
-from stratae.lifecycle import AsyncLifecycle, async_resource
+from stratae.lifecycle import AsyncScope, async_resource
 
 
-async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):
+async def test_lifecycle_inject_async_gen(async_application_scope: AsyncScope):
     """
     Test lifecycle management with dependency injection using async generator dependencies.
 
-    Given: An AsyncLifecycle with application scope.
+    Given: An application AsyncScope.
     When: An async generator dependency is injected at application scope.
     Then: The async generator should yield the same instance within the same application scope.
     """
@@ -27,7 +27,7 @@ async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):
     mock_cleanup = Mock()
     mock_side_effect = Mock()
 
-    @async_lifecycle.cache("application")
+    @async_application_scope.cache()
     @inject
     @async_resource
     async def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -38,7 +38,7 @@ async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):
             mock_cleanup()
 
     # Act / Assert
-    async with async_lifecycle.start("application"):
+    async with async_application_scope.activate():
         resource_instance = await get_resource()
         assert isinstance(resource_instance, SimpleObject)
         assert resource_instance is await get_resource()
@@ -48,11 +48,13 @@ async def test_lifecycle_inject_async_gen(async_lifecycle: AsyncLifecycle):
     mock_side_effect.assert_called_once()
 
 
-async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle):
+async def test_lifecycle_inject_nested_async_gen(
+    async_application_scope: AsyncScope, async_request_scope: AsyncScope
+):
     """
     Test nested lifecycle management with dependency injection using async generator dependencies.
 
-    Given: An AsyncLifecycle with application and request scopes.
+    Given: An application AsyncScope and a request AsyncScope.
     When: An async generator is injected at application scope and another at request scope.
     Then: The application scope async generator should yield the same instance across requests,
           while the request scope async generator should yield unique instances per request.
@@ -66,7 +68,7 @@ async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle
     mock_request_cleanup = Mock()
     mock_side_effect = Mock()
 
-    @async_lifecycle.cache("application")
+    @async_application_scope.cache()
     @inject
     @async_resource
     async def get_app_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -76,7 +78,7 @@ async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle
         finally:
             mock_app_cleanup()
 
-    @async_lifecycle.cache("request")
+    @async_request_scope.cache()
     @inject
     @async_resource
     async def get_request_resource(
@@ -88,16 +90,16 @@ async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle
             mock_request_cleanup()
 
     # Act / Assert
-    async with async_lifecycle.start("application"):
+    async with async_application_scope.activate():
         app_resource_instance = await get_app_resource()
         assert isinstance(app_resource_instance, SimpleObject)
 
-        async with async_lifecycle.start("request"):
+        async with async_request_scope.activate():
             request_resource_instance_1 = await get_request_resource()
             assert isinstance(request_resource_instance_1, SimpleObject)
             assert await get_app_resource() is app_resource_instance
             assert await get_request_resource() is request_resource_instance_1
-        async with async_lifecycle.start("request"):
+        async with async_request_scope.activate():
             request_resource_instance_2 = await get_request_resource()
             assert isinstance(request_resource_instance_2, SimpleObject)
             assert await get_app_resource() is app_resource_instance
@@ -109,11 +111,11 @@ async def test_lifecycle_inject_nested_async_gen(async_lifecycle: AsyncLifecycle
     assert mock_side_effect.call_count == 1
 
 
-async def test_lifecycle_inject_async_with_exception(async_lifecycle: AsyncLifecycle):
+async def test_lifecycle_inject_async_with_exception(async_application_scope: AsyncScope):
     """
     Test using async dependencies that raise an exception.
 
-    Given: An AsyncLifecycle with application scope.
+    Given: An application AsyncScope.
     When: An async dependency is injected at application scope that raises an exception.
     Then: The exception should propagate correctly.
     """
@@ -122,22 +124,22 @@ async def test_lifecycle_inject_async_with_exception(async_lifecycle: AsyncLifec
     class SimpleObject:
         pass
 
-    @async_lifecycle.cache("application")
+    @async_application_scope.cache()
     @inject
     async def get_resource(_: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         raise ValueError("Simulated exception")
 
     # Act / Assert
-    async with async_lifecycle.start("application"):
+    async with async_application_scope.activate():
         with pytest.raises(ValueError):
             await get_resource()
 
 
-async def test_lifecycle_inject_async_gen_with_exception(async_lifecycle: AsyncLifecycle):
+async def test_lifecycle_inject_async_gen_with_exception(async_application_scope: AsyncScope):
     """
     Test using async generator dependencies that raise an exception.
 
-    Given: An AsyncLifecycle with application scope.
+    Given: An application AsyncScope.
     When: An async generator dependency is injected at application scope that raises an exception.
     Then: The exception should propagate correctly.
     """
@@ -148,7 +150,7 @@ async def test_lifecycle_inject_async_gen_with_exception(async_lifecycle: AsyncL
 
     mock_cleanup = Mock()
 
-    @async_lifecycle.cache("application")
+    @async_application_scope.cache()
     @inject
     @async_resource
     async def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -160,17 +162,19 @@ async def test_lifecycle_inject_async_gen_with_exception(async_lifecycle: AsyncL
 
     # Act / Assert
     with pytest.raises(ValueError, match="Simulated exception after yield"):
-        async with async_lifecycle.start("application"):
+        async with async_application_scope.activate():
             resource_instance = await get_resource()
             assert isinstance(resource_instance, SimpleObject)
     assert mock_cleanup.call_count == 1
 
 
-async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecycle: AsyncLifecycle):
+async def test_lifecycle_inject_async_gen_with_multiple_exceptions(
+    async_application_scope: AsyncScope,
+):
     """
     Test using multiple sync generator dependencies that raise an exception.
 
-    Given: An AsyncLifecycle with application scope.
+    Given: An application AsyncScope.
     When: Generator dependencies are injected at application scope that raise an exception.
     Then: The exceptions should propagate correctly as an ExceptionGroup.
     """
@@ -182,7 +186,7 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecyc
     mock_cleanup = Mock()
     mock_side_effect = Mock()
 
-    @async_lifecycle.cache("application")
+    @async_application_scope.cache()
     @inject
     @async_resource
     async def get_one(
@@ -196,7 +200,7 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecyc
             mock_cleanup()
             raise ValueError("Simulated exception after yield")
 
-    @async_lifecycle.cache("application")
+    @async_application_scope.cache()
     @inject
     @async_resource
     async def get_two(
@@ -212,7 +216,7 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecyc
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exceptions:
-        async with async_lifecycle.start("application"):
+        async with async_application_scope.activate():
             resource_instance = await get_one()
             resource_instance_2 = await get_two()
             assert isinstance(resource_instance, SimpleObject)
@@ -223,7 +227,9 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(async_lifecyc
     assert any(isinstance(e, AttributeError) for e in exceptions.value.exceptions)
 
 
-async def test_async_lifecycle_outer_cache_and_context_change(async_lifecycle: AsyncLifecycle):
+async def test_async_lifecycle_outer_cache_and_context_change(
+    async_application_scope: AsyncScope,
+):
     """
     Test async lifecycle caching when cache is the outer decorator and injected values change.
 
@@ -239,20 +245,20 @@ async def test_async_lifecycle_outer_cache_and_context_change(async_lifecycle: A
     # Arrange
     mock = Mock()
 
-    @async_lifecycle.cache("application")
+    @async_application_scope.cache()
     @inject
     async def get_value(x: Annotated[int, Depends(lambda: mock.call_count)]) -> int:
         mock()
         return x + 1
 
     # Act / Assert
-    async with async_lifecycle.start("application"):
+    async with async_application_scope.activate():
         assert await get_value() == 1
         assert await get_value() == 1
 
 
 async def test_async_lifecycle_outer_cache_inject_change_with_custom_key(
-    async_lifecycle: AsyncLifecycle,
+    async_application_scope: AsyncScope,
 ):
     """
     Test async lifecycle caching with custom cache key and injection changes.
@@ -269,19 +275,19 @@ async def test_async_lifecycle_outer_cache_inject_change_with_custom_key(
     # Arrange
     mock = Mock()
 
-    @async_lifecycle.cache("application", cache_key=lambda: mock.call_count)
+    @async_application_scope.cache(cache_key=lambda: mock.call_count)
     @inject
     async def get_value(x: Annotated[int, Depends(lambda: mock.call_count)]) -> int:
         mock()
         return x + 1
 
     # Act / Assert
-    async with async_lifecycle.start("application"):
+    async with async_application_scope.activate():
         assert await get_value() == 1
         assert await get_value() == 2
 
 
-async def test_async_lifecycle_inner_cache_inject(async_lifecycle: AsyncLifecycle):
+async def test_async_lifecycle_inner_cache_inject(async_application_scope: AsyncScope):
     """
     Test async lifecycle caching when cache is the inner decorator and injected values change.
 
@@ -299,13 +305,13 @@ async def test_async_lifecycle_inner_cache_inject(async_lifecycle: AsyncLifecycl
     counter = Mock()
 
     @inject
-    @async_lifecycle.cache("application")
+    @async_application_scope.cache()
     async def get_value(x: Annotated[int, Depends(x)]) -> int:
         counter()
         return x * 2
 
     # Act / Assert
-    async with async_lifecycle.start("application"):
+    async with async_application_scope.activate():
         with x.use(10):
             assert await get_value() == 20
             assert await get_value() == 20

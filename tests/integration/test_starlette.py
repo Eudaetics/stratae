@@ -11,8 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.testclient import TestClient
 
 from stratae.integrations.starlette import scoped_route
-from stratae.lifecycle import async_resource
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncScope, async_resource
 
 pytestmark = pytest.mark.starlette
 
@@ -24,10 +23,10 @@ def events() -> list[str]:
 
 
 @pytest.fixture
-def app(async_lifecycle: AsyncLifecycle, events: list[str]) -> Starlette:
+def app(async_request_scope: AsyncScope, events: list[str]) -> Starlette:
     """Build a Starlette app whose routes activate the request scope via scoped_route."""
 
-    @async_lifecycle.cache("request")
+    @async_request_scope.cache()
     @async_resource
     async def get_transaction():
         events.append("open")
@@ -64,7 +63,7 @@ def app(async_lifecycle: AsyncLifecycle, events: list[str]) -> Starlette:
             raise HTTPException(status_code=409, detail="expected the same cached connection")
         raise RuntimeError("deliberate failure after calling resource twice")
 
-    Route = scoped_route(async_lifecycle, "request")
+    Route = scoped_route(async_request_scope)
     return Starlette(
         routes=[
             Route("/ok", ok),

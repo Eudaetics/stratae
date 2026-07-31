@@ -1,31 +1,29 @@
-"""Pytest configuration for tests using a lifecycle manager."""
-
-from typing import Sequence
+"""Pytest fixtures providing Scope/AsyncScope objects for integration and e2e tests."""
 
 import pytest
 
-from stratae.lifecycle import AsyncLifecycle, Lifecycle, Scope
+from stratae.lifecycle import AsyncScope, Scope
 
 
 @pytest.fixture
-def scopes():
-    """Provide a list of lifecycle scope names for testing."""
-    yield ["application", "session", "request"]
+def application_scope():
+    """Provide a shared-isolation, dense-storage application Scope."""
+    yield Scope("application", "shared")
 
 
 @pytest.fixture
-def scope_objs():
-    """Provide a list of scope objects."""
-    yield [Scope("application", "shared"), Scope("session", "context"), Scope("request", "context")]
+def request_scope():
+    """Provide a context-isolation, dense-storage request Scope."""
+    yield Scope("request", "context")
 
 
 @pytest.fixture
-def lifecycle(scope_objs: Sequence[Scope]):
-    """Provide a Lifecycle instance with shared-isolation scopes for testing."""
-    yield Lifecycle(scope_objs)
+def async_application_scope():
+    """Provide a shared-isolation, dense-storage application AsyncScope."""
+    yield AsyncScope("application", "shared")
 
 
 @pytest.fixture
-async def async_lifecycle(scope_objs: Sequence[Scope]):
-    """Provide an AsyncLifecycle instance with context-isolation scopes for testing."""
-    yield AsyncLifecycle(scope_objs)
+def async_request_scope():
+    """Provide a context-isolation, dense-storage request AsyncScope."""
+    yield AsyncScope("request", "context")

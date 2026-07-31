@@ -1,5 +1,5 @@
 """
-Wrappers for lifecycle-managed functions and context managers.
+Wrappers for scope-managed functions and context managers - a parallel implementation.
 
 Wrapper bodies are generated as source text and compiled rather than written as a
 generic ``*args/**kwargs`` shim, so the compiled wrapper's signature and defaults
@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, Awaitable, Callable, Hash
 
 from stratae.codegen import Writer, render_parameters
 from stratae.codegen.util import wrapper_filename
-from stratae.lifecycle._scope import UNSET, SharedVar
+from stratae.lifecycle._slots import UNSET, SharedVar
 
 if TYPE_CHECKING:
-    from stratae.lifecycle.lifecycle import AsyncLifecycle, Lifecycle
+    from stratae.lifecycle.scope import AsyncScope, BaseScope, Scope
 
 
 def _is_slot_eligible(
@@ -114,11 +114,11 @@ def _write_cache_store(writer: Writer) -> None:
     writer.write("return __value__")
 
 
-def _write_resolve_first_read(writer: Writer, lifecycle: Any, scope: str, read: str) -> None:
+def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> None:
     """
     Write the fast-path resolution of __slots__ plus the first slot read into it.
 
-    Which lookup is written depends on the scope's isolation (see _bind_slot_lookup for
+    Which lookup is written depends on the scope's isolation (see _build_namespace for
     the matching namespace binding): a context-isolated scope's ContextVar is bound
     straight into the wrapper's namespace at codegen time, with the read following the
     resolve. A shared scope reads its SharedVar's storage attribute, unguarded - when
@@ -127,14 +127,14 @@ def _write_resolve_first_read(writer: Writer, lifecycle: Any, scope: str, read: 
     otherwise: it subscripts a list or SlotDict with an int constant. Either miss falls
     back to get_slots(), which raises the right error.
     """
-    if isinstance(lifecycle._vars[scope], SharedVar):
+    if scope.is_shared():
         writer.write("__slots__ = __var__.storage")
         writer.write("try:")
         with writer.block():
             writer.write(read)
         writer.write("except TypeError:")
         with writer.block():
-            writer.write(f"__slots__ = __lifecycle__.get_slots({scope!r})")
+            writer.write("__slots__ = __scope__.get_slots()")
             writer.write(read)
         return
     writer.write("try:")
@@ -142,23 +142,18 @@ def _write_resolve_first_read(writer: Writer, lifecycle: Any, scope: str, read: 
         writer.write("__slots__ = __var__.get()")
     writer.write("except LookupError:")
     with writer.block():
-        writer.write(f"__slots__ = __lifecycle__.get_slots({scope!r})")
+        writer.write("__slots__ = __scope__.get_slots()")
     writer.write(read)
 
 
-def _is_shared_scope(lifecycle: Any, scope: str) -> bool:
-    """Whether scope's activation holder is a SharedVar, needing lock-guarded slot access."""
-    return isinstance(lifecycle._vars[scope], SharedVar)
-
-
 def _build_namespace(
-    func: Callable[..., Any], lifecycle: Any, scope: str, is_async: bool = False
+    func: Callable[..., Any], scope: "BaseScope", is_async: bool = False
 ) -> dict[str, Any]:
     """Build the namespace bindings every codegen'd wrapper compiles against."""
-    var = lifecycle._vars[scope]
-    namespace = {
+    var = scope.activation_var()
+    namespace: dict[str, Any] = {
         "__func__": func,
-        "__lifecycle__": lifecycle,
+        "__scope__": scope,
         "__UNSET__": UNSET,
         "__var__": var,
     }
@@ -167,18 +162,18 @@ def _build_namespace(
     return namespace
 
 
-def _write_slot_guard(writer: Writer, slot: int, lifecycle: Any, scope: str) -> None:
+def _write_slot_guard(writer: Writer, slot: int, scope: "BaseScope") -> None:
     """
     Write the guard that checks the dedicated slot for a slot-eligible call's direct value.
 
     Reads the slot into __value__ once, rather than indexing __slots__ again on both the
     hit-path return and the miss-path store. The caller opens the miss block.
     """
-    _write_resolve_first_read(writer, lifecycle, scope, f"__value__ = __slots__[{slot}]")
+    _write_resolve_first_read(writer, scope, f"__value__ = __slots__[{slot}]")
     writer.write("if __value__ is __UNSET__:")
 
 
-def _write_keyed_cache_guard(writer: Writer, slot: int, lifecycle: Any, scope: str) -> None:
+def _write_keyed_cache_guard(writer: Writer, slot: int, scope: "BaseScope") -> None:
     """
     Write the guard that resolves a keyed function's own dedicated cache dict.
 
@@ -186,7 +181,7 @@ def _write_keyed_cache_guard(writer: Writer, slot: int, lifecycle: Any, scope: s
     front than allocating an empty dict for every keyed function in the scope whether or
     not it's ever actually called.
     """
-    _write_resolve_first_read(writer, lifecycle, scope, f"__cache__ = __slots__[{slot}]")
+    _write_resolve_first_read(writer, scope, f"__cache__ = __slots__[{slot}]")
     writer.write("if __cache__ is __UNSET__:")
     with writer.block():
         writer.write("__cache__ = {}")
@@ -217,8 +212,7 @@ def _write_locked_slot_common(
 def _write_locked_keyed_common(
     writer: Writer,
     slot: int,
-    lifecycle: Any,
-    scope: str,
+    scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
     is_async: bool,
@@ -232,7 +226,7 @@ def _write_locked_keyed_common(
     silently discarding whichever's inserts came first, so only the hit check stays
     lock-free outside the lock. write_compute writes the result into __value__.
     """
-    _write_resolve_first_read(writer, lifecycle, scope, f"__cache__ = __slots__[{slot}]")
+    _write_resolve_first_read(writer, scope, f"__cache__ = __slots__[{slot}]")
     _write_key(writer, cache_key, params)
     writer.write("if __cache__ is not __UNSET__ and __ck__ in __cache__:")
     with writer.block():
@@ -253,12 +247,12 @@ def _write_locked_keyed_common(
 
 
 def _write_slot_body(
-    writer: Writer, slot: int, lifecycle: Any, scope: str, call: str, is_async: bool = False
+    writer: Writer, slot: int, scope: "BaseScope", call: str, is_async: bool = False
 ) -> None:
     """Write the whole body of a slot-eligible wrapper around the rendered call expression."""
-    _write_slot_guard(writer, slot, lifecycle, scope)
+    _write_slot_guard(writer, slot, scope)
     with writer.block():
-        if _is_shared_scope(lifecycle, scope):
+        if scope.is_shared():
             _write_locked_slot_common(
                 writer, slot, is_async, lambda: writer.write(f"__value__ = {call}")
             )
@@ -271,19 +265,17 @@ def _write_slot_body(
 def _write_keyed_body(
     writer: Writer,
     slot: int,
-    lifecycle: Any,
-    scope: str,
+    scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
     call: str,
     is_async: bool = False,
 ) -> None:
     """Write the whole body of a keyed wrapper around the rendered call expression."""
-    if _is_shared_scope(lifecycle, scope):
+    if scope.is_shared():
         _write_locked_keyed_common(
             writer,
             slot,
-            lifecycle,
             scope,
             cache_key,
             params,
@@ -291,7 +283,7 @@ def _write_keyed_body(
             lambda: writer.write(f"__value__ = {call}"),
         )
         return
-    _write_keyed_cache_guard(writer, slot, lifecycle, scope)
+    _write_keyed_cache_guard(writer, slot, scope)
     _write_key(writer, cache_key, params)
     _write_cache_check(writer)
     writer.write(f"__value__ = {call}")
@@ -340,46 +332,43 @@ def _finalize(
 
 def _create_sync_wrapper_impl(
     func: Callable[..., Any],
-    lifecycle: Any,
-    scope: str,
+    scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
 ) -> Callable[..., Any]:
     """Build the codegen'd wrapper shared by the sync and sync-in-async cache decorators."""
     params = list(signature(func).parameters.values())
-    slot = lifecycle.allocate_slot(scope)
+    slot = scope.allocate_slot()
 
     writer = Writer()
     writer.write(f"def wrapper({render_parameters(params)}):")
     with writer.block():
         call = f"__func__({_render_forward_arguments(params)})"
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, lifecycle, scope, call)
+            _write_slot_body(writer, slot, scope, call)
         else:
-            _write_keyed_body(writer, slot, lifecycle, scope, cache_key, params, call)
+            _write_keyed_body(writer, slot, scope, cache_key, params, call)
 
-    namespace = _build_namespace(func, lifecycle, scope)
+    namespace = _build_namespace(func, scope)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
-    weakref.finalize(wrapper, lifecycle.release_slot, scope, slot)
+    weakref.finalize(wrapper, scope.release_slot, slot)
     return wrapper
 
 
 def create_sync_wrapper[**P, T](
     func: Callable[P, T],
-    lifecycle: "Lifecycle",
-    scope: str,
+    scope: "Scope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, T]:
     """
-    Create a synchronous wrapper function that caches based on the lifecycle scope.
+    Create a synchronous wrapper function that caches based on the scope's activation.
 
     Args:
         func: The function whose result should be cached.
-        lifecycle: The `Lifecycle` whose scope owns the cached value.
-        scope: Name of the scope the cached value lives in.
+        scope: The `Scope` that owns the cached value.
         cache_key: Callable deriving a hashable cache key from `func`'s
             arguments. When omitted, the key is `func`'s arguments
             themselves.
@@ -394,24 +383,22 @@ def create_sync_wrapper[**P, T](
     """
     return cast(
         Callable[P, T],
-        _create_sync_wrapper_impl(func, lifecycle, scope, cache_key, ignore_params),
+        _create_sync_wrapper_impl(func, scope, cache_key, ignore_params),
     )
 
 
 def create_sync_in_async_wrapper[**P, T](
     func: Callable[P, T],
-    lifecycle: "AsyncLifecycle",
-    scope: str,
+    scope: "AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, T]:
     """
-    Create a synchronous wrapper function for use within an async lifecycle.
+    Create a synchronous wrapper function for use within an async scope.
 
     Args:
         func: The function whose result should be cached.
-        lifecycle: The `AsyncLifecycle` whose scope owns the cached value.
-        scope: Name of the scope the cached value lives in.
+        scope: The `AsyncScope` that owns the cached value.
         cache_key: Callable deriving a hashable cache key from `func`'s
             arguments. When omitted, the key is `func`'s arguments
             themselves.
@@ -426,25 +413,23 @@ def create_sync_in_async_wrapper[**P, T](
     """
     return cast(
         Callable[P, T],
-        _create_sync_wrapper_impl(func, lifecycle, scope, cache_key, ignore_params),
+        _create_sync_wrapper_impl(func, scope, cache_key, ignore_params),
     )
 
 
 def create_async_wrapper[**P, T](
     func: Callable[P, Awaitable[T] | AsyncGenerator[T, None]],
-    lifecycle: "AsyncLifecycle",
-    scope: str,
+    scope: "AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, Awaitable[T]]:
     """
-    Create an asynchronous wrapper function that caches based on the lifecycle scope.
+    Create an asynchronous wrapper function that caches based on the scope's activation.
 
     Args:
         func: The async function, or async generator, whose result should
             be cached.
-        lifecycle: The `AsyncLifecycle` whose scope owns the cached value.
-        scope: Name of the scope the cached value lives in.
+        scope: The `AsyncScope` that owns the cached value.
         cache_key: Callable deriving a hashable cache key from `func`'s
             arguments. When omitted, the key is `func`'s arguments
             themselves.
@@ -458,24 +443,22 @@ def create_async_wrapper[**P, T](
 
     """
     params = list(signature(func).parameters.values())
-    slot = lifecycle.allocate_slot(scope)
+    slot = scope.allocate_slot()
 
     writer = Writer()
     writer.write(f"async def wrapper({render_parameters(params)}):")
     with writer.block():
         call = f"await __func__({_render_forward_arguments(params)})"
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, lifecycle, scope, call, is_async=True)
+            _write_slot_body(writer, slot, scope, call, is_async=True)
         else:
-            _write_keyed_body(
-                writer, slot, lifecycle, scope, cache_key, params, call, is_async=True
-            )
+            _write_keyed_body(writer, slot, scope, cache_key, params, call, is_async=True)
 
-    namespace = _build_namespace(func, lifecycle, scope, is_async=True)
+    namespace = _build_namespace(func, scope, is_async=True)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = cast(Callable[P, Awaitable[T]], _finalize(writer, func, params, namespace))
-    weakref.finalize(wrapper, lifecycle.release_slot, scope, slot)
+    weakref.finalize(wrapper, scope.release_slot, slot)
     return wrapper
 
 
@@ -484,7 +467,7 @@ def _write_resolve_exit_stack(writer: Writer) -> None:
     Write the lazy resolution of the scope's exit stack from reserved slot 0 into __stack__.
 
     Only ever written on a context-manager wrapper's miss path, so the stack (an ExitStack
-    or AsyncExitStack, chosen per lifecycle type via the __stack_type__ namespace binding)
+    or AsyncExitStack, chosen per scope flavor via the __stack_type__ namespace binding)
     is created the first time this scope activation actually enters a context manager.
     """
     writer.write("__stack__ = __slots__[0]")
@@ -496,8 +479,7 @@ def _write_resolve_exit_stack(writer: Writer) -> None:
 def _write_cm_slot_body(
     writer: Writer,
     slot: int,
-    lifecycle: Any,
-    scope: str,
+    scope: "BaseScope",
     params: list[Parameter],
     enter_expr: str,
     is_async: bool = False,
@@ -509,9 +491,9 @@ def _write_cm_slot_body(
         _write_resolve_exit_stack(writer)
         writer.write(f"__value__ = {enter_expr}")
 
-    _write_slot_guard(writer, slot, lifecycle, scope)
+    _write_slot_guard(writer, slot, scope)
     with writer.block():
-        if _is_shared_scope(lifecycle, scope):
+        if scope.is_shared():
             _write_locked_slot_common(writer, slot, is_async, write_enter)
         else:
             write_enter()
@@ -522,8 +504,7 @@ def _write_cm_slot_body(
 def _write_cm_keyed_body(
     writer: Writer,
     slot: int,
-    lifecycle: Any,
-    scope: str,
+    scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
     enter_expr: str,
@@ -536,12 +517,10 @@ def _write_cm_keyed_body(
         _write_resolve_exit_stack(writer)
         writer.write(f"__value__ = {enter_expr}")
 
-    if _is_shared_scope(lifecycle, scope):
-        _write_locked_keyed_common(
-            writer, slot, lifecycle, scope, cache_key, params, is_async, write_enter
-        )
+    if scope.is_shared():
+        _write_locked_keyed_common(writer, slot, scope, cache_key, params, is_async, write_enter)
         return
-    _write_keyed_cache_guard(writer, slot, lifecycle, scope)
+    _write_keyed_cache_guard(writer, slot, scope)
     _write_key(writer, cache_key, params)
     _write_cache_check(writer)
     write_enter()
@@ -550,8 +529,7 @@ def _write_cm_keyed_body(
 
 def _create_cm_wrapper_impl(
     func: Callable[..., Any],
-    lifecycle: Any,
-    scope: str,
+    scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
     is_async: bool,
@@ -559,32 +537,29 @@ def _create_cm_wrapper_impl(
 ) -> Callable[..., Any]:
     """Build the codegen'd wrapper shared by the sync and async context-manager decorators."""
     params = list(signature(func).parameters.values())
-    slot = lifecycle.allocate_slot(scope)
+    slot = scope.allocate_slot()
 
     writer = Writer()
     def_kw = "async def" if is_async else "def"
     writer.write(f"{def_kw} wrapper({render_parameters(params)}):")
     with writer.block():
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_cm_slot_body(writer, slot, lifecycle, scope, params, enter_expr, is_async)
+            _write_cm_slot_body(writer, slot, scope, params, enter_expr, is_async)
         else:
-            _write_cm_keyed_body(
-                writer, slot, lifecycle, scope, cache_key, params, enter_expr, is_async
-            )
+            _write_cm_keyed_body(writer, slot, scope, cache_key, params, enter_expr, is_async)
 
-    namespace = _build_namespace(func, lifecycle, scope, is_async=is_async)
-    namespace["__stack_type__"] = lifecycle.exit_stack_type()
+    namespace = _build_namespace(func, scope, is_async=is_async)
+    namespace["__stack_type__"] = scope.exit_stack_type()
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
-    weakref.finalize(wrapper, lifecycle.release_slot, scope, slot)
+    weakref.finalize(wrapper, scope.release_slot, slot)
     return wrapper
 
 
 def create_synccm_wrapper[**P, T](
     func: Callable[P, AbstractContextManager[T]],
-    lifecycle: "Lifecycle | AsyncLifecycle",
-    scope: str,
+    scope: "Scope | AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, T]:
@@ -598,9 +573,7 @@ def create_synccm_wrapper[**P, T](
 
     Args:
         func: The context-manager-returning function to wrap.
-        lifecycle: The `Lifecycle`/`AsyncLifecycle` whose scope owns the
-            cached value and exit stack.
-        scope: Name of the scope the cached value and exit stack live in.
+        scope: The `Scope`/`AsyncScope` that owns the cached value and exit stack.
         cache_key: Callable deriving a hashable cache key from `func`'s
             arguments. When omitted, the key is `func`'s arguments
             themselves.
@@ -617,7 +590,6 @@ def create_synccm_wrapper[**P, T](
         Callable[P, T],
         _create_cm_wrapper_impl(
             func,
-            lifecycle,
             scope,
             cache_key,
             ignore_params,
@@ -629,8 +601,7 @@ def create_synccm_wrapper[**P, T](
 
 def create_asynccm_wrapper[**P, T](
     func: Callable[P, AbstractAsyncContextManager[T]],
-    lifecycle: "AsyncLifecycle",
-    scope: str,
+    scope: "AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Callable[P, Awaitable[T]]:
@@ -644,9 +615,7 @@ def create_asynccm_wrapper[**P, T](
 
     Args:
         func: The async-context-manager-returning function to wrap.
-        lifecycle: The `AsyncLifecycle` whose scope owns the cached value
-            and exit stack.
-        scope: Name of the scope the cached value and exit stack live in.
+        scope: The `AsyncScope` that owns the cached value and exit stack.
         cache_key: Callable deriving a hashable cache key from `func`'s
             arguments. When omitted, the key is `func`'s arguments
             themselves.
@@ -663,7 +632,6 @@ def create_asynccm_wrapper[**P, T](
         Callable[P, Awaitable[T]],
         _create_cm_wrapper_impl(
             func,
-            lifecycle,
             scope,
             cache_key,
             ignore_params,

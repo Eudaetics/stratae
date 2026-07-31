@@ -94,8 +94,7 @@ See {py:class}`Lifecycle <stratae.lifecycle.lifecycle.Lifecycle>`,
 rest of the module's API.
 """
 
-from .lifecycle import AsyncLifecycle, Lifecycle
 from .resource import async_resource, resource
-from .scope import Scope
+from .scope import AsyncScope, Scope
 
-__all__ = ["AsyncLifecycle", "Lifecycle", "Scope", "async_resource", "resource"]
+__all__ = ["AsyncScope", "Scope", "async_resource", "resource"]

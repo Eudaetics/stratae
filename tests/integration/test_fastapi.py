@@ -8,8 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from stratae.integrations.fastapi import scoped_route
-from stratae.lifecycle import async_resource
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncScope, async_resource
 
 pytestmark = pytest.mark.fastapi
 
@@ -21,10 +20,10 @@ def events() -> list[str]:
 
 
 @pytest.fixture
-def app(async_lifecycle: AsyncLifecycle, events: list[str]) -> FastAPI:
+def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
     """Build a FastAPI app whose request scope is activated via scoped_route."""
 
-    @async_lifecycle.cache("request")
+    @async_request_scope.cache()
     @async_resource
     async def get_transaction():
         events.append("open")
@@ -38,7 +37,7 @@ def app(async_lifecycle: AsyncLifecycle, events: list[str]) -> FastAPI:
             events.append("close")
 
     fastapi_app = FastAPI()
-    fastapi_app.router.route_class = scoped_route(async_lifecycle, "request")
+    fastapi_app.router.route_class = scoped_route(async_request_scope)
 
     @fastapi_app.get("/ok")
     async def ok() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]

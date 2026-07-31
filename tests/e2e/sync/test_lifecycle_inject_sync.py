@@ -7,60 +7,60 @@ import pytest
 
 from stratae.context import Context
 from stratae.depends import Depends, inject
-from stratae.lifecycle import Lifecycle, resource
+from stratae.lifecycle import Scope, resource
 
 
-def test_lifecycle_inject_sync(lifecycle: Lifecycle):
+def test_lifecycle_inject_sync(application_scope: Scope):
     """
     Test lifecycle management with dependency injection with sync dependencies.
 
-    Given: A Lifecycle with application scope.
+    Given: An application scope.
     When: A dependency is injected at application scope.
     Then: The dependency should be created once per application scope.
     """
 
     # Arrange
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     def get_db(db: Annotated[object, Depends(lambda: object())]) -> object:
         return db
 
     # Act / Assert
-    with lifecycle.start("application"):
+    with application_scope.activate():
         assert get_db() is get_db()
 
 
-def test_lifecycle_inject_nested_sync(lifecycle: Lifecycle):
+def test_lifecycle_inject_nested_sync(application_scope: Scope, request_scope: Scope):
     """
     Test nested lifecycle management with dependency injection with sync dependencies.
 
-    Given: A Lifecycle with application and request scopes.
+    Given: An application scope and a request scope.
     When: A dependency is injected at application scope and another at request scope.
     Then: The application scope dependency should be shared across requests, while the request
           scope dependency should be unique per request.
     """
 
     # Arrange
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     def get_app_db(db: Annotated[object, Depends(lambda: object())]) -> object:
         return db
 
-    @lifecycle.cache("request")
+    @request_scope.cache()
     @inject
     def get_request_db(db: Annotated[object, Depends(lambda: object())]) -> object:
         return db
 
     # Act / Assert
-    with lifecycle.start("application"):
+    with application_scope.activate():
         app_db_instance = get_app_db()
         assert isinstance(app_db_instance, object)
         assert get_app_db() is app_db_instance
-        with lifecycle.start("request"):
+        with request_scope.activate():
             request_db_instance_1 = get_request_db()
             assert get_app_db() is app_db_instance
             assert get_request_db() is request_db_instance_1
-        with lifecycle.start("request"):
+        with request_scope.activate():
             request_db_instance_2 = get_request_db()
             assert get_app_db() is app_db_instance
             assert get_request_db() is request_db_instance_2
@@ -68,11 +68,11 @@ def test_lifecycle_inject_nested_sync(lifecycle: Lifecycle):
         assert get_app_db() is app_db_instance
 
 
-def test_lifecycle_inject_sync_generator(lifecycle: Lifecycle):
+def test_lifecycle_inject_sync_generator(application_scope: Scope):
     """
     Test lifecycle management with dependency injection using sync generator dependencies.
 
-    Given: A Lifecycle with application scope.
+    Given: An application scope.
     When: A generator dependency is injected at application scope.
     Then: The generator should yield the same instance within the same application scope.
     """
@@ -83,7 +83,7 @@ def test_lifecycle_inject_sync_generator(lifecycle: Lifecycle):
 
     mock_cleanup = Mock()
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     @resource
     def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -93,18 +93,18 @@ def test_lifecycle_inject_sync_generator(lifecycle: Lifecycle):
             mock_cleanup()
 
     # Act / Assert
-    with lifecycle.start("application"):
+    with application_scope.activate():
         assert isinstance(get_resource(), SimpleObject)
         assert get_resource() is get_resource()
         mock_cleanup.assert_not_called()
     mock_cleanup.assert_called_once()
 
 
-def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
+def test_lifecycle_inject_nested_sync_generator(application_scope: Scope, request_scope: Scope):
     """
     Test nested lifecycle management with dependency injection using sync generator dependencies.
 
-    Given: A Lifecycle with application and request scopes.
+    Given: An application scope and a request scope.
     When: A generator dependency is injected at application scope and another at request scope.
     Then: The application scope generator should yield the same instance across requests, while
           the request scope generator should yield unique instances per request.
@@ -117,7 +117,7 @@ def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
     mock_app_cleanup = Mock()
     mock_request_cleanup = Mock()
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     @resource
     def get_app_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -126,7 +126,7 @@ def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
         finally:
             mock_app_cleanup()
 
-    @lifecycle.cache("request")
+    @request_scope.cache()
     @inject
     @resource
     def get_request_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -136,16 +136,16 @@ def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
             mock_request_cleanup()
 
     # Act / Assert
-    with lifecycle.start("application"):
+    with application_scope.activate():
         app_resource_instance = get_app_resource()
         assert isinstance(app_resource_instance, SimpleObject)
 
-        with lifecycle.start("request"):
+        with request_scope.activate():
             request_resource_instance_1 = get_request_resource()
             assert isinstance(request_resource_instance_1, SimpleObject)
             assert get_app_resource() is app_resource_instance
             assert get_request_resource() is request_resource_instance_1
-        with lifecycle.start("request"):
+        with request_scope.activate():
             request_resource_instance_2 = get_request_resource()
             assert isinstance(request_resource_instance_2, SimpleObject)
             assert get_app_resource() is app_resource_instance
@@ -155,11 +155,11 @@ def test_lifecycle_inject_nested_sync_generator(lifecycle: Lifecycle):
     assert mock_request_cleanup.call_count == 2
 
 
-def test_lifecycle_inject_sync_with_exception(lifecycle: Lifecycle):
+def test_lifecycle_inject_sync_with_exception(application_scope: Scope):
     """
     Test using sync dependencies that raise an exception.
 
-    Given: A Lifecycle with application scope.
+    Given: An application scope.
     When: A dependency is injected at application scope that raises an exception.
     Then: The exception should propagate correctly.
     """
@@ -168,7 +168,7 @@ def test_lifecycle_inject_sync_with_exception(lifecycle: Lifecycle):
     class SimpleObject:
         pass
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     @resource
     def get_resource(_: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -177,15 +177,15 @@ def test_lifecycle_inject_sync_with_exception(lifecycle: Lifecycle):
 
     # Act / Assert
     with pytest.raises(ValueError):
-        with lifecycle.start("application"):
+        with application_scope.activate():
             get_resource()
 
 
-def test_lifecycle_inject_sync_gen_with_exception(lifecycle: Lifecycle):
+def test_lifecycle_inject_sync_gen_with_exception(application_scope: Scope):
     """
     Test using sync generator dependencies that raise an exception.
 
-    Given: A Lifecycle with application scope.
+    Given: An application scope.
     When: A generator dependency is injected at application scope that raises an exception.
     Then: The exception should propagate correctly.
     """
@@ -197,7 +197,7 @@ def test_lifecycle_inject_sync_gen_with_exception(lifecycle: Lifecycle):
     mock_cleanup = Mock()
     mock_side_effect = Mock()
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     @resource
     def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -210,7 +210,7 @@ def test_lifecycle_inject_sync_gen_with_exception(lifecycle: Lifecycle):
 
     # Act / Assert
     with pytest.raises(ValueError, match="Simulated exception after yield"):
-        with lifecycle.start("application"):
+        with application_scope.activate():
             resource_instance = get_resource()
             assert isinstance(resource_instance, SimpleObject)
 
@@ -218,11 +218,11 @@ def test_lifecycle_inject_sync_gen_with_exception(lifecycle: Lifecycle):
     assert mock_cleanup.call_count == 1
 
 
-def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle):
+def test_lifecycle_inject_sync_gen_with_multiple_exceptions(application_scope: Scope):
     """
     Test using multiple sync generator dependencies that raise an exception.
 
-    Given: A Lifecycle with application scope.
+    Given: An application scope.
     When: Generator dependencies are injected at application scope that raise an exception.
     Then: The exceptions should propagate correctly as an ExceptionGroup.
     """
@@ -235,7 +235,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle
     mock_side_effect = Mock()
     mock_catch = Mock()
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     @resource
     def get_one(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -249,7 +249,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle
             mock_cleanup()
             raise ValueError("Simulated exception after yield")
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     @resource
     def get_two(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
@@ -262,7 +262,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exceptions:
-        with lifecycle.start("application"):
+        with application_scope.activate():
             resource_instance = get_one()
             resource_instance_2 = get_two()
             assert isinstance(resource_instance, SimpleObject)
@@ -282,7 +282,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(lifecycle: Lifecycle
     assert mock_catch.call_count == 1
 
 
-def test_lifecycle_outer_cache_and_inject_change(lifecycle: Lifecycle):
+def test_lifecycle_outer_cache_and_inject_change(application_scope: Scope):
     """
     Test lifecycle caching when cache is the outer decorator and injected values change.
 
@@ -298,19 +298,19 @@ def test_lifecycle_outer_cache_and_inject_change(lifecycle: Lifecycle):
     # Arrange
     mock = Mock()
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     def get_value(x: Annotated[int, Depends(lambda: mock.call_count)]) -> int:
         mock()
         return x + 1
 
     # Act / Assert
-    with lifecycle.start("application"):
+    with application_scope.activate():
         assert get_value() == 1
         assert get_value() == 1
 
 
-def test_lifecycle_outer_cache_inject_change_with_custom_key(lifecycle: Lifecycle):
+def test_lifecycle_outer_cache_inject_change_with_custom_key(application_scope: Scope):
     """
     Test lifecycle caching with custom cache key when injection values change.
 
@@ -319,7 +319,7 @@ def test_lifecycle_outer_cache_inject_change_with_custom_key(lifecycle: Lifecycl
     injection. If a dependency is based on a value that changes, the cache will not reflect that
     change unless the cache key generation accounts for it.
 
-    Given: A Lifecycle with application scope.
+    Given: An application scope.
     When: A dependency is injected at application scope with different argument values and a
           custom cache key that includes the context value.
     Then: The dependency should be cached based on the custom cache key.
@@ -327,19 +327,19 @@ def test_lifecycle_outer_cache_inject_change_with_custom_key(lifecycle: Lifecycl
     # Arrange
     mock = Mock()
 
-    @lifecycle.cache("application", cache_key=lambda: mock.call_count)
+    @application_scope.cache(cache_key=lambda: mock.call_count)
     @inject
     def get_value(x: Annotated[int, Depends(lambda: mock.call_count)]) -> int:
         mock()
         return x + 1
 
     # Act / Assert
-    with lifecycle.start("application"):
+    with application_scope.activate():
         assert get_value() == 1
         assert get_value() == 2
 
 
-def test_lifecycle_inner_cache_inject(lifecycle: Lifecycle):
+def test_lifecycle_inner_cache_inject(application_scope: Scope):
     """
     Test lifecycle caching when cache is the inner decorator and injected values change.
 
@@ -357,13 +357,13 @@ def test_lifecycle_inner_cache_inject(lifecycle: Lifecycle):
     counter = Mock()
 
     @inject
-    @lifecycle.cache("application")
+    @application_scope.cache()
     def get_value(x: Annotated[int, Depends(x)]) -> int:
         counter()
         return x * 2
 
     # Act / Assert
-    with lifecycle.start("application"):
+    with application_scope.activate():
         with x.use(10):
             assert get_value() == 20
             assert get_value() == 20

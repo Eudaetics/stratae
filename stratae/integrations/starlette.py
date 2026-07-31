@@ -99,10 +99,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncScope
 
 
-def scoped_route(lifecycle: AsyncLifecycle, scope: str) -> type[Route]:
+def scoped_route(scope: AsyncScope) -> type[Route]:
     """Build a Route subclass that activates `scope` around every request it handles."""
 
     class ScopedRoute(Route):
@@ -113,7 +113,7 @@ def scoped_route(lifecycle: AsyncLifecycle, scope: str) -> type[Route]:
             **kwargs: Any,
         ) -> None:
             async def scoped_endpoint(request: Request) -> Response:
-                async with lifecycle.start(scope):
+                async with scope.activate():
                     return await endpoint(request)
 
             super().__init__(path, scoped_endpoint, **kwargs)

@@ -4,21 +4,14 @@ import inspect
 from random import randint
 from typing import Annotated, Any
 
-import pytest
-
 from stratae.context import Context
 from stratae.depends import Depends, inject
-from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle import Scope
 
 
-@pytest.fixture
-def lifecycle():
-    """Provide a Lifecycle instance for testing."""
-    scopes = ["application", "session", "request"]
-    yield Lifecycle([Scope(name, "shared") for name in scopes])
-
-
-def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
+def test_api_request_processing_with_dependency_injection(
+    application_scope: Scope, request_scope: Scope
+):
     """
     End-to-end test simulating a web API processing user requests.
 
@@ -39,7 +32,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
         connection_id = f"db_conn_{randint(1000, 9999)}"
         return connection_id
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     @inject
     def initialize_connection_pool(
         db_conn: Annotated[str, Depends(create_database_connection)],
@@ -48,7 +41,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
         pool_size = randint(5, 20)
         return {"connection": db_conn, "pool_size": pool_size, "max_connections": pool_size * 10}
 
-    @lifecycle.cache("request")
+    @request_scope.cache()
     @inject
     def authenticate_user(
         pool: Annotated[dict[str, Any], Depends(initialize_connection_pool)],
@@ -62,7 +55,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
             "pool_connection": pool["connection"],
         }
 
-    @lifecycle.cache("request")
+    @request_scope.cache()
     @inject
     def process_api_request(
         pool: Annotated[dict[str, Any], Depends(initialize_connection_pool)],
@@ -80,10 +73,10 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
         return response
 
     # Act & Assert: Simulate multiple requests in an application lifecycle
-    with lifecycle.start("application"):
+    with application_scope.activate():
         user_id.set(42)
         pool = initialize_connection_pool()
-        with lifecycle.start("request"):
+        with request_scope.activate():
             print(inspect.signature(process_api_request))
             response1 = process_api_request()
             assert response1["status"] == "success"
@@ -94,7 +87,7 @@ def test_api_request_processing_with_dependency_injection(lifecycle: Lifecycle):
             assert initialize_connection_pool() is pool
 
         user_id.set(99)
-        with lifecycle.start("request"):
+        with request_scope.activate():
             response2 = process_api_request()
             assert response2["status"] == "success"
             assert response2["user_id"] == 99

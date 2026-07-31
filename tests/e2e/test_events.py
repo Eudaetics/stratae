@@ -2,20 +2,12 @@
 
 from typing import Annotated, Any
 
-import pytest
-
 from stratae.depends import Depends, inject
 from stratae.events import DirectBus, Event, PubSub, Request
-from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle import Scope
 
 
-@pytest.fixture
-def lifecycle():
-    """Provide a Lifecycle instance for testing."""
-    yield Lifecycle([Scope("application", "shared")])
-
-
-def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
+def test_order_flow_with_injected_handlers(application_scope: Scope):
     """
     End-to-end test simulating order processing over the direct bus.
 
@@ -39,7 +31,7 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     def order_store() -> dict[int, dict[str, Any]]:
         return {}
 
@@ -66,7 +58,7 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
         return Quote(order_id=request.order_id, total=100)
 
     # Act & Assert: place and price an order within the application scope
-    with lifecycle.start("application"):
+    with application_scope.activate():
         place_order(order_id=42)
         quote = request_quote(order_id=42)
 

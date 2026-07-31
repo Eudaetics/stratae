@@ -88,10 +88,10 @@ from typing import Any, Callable, Coroutine
 from fastapi import Request, Response
 from fastapi.routing import APIRoute
 
-from stratae.lifecycle.lifecycle import AsyncLifecycle
+from stratae.lifecycle import AsyncScope
 
 
-def scoped_route(lifecycle: AsyncLifecycle, scope: str) -> type[APIRoute]:
+def scoped_route(scope: AsyncScope) -> type[APIRoute]:
     """Build an APIRoute subclass that activates `scope` around every request it handles."""
 
     class ScopedRoute(APIRoute):
@@ -99,7 +99,7 @@ def scoped_route(lifecycle: AsyncLifecycle, scope: str) -> type[APIRoute]:
             handler = super().get_route_handler()
 
             async def scoped_handler(request: Request) -> Response:
-                async with lifecycle.start(scope):
+                async with scope.activate():
                     return await handler(request)
 
             return scoped_handler
