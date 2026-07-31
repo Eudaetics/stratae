@@ -73,7 +73,7 @@ job failed, rolled back: something failed before the job finished
 ```
 ````
 
-The insert never gets committed. `get_connection`'s `except` clause rolls back instead, then closes the connection. `raise` lets the error keep going after that, so the caller still sees it too.
+The insert never gets committed. `get_connection`'s `except` clause rolls back instead, then closes the connection.
 
 ### Injection
 
@@ -128,15 +128,12 @@ class UserAdded:
     def __init__(self, name: str) -> None:
         self.name = name
 
-class UsersRequested:
-    pass
-
 user_added = Event(PubSub, UserAdded)
-users_requested = Event(Request[list[tuple[int, str]]], UsersRequested)
+users_requested = Event(Request[list[tuple[int, str]]])
 
 bus = DirectBus()
 add_user = bus.bind(user_added, factory=UserAdded)
-list_users = bus.bind(users_requested, factory=UsersRequested)
+list_users = bus.bind(users_requested)
 
 @bus.handle(user_added)
 @inject
@@ -145,7 +142,7 @@ def _(e: UserAdded, cursor: Cursor) -> None:
 
 @bus.handle(users_requested)
 @inject
-def _(request: UsersRequested, cursor: Cursor) -> list[tuple[int, str]]:
+def _(cursor: Cursor) -> list[tuple[int, str]]:
     return cursor.execute("SELECT id, name FROM users").fetchall()
 
 with job.activate():

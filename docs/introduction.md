@@ -1,6 +1,6 @@
 # Introduction
 
-Most frameworks optimize for *easy*. They get you moving fast by deciding a lot upfront, and that speed comes from tangling your application code together with their way of doing things. For some projects, that tangle never matters. However, if your business needs change enough, or you need the same code to run somewhere else, unwinding it gets expensive.
+Most frameworks optimize for *easy*. They get you moving fast by deciding a lot upfront, and that speed comes from tangling your application code together with their way of doing things. For some projects, that never matters. However, if your business needs change enough, or you need the same code to run somewhere else, unwinding it gets expensive.
 
 Stratae optimizes for *simple* instead, in the sense Rich Hickey draws out in "Simple Made Easy": not tangled together, not necessarily the fastest thing to pick up on day one. Dependency injection, lifecycle management, and events are three small, independent tools. None of them know about each other. You choose whether and how to combine them. Combined well, they can make A/B tests, feature flags, and per-tenant behavior straightforward.
 
