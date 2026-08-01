@@ -119,9 +119,9 @@ with job.activate():
 
 ### Events
 
-So far `add_user` decides how a user gets stored. It is coupled to a Cursor object, and only runs the `INSERT` itself. `stratae.events` can separate those concerns. `add_user` becomes a command, add this user, and anything registered can decide what to do in response.
+So far `add_user` decides how a user gets stored. It is coupled to a Cursor object, and only runs the `INSERT` itself. `stratae.events` can separate those concerns. `add_user` becomes a command, add this user, dispatched as a `Request`: exactly one handler, `persist_user`, answers it, and `add_user` blocks until `persist_user` returns. `persist_user` emits a separate `PubSub` event, `UserAdded`, once the write succeeds, and anything that needs to react to a user having been added, like the audit log, subscribes to that.
 
-````{example} Decoupling the command to add a user from how it gets written
+````{example} Separating the command to add a user from the fact that one was added
 ```{code-block} python
 from stratae.context import Context
 from stratae.events import DirectBus, Event, PubSub, Request
@@ -130,11 +130,17 @@ class AddUser:
     def __init__(self, name: str) -> None:
         self.name = name
 
-add_user_event = Event(PubSub, AddUser)
+class UserAdded:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+add_user_event = Event(Request[None], AddUser)
+user_added_event = Event(PubSub, UserAdded)
 users_requested = Event(Request[list[tuple[int, str]]])
 
 bus = DirectBus()
 add_user = bus.bind(add_user_event, factory=AddUser)
+notify_user_added = bus.bind(user_added_event, factory=UserAdded)
 list_users = bus.bind(users_requested)
 
 current_user = Context[str]("cur_user")
@@ -143,14 +149,15 @@ current_user = Context[str]("cur_user")
 @inject
 def persist_user(cmd: AddUser, cursor: Cursor) -> None:
     cursor.execute("INSERT INTO users (name) VALUES (?)", (cmd.name,))
+    notify_user_added(name=cmd.name)
 
-@bus.handle(add_user_event)
+@bus.handle(user_added_event)
 @inject
 def record_audit(
-    cmd: AddUser, cursor: Cursor, admin: Annotated[str, Depends(current_user)]
+    added: UserAdded, cursor: Cursor, admin: Annotated[str, Depends(current_user)]
 ) -> None:
     cursor.execute(
-        "INSERT INTO audit_log (admin, name) VALUES (?, ?)", (admin, cmd.name)
+        "INSERT INTO audit_log (admin, name) VALUES (?, ?)", (admin, added.name)
     )
 
 @bus.handle(users_requested)
@@ -168,10 +175,10 @@ with job.activate(), current_user.use("Steve"):
 ```
 ````
 
-`add_user(name="Alice")` no longer runs an `INSERT` itself. It declares the intent, "add this user," and hands it to the bus as an `AddUser` command. What happens next, and how many things happen, is up to whatever's registered for `add_user_event`. `persist_user` does the actual write; `record_audit` writes a row to `audit_log` through the same `cursor`. Neither knows the other exists, and `add_user` doesn't know about either of them.
+Calling `add_user` blocks until `persist_user` returns, so the INSERT has already run against the connection by the time it comes back, though it isn't durable until the job commits at the end of `job.activate()`. `persist_user` only emits `UserAdded` once that INSERT has run, so `record_audit` can never fire for a write that raised instead. Because `record_audit` is reacting to that event instead of being called directly, adding another listener later, a welcome email, say, means registering a new handler, not editing `persist_user`.
 
 ## Conclusion
 
-With Lifecycle, Injection, and Events in place, extending this script is a matter of adding, not editing: a new handler can subscribe to `add_user_event` without touching `persist_user`, and a new provider can replace `get_connection` without touching `add_user` or `list_users`.
+With Lifecycle, Injection, and Events in place, extending this script is a matter of adding, not editing: a new handler can subscribe to `user_added_event` without touching `persist_user`, and a new provider can replace `get_connection` without touching `add_user` or `list_users`.
 
 For a longer worked example that grows from a plain script into one using each of these modules, see the [Project Walkthrough](walkthrough). The [API reference](../api-reference) has the full signature-level detail.
