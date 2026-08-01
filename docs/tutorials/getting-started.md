@@ -180,5 +180,3 @@ Calling `add_user` blocks until `persist_user` returns, so the INSERT has alread
 ## Conclusion
 
 With Lifecycle, Injection, and Events in place, extending this script is a matter of adding, not editing: a new handler can subscribe to `user_added_event` without touching `persist_user`, and a new provider can replace `get_connection` without touching `add_user` or `list_users`.
-
-For a longer worked example that grows from a plain script into one using each of these modules, see the [Project Walkthrough](walkthrough). The [API reference](../api-reference) has the full signature-level detail.
