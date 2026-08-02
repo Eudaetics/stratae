@@ -94,6 +94,7 @@ See {py:class}`BaseScope`, {py:class}`Scope`, and {py:class}`AsyncScope` for the
 the module's API.
 """
 
+from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from types import TracebackType
 from typing import Any, Callable, Hashable, Literal, get_args
@@ -293,7 +294,7 @@ class Activation:
     case, so no separate sparse-storage variant is needed.
     """
 
-    __slots__ = ("var", "token", "slots", "parent_slots")
+    __slots__ = ("var", "token", "slots", "parent_slots", "parent_lock")
 
     slots: Any
     """The activation's live slot storage, declared `Any` rather than `SlotStorage`."""
@@ -304,12 +305,14 @@ class Activation:
         token: Any,
         slots: SlotStorage,
         parent_slots: SlotStorage | None,
+        parent_lock: AbstractContextManager[Any],
     ) -> None:
         """Construct the Activation state for a scope."""
         self.var = var
         self.token = token
         self.slots = slots
         self.parent_slots = parent_slots
+        self.parent_lock = parent_lock
 
     def __enter__(self) -> "Activation":
         """Return self - the scope was already activated by `activate()`."""
@@ -340,7 +343,8 @@ class Activation:
             return None
         finally:
             if parent_slots is not None:
-                parent_slots[1] -= 1
+                with self.parent_lock:
+                    parent_slots[1] -= 1
 
 
 class AsyncActivation:
@@ -352,7 +356,7 @@ class AsyncActivation:
     either case, so no separate sparse-storage variant is needed.
     """
 
-    __slots__ = ("var", "token", "slots", "parent_slots")
+    __slots__ = ("var", "token", "slots", "parent_slots", "parent_lock")
 
     slots: Any
     """The activation's live slot storage, declared `Any` rather than `SlotStorage`."""
@@ -363,12 +367,14 @@ class AsyncActivation:
         token: Any,
         slots: SlotStorage,
         parent_slots: SlotStorage | None,
+        parent_lock: AbstractContextManager[Any],
     ) -> None:
         """Construct the Activation state for an async scope."""
         self.var = var
         self.token = token
         self.slots = slots
         self.parent_slots = parent_slots
+        self.parent_lock = parent_lock
 
     async def __aenter__(self) -> "AsyncActivation":
         """Return self - the scope was already activated by `activate()`."""
@@ -399,7 +405,8 @@ class AsyncActivation:
             return None
         finally:
             if parent_slots is not None:
-                parent_slots[1] -= 1
+                with self.parent_lock:
+                    parent_slots[1] -= 1
 
 
 class Scope(BaseScope):
@@ -422,18 +429,25 @@ class Scope(BaseScope):
         if requires := self._requires:
             try:
                 parent_slots = requires._var.get()
-                parent_slots[1] += 1
             except LookupError:
                 raise ScopeActivationError(
                     f"Cannot activate {self.name!r}: required scope "
                     f"{requires.name!r} is not active."
                 ) from LookupError
+            parent_lock = (
+                requires._var.counter_lock
+                if isinstance(requires._var, SharedVar)
+                else nullcontext()
+            )
+            with parent_lock:
+                parent_slots[1] += 1
         else:
             parent_slots = None
+            parent_lock = nullcontext()
         slots = self._template.copy()
         var = self._var
         token = var.set(slots)
-        return self._activation_cls(var, token, slots, parent_slots)
+        return self._activation_cls(var, token, slots, parent_slots, parent_lock)
 
     def deactivate(self, activation: Activation) -> None:
         """
@@ -510,18 +524,25 @@ class AsyncScope(BaseScope):
         if requires := self._requires:
             try:
                 parent_slots = requires._var.get()
-                parent_slots[1] += 1
             except LookupError:
                 raise ScopeActivationError(
                     f"Cannot activate {self.name!r}: required scope "
                     f"{requires.name!r} is not active."
                 ) from LookupError
+            parent_lock = (
+                requires._var.counter_lock
+                if isinstance(requires._var, SharedVar)
+                else nullcontext()
+            )
+            with parent_lock:
+                parent_slots[1] += 1
         else:
             parent_slots = None
+            parent_lock = nullcontext()
         slots = self._template.copy()
         var = self._var
         token = var.set(slots)
-        return self._activation_cls(var, token, slots, parent_slots)
+        return self._activation_cls(var, token, slots, parent_slots, parent_lock)
 
     async def deactivate(self, activation: AsyncActivation) -> None:
         """

@@ -1,7 +1,6 @@
 # Checks
 
-`stratae.checks` provide options for running a set of preconditions. Most often these would be guard-style
-checks to prevent running code by raising if one of the checks fail. A "check" here is nothing more than a zero-argument callable that raises on failure. Using lambdas, closures, or dependency injection are all options to provide run-time information for a check.
+`stratae.checks` provide options for running a set of preconditions. Most often these would be guard-style checks to prevent running code by raising if one of the checks fail. A "check" here is nothing more than a zero-argument callable that raises on failure. Using lambdas, closures, or dependency injection are all options to provide run-time information for a check.
 
 ## Running checks
 

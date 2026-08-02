@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("fastapi")
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from stratae.integrations.fastapi import scoped_route
@@ -67,6 +68,51 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
         if first is not second:
             raise HTTPException(status_code=409, detail="expected the same cached connection")
         raise RuntimeError("deliberate failure after calling resource twice")
+
+    @fastapi_app.get("/stream")
+    async def stream() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+        connection = await get_transaction()
+
+        async def body():
+            events.append(f"stream:{connection}")
+            yield b"chunk1"
+            events.append("stream-done")
+            yield b"chunk2"
+
+        return StreamingResponse(body())
+
+    @fastapi_app.get("/stream-twice")
+    async def stream_twice() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+        first = await get_transaction()
+
+        async def body():
+            second = await get_transaction()
+            events.append(f"same_connection:{first is second}")
+            yield b"chunk1"
+
+        return StreamingResponse(body())
+
+    @fastapi_app.get("/stream-then-fail")
+    async def stream_then_fail() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+        await get_transaction()
+
+        async def body():
+            yield b"chunk1"
+            raise RuntimeError("deliberate failure mid-stream")
+
+        return StreamingResponse(body())
+
+    @fastapi_app.get("/fail-before-resource")
+    async def fail_before_resource() -> None:  # pyright: ignore[reportUnusedFunction]
+        raise RuntimeError("deliberate failure before touching any resource")
+
+    @fastapi_app.get("/stream-fail-before-resource")
+    async def stream_fail_untouched() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+        async def body():
+            yield b"chunk1"
+            raise RuntimeError("deliberate mid-stream failure before touching any resource")
+
+        return StreamingResponse(body())
 
     return fastapi_app
 
@@ -159,3 +205,101 @@ def test_resource_called_twice_then_fails_rolls_back_once(app: FastAPI, events: 
     # Assert
     assert response.status_code == 500
     assert events == ["open", "rollback", "close"]
+
+
+def test_streaming_response_keeps_scope_open_until_body_completes(app: FastAPI, events: list[str]):
+    """
+    Test that a StreamingResponse keeps the request scope open for its whole body.
+
+    Given: A FastAPI app whose route class activates the request scope
+    When: A route returns a StreamingResponse whose body is produced after the route
+        handler itself has already returned
+    Then: The request-scoped resource stays open through the entire streamed body,
+        and only commits/closes once the last chunk has been sent - not as soon as
+        the handler returns the response object
+    """
+    # Act
+    client = TestClient(app)
+    response = client.get("/stream")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.text == "chunk1chunk2"
+    assert events == ["open", "stream:connection", "stream-done", "commit", "close"]
+
+
+def test_streaming_response_resource_still_valid_mid_stream(app: FastAPI, events: list[str]):
+    """
+    Test that the request-scoped resource is still usable from inside a streamed body.
+
+    Given: A FastAPI app whose route class activates the request scope
+    When: A route calls the request-scoped resource once before returning a StreamingResponse,
+        then calls it again from inside the body, after the route handler has already returned
+    Then: The second call returns the same cached connection as the first - the scope is
+        still genuinely active for the whole body, not just deferred at the edges
+    """
+    # Act
+    client = TestClient(app)
+    response = client.get("/stream-twice")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.text == "chunk1"
+    assert events == ["open", "same_connection:True", "commit", "close"]
+
+
+def test_streaming_response_rolls_back_on_body_failure(app: FastAPI, events: list[str]):
+    """
+    Test that a failure partway through a streamed body still rolls back the resource.
+
+    Given: A FastAPI app whose route class activates the request scope
+    When: A route returns a StreamingResponse whose body raises after sending its first chunk
+    Then: The request-scoped resource rolls back rather than committing, even though the
+        failure happens after the route handler itself already returned successfully
+    """
+    # Act
+    client = TestClient(app, raise_server_exceptions=False)
+    client.get("/stream-then-fail")
+
+    # Assert
+    assert events == ["open", "rollback", "close"]
+
+
+def test_exception_before_resource_use_still_propagates(app: FastAPI, events: list[str]):
+    """
+    Test that an exception raised before touching the resource still propagates.
+
+    Given: A FastAPI app whose route class activates the request scope
+    When: A route raises without ever calling the request-scoped resource, so the scope's
+        activation never entered any resource and has nothing to roll back
+    Then: The exception still propagates as a 500, and no resource lifecycle events happen
+        at all, since the resource was never touched
+    """
+    # Act
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/fail-before-resource")
+
+    # Assert
+    assert response.status_code == 500
+    assert events == []
+
+
+def test_streaming_response_failure_before_resource_use_still_propagates(
+    app: FastAPI, events: list[str]
+):
+    """
+    Test that a mid-stream failure still propagates even when the resource was never touched.
+
+    Given: A FastAPI app whose route class activates the request scope
+    When: A route returns a StreamingResponse whose body raises without the handler or the
+        body ever calling the request-scoped resource, so the scope's activation has
+        nothing to roll back
+    Then: The exception still propagates rather than being silently swallowed, and no
+        resource lifecycle events happen at all
+    """
+    # Act
+    client = TestClient(app, raise_server_exceptions=False)
+    client.get("/stream-fail-before-resource")
+
+    # Assert
+    assert events == []

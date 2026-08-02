@@ -46,6 +46,7 @@ class SharedVar:
         "_token",
         "lock",
         "async_lock",
+        "counter_lock",
         "_current_token",
     )
 
@@ -55,6 +56,7 @@ class SharedVar:
         self._token = SharedToken(self)
         self.lock = threading.RLock()
         self.async_lock = AsyncRLock()
+        self.counter_lock = threading.Lock()
         self._current_token: SharedToken | None = None
 
     def get(self, default: Any = _MISSING) -> SlotStorage:

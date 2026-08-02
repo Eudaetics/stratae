@@ -96,8 +96,28 @@ from typing import Any, Awaitable, Callable
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
+from starlette.types import Receive, Send
+from starlette.types import Scope as ASGIScope
 
 from stratae.lifecycle import AsyncScope
+from stratae.lifecycle.scope import AsyncActivation
+
+
+class _ScopedResponse(Response):
+    """Wrap a Response so its scope activation stays open until the response finishes sending."""
+
+    def __init__(self, response: Response, activation: AsyncActivation) -> None:
+        self._response = response
+        self._activation = activation
+
+    async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
+        try:
+            await self._response(scope, receive, send)
+        except Exception as exc:
+            await self._activation.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+        else:
+            await self._activation.__aexit__(None, None, None)
 
 
 def scoped_route(scope: AsyncScope) -> type[Route]:
@@ -111,8 +131,13 @@ def scoped_route(scope: AsyncScope) -> type[Route]:
             **kwargs: Any,
         ) -> None:
             async def scoped_endpoint(request: Request) -> Response:
-                async with scope.activate():
-                    return await endpoint(request)
+                activation = scope.activate()
+                try:
+                    response = await endpoint(request)
+                except Exception as exc:
+                    await activation.__aexit__(type(exc), exc, exc.__traceback__)
+                    raise
+                return _ScopedResponse(response, activation)
 
             super().__init__(path, scoped_endpoint, **kwargs)
 

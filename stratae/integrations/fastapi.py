@@ -86,8 +86,28 @@ from typing import Any, Callable, Coroutine
 
 from fastapi import Request, Response
 from fastapi.routing import APIRoute
+from starlette.types import Receive, Send
+from starlette.types import Scope as ASGIScope
 
 from stratae.lifecycle import AsyncScope
+from stratae.lifecycle.scope import AsyncActivation
+
+
+class _ScopedResponse(Response):
+    """Wrap a Response so its scope activation stays open until the response finishes sending."""
+
+    def __init__(self, response: Response, activation: AsyncActivation) -> None:
+        self._response = response
+        self._activation = activation
+
+    async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
+        try:
+            await self._response(scope, receive, send)
+        except Exception as exc:
+            await self._activation.__aexit__(type(exc), exc, exc.__traceback__)
+            raise
+        else:
+            await self._activation.__aexit__(None, None, None)
 
 
 def scoped_route(scope: AsyncScope) -> type[APIRoute]:
@@ -98,8 +118,13 @@ def scoped_route(scope: AsyncScope) -> type[APIRoute]:
             handler = super().get_route_handler()
 
             async def scoped_handler(request: Request) -> Response:
-                async with scope.activate():
-                    return await handler(request)
+                activation = scope.activate()
+                try:
+                    response = await handler(request)
+                except Exception as exc:
+                    await activation.__aexit__(type(exc), exc, exc.__traceback__)
+                    raise
+                return _ScopedResponse(response, activation)
 
             return scoped_handler
 
