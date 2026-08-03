@@ -33,7 +33,7 @@ checks passed
 `check` only accepts synchronous checks. Passing one that returns an awaitable raises `TypeError` telling you to use `check_async` instead. `check_async` accepts a mix of sync and async checks in the same call, awaiting the async ones.
 ```
 
-Here, `not_suspended` is async while `is_admin` stays sync, and `check_async` runs both in the same call:
+Here, `not_suspended` is async while `is_admin` stays sync, and `check_async` runs both in the same call.
 
 ````{example} Running async checks
 ```{code-block} python
@@ -71,7 +71,7 @@ By default (`mode="all"`), `check` stops at the first failure and propagates its
 
 ## Guarding a function
 
-`require` is the decorator form of `check`. It runs before the wrapped function and discards the return values of the given checks, since only side effects (raising, or not) matter:
+`require` is the decorator form of `check`. It runs before the wrapped function and discards the return values of the given checks, since only side effects (raising, or not) matter.
 
 ````{example} Guarding a function with require
 ```{code-block} python
@@ -147,7 +147,7 @@ If any check inside `any_of`/`all_of` is async, the combination it returns is it
 
 ## An authentication example
 
-`mode="any"` fits a precondition with more than one valid way to satisfy it, where it doesn't matter which one does. A user is authenticated whether they passed a password or an SSO token, and nothing downstream needs to know which:
+`mode="any"` fits a precondition with more than one valid way to satisfy it, where it doesn't matter which one does. A user is authenticated whether they passed a password or an SSO token, and nothing downstream needs to know which.
 
 ````{example} Accepting any of several authentication methods
 ```{code-block} python
@@ -294,7 +294,7 @@ processing order 42
 ```
 ````
 
-All three compose without any special-casing. `application` caches an account store; `request` resolves the current user from it as an injected dependency; `@inject` collapses that whole chain into the zero-argument check `require` expects. The same admin check then guards an `events` handler exactly like the standalone example above, just built from a longer dependency chain:
+All three compose without any special-casing. `application` caches an account store; `request` resolves the current user from it as an injected dependency; `@inject` collapses that whole chain into the zero-argument check `require` expects. The same admin check then guards an `events` handler exactly like the standalone example above, just built from a longer dependency chain.
 
 ````{example} Combining depends, lifecycle, and events
 ```{code-block} python
@@ -360,7 +360,7 @@ refunding order 42
 
 ### External tools
 
-`require` stacks under a route decorator too, guarding the endpoint before its body runs. A check can raise `fastapi.HTTPException` directly. FastAPI's built-in handling turns that into the response:
+`require` stacks under a route decorator too, guarding the endpoint before its body runs. A check can raise `fastapi.HTTPException` directly. FastAPI's built-in handling turns that into the response.
 
 ````{example} Guarding a FastAPI route with require
 ```{code-block} python

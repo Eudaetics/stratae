@@ -72,7 +72,7 @@ class _NoDefault:
 
 
 _NO_DEFAULT = _NoDefault()
-IGNORE = _NoDefault()
+IGNORE_DEFAULT = _NoDefault()
 """
 Sentinel passed as a 'default' to skip the constructor default and require a set value.
 
@@ -81,8 +81,8 @@ Sentinel passed as a 'default' to skip the constructor default and require a set
 If there is no value set in the current context, then {py:func}`Context.get` returns first
 the default provided to {py:func}`Context.get`, then the constructor level default, and
 finally raises a RuntimeError.
-The `IGNORE` sentinel provides a third option. If the {py:func}`Context.get` is called with
-`IGNORE`, then it will raise a RuntimeError if no value is set and ignore the constructor
+The `IGNORE_DEFAULT` sentinel provides a third option. If the {py:func}`Context.get` is called with
+`IGNORE_DEFAULT`, then it will raise a RuntimeError if no value is set and ignore the constructor
 level default.
 """
 
@@ -140,12 +140,12 @@ class Context[T]:
         :param default: Fallback value used when the variable is unset and no
             call-specific default is given. When omitted, there is no
             fallback and an unset access raises.
-        :raises ValueError: If `IGNORE` is passed as the default; it is only
+        :raises ValueError: If `IGNORE_DEFAULT` is passed as the default; it is only
             meaningful as a call-specific default to {py:func}`Context.get`/`__call__`.
 
         """
-        if default is IGNORE:
-            raise ValueError("IGNORE cannot be used as a constructor default.")
+        if default is IGNORE_DEFAULT:
+            raise ValueError("IGNORE_DEFAULT cannot be used as a constructor default.")
         self._name = name
         self._var: ContextVar[T] = ContextVar(name)
         self._default = default
@@ -159,7 +159,7 @@ class Context[T]:
 
         :param default: Fallback value to use if the variable is unset. When
             omitted, falls back to the constructor's default, if any.
-            Pass `IGNORE` to bypass the constructor's default and
+            Pass `IGNORE_DEFAULT` to bypass the constructor's default and
             require a set value.
         :returns: The currently set value if any, otherwise the call-specific
             default if given, otherwise the constructor default.

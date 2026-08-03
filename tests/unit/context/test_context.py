@@ -5,7 +5,7 @@ from contextvars import Token
 
 import pytest
 
-from stratae.context import IGNORE, Context
+from stratae.context import IGNORE_DEFAULT, Context
 
 
 def test_context_set():
@@ -152,10 +152,10 @@ def test_context_call_default_overrides_constructor_default():
 
 def test_context_ignore_default_raises():
     """
-    Verify IGNORE bypasses the constructor default.
+    Verify IGNORE_DEFAULT bypasses the constructor default.
 
     Given: A context variable instance constructed with a default, but unset.
-    When: The value is retrieved with IGNORE passed as the default.
+    When: The value is retrieved with IGNORE_DEFAULT passed as the default.
     Then: A RuntimeError should be raised instead of returning the constructor default.
     """
     # Arrange
@@ -163,15 +163,15 @@ def test_context_ignore_default_raises():
 
     # Act / Assert
     with pytest.raises(RuntimeError, match="Context 'test' is not set."):
-        test.get(default=IGNORE)
+        test.get(default=IGNORE_DEFAULT)
 
 
 def test_context_ignore_default_returns_set_value():
     """
-    Verify IGNORE still returns the value when the context is set.
+    Verify IGNORE_DEFAULT still returns the value when the context is set.
 
     Given: A context variable instance constructed with a default, and set.
-    When: The value is retrieved with IGNORE passed as the default.
+    When: The value is retrieved with IGNORE_DEFAULT passed as the default.
     Then: The set value should be returned, not the constructor default.
     """
     # Arrange
@@ -179,20 +179,20 @@ def test_context_ignore_default_returns_set_value():
 
     # Act / Assert
     with test.use(5):
-        assert test.get(default=IGNORE) == 5
+        assert test.get(default=IGNORE_DEFAULT) == 5
 
 
 def test_context_constructor_default_ignore_raises():
     """
-    Verify constructing a context with IGNORE as the default raises an error.
+    Verify constructing a context with IGNORE_DEFAULT as the default raises an error.
 
     Given: Nothing constructed yet.
-    When: A context is constructed with IGNORE passed as the default.
+    When: A context is constructed with IGNORE_DEFAULT passed as the default.
     Then: A ValueError should be raised.
     """
     # Act / Assert
-    with pytest.raises(ValueError, match="IGNORE cannot be used as a constructor default."):
-        Context[int]("test", default=IGNORE)
+    with pytest.raises(ValueError, match="IGNORE_DEFAULT cannot be used as a constructor default."):
+        Context[int]("test", default=IGNORE_DEFAULT)
 
 
 def test_context_get_unset_raises():
