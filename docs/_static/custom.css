@@ -376,3 +376,17 @@ html[data-theme="dark"] .bd-content .sd-card .sd-card-footer {
     margin: 0;
     white-space: pre-wrap;
 }
+
+.admonition.motivation-block {
+    border-color: var(--pst-color-secondary);
+    background-color: var(--pst-color-surface);
+}
+
+.admonition.motivation-block > .admonition-title {
+    background-color: var(--pst-color-secondary-bg);
+}
+
+.admonition.motivation-block > .admonition-title::after {
+    content: "\f14e";
+    color: var(--pst-color-secondary);
+}

@@ -1,4 +1,4 @@
-"""Custom "Example" admonition and verbatim "Output" block."""
+"""Custom "Example" and "Motivation" admonitions, and verbatim "Output" block."""
 
 from docutils import nodes
 from docutils.parsers.rst import Directive
@@ -42,6 +42,34 @@ class ExampleDirective(BaseAdmonition):
         return [admonition_node]
 
 
+class MotivationDirective(BaseAdmonition):
+    """Renders as a fixed-title "Motivation" admonition."""
+
+    required_arguments = 0
+    optional_arguments = 0
+    node_class = nodes.admonition
+
+    def run(self) -> list[nodes.Node]:
+        """Build an admonition node with a "Motivation" title, then parse its body."""
+        self.options["classes"] = ["motivation-block"]
+        self.assert_has_content()
+        text = "\n".join(self.content)
+        admonition_node = nodes.admonition(text, **self.options)
+        self.add_name(admonition_node)
+        admonition_node.source, admonition_node.line = self.state_machine.get_source_and_line(
+            self.lineno
+        )
+
+        title = nodes.container("", classes=["admonition-title"])
+        title += nodes.paragraph(
+            "", "", nodes.Text("Motivation"), classes=["admonition-title-label"]
+        )
+        admonition_node += title
+
+        self.state.nested_parse(self.content, self.content_offset, admonition_node)
+        return [admonition_node]
+
+
 class OutputDirective(Directive):
     """Renders its content verbatim as plain preformatted text."""
 
@@ -57,7 +85,8 @@ class OutputDirective(Directive):
 
 
 def setup(app: Sphinx) -> ExtensionMetadata:
-    """Register the "example" and "output" directives with Sphinx."""
+    """Register the "example", "motivation", and "output" directives with Sphinx."""
     app.add_directive("example", ExampleDirective)
+    app.add_directive("motivation", MotivationDirective)
     app.add_directive("output", OutputDirective)
     return {"parallel_read_safe": True, "parallel_write_safe": True}

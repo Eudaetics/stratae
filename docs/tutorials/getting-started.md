@@ -149,7 +149,8 @@ def add_user(name: str, cursor: Cursor) -> None:
 @inject
 def record_audit(added: UserAdded, cursor: Cursor, admin: CurrentUser) -> None:
     cursor.execute(
-        "INSERT INTO audit_log (admin, name) VALUES (?, ?)", (admin, added.name)
+        "INSERT INTO audit_log (admin, name) VALUES (?, ?)",
+        (admin, added.name)
     )
 
 @bus.handle(users_requested)
