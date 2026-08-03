@@ -119,43 +119,35 @@ with job.activate():
 
 ### Events
 
-So far `add_user` decides how a user gets stored. It is coupled to a Cursor object, and only runs the `INSERT` itself. `stratae.events` can separate those concerns. `add_user` becomes a command, add this user, dispatched as a `Request`: exactly one handler, `persist_user`, answers it, and `add_user` blocks until `persist_user` returns. `persist_user` emits a separate `PubSub` event, `UserAdded`, once the write succeeds, and anything that needs to react to a user having been added, like the audit log, subscribes to that.
+So far `add_user` and `list_users` talk straight to the database: each grabs a `Cursor` and runs its query itself. `stratae.events` can pull the reactions to those actions out into their own handlers. Once `add_user` inserts a row, it fires a `PubSub` event, `UserAdded`, and anything that needs to react subscribes to it instead of being called directly. `list_users` shows the other event pattern, `Request`: it dispatches a request instead of querying the cursor itself, and exactly one handler, `fetch_users`, answers it and returns the rows.
 
-````{example} Separating the command to add a user from the fact that one was added
+````{example} Notifying that a user was added
 ```{code-block} python
 from stratae.context import Context
 from stratae.events import DirectBus, Event, PubSub, Request
-
-class AddUser:
-    def __init__(self, name: str) -> None:
-        self.name = name
 
 class UserAdded:
     def __init__(self, name: str) -> None:
         self.name = name
 
-add_user_event = Event(Request[None], AddUser)
 user_added_event = Event(PubSub, UserAdded)
 users_requested = Event(Request[list[tuple[int, str]]])
 
 bus = DirectBus()
-add_user = bus.bind(add_user_event, factory=AddUser)
 notify_user_added = bus.bind(user_added_event, factory=UserAdded)
 list_users = bus.bind(users_requested)
 
 current_user = Context[str]("cur_user")
+type CurrentUser = Annotated[str, Depends(current_user)]
 
-@bus.handle(add_user_event)
 @inject
-def persist_user(cmd: AddUser, cursor: Cursor) -> None:
-    cursor.execute("INSERT INTO users (name) VALUES (?)", (cmd.name,))
-    notify_user_added(name=cmd.name)
+def add_user(name: str, cursor: Cursor) -> None:
+    cursor.execute("INSERT INTO users (name) VALUES (?)", (name,))
+    notify_user_added(name)
 
 @bus.handle(user_added_event)
 @inject
-def record_audit(
-    added: UserAdded, cursor: Cursor, admin: Annotated[str, Depends(current_user)]
-) -> None:
+def record_audit(added: UserAdded, cursor: Cursor, admin: CurrentUser) -> None:
     cursor.execute(
         "INSERT INTO audit_log (admin, name) VALUES (?, ?)", (admin, added.name)
     )
@@ -175,7 +167,7 @@ with job.activate(), current_user.use("Steve"):
 ```
 ````
 
-Calling `add_user` blocks until `persist_user` returns, so the INSERT has already run against the connection by the time it comes back, though it isn't durable until the job commits at the end of `job.activate()`. `persist_user` only emits `UserAdded` once that INSERT has run, so `record_audit` can never fire for a write that raised instead. Because `record_audit` is reacting to that event instead of being called directly, adding another listener later, a welcome email, say, means registering a new handler, not editing `persist_user`.
+`Event(pattern, schema)` defines the shape of an event independent of any bus: the dispatch pattern, `PubSub` for fire-and-forget or `Request[Reply]` for request/reply, and the payload schema it carries. `bus.bind(event, factory=...)` is a shortcut for `bus.emit`. It wraps the event and the bus's routing config around `emit`, returning a callable that dispatches through it. `factory` is optional. Given one, as shown in `notify_user_added`, the callable builds the payload from its arguments; without one, it takes an already-built instance of the event's schema directly. Adding additional behavior, such as sending a welcom email, means registering a new handler instead of editing `add_user`. `list_users` shows the same shape on the read side. Calling it dispatches a `Request`, and `fetch_users` is the handler that answers it and returns the rows.
 
 ## Conclusion
 
