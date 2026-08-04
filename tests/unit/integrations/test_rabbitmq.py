@@ -11,7 +11,7 @@ RabbitMQPublisher:
 - Entering the context opens the connection and allocates a channel.
 - Exiting the context closes the connection.
 - emit raises NotConnectedError before the context is entered.
-- emit publishes the pack-serialized payload to the configured exchange
+- emit publishes the serialized payload to the configured exchange
   and routing key.
 - emit uses the binding's serializer when one is provided.
 - Awaiting a factory-bound callable produced by bind constructs and publishes the payload.
@@ -43,7 +43,7 @@ from stratae.events import (
 )
 from stratae.events.exceptions import NotConnectedError
 from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
-from stratae.serde import pack
+from stratae.serde import serialize
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -183,11 +183,11 @@ async def test_emit_raises_not_implemented_for_request(publisher: RabbitMQPublis
 
 async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, channel: AsyncMock):
     """
-    ``emit`` should publish the pack-serialized payload to the configured target.
+    ``emit`` should publish the serialized payload to the configured target.
 
     Given: A connected publisher and a payload
     When: emit is awaited without a serializer
-    Then: The payload should be packed and published with the config's
+    Then: The payload should be serialized and published with the config's
           exchange and routing key
     """
     # Arrange
@@ -199,7 +199,7 @@ async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, chann
 
     # Assert
     call = channel.basic_publish.await_args
-    assert call.args[0] == pack(payload)
+    assert call.args[0] == serialize(payload)
     assert call.kwargs["exchange"] == "events"
     assert call.kwargs["routing_key"] == "order.placed"
 
@@ -228,7 +228,7 @@ async def test_emit_publishes_empty_body_for_signal_event(
 
 async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel: AsyncMock):
     """
-    ``emit`` should use the supplied serializer instead of the default pack.
+    ``emit`` should use the supplied serializer instead of the default serialize.
 
     Given: A connected publisher and a custom serializer
     When: emit is awaited with the serializer
@@ -236,7 +236,7 @@ async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel
     """
 
     # Arrange
-    def to_bytes(_: _OrderPlaced) -> bytes:
+    def to_bytes(_: object) -> bytes:
         return b"custom"
 
     # Act
@@ -346,7 +346,7 @@ async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: Asyn
 
     Given: A connected publisher and a callable bound with a factory
     When: The callable is awaited with factory arguments
-    Then: The constructed payload should be packed and published
+    Then: The constructed payload should be serialized and published
     """
     # Arrange
     order_placed = publisher.bind(_order_placed, factory=_OrderPlaced, config=_config)
@@ -357,6 +357,6 @@ async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: Asyn
 
     # Assert
     call = channel.basic_publish.await_args
-    assert call.args[0] == pack(_OrderPlaced(7))
+    assert call.args[0] == serialize(_OrderPlaced(7))
     assert call.kwargs["exchange"] == "events"
     assert call.kwargs["routing_key"] == "order.placed"

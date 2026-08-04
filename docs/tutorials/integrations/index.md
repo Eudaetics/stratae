@@ -9,7 +9,7 @@ msgspec
 rabbitmq
 ```
 
-- **[msgspec](msgspec)** — registers a `msgspec.Struct`-specific fast path onto `stratae.serde.pack`.
+- **[msgspec](msgspec)** — registers a `msgspec.Struct`-specific fast path onto `stratae.serde.serialize`.
 - **[RabbitMQ](rabbitmq)** — `RabbitMQPublisher` and `RabbitMQConsumer` implement `stratae.events`' bus protocols over AMQP, including automatic `Envelope` correlation across the wire.
 
 Full reference: {doc}`stratae.integrations API reference <../../apidocs/stratae.integrations/stratae.integrations>`.

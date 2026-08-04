@@ -14,7 +14,7 @@ RabbitMQConsumer:
 - Registrations made while connected start consuming immediately.
 - Exiting the context closes the connection.
 - handle registers directly or as a decorator, returning the Handler.
-- Delivered messages are decoded with the default unpack_json and the
+- Delivered messages are decoded with the default deserialize and the
   message is acked after the handler returns.
 - Async handlers are awaited.
 - The consumer's deserializer is called as deserializer(body, type=schema).
@@ -254,7 +254,7 @@ def test_handle_as_decorator_returns_handler(consumer: RabbitMQConsumer):
 
 async def test_message_decoded_and_acked(consumer: RabbitMQConsumer, channel: AsyncMock):
     """
-    A delivered message should be decoded with unpack_json and acked.
+    A delivered message should be decoded with deserialize and acked.
 
     Given: A connected consumer with a sync handler and a JSON message body
     When: The registered callback receives the message
@@ -335,7 +335,7 @@ async def test_constructor_deserializer_used(connect_mock: AsyncMock, channel: A
     """
     The consumer's deserializer should decode bodies against the event's schema.
 
-    Given: A consumer constructed with a custom Unpacker
+    Given: A consumer constructed with a custom Deserializer
     When: The registered callback receives a message
     Then: The deserializer should be called with the body and the event's
           schema, and the handler should receive its result

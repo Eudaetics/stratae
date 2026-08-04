@@ -4,7 +4,6 @@
 :maxdepth: 1
 :hidden:
 getting-started
-walkthrough
 dependency-injection
 lifecycle
 events
@@ -14,8 +13,7 @@ serde
 integrations/index
 ```
 
-New to Stratae? See [Getting Started](getting-started) for installation and examples, then the [Project Walkthrough](walkthrough) for a working example that grows from a simple script into one using each piece of Stratae.
-
+New to Stratae? See [Getting Started](getting-started) for installation and examples, then the additional tutorials for each module to see more in-depth documentation.
 ## The core
 
 [Dependency Injection](dependency-injection), [Lifecycle](lifecycle.md), and [Events](events.md) are the core elements and are fully independent. Read whichever one matches the problem you have. Each tutorial shows how it combines with the other two.
@@ -118,7 +116,7 @@ Standalone, no dependency on the core three or on each other:
 - [FastAPI](integrations/fastapi) — `scoped_route` builds an `APIRoute` subclass that activates an `AsyncScope` around each request.
 - [Starlette](integrations/starlette) — the same `scoped_route` pattern, built on Starlette's `Route`.
 - [RabbitMQ](integrations/rabbitmq) implements `stratae.events`' bus protocols over AMQP.
-- [msgspec](integrations/msgspec) registers a fast path onto `stratae.serde.pack` for `msgspec.Struct` payloads.
+- [msgspec](integrations/msgspec) registers a fast path onto `stratae.serde.serialize` for `msgspec.Struct` payloads.
 
 ## Looking for something specific?
 

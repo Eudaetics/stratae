@@ -188,13 +188,13 @@ access denied: not an admin
 
 ### Serde
 
-Serialization and deserialization tools for encoding/decoding data: `encode`, `pack`, and `unpack_json`.
+Serialization and deserialization tools for encoding/decoding data: `encode`, `serialize`, and `deserialize`.
 
-````{example} Round-tripping a dataclass through pack/unpack
+````{example} Round-tripping a dataclass through serialize/deserialize
 ```{code-block} python
 from dataclasses import asdict, dataclass
 from uuid import UUID, uuid4
-from stratae.serde import pack, unpack_json
+from stratae.serde import serialize, deserialize
 
 @dataclass
 class Widget:
@@ -209,10 +209,10 @@ class Widget:
         return asdict(self)
 
 widget = Widget(id=uuid4(), name="sprocket")
-data = pack(widget)
+data = serialize(widget)
 print(data)
 
-restored = unpack_json(data, type=Widget)
+restored = deserialize(data, type=Widget)
 print(restored.name)
 ```
 ```{output}
@@ -225,7 +225,7 @@ sprocket
 
 ### Integrations
 
-Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. msgspec enables a faster pack path. RabbitMQ gets async publish and consume adapters.
+Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. msgspec enables a faster serialize path. RabbitMQ gets async publish and consume adapters.
 
 ````{example} Publishing a msgspec.Struct event to RabbitMQ, then consuming it back
 <!--- skip: next -->

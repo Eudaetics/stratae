@@ -22,4 +22,4 @@ Each tool works on its own. You can use `stratae.lifecycle` for scoped caching w
 
 Each guide covers one module end to end. It walks through the core concepts and the way its pieces compose in practice. The guides build loosely on each other. Read the dependency injection and lifecycle guides before events. However, since each core module is independent, you can focus on only the small parts you need.
 
-Start with [Getting Started](tutorials/getting-started) to install Stratae, then the [Project Walkthrough](tutorials/walkthrough) for a five-minute working example. The [API reference](api-reference) has the full signature-level detail for everything covered here.
+Start with [Getting Started](tutorials/getting-started) to install Stratae and see examples. The [API reference](api-reference) has the full signature-level detail for everything covered here.

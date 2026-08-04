@@ -23,7 +23,7 @@ This test suite verifies the following behaviors:
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Callable
+from typing import AsyncIterator, Callable
 from uuid import uuid4
 
 import msgspec

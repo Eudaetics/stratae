@@ -9,7 +9,7 @@ both provide a `scoped_route` helper. It activates an
 request a route handles.
 
 {py:mod}`stratae.integrations.msgspec`
-registers a faster {py:func}`pack <stratae.serde.pack>` path for
+registers a faster {py:func}`serialize <stratae.serde.serialize>` path for
 `msgspec.Struct` payloads.
 
 {py:mod}`stratae.integrations.rabbitmq` provides async publish and consume

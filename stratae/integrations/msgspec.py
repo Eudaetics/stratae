@@ -1,27 +1,28 @@
 """
-Register a faster pack path for msgspec.Struct payloads.
+Register a faster serialize path for msgspec.Struct payloads.
 
-Registers a `msgspec.Struct`-specific implementation of {py:func}`pack
-<stratae.serde.pack>` that uses `msgspec.json.encode` in place of
+Registers a `msgspec.Struct`-specific implementation of {py:func}`serialize
+<stratae.serde.serialize>` that uses `msgspec.json.encode` in place of
 `json.dumps`. {py:func}`encode <stratae.serde.encode>` is wired in as
 `msgspec`'s `enc_hook`. Struct fields that aren't natively serializable by
 `msgspec` (UUIDs, datetimes, Decimals, or objects exposing
-`to_dict`/`model_dump`) are handled the same way as the default `pack`.
+`to_dict`/`model_dump`) are handled the same way as the default `serialize`.
 
 The registration only takes effect once this module has actually been
-imported, since {py:func}`pack <stratae.serde.pack>` is a
+imported, since {py:func}`serialize <stratae.serde.serialize>` is a
 `functools.singledispatch` function and only dispatches to implementations
 from modules the interpreter has run. Import `stratae.integrations.msgspec`
-once, for its side effect, before packing any `msgspec.Struct`. Installing
-`msgspec` itself is not enough. Without that import, `pack` still runs on a
-`msgspec.Struct` by falling back to its generic `json.dumps`-based path,
-so the fallback can go unnoticed rather than failing loudly.
+once, for its side effect, before serializing any `msgspec.Struct`.
+Installing `msgspec` itself is not enough. Without that import, `serialize`
+still runs on a `msgspec.Struct` by falling back to its generic
+`json.dumps`-based path, so the fallback can go unnoticed rather than
+failing loudly.
 
-````{example} Packing a msgspec.Struct with a field msgspec can't natively encode
+````{example} Serializing a msgspec.Struct with a field msgspec can't natively encode
 ```{code-block} python
 import msgspec
-import stratae.integrations.msgspec  # noqa: F401 (registers the pack fast path)
-from stratae.serde import pack
+import stratae.integrations.msgspec  # noqa: F401 (registers the serialize fast path)
+from stratae.serde import serialize
 
 class Amount:
     def __init__(self, value: float, currency: str) -> None:
@@ -41,7 +42,7 @@ def dec_hook(type, obj):
     raise TypeError(f"unsupported type: {type}")
 
 order = OrderPlaced(order_id=42, total=Amount(value=19.99, currency="usd"))
-data = pack(order)
+data = serialize(order)
 print(data.decode())
 
 restored = msgspec.json.decode(data, type=OrderPlaced, dec_hook=dec_hook)
@@ -53,17 +54,17 @@ print(restored.total.value, restored.total.currency)
 ```
 ````
 
-See {py:func}`pack <stratae.serde.pack>` and {py:func}`encode
+See {py:func}`serialize <stratae.serde.serialize>` and {py:func}`encode
 <stratae.serde.encode>` for the rest of the module's API.
 
 """
 
 import msgspec
 
-from stratae.serde import encode, pack
+from stratae.serde import encode, serialize
 
 
-@pack.register
+@serialize.register
 def _(obj: msgspec.Struct) -> bytes:
     """Serialize a msgspec.Struct to JSON bytes, using stratae's encode for non-native types."""
     return msgspec.json.encode(obj, enc_hook=encode)
