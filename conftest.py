@@ -1,4 +1,4 @@
-"""Root pytest configuration, shared across tests/ and stratae/ collection."""
+"""Root pytest configuration for testing docs in docstrings and markdown."""
 
 from sybil import Sybil
 from sybil.parsers.myst import PythonCodeBlockParser, SkipParser
