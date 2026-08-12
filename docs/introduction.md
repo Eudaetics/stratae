@@ -8,7 +8,7 @@ Stratae optimizes for *simple* instead, in the sense Rich Hickey draws out in "S
 
 `stratae.depends` is dependency injection. Mark a parameter as injected and it gets resolved from a provider at call time. There's no container to configure, or registration steps.
 
-`stratae.lifecycle` is lifecycle management. Scope caching and cleanup to a unit of work, so a resource opens once per scope and tears down automatically when the scope ends.
+`stratae.lifecycle` is lifecycle management. Scope caching and cleanup to a unit of work so that a resource opens once per scope and tears down automatically when the scope ends.
 
 `stratae.events` is event definitions. Define pub/sub and request/reply messages independent of whatever bus eventually delivers them or whatever handler answers them. The same event definition works whether you bind it to an in-process `DirectBus` today or a distributed broker like RabbitMQ later. Growing from one to the other only requires updating to the new adapter's configurations, not rewriting the event definition, call sites, or the code inside the handler.
 

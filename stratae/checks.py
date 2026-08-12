@@ -148,8 +148,8 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
     Combine checks into a single deferred check that passes if any one does.
 
     Lets an "any" group nest inside an "all" group (or another "any"
-    group), so boolean requirements like `(is_admin or is_owner) and
-    not_pending` can be expressed directly.
+    group) letting boolean requirements like `(is_admin or is_owner) and
+    not_pending` be expressed directly.
 
     If any of `checks` is an async function, the returned check is async
     too, and can only be run through {py:func}`check_async` (directly, or

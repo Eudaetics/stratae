@@ -43,7 +43,7 @@ from stratae.events import (
 )
 from stratae.events.exceptions import NotConnectedError
 from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
-from stratae.serde import serialize
+from stratae.serde import encode, serialize
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -52,8 +52,11 @@ class _OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-    def to_dict(self) -> dict[str, int]:
-        return {"order_id": self.order_id}
+
+@encode.register
+def encode_order_placed(obj: _OrderPlaced) -> dict[str, int]:
+    """Define the encoder for _OrderPlaced."""
+    return {"order_id": obj.order_id}
 
 
 _order_placed = Event(PubSub, _OrderPlaced)

@@ -68,7 +68,7 @@ Pure Python, no external packages. Nothing else gets added along with Stratae, a
 
 {octicon}`terminal;1.2em` **Use Anywhere**
 ^^^
-No framework required. Every piece is a plain callable, so it drops into a script, a CLI, a worker, or whatever framework you're already using with minimal integration.
+No framework required. Every piece is a plain callable. It drops into a script, a CLI, a worker, or whatever framework you're already using with minimal integration.
 :::
 
 :::{grid-item-card}

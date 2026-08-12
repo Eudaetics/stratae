@@ -1,7 +1,7 @@
 """
 MyST renderer mixin that titles toctree entries with short module names.
 
-Toctree entries are titled with the short module name, so the sidebar shows
+Toctree entries are titled with the short module name so that the sidebar shows
 ``overriding`` rather than ``stratae.depends.overriding``. Page headings keep
 the full dotted name.
 """

@@ -105,54 +105,6 @@ def test_override_datetime_encoding_for_stricter_tz_awareness():
         assert encode(aware) == aware.isoformat()
 
 
-def test_custom_object_encoding_to_dict():
-    """
-    Test that custom objects with to_dict method are encoded correctly.
-
-    Given: A custom object with a to_dict method.
-    When: The encode function is called with the custom object.
-    Then: The result should be a dictionary representation of the object.
-    """
-
-    # Arrange
-    class CustomObject:
-        def to_dict(self):
-            return {"key": "value"}
-
-    value = CustomObject()
-
-    # Act
-    result = encode(value)
-
-    # Assert
-    assert isinstance(result, dict)
-    assert result == {"key": "value"}
-
-
-def test_custom_object_encoding_model_dump():
-    """
-    Test that custom objects with model_dump method are encoded correctly.
-
-    Given: A custom object with a model_dump method.
-    When: The encode function is called with the custom object.
-    Then: The result should be a dictionary representation of the object.
-    """
-
-    # Arrange
-    class CustomModel:
-        def model_dump(self):
-            return {"key": "value"}
-
-    value = CustomModel()
-
-    # Act
-    result = encode(value)
-
-    # Assert
-    assert isinstance(result, dict)
-    assert result == {"key": "value"}
-
-
 def test_custom_object_encoding_dict():
     """
     Test that custom objects with __dict__ attribute do not encode directly.
@@ -178,7 +130,7 @@ def test_encode_raises_type_error_for_non_encodable():
     """
     Test that encode raises TypeError for non-encodable objects.
 
-    Given: An object that does not have to_dict or model_dump.
+    Given: An object with no registered encoder.
     When: The encode function is called with the object.
     Then: A TypeError should be raised indicating the object is not encodable.
     """
@@ -233,34 +185,3 @@ def test_new_registration():
     # Assert
     assert isinstance(result, dict)
     assert result == {"new_type_value": "test_value", "encoded": "test"}
-
-
-def test_encode_priority_to_dict_over_model_dump():
-    """
-    Test that encode prefers to_dict() over model_dump().
-
-    Given: An object with both to_dict() method and model_dump() method,
-    When: encode is called,
-    Then: it should use to_dict() and ignore model_dump().
-    """
-
-    # Arrange
-    class ObjectWithModelDump:
-        def __init__(self):
-            self.attr = "from_model_dump"
-
-        def to_dict(self):
-            return {"source": "to_dict_method"}
-
-        def model_dump(self):
-            return {"source": "model_dump_method"}
-
-    obj = ObjectWithModelDump()
-
-    # Act
-    result = encode(obj)
-
-    # Assert
-    assert result == {"source": "to_dict_method"}
-    assert result != {"source": "model_dump_method"}
-    assert result != {"attr": "from_model_dump"}

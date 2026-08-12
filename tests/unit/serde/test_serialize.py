@@ -51,9 +51,7 @@ def test_serialize_delegates_to_encode_for_unknown_types(mocker: MockerFixture):
 
     Given: A payload containing a value json can't natively serialize.
     When: The serialize function is called with the payload.
-    Then: encode is called with that value, and its return value is what
-        ends up in the serialized output - per-type encoding behavior itself
-        is covered by encode's own tests, not duplicated here.
+    Then: encode is called with that value.
     """
     # Arrange
     value = uuid4()
@@ -151,10 +149,10 @@ def test_serialize_raises_for_non_string_convertible_keys():
 
 def test_serialize_raises_for_set_payload():
     """
-    Test that a bare set, with no to_dict/model_dump, isn't encodable.
+    Test that a bare set, with no registered encoder, isn't encodable.
 
     Given: A set payload - not natively JSON-serializable and without a
-        to_dict or model_dump method for encode's fallback to use.
+        registered encoder for encode to use.
     When: The serialize function is called with the payload.
     Then: A TypeError is raised indicating the set isn't encodable.
     """
@@ -171,7 +169,7 @@ def test_serialize_raises_for_raw_bytes_payload():
     Test that raw bytes, serialize's own output type, aren't encodable as input.
 
     Given: A bytes payload - not natively JSON-serializable and without a
-        to_dict or model_dump method.
+        registered encoder.
     When: The serialize function is called with the payload.
     Then: A TypeError is raised indicating the bytes aren't encodable.
     """
@@ -183,43 +181,6 @@ def test_serialize_raises_for_raw_bytes_payload():
         serialize(payload)
 
 
-def test_serialize_raises_when_to_dict_attribute_is_not_callable():
-    """
-    Test that a to_dict attribute that isn't callable fails loudly.
-
-    Given: An object whose to_dict attribute exists but isn't a method.
-    When: The serialize function is called with the object.
-    Then: A TypeError is raised because encode() tries to call it.
-    """
-
-    # Arrange
-    class BrokenToDict:
-        to_dict = "not a method"
-
-    # Act & Assert
-    with pytest.raises(TypeError, match="not callable"):
-        serialize(BrokenToDict())
-
-
-def test_serialize_propagates_error_raised_inside_to_dict():
-    """
-    Test that an exception raised inside a payload's to_dict propagates unchanged.
-
-    Given: An object whose to_dict raises during its own computation.
-    When: The serialize function is called with the object.
-    Then: The original exception propagates unchanged.
-    """
-
-    # Arrange
-    class Broken:
-        def to_dict(self):
-            raise RuntimeError("boom")
-
-    # Act & Assert
-    with pytest.raises(RuntimeError, match="boom"):
-        serialize(Broken())
-
-
 def test_serialize_allows_out_of_spec_float_values():
     """
     Test that non-finite floats are encoded as non-spec tokens instead of raising.
@@ -228,9 +189,7 @@ def test_serialize_allows_out_of_spec_float_values():
         module permits by default even though they aren't valid per the
         JSON spec.
     When: The serialize function is called with the payload.
-    Then: No error is raised - the caller gets non-spec-compliant tokens in
-        the output rather than a failure, a landmine for strict JSON
-        consumers downstream.
+    Then: No error is raised.
     """
     # Arrange
     payload = {"value": float("nan"), "pos_inf": float("inf"), "neg_inf": float("-inf")}

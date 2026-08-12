@@ -64,6 +64,7 @@ from stratae.events import (
     PubSub,
 )
 from stratae.integrations.rabbitmq import RabbitMQConsumeConfig, RabbitMQConsumer
+from stratae.serde import deserialize
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -71,6 +72,11 @@ _URL = "amqp://guest:guest@localhost/"
 class _OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
+
+
+@deserialize.register(_OrderPlaced)
+def _(value: dict[str, Any]) -> _OrderPlaced:
+    return _OrderPlaced(**value)
 
 
 _order_placed = Event(PubSub, _OrderPlaced)
