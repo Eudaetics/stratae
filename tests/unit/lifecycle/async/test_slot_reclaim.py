@@ -51,7 +51,7 @@ async def test_release_slot_deletes_unwritten_sparse_key():
         gc.collect()
 
         # Assert
-        assert len(scope.get_slots()) == 1
+        assert len(scope.get_slots()) == 2
 
 
 async def test_reclaimed_slot_does_not_leak_stale_value(async_scope: AsyncScope):

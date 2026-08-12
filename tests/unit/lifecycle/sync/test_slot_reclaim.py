@@ -51,7 +51,7 @@ def test_release_slot_deletes_unwritten_sparse_key():
         gc.collect()
 
         # Assert
-        assert len(scope.get_slots()) == 1
+        assert len(scope.get_slots()) == 2
 
 
 def test_context_scope_template_growth_is_bounded(context_scope: Scope):

@@ -242,7 +242,7 @@ class BaseScope:
 
     def exit_stack_type(self) -> type[ExitStack] | type[AsyncExitStack]:
         """
-        Return this scope's exit stack type, for codegen that lazily initializes exit stacks.
+        Return this scope's exit stack type.
 
         :returns: `ExitStack` for a `Scope`, `AsyncExitStack` for an `AsyncScope`.
         """
@@ -337,10 +337,7 @@ class Activation:
         self.var.reset(self.token)
         parent_slots = self.parent_slots
         try:
-            stack = slots[0]
-            if stack is not UNSET:
-                return stack.close(exc)
-            return None
+            return slots[0].close(exc)
         finally:
             if parent_slots is not None:
                 with self.parent_lock:
@@ -399,10 +396,7 @@ class AsyncActivation:
         self.var.reset(self.token)
         parent_slots = self.parent_slots
         try:
-            stack = slots[0]
-            if stack is not UNSET:
-                return await stack.aclose(exc)
-            return None
+            return await slots[0].aclose(exc)
         finally:
             if parent_slots is not None:
                 with self.parent_lock:
@@ -445,6 +439,7 @@ class Scope(BaseScope):
             parent_slots = None
             parent_lock = nullcontext()
         slots = self._template.copy()
+        slots[0] = self._exit_stack_cls()
         var = self._var
         token = var.set(slots)
         return self._activation_cls(var, token, slots, parent_slots, parent_lock)
@@ -540,6 +535,7 @@ class AsyncScope(BaseScope):
             parent_slots = None
             parent_lock = nullcontext()
         slots = self._template.copy()
+        slots[0] = self._exit_stack_cls()
         var = self._var
         token = var.set(slots)
         return self._activation_cls(var, token, slots, parent_slots, parent_lock)

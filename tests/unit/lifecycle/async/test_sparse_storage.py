@@ -6,8 +6,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle._slots import UNSET
-from stratae.lifecycle._stack import AsyncExitStack
 from stratae.lifecycle.resource import async_resource, resource
 from stratae.lifecycle.scope import AsyncScope
 
@@ -215,11 +213,11 @@ async def test_async_sparse_storage_context_fresh_per_activation(req_sparse: Asy
 
 
 @pytest.mark.parametrize("scope_fixture", ["app_sparse", "req_sparse"])
-async def test_async_sparse_storage_exit_stack_lazy_and_cleaned_up(
+async def test_async_sparse_storage_exit_stack_cleaned_up(
     scope_fixture: str, request: pytest.FixtureRequest
 ):
     """
-    A sparse-backed scope's exit stack is created on first use and closed on deactivation.
+    A sparse-backed scope's exit stack is closed on deactivation.
 
     Given: A sparse-backed scope with a registered async resource,
     When: The resource is entered and the scope is deactivated,
@@ -239,12 +237,8 @@ async def test_async_sparse_storage_exit_stack_lazy_and_cleaned_up(
 
     # Act
     async with scope.activate():
-        assert scope.get_slots()[0] is UNSET
         await test_resource()
-        stack = scope.get_slots()[0]
-        assert isinstance(stack, AsyncExitStack)
         await test_resource()
-        assert scope.get_slots()[0] is stack
 
     # Assert
     mock.assert_called_once()

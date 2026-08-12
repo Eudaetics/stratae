@@ -152,7 +152,7 @@ def test_release_slot_deletes_unwritten_sparse_key():
     scope.release_slot(key)
 
     # Assert
-    assert len(scope.get_slots()) == 1
+    assert len(scope.get_slots()) == 2
 
 
 def test_get_slots_raises_when_inactive():

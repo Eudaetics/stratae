@@ -488,16 +488,12 @@ def create_async_wrapper[**P, T](
 
 def _write_resolve_exit_stack(writer: Writer) -> None:
     """
-    Write the lazy resolution of the scope's exit stack from reserved slot 0 into __stack__.
+    Write the read of the scope's exit stack from reserved slot 0 into __stack__.
 
-    Only ever written on a context-manager wrapper's miss path, so the stack (an ExitStack
-    or AsyncExitStack, chosen per scope flavor via the __stack_type__ namespace binding)
-    is created the first time this scope activation actually enters a context manager.
+    Slot 0 is populated eagerly when the scope activates (see Scope.activate/
+    AsyncScope.activate), so this is a plain read - never UNSET.
     """
     writer.write("__stack__ = __slots__[0]")
-    writer.write("if __stack__ is __UNSET__:")
-    with writer.block():
-        writer.write("__stack__ = __slots__[0] = __stack_type__()")
 
 
 def _write_cm_slot_body(
@@ -573,7 +569,6 @@ def _create_cm_wrapper_impl(
             _write_cm_keyed_body(writer, slot, scope, cache_key, params, enter_expr, is_async)
 
     namespace = _build_namespace(func, scope, is_async=is_async)
-    namespace["__stack_type__"] = scope.exit_stack_type()
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
