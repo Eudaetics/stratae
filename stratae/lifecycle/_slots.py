@@ -2,7 +2,6 @@ import threading
 from contextvars import ContextVar
 from typing import Any
 
-from stratae.lifecycle._async_lock import AsyncRLock
 from stratae.lifecycle.exceptions import ScopeActivationError
 
 UNSET: Any = object()
@@ -44,8 +43,6 @@ class SharedVar:
         "name",
         "storage",
         "_token",
-        "lock",
-        "async_lock",
         "counter_lock",
         "_current_token",
     )
@@ -54,8 +51,6 @@ class SharedVar:
         self.name = name
         self.storage: SlotStorage = UNSET
         self._token = SharedToken(self)
-        self.lock = threading.RLock()
-        self.async_lock = AsyncRLock()
         self.counter_lock = threading.Lock()
         self._current_token: SharedToken | None = None
 

@@ -8,6 +8,8 @@ instead of a keyed dict lookup whenever the function's result doesn't vary by
 argument values.
 """
 
+import asyncio
+import threading
 import weakref
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
@@ -178,7 +180,7 @@ def _build_namespace(
         "__var__": var,
     }
     if isinstance(var, SharedVar):
-        namespace["__lock__"] = var.async_lock if is_async else var.lock
+        namespace["__lock__"] = asyncio.Lock() if is_async else threading.Lock()
     return namespace
 
 
