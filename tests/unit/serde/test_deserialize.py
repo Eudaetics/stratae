@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from stratae.serde import Deserializer, deserialize, encode, serialize
+from stratae.serde import Deserializer, decode_int, deserialize, encode, serialize
 
 # region protocol conformance
 
@@ -1139,6 +1139,18 @@ def test_deserialize_int_rejects_non_numeric_string():
     # Act & Assert
     with pytest.raises(TypeError):
         deserialize(data, type=int)
+
+
+def test_decode_int_rejects_non_compatible_object():
+    """
+    `decode_int` raises on a non number and non string.
+
+    Given: A value that is neither a number nor a numeric string.
+    When: decode_int is called with that value.
+    Then: A TypeError is raised.
+    """
+    with pytest.raises(TypeError, match="not an int or an int-shaped string"):
+        decode_int(object())
 
 
 # endregion

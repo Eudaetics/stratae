@@ -103,6 +103,31 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> Starlette:
 
         return StreamingResponse(body())
 
+    @async_request_scope.cache()
+    @async_resource
+    async def get_swallowing_transaction():
+        events.append("open")
+        try:
+            yield "connection"
+            events.append("commit")
+        except ValueError:
+            events.append("swallowed")
+        finally:
+            events.append("close")
+
+    async def swallowed_exception_route(request: Request) -> JSONResponse:
+        await get_swallowing_transaction()
+        raise ValueError("deliberate failure swallowed by resource cleanup")
+
+    async def stream_swallowed_exception(request: Request) -> StreamingResponse:
+        await get_swallowing_transaction()
+
+        async def body():
+            yield b"chunk1"
+            raise ValueError("deliberate mid-stream failure swallowed by resource cleanup")
+
+        return StreamingResponse(body())
+
     Route = scoped_route(async_request_scope)
     return Starlette(
         routes=[
@@ -116,13 +141,15 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> Starlette:
             Route("/fail-before-resource", fail_before_resource),
             Route("/stream-fail-before-resource", stream_fail_before_resource),
             Route("/stream-then-fail", stream_then_fail),
+            Route("/swallowed-exception", swallowed_exception_route),
+            Route("/stream-swallowed-exception", stream_swallowed_exception),
         ],
     )
 
 
 def test_successful_request_commits(app: Starlette, events: list[str]):
     """
-    Test that a request scope activated via scoped_route commits on success.
+    A request scope activated via scoped_route should commit on success.
 
     Given: A Starlette app whose routes activate the request scope
     When: A route completes without raising
@@ -139,12 +166,11 @@ def test_successful_request_commits(app: Starlette, events: list[str]):
 
 def test_handled_exception_rolls_back(app: Starlette, events: list[str]):
     """
-    Test that an HTTPException reaches the request-scoped resource, unlike ASGI middleware.
+    HTTPException should still roll back the request-scoped resource.
 
     Given: A Starlette app whose routes activate the request scope
-    When: A route raises HTTPException, which Starlette's ExceptionMiddleware handles
-    Then: The request-scoped resource still sees the exception and rolls back, since
-        scoped_route wraps the endpoint itself, inside ExceptionMiddleware
+    When: A route raises HTTPException
+    Then: The request-scoped resource still sees the exception and rolls back
     """
     # Act
     client = TestClient(app)
@@ -157,7 +183,7 @@ def test_handled_exception_rolls_back(app: Starlette, events: list[str]):
 
 def test_unhandled_exception_rolls_back(app: Starlette, events: list[str]):
     """
-    Test that a genuinely unhandled exception reaches the request-scoped resource.
+    An unhandled exception should still roll back the request-scoped resource.
 
     Given: A Starlette app whose routes activate the request scope
     When: A route raises an exception with no matching handler
@@ -174,7 +200,7 @@ def test_unhandled_exception_rolls_back(app: Starlette, events: list[str]):
 
 def test_resource_called_twice_commits_once(app: Starlette, events: list[str]):
     """
-    Test that calling the resource multiple times in one request doesn't double-commit.
+    Calling the resource multiple times in one request shouldn't double-commit.
 
     Given: A Starlette app whose routes activate the request scope
     When: A route calls the request-scoped resource twice
@@ -193,13 +219,11 @@ def test_resource_called_twice_commits_once(app: Starlette, events: list[str]):
 
 def test_resource_called_twice_then_fails_rolls_back_once(app: Starlette, events: list[str]):
     """
-    Test that calling the resource twice before failing still only rolls back once.
+    Calling the resource twice before failing should still only roll back once.
 
     Given: A Starlette app whose routes activate the request scope
-    When: A route calls the request-scoped resource twice (getting the same cached
-        connection both times) and then raises
-    Then: Only a single open/rollback/close cycle happens for the whole request -
-        the resource is not entered or torn down twice just because it was called twice
+    When: A route calls the request-scoped resource twice and then raises
+    Then: Only a single open/rollback/close cycle happens for the whole request
     """
     # Act
     client = TestClient(app, raise_server_exceptions=False)
@@ -214,14 +238,12 @@ def test_streaming_response_keeps_scope_open_until_body_completes(
     app: Starlette, events: list[str]
 ):
     """
-    Test that a StreamingResponse keeps the request scope open for its whole body.
+    A StreamingResponse should keep the request scope open for its whole body.
 
     Given: A Starlette app whose routes activate the request scope
-    When: A route returns a StreamingResponse whose body is produced after the route
-        handler itself has already returned
+    When: A route returns a StreamingResponse whose body runs after the handler returns
     Then: The request-scoped resource stays open through the entire streamed body,
-        and only commits/closes once the last chunk has been sent - not as soon as
-        the handler returns the response object
+        and only commits/closes once the last chunk has been sent
     """
     # Act
     client = TestClient(app)
@@ -235,13 +257,11 @@ def test_streaming_response_keeps_scope_open_until_body_completes(
 
 def test_streaming_response_resource_still_valid_mid_stream(app: Starlette, events: list[str]):
     """
-    Test that the request-scoped resource is still usable from inside a streamed body.
+    The request-scoped resource should still be usable from inside a streamed body.
 
     Given: A Starlette app whose routes activate the request scope
-    When: A route calls the request-scoped resource once before returning a StreamingResponse,
-        then calls it again from inside the body, after the route handler has already returned
-    Then: The second call returns the same cached connection as the first - the scope is
-        still genuinely active for the whole body, not just deferred at the edges
+    When: A route calls the request-scoped resource once, then again from inside the streamed body
+    Then: The second call returns the same cached connection as the first
     """
     # Act
     client = TestClient(app)
@@ -255,12 +275,11 @@ def test_streaming_response_resource_still_valid_mid_stream(app: Starlette, even
 
 def test_streaming_response_rolls_back_on_body_failure(app: Starlette, events: list[str]):
     """
-    Test that a failure partway through a streamed body still rolls back the resource.
+    A failure partway through a streamed body should still roll back the resource.
 
     Given: A Starlette app whose routes activate the request scope
     When: A route returns a StreamingResponse whose body raises after sending its first chunk
-    Then: The request-scoped resource rolls back rather than committing, even though the
-        failure happens after the route handler itself already returned successfully
+    Then: The request-scoped resource rolls back rather than committing
     """
     # Act
     client = TestClient(app, raise_server_exceptions=False)
@@ -272,13 +291,12 @@ def test_streaming_response_rolls_back_on_body_failure(app: Starlette, events: l
 
 def test_exception_before_resource_use_still_propagates(app: Starlette, events: list[str]):
     """
-    Test that an exception raised before touching the resource still propagates.
+    An exception raised before touching the resource should still propagate.
 
     Given: A Starlette app whose routes activate the request scope
-    When: A route raises without ever calling the request-scoped resource, so the scope's
-        activation never entered any resource and has nothing to roll back
+    When: A route raises without ever calling the request-scoped resource
     Then: The exception still propagates as a 500, and no resource lifecycle events happen
-        at all, since the resource was never touched
+        at all
     """
     # Act
     client = TestClient(app, raise_server_exceptions=False)
@@ -293,12 +311,11 @@ def test_streaming_response_failure_before_resource_use_still_propagates(
     app: Starlette, events: list[str]
 ):
     """
-    Test that a mid-stream failure still propagates even when the resource was never touched.
+    A mid-stream failure should still propagate even when the resource was never touched.
 
     Given: A Starlette app whose routes activate the request scope
-    When: A route returns a StreamingResponse whose body raises without the handler or the
-        body ever calling the request-scoped resource, so the scope's activation has
-        nothing to roll back
+    When: A route returns a StreamingResponse whose body raises without ever calling
+        the request-scoped resource
     Then: The exception still propagates rather than being silently swallowed, and no
         resource lifecycle events happen at all
     """
@@ -308,3 +325,43 @@ def test_streaming_response_failure_before_resource_use_still_propagates(
 
     # Assert
     assert events == []
+
+
+def test_route_exception_still_propagates_when_resource_swallows_it(
+    app: Starlette, events: list[str]
+):
+    """
+    A route exception should still reach the client even when a resource swallows it.
+
+    Given: A Starlette app whose request-scoped resource catches and suppresses the
+        exception type the route raises
+    When: The route raises that exception
+    Then: The response is still a 500
+    """
+    # Act
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/swallowed-exception")
+
+    # Assert
+    assert response.status_code == 500
+    assert events == ["open", "swallowed", "close"]
+
+
+def test_streaming_response_exception_still_propagates_when_resource_swallows_it(
+    app: Starlette, events: list[str]
+):
+    """
+    Mid-stream exceptions should still surface even when a resource swallows it.
+
+    Given: A Starlette app whose request-scoped resource catches and suppresses the
+        exception type a streamed body raises
+    When: The StreamingResponse body raises that exception after sending its first chunk
+    Then: The exception still reaches the ASGI layer
+    """
+    # Act
+    client = TestClient(app)
+    with pytest.raises(ValueError, match="deliberate mid-stream failure"):
+        client.get("/stream-swallowed-exception")
+
+    # Assert
+    assert events == ["open", "swallowed", "close"]
