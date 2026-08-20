@@ -433,3 +433,49 @@ def test_deserialize_does_not_reconstruct_list_field_of_nested_dataclasses():
     # Assert
     assert all(isinstance(item, dict) for item in restored.items)
     assert restored != original
+
+
+def test_deserializer_deregister():
+    """
+    Deregistering a handler for a type should remove it from the deserializer.
+
+    Given: A deserializer with a handler registered for a type.
+    When: `deregister` is called for that type.
+    Then: It should remove the handler and no longer handle that type directly.
+    """
+
+    # Arrange
+    @dataclass
+    class Item:
+        sku: str
+
+    @deserialize.register(Item)
+    def _(value: dict[str, Any]) -> Item:
+        return Item(**value)
+
+    data = '{"sku": "test"}'.encode()
+    restored = deserialize(data, type=Item)
+
+    # Act
+    deserialize.deregister(Item)
+
+    # Assert
+    assert isinstance(restored, Item)
+    with pytest.raises(TypeError, match="Cannot deserialize into.*Item.*: no handler registered"):
+        deserialize(data, type=Item)
+
+
+def test_deserializer_deregister_no_handler():
+    """
+    Deregistering a handler for a type without a handler should raise.
+
+    Given: A deserializer,
+    When: `deregister` is called for a type that is not registered,
+    Then: A KeyError should raise
+    """
+
+    class Item:
+        sku: str
+
+    with pytest.raises(ValueError, match="Cannot deregister.*Item.*no handler registered"):
+        deserialize.deregister(Item)
