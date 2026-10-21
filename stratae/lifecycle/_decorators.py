@@ -1,11 +1,11 @@
 """
-Decorator objects returned by `Scope.cache`/`AsyncScope.cache` - a parallel implementation.
+Decorator objects returned by `Scope.cache`/`AsyncScope.cache`.
 
-Adapted from `_decorators.py`, binding a `Scope`/`AsyncScope` object directly instead of a
-`(scope_name, lifecycle)` pair, and enforcing that a function is only ever cached in one
-scope: caching a function's result in more than one scope has no fixed, declared home for
-it - which scope wins would depend on which scopes happen to be active when it's called,
-exactly the kind of runtime-resolved cache placement this design rejects elsewhere.
+Each decorator binds its `Scope`/`AsyncScope` object directly, and enforces that a function
+is only ever cached in one scope: caching a function's result in more than one scope has no
+fixed, declared home for it - which scope wins would depend on which scopes happen to be
+active when it's called, exactly the kind of runtime-resolved cache placement this design
+rejects elsewhere.
 """
 
 from contextlib import AbstractAsyncContextManager, AbstractContextManager

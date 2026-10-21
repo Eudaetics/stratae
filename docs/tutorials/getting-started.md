@@ -1,7 +1,7 @@
 # Getting Started
 
 
-Stratae is made of three primary independent modules: [Dependency Injection](dependency-injection), [Lifecycle](lifecycle.md), and [Events](events.md), plus [Checks](checks.md), [Context](context.md), and [Serde](serde.md) utilities.
+Stratae is made of three primary independent modules: [Dependency Injection](../apidocs/stratae.depends/stratae.depends), [Lifecycle](../apidocs/stratae.lifecycle/stratae.lifecycle), and [Events](../apidocs/stratae.events/stratae.events), plus [Checks](checks.md), [Context](context.md), and [Serde](serde.md) utilities.
 
 ## Install
 

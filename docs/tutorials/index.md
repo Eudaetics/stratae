@@ -4,9 +4,6 @@
 :maxdepth: 1
 :hidden:
 getting-started
-dependency-injection
-lifecycle
-events
 context
 checks
 serde
@@ -16,11 +13,11 @@ integrations/index
 New to Stratae? See [Getting Started](getting-started) for installation and examples, then the additional tutorials for each module to see more in-depth documentation.
 ## The core
 
-[Dependency Injection](dependency-injection), [Lifecycle](lifecycle.md), and [Events](events.md) are the core elements and are fully independent. Read whichever one matches the problem you have. Each tutorial shows how it combines with the other two.
+[Dependency Injection](../apidocs/stratae.depends/stratae.depends), [Lifecycle](../apidocs/stratae.lifecycle/stratae.lifecycle), and [Events](../apidocs/stratae.events/stratae.events) are the core elements and are fully independent. Read whichever one matches the problem you have.
 
 ### Dependency Injection
 
-[Dependency Injection](dependency-injection) wires a function's parameters to provider callables, resolved at call time. Mark a parameter with `Annotated[T, Depends(provider)]` and decorate the function with `@inject`. Callers never see or pass that parameter; it's resolved automatically.
+[Dependency Injection](../apidocs/stratae.depends/stratae.depends) wires a function's parameters to provider callables, resolved at call time. Mark a parameter with `Annotated[T, Depends(provider)]` and decorate the function with `@inject`. Callers never see or pass that parameter; it's resolved automatically.
 
 ````{example} Injecting a tax rate provider
 ```{code-block} python
@@ -45,7 +42,7 @@ print(total_with_tax(100.0))
 
 ### Lifecycle
 
-[Lifecycle](lifecycle.md) scopes caching and cleanup to a unit of work, such as a request, a background job, or an application run. `.cache` registers a function to run once and be reused for the life of an active scope. Wrap a generator in `resource` to also clean it up automatically: the code after `yield` runs when the scope exits, not when the function returns.
+[Lifecycle](../apidocs/stratae.lifecycle/stratae.lifecycle) scopes caching and cleanup to a unit of work, such as a request, a background job, or an application run. `.cache` registers a function to run once and be reused for the life of an active scope. Wrap a generator in `resource` to also clean it up automatically: the code after `yield` runs when the scope exits, not when the function returns.
 
 ````{example} Caching and cleaning up a batch within a scope
 ```{code-block} python
@@ -75,7 +72,7 @@ processed 2 items: ['order-1', 'order-2']
 
 ### Events
 
-[Events](events.md) decouples code that produces an event from whatever handles it. Pair a payload schema with a dispatch pattern using `Event(...)`: `PubSub` for fire-and-forget, `Request[Reply]` for exactly one responder. Bind the result to a bus, then register handlers separately from wherever the event gets triggered.
+[Events](../apidocs/stratae.events/stratae.events) decouples code that produces an event from whatever handles it. Pair a payload schema with a dispatch pattern using `Event(...)`: `PubSub` for fire-and-forget, `Request[Reply]` for exactly one responder. Bind the result to a bus, then register handlers separately from wherever the event gets triggered.
 
 ````{example} Publishing and handling an order event
 ```{code-block} python
@@ -113,15 +110,15 @@ Standalone, no dependency on the core three or on each other:
 
 [Integrations](integrations/index) bridges the core modules to specific third-party tools:
 
-- [FastAPI](integrations/fastapi) — `scoped_route` builds an `APIRoute` subclass that activates an `AsyncScope` around each request.
-- [Starlette](integrations/starlette) — the same `scoped_route` pattern, built on Starlette's `Route`.
-- [RabbitMQ](integrations/rabbitmq) implements `stratae.events`' bus protocols over AMQP.
-- [msgspec](integrations/msgspec) registers a fast path onto `stratae.serde.serialize` for `msgspec.Struct` payloads.
+- [FastAPI](../apidocs/stratae.integrations/stratae.integrations.fastapi) — `scoped_route` builds an `APIRoute` subclass that activates an `AsyncScope` around each request.
+- [Starlette](../apidocs/stratae.integrations/stratae.integrations.starlette) — the same `scoped_route` pattern, built on Starlette's `Route`.
+- [RabbitMQ](../apidocs/stratae.integrations/stratae.integrations.rabbitmq) implements `stratae.events`' bus protocols over AMQP.
+- [msgspec](../apidocs/stratae.integrations/stratae.integrations.msgspec) registers a fast path onto `stratae.serde.serialize` for `msgspec.Struct` payloads.
 
 ## Looking for something specific?
 
 :::{dropdown} I want to improve testability.
-Use [Dependency Injection](dependency-injection) and `override`/`overrides` to swap in a mock for the duration of a `with` block, without restructuring the function it's injected into.
+Use [Dependency Injection](../apidocs/stratae.depends/stratae.depends) and `override`/`overrides` to swap in a mock for the duration of a `with` block, without restructuring the function it's injected into.
 :::
 
 :::{dropdown} I need authorization guards on business logic or an HTTP endpoint.
@@ -129,15 +126,15 @@ Use [Checks](checks.md)'s `require` decorator, or a check as a Dependency Inject
 :::
 
 :::{dropdown} I need to trigger several side effects (an email, a cache invalidation, an analytics event) without hard-coding them together.
-Use [Events](events.md)'s `PubSub` dispatch pattern: define the event once, then register each side effect as an independent handler.
+Use [Events](../apidocs/stratae.events/stratae.events)'s `PubSub` dispatch pattern: define the event once, then register each side effect as an independent handler.
 :::
 
 :::{dropdown} I need a real broker in production, but an in-memory stand-in locally.
-[Events](events.md) buses are swappable by design. Bind to `DirectBus` locally or in tests, and to [RabbitMQ](integrations/rabbitmq) in production, with no change to the event definitions or handlers.
+[Events](../apidocs/stratae.events/stratae.events) buses are swappable by design. Bind to `DirectBus` locally or in tests, and to [RabbitMQ](../apidocs/stratae.integrations/stratae.integrations.rabbitmq) in production, with no change to the event definitions or handlers.
 :::
 
 :::{dropdown} I need a connection to close automatically, even on error.
-Use [Lifecycle](lifecycle.md)'s `resource` to wrap a generator so the cleanup code after `yield` runs when the scope exits, regardless of how it ended.
+Use [Lifecycle](../apidocs/stratae.lifecycle/stratae.lifecycle)'s `resource` to wrap a generator so the cleanup code after `yield` runs when the scope exits, regardless of how it ended.
 :::
 
 :::{dropdown} I need a different implementation depending on the user, tenant, environment, or feature flag.

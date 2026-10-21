@@ -423,3 +423,79 @@ def test_resource_swallowing_exception_hides_it_from_earlier_resources(scope: Sc
     mock_swallowed_b.assert_called_once()
     mock_commit_a.assert_called_once()
     mock_rollback_a.assert_not_called()
+
+
+class _Interrupt(BaseException):
+    """A non-Exception error, standing in for cancellation or KeyboardInterrupt."""
+
+
+def test_cleanup_raising_non_exception_still_closes_earlier_resources(scope: Scope):
+    """
+    A cleanup raising a BaseException that isn't an Exception doesn't skip later cleanups.
+
+    Given: Two cached resources, the second-entered of which raises a non-Exception
+        BaseException while closing,
+    When: The scope deactivates,
+    Then: The first resource should still be closed, and the BaseException should propagate.
+    """
+    # Arrange
+    closed: list[str] = []
+
+    @scope.cache()
+    @resource
+    def first():
+        try:
+            yield "first"
+        finally:
+            closed.append("first")
+
+    @scope.cache()
+    @resource
+    def second():
+        yield "second"
+        raise _Interrupt("cancelled during cleanup")
+
+    # Act
+    with pytest.raises(_Interrupt):
+        with scope.activate():
+            first()
+            second()
+
+    # Assert
+    assert closed == ["first"]
+
+
+def test_non_exception_cleanup_failures_are_grouped_with_exceptions(scope: Scope):
+    """
+    A BaseException from one cleanup and an Exception from another are raised together.
+
+    Given: Two cached resources, one raising a non-Exception BaseException while closing and
+        the other a ValueError,
+    When: The scope deactivates,
+    Then: A BaseExceptionGroup containing both should be raised.
+    """
+
+    # Arrange
+    @scope.cache()
+    @resource
+    def first():
+        try:
+            yield "first"
+        finally:
+            raise ValueError("first failure")
+
+    @scope.cache()
+    @resource
+    def second():
+        yield "second"
+        raise _Interrupt("cancelled during cleanup")
+
+    # Act
+    with pytest.raises(BaseExceptionGroup) as group:
+        with scope.activate():
+            first()
+            second()
+
+    # Assert
+    kinds = sorted(type(exc).__name__ for exc in group.value.exceptions)
+    assert kinds == ["ValueError", "_Interrupt"]

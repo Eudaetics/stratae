@@ -19,6 +19,24 @@ request- or session-scoped state. `storage="dense"` (the default) indexes slots 
 by position. `storage="sparse"` allocates slots lazily. Use sparse storage for a scope
 that registers many functions but touches only a handful per activation.
 
+A shared scope computes each cached entry once, even when several threads or tasks miss it
+at the same time. Later callers wait for that first computation and reuse its result, or
+compute it themselves if it raised. A computation may call other cached functions, including
+its own function with different arguments. A call that would wait on its own unfinished
+computation, such as a no-parameter function calling itself, raises
+{py:exc}`CacheCycleError <stratae.lifecycle.exceptions.CacheCycleError>` instead of
+deadlocking.
+
+A context scope's activation is shared by the tasks started inside it, since they inherit
+its context. When those tasks miss the same entry of an async cached function or
+`async_resource` at once, it's computed once, with the same waiting, retrying, and
+{py:exc}`CacheCycleError <stratae.lifecycle.exceptions.CacheCycleError>` rules as a shared
+scope. A sync cached function can't be interrupted by another task part-way through, so it
+isn't guarded this way; only threads running a copied context could overlap it. A task or
+copied context that outlives the activation can't keep using it: its cached calls raise
+{py:exc}`ScopeInactiveError <stratae.lifecycle.exceptions.ScopeInactiveError>`, and
+{py:meth}`BaseScope.is_active` reports `False` there.
+
 A scope can declare another scope as a parent with `requires`. {py:meth}`Scope.activate`
 raises immediately unless that scope is already active.
 
@@ -213,7 +231,8 @@ class BaseScope:
 
     def is_active(self) -> bool:
         """Whether this scope has a live activation in the calling context."""
-        return self._var.get(UNSET) is not UNSET
+        # Live storage is never empty; an ended activation's storage is emptied.
+        return bool(self._var.get(None))
 
     def is_shared(self) -> bool:
         """Whether this scope's activation holder is a SharedVar, needing lock-guarded access."""
@@ -236,9 +255,14 @@ class BaseScope:
             context.
         """
         try:
-            return self._var.get()
+            slots = self._var.get()
         except LookupError:
             raise ScopeInactiveError(f"Scope {self.name!r} is not active.") from None
+        if not slots:
+            # Emptied when its activation ended - reached from a task that copied the
+            # context while the activation was live.
+            raise ScopeInactiveError(f"Scope {self.name!r} is not active: its activation ended.")
+        return slots
 
     def exit_stack_type(self) -> type[ExitStack] | type[AsyncExitStack]:
         """
@@ -266,8 +290,8 @@ class BaseScope:
             self._counter = slot + 1
             return slot
         self._template.append(UNSET)
-        active = self._var.get(UNSET)
-        if isinstance(active, list):
+        active = self._var.get(None)
+        if isinstance(active, list) and active:
             active.append(UNSET)
         return len(self._template) - 1
 
@@ -277,10 +301,11 @@ class BaseScope:
 
         :param slot: The slot index/key returned by {py:meth}`BaseScope.allocate_slot`.
         """
-        active = self._var.get(UNSET)
+        active = self._var.get(None)
         if isinstance(active, list):
-            active[slot] = UNSET
-        elif active is not UNSET:
+            if active:
+                active[slot] = UNSET
+        elif active is not None:
             active.pop(slot, None)
         self._free_slots.append(slot)
 
@@ -320,8 +345,8 @@ class Activation:
 
     def __exit__(
         self,
-        exc_type: type[Exception] | None,
-        exc: Exception | None,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool | None:
         """
@@ -330,7 +355,7 @@ class Activation:
         :raises ScopeActivationError: If a scope requiring this one is still active.
         """
         slots = self.slots
-        if slots[1] > 0:
+        if slots and slots[1] > 0:
             raise ScopeActivationError(
                 f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
             )
@@ -339,6 +364,7 @@ class Activation:
         try:
             return slots[0].close(exc)
         finally:
+            slots.clear()
             if parent_slots is not None:
                 with self.parent_lock:
                     parent_slots[1] -= 1
@@ -379,8 +405,8 @@ class AsyncActivation:
 
     async def __aexit__(
         self,
-        exc_type: type[Exception] | None,
-        exc: Exception | None,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool | None:
         """
@@ -389,7 +415,7 @@ class AsyncActivation:
         :raises ScopeActivationError: If a scope requiring this one is still active.
         """
         slots = self.slots
-        if slots[1] > 0:
+        if slots and slots[1] > 0:
             raise ScopeActivationError(
                 f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
             )
@@ -398,6 +424,7 @@ class AsyncActivation:
         try:
             return await slots[0].aclose(exc)
         finally:
+            slots.clear()
             if parent_slots is not None:
                 with self.parent_lock:
                     parent_slots[1] -= 1
@@ -421,20 +448,17 @@ class Scope(BaseScope):
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
         if requires := self._requires:
-            try:
-                parent_slots = requires._var.get()
-            except LookupError:
+            parent_slots = requires._var.get(None)
+            if not parent_slots:
                 raise ScopeActivationError(
                     f"Cannot activate {self.name!r}: required scope "
                     f"{requires.name!r} is not active."
-                ) from LookupError
+                )
             parent_lock = (
                 requires._var.counter_lock
                 if isinstance(requires._var, SharedVar)
                 else nullcontext()
             )
-            with parent_lock:
-                parent_slots[1] += 1
         else:
             parent_slots = None
             parent_lock = nullcontext()
@@ -442,6 +466,11 @@ class Scope(BaseScope):
         slots[0] = self._exit_stack_cls()
         var = self._var
         token = var.set(slots)
+        # Counted only once set() succeeded - a failed activation never deactivates, so it
+        # must not hold its parent open.
+        if parent_slots is not None:
+            with parent_lock:
+                parent_slots[1] += 1
         return self._activation_cls(var, token, slots, parent_slots, parent_lock)
 
     def deactivate(self, activation: Activation) -> None:
@@ -517,20 +546,17 @@ class AsyncScope(BaseScope):
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
         if requires := self._requires:
-            try:
-                parent_slots = requires._var.get()
-            except LookupError:
+            parent_slots = requires._var.get(None)
+            if not parent_slots:
                 raise ScopeActivationError(
                     f"Cannot activate {self.name!r}: required scope "
                     f"{requires.name!r} is not active."
-                ) from LookupError
+                )
             parent_lock = (
                 requires._var.counter_lock
                 if isinstance(requires._var, SharedVar)
                 else nullcontext()
             )
-            with parent_lock:
-                parent_slots[1] += 1
         else:
             parent_slots = None
             parent_lock = nullcontext()
@@ -538,6 +564,11 @@ class AsyncScope(BaseScope):
         slots[0] = self._exit_stack_cls()
         var = self._var
         token = var.set(slots)
+        # Counted only once set() succeeded - a failed activation never deactivates, so it
+        # must not hold its parent open.
+        if parent_slots is not None:
+            with parent_lock:
+                parent_slots[1] += 1
         return self._activation_cls(var, token, slots, parent_slots, parent_lock)
 
     async def deactivate(self, activation: AsyncActivation) -> None:

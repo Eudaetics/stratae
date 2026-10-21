@@ -13,6 +13,9 @@ This module contains asynchronous tests to ensure that:
 import asyncio
 from typing import Any
 
+import pytest
+
+from stratae.lifecycle.exceptions import ScopeInactiveError
 from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
@@ -288,3 +291,65 @@ async def test_concurrent_resource_management_nested_scopes(
     assert init_count == 2, f"Expected 2 initializations, got {init_count}"
     assert len(cleanup) == 2, f"Expected 2 cleanups, got {len(cleanup)}"
     assert len(set(cleanup)) == 2, "Cleanup was not called for both tasks!"
+
+
+async def test_concurrent_first_calls_within_one_activation_enter_resource_once(
+    async_context_scope: AsyncScope,
+):
+    """
+    Child tasks sharing one activation share a single entry of a cached resource.
+
+    Given: An active context scope and a cached resource that suspends while entering,
+    When: two child tasks of the activation (via gather) call it for the first time at once,
+    Then: the resource should be entered exactly once, and both tasks should get its value.
+    """
+    # Arrange
+    enter_count = 0
+
+    @async_context_scope.cache()
+    @async_resource
+    async def get_connection():
+        nonlocal enter_count
+        enter_count += 1
+        await asyncio.sleep(0.01)
+        yield object()
+
+    # Act
+    async with async_context_scope.activate():
+        first, second = await asyncio.gather(get_connection(), get_connection())
+
+    # Assert
+    assert enter_count == 1
+    assert first is second
+
+
+async def test_task_outliving_activation_cannot_use_its_cache(async_context_scope: AsyncScope):
+    """
+    A task that outlives its activation can't reuse or extend the ended activation's cache.
+
+    Given: A task created inside a context scope activation, still running once it ends,
+    When: that task calls one of the scope's cached functions after the activation has ended,
+    Then: the call should raise ScopeInactiveError, as for any caller outside an activation.
+    """
+
+    # Arrange
+    @async_context_scope.cache()
+    async def get_value() -> object:
+        return object()
+
+    activation_ended = asyncio.Event()
+
+    async def outlive_activation() -> object:
+        await activation_ended.wait()
+        return await get_value()
+
+    async with async_context_scope.activate():
+        await get_value()
+        task = asyncio.create_task(outlive_activation())
+
+    # Act
+    activation_ended.set()
+
+    # Assert
+    with pytest.raises(ScopeInactiveError):
+        await task

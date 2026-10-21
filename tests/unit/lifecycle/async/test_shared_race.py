@@ -2,6 +2,9 @@
 
 import asyncio
 
+import pytest
+
+from stratae.lifecycle.exceptions import CacheCycleError
 from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
@@ -131,3 +134,124 @@ async def test_shared_scope_reentrant_dependency_does_not_deadlock(
 
     # Assert
     assert result == 2
+
+
+async def test_shared_scope_keyed_recursion_does_not_deadlock(async_scope: AsyncScope):
+    """
+    A keyed cached coroutine function awaiting itself with other keys doesn't deadlock.
+
+    Given: a shared-scope cached fib(n) whose first computation awaits fib(n - 1) and fib(n - 2),
+    When: it's awaited for the first time,
+    Then: every key should compute without deadlocking, each exactly once.
+    """
+    # Arrange
+    computed: list[int] = []
+
+    @async_scope.cache()
+    async def fib(n: int) -> int:
+        computed.append(n)
+        return n if n < 2 else await fib(n - 1) + await fib(n - 2)
+
+    # Act - a timeout turns a regression into a fast failure instead of hanging the suite.
+    async with async_scope.activate():
+        result = await asyncio.wait_for(fib(10), timeout=2)
+
+    # Assert
+    assert result == 55
+    assert sorted(computed) == list(range(11))
+
+
+async def test_shared_scope_mutual_recursion_does_not_deadlock(async_scope: AsyncScope):
+    """
+    Two keyed cached coroutine functions awaiting each other with different keys don't deadlock.
+
+    Given: shared-scope cached functions a(n) -> b(n - 1) -> a(n - 1),
+    When: a is awaited for the first time,
+    Then: the chain should resolve without deadlocking.
+    """
+
+    # Arrange
+    @async_scope.cache()
+    async def a(n: int) -> int:
+        return 0 if n == 0 else await b(n - 1) + 1
+
+    @async_scope.cache()
+    async def b(n: int) -> int:
+        return await a(n)
+
+    # Act
+    async with async_scope.activate():
+        result = await asyncio.wait_for(a(3), timeout=2)
+
+    # Assert
+    assert result == 3
+
+
+async def test_shared_scope_self_dependent_slot_raises_cycle_error(async_scope: AsyncScope):
+    """
+    A slot-eligible cached coroutine function awaiting itself raises instead of deadlocking.
+
+    Given: a shared-scope ignore_params function whose computation awaits itself,
+    When: it's awaited for the first time,
+    Then: the inner call should raise CacheCycleError, and the slot should stay unclaimed.
+    """
+    # Arrange
+    recurse = True
+
+    @async_scope.cache(ignore_params=True)
+    async def countdown(n: int) -> int:
+        return await countdown(n - 1) if recurse else n
+
+    # Act
+    async with async_scope.activate():
+        with pytest.raises(CacheCycleError):
+            await asyncio.wait_for(countdown(3), timeout=2)
+        recurse = False
+        result = await countdown(5)
+
+    # Assert
+    assert result == 5
+
+
+async def test_shared_scope_waiter_recomputes_after_owner_fails(async_scope: AsyncScope):
+    """
+    A task waiting on another task's failed computation computes the value itself.
+
+    Given: one task computing a shared-scope cached function, and a second task waiting on
+           that same entry,
+    When: the first task's computation raises,
+    Then: the first should see its exception, and the waiter should compute and cache the
+          value itself.
+    """
+    # Arrange
+    owner_started = asyncio.Event()
+    release_owner = asyncio.Event()
+    calls = 0
+
+    @async_scope.cache()
+    async def get_thing() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            owner_started.set()
+            await release_owner.wait()
+            raise RuntimeError("first computation fails")
+        return 42
+
+    # Act
+    async with async_scope.activate():
+        owner = asyncio.ensure_future(get_thing())
+        await owner_started.wait()
+        waiter = asyncio.ensure_future(get_thing())
+        await asyncio.sleep(0)  # let the waiter reach the claimed entry before the owner fails
+        release_owner.set()
+        owner_outcome, waiter_outcome = await asyncio.wait_for(
+            asyncio.gather(owner, waiter, return_exceptions=True), timeout=2
+        )
+        cached = await get_thing()
+
+    # Assert
+    assert isinstance(owner_outcome, RuntimeError)
+    assert waiter_outcome == 42
+    assert cached == 42
+    assert calls == 2

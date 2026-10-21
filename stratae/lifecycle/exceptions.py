@@ -7,7 +7,8 @@ storage value, or a `requires` combination that isn't allowed.
 {py:exc}`ScopeInactiveError` is raised when accessing a scope that has no
 active activation in the calling context. {py:exc}`ScopeActivationError` is
 raised when deactivating a scope whose activation has already ended, or one a
-dependent scope still requires active.
+dependent scope still requires active. {py:exc}`CacheCycleError` is raised when
+a shared scope's cached call depends on its own still-running first computation.
 """
 
 
@@ -52,4 +53,15 @@ class ScopeInactiveError(LifecycleException, RuntimeError):
     Raised when a scope has no active activation in the calling context, as
     distinct from {py:exc}`ScopeNotFoundError`, which covers a scope
     reference that can't be found at all.
+    """
+
+
+class CacheCycleError(LifecycleException, RuntimeError):
+    """
+    Exception raised when a cached call waits on its own in-progress computation.
+
+    Raised in a shared scope when the thread or task computing a cache entry calls
+    back into that same entry before it's stored - for example, a no-parameter (or
+    `ignore_params`) function that calls itself. Waiting would never finish, so the
+    call fails instead of deadlocking.
     """

@@ -1,5 +1,5 @@
 """
-Wrappers for scope-managed functions and context managers - a parallel implementation.
+Wrappers for scope-managed functions and context managers.
 
 Wrapper bodies are generated as source text and compiled rather than written as a
 generic ``*args/**kwargs`` shim, so the compiled wrapper's signature and defaults
@@ -8,17 +8,29 @@ instead of a keyed dict lookup whenever the function's result doesn't vary by
 argument values.
 """
 
-import asyncio
 import threading
 import weakref
+from asyncio import current_task
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
 from inspect import Parameter, signature
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Hashable, Protocol, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Hashable,
+    Literal,
+    NoReturn,
+    Protocol,
+    cast,
+)
 
 from stratae.codegen import Writer, render_parameters
 from stratae.codegen.util import wrapper_filename
-from stratae.lifecycle._slots import UNSET, SharedVar
+from stratae.lifecycle._inflight import AsyncPending, Pending, WatchedClaim, wait_for_claim
+from stratae.lifecycle._slots import UNSET
+from stratae.lifecycle.exceptions import ScopeInactiveError
 
 if TYPE_CHECKING:
     from stratae.lifecycle.scope import AsyncScope, BaseScope, Scope
@@ -141,13 +153,15 @@ def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> 
     Write the fast-path resolution of __slots__ plus the first slot read into it.
 
     Which lookup is written depends on the scope's isolation (see _build_namespace for
-    the matching namespace binding): a context-isolated scope's ContextVar is bound
-    straight into the wrapper's namespace at codegen time, with the read following the
-    resolve. A shared scope reads its SharedVar's storage attribute, unguarded - when
-    the scope is inactive the attribute holds UNSET, whose subscript in the read raises
-    TypeError, so the active path pays no explicit check. The read can't raise TypeError
-    otherwise: it subscripts a list or SlotDict with an int constant. Either miss falls
-    back to get_slots(), which raises the right error.
+    the matching namespace binding). A shared scope reads its SharedVar's storage attribute,
+    unguarded - when the scope is inactive the attribute holds UNSET, whose subscript in the
+    read raises TypeError, so the active path pays no explicit check. The read can't raise
+    TypeError otherwise: it subscripts a list or SlotDict with an int constant. A
+    context-isolated scope's ContextVar is bound straight into the wrapper's namespace at
+    codegen time, and its get() shares one try with the read: an inactive scope raises
+    LookupError from get(), and an ended activation's emptied storage raises IndexError or
+    KeyError - both LookupErrors - from the read. Either miss falls back to get_slots(),
+    which raises the right error.
     """
     if scope.is_shared():
         writer.write("__slots__ = __var__.storage")
@@ -162,25 +176,61 @@ def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> 
     writer.write("try:")
     with writer.block():
         writer.write("__slots__ = __var__.get()")
+        writer.write(read)
     writer.write("except LookupError:")
     with writer.block():
         writer.write("__slots__ = __scope__.get_slots()")
-    writer.write(read)
+        writer.write(read)
+
+
+type ClaimStyle = Literal["locked", "task"] | None
+
+
+def _claim_style(scope: "BaseScope", is_async: bool) -> ClaimStyle:
+    """
+    How a wrapper claims its misses so overlapping callers compute each entry once, if at all.
+
+    `"locked"`: a shared scope's callers can be on any thread, so its claims live in a
+    per-wrapper dict guarded by a lock. `"task"`: a context scope's async wrapper - callers
+    overlapping one activation are its child tasks, sharing one event loop. Its claim
+    bookkeeping never awaits, so it needs no lock, and it lives in the activation's own
+    claims dict, with the owning task itself as the claim. `None`: a context scope's sync
+    wrapper computes without suspending, so only threads running a copied context could
+    overlap it - it skips claiming to keep that miss path free of the bookkeeping.
+    """
+    if scope.is_shared():
+        return "locked"
+    return "task" if is_async else None
+
+
+def _raise_ended(scope: "BaseScope") -> NoReturn:
+    """Raise for a claim waiter whose activation ended while it was waiting."""
+    raise ScopeInactiveError(f"Scope {scope.name!r} is not active: its activation ended.")
 
 
 def _build_namespace(
     func: Callable[..., Any], scope: "BaseScope", is_async: bool = False
 ) -> dict[str, Any]:
     """Build the namespace bindings every codegen'd wrapper compiles against."""
-    var = scope.activation_var()
     namespace: dict[str, Any] = {
         "__func__": func,
         "__scope__": scope,
         "__UNSET__": UNSET,
-        "__var__": var,
+        "__var__": scope.activation_var(),
     }
-    if isinstance(var, SharedVar):
-        namespace["__lock__"] = asyncio.Lock() if is_async else threading.Lock()
+    style = _claim_style(scope, is_async)
+    if style == "locked":
+        # A thread lock even for async wrappers: it only guards claim/store bookkeeping,
+        # never an await, so it can't block the event loop for long.
+        namespace["__lock__"] = threading.Lock()
+        namespace["__inflight__"] = {}
+        namespace["__Pending__"] = AsyncPending if is_async else Pending
+        namespace["__ended__"] = _raise_ended
+    elif style == "task":
+        namespace["__task__"] = current_task
+        namespace["__wait_claim__"] = wait_for_claim
+        namespace["__Watched__"] = WatchedClaim
+        namespace["__ended__"] = _raise_ended
     return namespace
 
 
@@ -210,77 +260,218 @@ def _write_keyed_cache_guard(writer: Writer, slot: int, scope: "BaseScope") -> N
         writer.write(f"__slots__[{slot}] = __cache__")
 
 
-def _write_locked_slot_common(
-    writer: Writer, slot: int, is_async: bool, write_compute: Callable[[], None]
+def _write_slot_store(writer: Writer, slot: int, scope: "BaseScope") -> None:
+    """
+    Write the store of __value__ into a slot-eligible function's slot.
+
+    A computation still running when its activation ends finds that storage emptied, and
+    mustn't refill it: a later call reaching the ended storage would hit the value instead
+    of raising. Into an emptied list the store raises IndexError, caught at no cost to a
+    live store; an emptied SlotDict would accept it, so a sparse store checks first.
+    """
+    if scope.storage == "dense":
+        writer.write("try:")
+        with writer.block():
+            writer.write(f"__slots__[{slot}] = __value__")
+        writer.write("except IndexError:")
+        with writer.block():
+            writer.write("pass")
+        return
+    writer.write("if __slots__:")
+    with writer.block():
+        writer.write(f"__slots__[{slot}] = __value__")
+
+
+def _write_claimed_compute(
+    writer: Writer,
+    key: str,
+    is_async: bool,
+    write_recheck: Callable[[], None],
+    write_compute: Callable[[], None],
+    write_store: Callable[[], None],
+) -> None:
+    """Write a shared scope's lock-guarded claim-then-compute miss path."""
+    writer.write("while True:")
+    with writer.block():
+        writer.write("with __lock__:")
+        with writer.block():
+            write_recheck()
+            writer.write(f"__pending__ = __inflight__.get({key})")
+            writer.write("if __pending__ is None:")
+            with writer.block():
+                writer.write(f"__inflight__[{key}] = __Pending__()")
+                writer.write("break")
+            writer.write("__done__ = __pending__.watch()")
+        writer.write(f"{'await ' if is_async else ''}__done__.wait()")
+        writer.write("if not __slots__:")
+        with writer.block():
+            writer.write("__ended__(__scope__)")
+    writer.write("try:")
+    with writer.block():
+        write_compute()
+        write_store()
+    writer.write("finally:")
+    with writer.block():
+        writer.write("with __lock__:")
+        with writer.block():
+            writer.write(f"__inflight__.pop({key}).release()")
+
+
+def _write_task_claimed_compute(
+    writer: Writer,
+    key: str,
+    write_recheck: Callable[[], None],
+    write_compute: Callable[[], None],
+    write_store: Callable[[], None],
 ) -> None:
     """
-    Write a shared scope's double-checked-locked slot miss.
+    Write a context scope's lockless claim-then-compute miss path, for an async wrapper.
 
-    Only reached once the lock-free fast-path read outside already saw UNSET; re-reads the
-    slot after acquiring the lock in case another caller already filled it while this one
-    was waiting, since only then is the miss still real. write_compute writes the result
-    into __value__ - a plain call for a slot-eligible function, a context-manager entry
-    for a resource - the caller supplies it since that part differs.
+    Only reached right after a miss, with no await since, so there's nothing to re-check
+    until a wait. The claim is the calling task itself in the activation's claims dict,
+    replaced by a WatchedClaim only once another task waits on it - so an uncontended miss
+    adds a few dict operations and no allocation.
     """
-    writer.write(f"{'async with' if is_async else 'with'} __lock__:")
+    writer.write("__claims__ = __slots__[0].claims")
+    writer.write("while True:")
     with writer.block():
-        writer.write(f"__value__ = __slots__[{slot}]")
-        writer.write("if __value__ is __UNSET__:")
+        writer.write(f"__claim__ = __claims__.get({key})")
+        writer.write("if __claim__ is None:")
         with writer.block():
-            write_compute()
-            writer.write(f"__slots__[{slot}] = __value__")
+            writer.write("break")
+        writer.write(f"await __wait_claim__(__claims__, {key}, __claim__)")
+        writer.write("if not __slots__:")
+        with writer.block():
+            writer.write("__ended__(__scope__)")
+        write_recheck()
+    writer.write(f"__claims__[{key}] = __task__()")
+    writer.write("try:")
+    with writer.block():
+        write_compute()
+        write_store()
+    writer.write("finally:")
+    with writer.block():
+        writer.write(f"__claim__ = __claims__.pop({key})")
+        writer.write("if __claim__.__class__ is __Watched__:")
+        with writer.block():
+            writer.write("__claim__.done.set()")
 
 
-def _write_locked_keyed_common(
+def _write_claimed_slot_miss(
+    writer: Writer,
+    slot: int,
+    scope: "BaseScope",
+    style: ClaimStyle,
+    is_async: bool,
+    write_compute: Callable[[], None],
+) -> None:
+    """
+    Write a claiming slot miss, computed once across overlapping callers.
+
+    Only reached once the lock-free fast-path read outside already saw UNSET. A shared
+    scope's wrapper claims under `None`, since the slot holds one value per activation and
+    its claims are its own; a context scope's claims share the activation's dict, so they
+    claim under the slot number.
+    """
+
+    def write_recheck() -> None:
+        writer.write(f"__value__ = __slots__[{slot}]")
+        writer.write("if __value__ is not __UNSET__:")
+        with writer.block():
+            writer.write("return __value__")
+
+    def write_store() -> None:
+        _write_slot_store(writer, slot, scope)
+
+    if style == "task":
+        _write_task_claimed_compute(writer, str(slot), write_recheck, write_compute, write_store)
+    else:
+        _write_claimed_compute(writer, "None", is_async, write_recheck, write_compute, write_store)
+
+
+def _write_claimed_keyed_body(
     writer: Writer,
     slot: int,
     scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
+    style: ClaimStyle,
     is_async: bool,
     write_compute: Callable[[], None],
 ) -> None:
     """
-    Write a shared scope's keyed cache access with double-checked locking.
+    Write a claiming keyed cache access, computing each key once across overlapping callers.
 
-    Unlike the non-shared path, the dict's lazy creation moves inside the lock too: two
-    concurrent callers can each see the slot as UNSET and each build a fresh dict,
-    silently discarding whichever's inserts came first, so only the hit check stays
-    lock-free outside the lock. write_compute writes the result into __value__.
+    Claims are per key, so computing one key never waits on another. In a shared scope the
+    dict's lazy creation moves inside the lock too: two callers on different threads can
+    each see the slot as UNSET and each build a fresh dict, silently discarding whichever's
+    inserts came first, so only the hit check stays lock-free. A context scope's tasks can't
+    interleave before claiming, so they build it without one. write_compute writes the
+    result into __value__.
     """
     _write_resolve_first_read(writer, scope, f"__cache__ = __slots__[{slot}]")
     _write_key(writer, cache_key, params)
     writer.write("if __cache__ is not __UNSET__ and __ck__ in __cache__:")
     with writer.block():
         writer.write("return __cache__[__ck__]")
-    writer.write(f"{'async with' if is_async else 'with'} __lock__:")
-    with writer.block():
-        writer.write(f"__cache__ = __slots__[{slot}]")
+
+    def write_store() -> None:
+        writer.write("__cache__[__ck__] = __value__")
+
+    if style == "task":
         writer.write("if __cache__ is __UNSET__:")
         with writer.block():
             writer.write("__cache__ = {}")
             writer.write(f"__slots__[{slot}] = __cache__")
-        writer.write("if __ck__ in __cache__:")
-        with writer.block():
-            writer.write("return __cache__[__ck__]")
-        write_compute()
-        writer.write("__cache__[__ck__] = __value__")
-        writer.write("return __value__")
+        writer.write(f"__pk__ = ({slot}, __ck__)")
+
+        def write_task_recheck() -> None:
+            writer.write("if __ck__ in __cache__:")
+            with writer.block():
+                writer.write("return __cache__[__ck__]")
+
+        _write_task_claimed_compute(
+            writer, "__pk__", write_task_recheck, write_compute, write_store
+        )
+    else:
+
+        def write_recheck() -> None:
+            writer.write(f"__cache__ = __slots__[{slot}]")
+            writer.write("if __cache__ is __UNSET__:")
+            with writer.block():
+                writer.write("__cache__ = {}")
+                writer.write(f"__slots__[{slot}] = __cache__")
+            writer.write("if __ck__ in __cache__:")
+            with writer.block():
+                writer.write("return __cache__[__ck__]")
+
+        _write_claimed_compute(
+            writer, "__ck__", is_async, write_recheck, write_compute, write_store
+        )
+    writer.write("return __value__")
 
 
 def _write_slot_body(
-    writer: Writer, slot: int, scope: "BaseScope", call: str, is_async: bool = False
+    writer: Writer,
+    slot: int,
+    scope: "BaseScope",
+    write_compute: Callable[[], None],
+    is_async: bool = False,
 ) -> None:
-    """Write the whole body of a slot-eligible wrapper around the rendered call expression."""
+    """
+    Write the whole body of a slot-eligible wrapper.
+
+    write_compute writes the result into __value__ - a plain call for a function, a
+    context-manager entry for a resource.
+    """
+    style = _claim_style(scope, is_async)
     _write_slot_guard(writer, slot, scope)
     with writer.block():
-        if scope.is_shared():
-            _write_locked_slot_common(
-                writer, slot, is_async, lambda: writer.write(f"__value__ = {call}")
-            )
+        if style is not None:
+            _write_claimed_slot_miss(writer, slot, scope, style, is_async, write_compute)
         else:
-            writer.write(f"__value__ = {call}")
-            writer.write(f"__slots__[{slot}] = __value__")
+            write_compute()
+            _write_slot_store(writer, slot, scope)
     writer.write("return __value__")
 
 
@@ -290,25 +481,25 @@ def _write_keyed_body(
     scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
-    call: str,
+    write_compute: Callable[[], None],
     is_async: bool = False,
 ) -> None:
-    """Write the whole body of a keyed wrapper around the rendered call expression."""
-    if scope.is_shared():
-        _write_locked_keyed_common(
-            writer,
-            slot,
-            scope,
-            cache_key,
-            params,
-            is_async,
-            lambda: writer.write(f"__value__ = {call}"),
+    """
+    Write the whole body of a keyed wrapper.
+
+    write_compute writes the result into __value__ - a plain call for a function, a
+    context-manager entry for a resource.
+    """
+    style = _claim_style(scope, is_async)
+    if style is not None:
+        _write_claimed_keyed_body(
+            writer, slot, scope, cache_key, params, style, is_async, write_compute
         )
         return
     _write_keyed_cache_guard(writer, slot, scope)
     _write_key(writer, cache_key, params)
     _write_cache_check(writer)
-    writer.write(f"__value__ = {call}")
+    write_compute()
     _write_cache_store(writer)
 
 
@@ -367,10 +558,14 @@ def _create_sync_wrapper_impl(
     writer.write(f"def wrapper({render_parameters(params)}):")
     with writer.block():
         call = f"__func__({_render_forward_arguments(params)})"
+
+        def write_call() -> None:
+            writer.write(f"__value__ = {call}")
+
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, scope, call)
+            _write_slot_body(writer, slot, scope, write_call)
         else:
-            _write_keyed_body(writer, slot, scope, cache_key, params, call)
+            _write_keyed_body(writer, slot, scope, cache_key, params, write_call)
 
     namespace = _build_namespace(func, scope)
     if cache_key is not None:
@@ -472,10 +667,14 @@ def create_async_wrapper[**P, T](
     writer.write(f"async def wrapper({render_parameters(params)}):")
     with writer.block():
         call = f"await __func__({_render_forward_arguments(params)})"
+
+        def write_call() -> None:
+            writer.write(f"__value__ = {call}")
+
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, scope, call, is_async=True)
+            _write_slot_body(writer, slot, scope, write_call, is_async=True)
         else:
-            _write_keyed_body(writer, slot, scope, cache_key, params, call, is_async=True)
+            _write_keyed_body(writer, slot, scope, cache_key, params, write_call, is_async=True)
 
     namespace = _build_namespace(func, scope, is_async=True)
     if cache_key is not None:
@@ -498,57 +697,6 @@ def _write_resolve_exit_stack(writer: Writer) -> None:
     writer.write("__stack__ = __slots__[0]")
 
 
-def _write_cm_slot_body(
-    writer: Writer,
-    slot: int,
-    scope: "BaseScope",
-    params: list[Parameter],
-    enter_expr: str,
-    is_async: bool = False,
-) -> None:
-    """Write the whole body of a slot-eligible context-manager wrapper."""
-
-    def write_enter() -> None:
-        writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-        _write_resolve_exit_stack(writer)
-        writer.write(f"__value__ = {enter_expr}")
-
-    _write_slot_guard(writer, slot, scope)
-    with writer.block():
-        if scope.is_shared():
-            _write_locked_slot_common(writer, slot, is_async, write_enter)
-        else:
-            write_enter()
-            writer.write(f"__slots__[{slot}] = __value__")
-    writer.write("return __value__")
-
-
-def _write_cm_keyed_body(
-    writer: Writer,
-    slot: int,
-    scope: "BaseScope",
-    cache_key: Callable[..., Hashable] | None,
-    params: list[Parameter],
-    enter_expr: str,
-    is_async: bool = False,
-) -> None:
-    """Write the whole body of a keyed context-manager wrapper."""
-
-    def write_enter() -> None:
-        writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-        _write_resolve_exit_stack(writer)
-        writer.write(f"__value__ = {enter_expr}")
-
-    if scope.is_shared():
-        _write_locked_keyed_common(writer, slot, scope, cache_key, params, is_async, write_enter)
-        return
-    _write_keyed_cache_guard(writer, slot, scope)
-    _write_key(writer, cache_key, params)
-    _write_cache_check(writer)
-    write_enter()
-    _write_cache_store(writer)
-
-
 def _create_cm_wrapper_impl(
     func: Callable[..., Any],
     scope: "BaseScope",
@@ -563,12 +711,18 @@ def _create_cm_wrapper_impl(
 
     writer = Writer()
     def_kw = "async def" if is_async else "def"
+
+    def write_enter() -> None:
+        writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
+        _write_resolve_exit_stack(writer)
+        writer.write(f"__value__ = {enter_expr}")
+
     writer.write(f"{def_kw} wrapper({render_parameters(params)}):")
     with writer.block():
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_cm_slot_body(writer, slot, scope, params, enter_expr, is_async)
+            _write_slot_body(writer, slot, scope, write_enter, is_async)
         else:
-            _write_cm_keyed_body(writer, slot, scope, cache_key, params, enter_expr, is_async)
+            _write_keyed_body(writer, slot, scope, cache_key, params, write_enter, is_async)
 
     namespace = _build_namespace(func, scope, is_async=is_async)
     if cache_key is not None:

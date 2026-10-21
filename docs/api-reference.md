@@ -194,7 +194,7 @@ Serialization and deserialization tools for encoding/decoding data: `encode`, `s
 ```{code-block} python
 from dataclasses import asdict, dataclass
 from uuid import UUID, uuid4
-from stratae.serde import serialize, deserialize
+from stratae.serde import serialize, deserialize, encode
 
 @dataclass
 class Widget:
@@ -205,8 +205,13 @@ class Widget:
         if isinstance(self.id, str):
             self.id = UUID(self.id)
 
-    def to_dict(self):
-        return asdict(self)
+@encode.register
+def encode_widget(obj: Widget) -> dict:
+    return asdict(obj)
+
+@deserialize.register(Widget)
+def decode_widget(value: dict) -> Widget:
+    return Widget(**value)
 
 widget = Widget(id=uuid4(), name="sprocket")
 data = serialize(widget)
@@ -216,7 +221,7 @@ restored = deserialize(data, type=Widget)
 print(restored.name)
 ```
 ```{output}
-b'{"id": "05483b1e-b51a-4a28-a992-59dc75499b1f, "name": "sprocket"}'
+b'{"id": "05483b1e-b51a-4a28-a992-59dc75499b1f", "name": "sprocket"}'
 sprocket
 ```
 ````

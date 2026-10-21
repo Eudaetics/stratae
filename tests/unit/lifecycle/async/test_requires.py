@@ -263,3 +263,28 @@ async def test_deactivate_child_without_resource_returns_none(storage: str):
 
     # Assert
     assert not child.is_active()
+
+
+async def test_failed_activate_does_not_count_as_live_dependent():
+    """
+    A child activation that fails leaves no live dependent behind on its parent.
+
+    Given: An active shared parent, and a shared child scope requiring it that's already active,
+    When: the child is activated a second time, which fails, and its first activation is then
+          deactivated,
+    Then: the parent can still be deactivated.
+    """
+    # Arrange
+    parent = AsyncScope("application", "shared")
+    child = AsyncScope("worker", "shared", requires=parent)
+    parent_activation = parent.activate()
+    child_activation = child.activate()
+    with pytest.raises(ScopeActivationError, match="already active"):
+        child.activate()
+    await child.deactivate(child_activation)
+
+    # Act
+    await parent.deactivate(parent_activation)
+
+    # Assert
+    assert not parent.is_active()

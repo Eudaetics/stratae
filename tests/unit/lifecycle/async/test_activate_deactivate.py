@@ -3,6 +3,7 @@
 import pytest
 
 from stratae.lifecycle.exceptions import ScopeActivationError
+from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -135,3 +136,65 @@ async def test_context_scope_double_deactivate_raises():
     # Act & Assert
     with pytest.raises(RuntimeError):
         await scope.deactivate(activation)
+
+
+async def test_exception_raised_while_handling_another_propagates_unchanged():
+    """
+    An exception raised while handling another propagates as-is through deactivation.
+
+    Given: An active scope whose block raises a ValueError while handling a KeyError,
+    When: the scope deactivates on the way out,
+    Then: the ValueError itself propagates - not an ExceptionGroup bundling it with the
+          KeyError it was raised during.
+    """
+    # Arrange
+    scope = AsyncScope("request")
+    raised = ValueError("translated")
+
+    # Act
+    with pytest.raises(ValueError) as exc_info:
+        async with scope.activate():
+            try:
+                raise KeyError("missing")
+            except KeyError:
+                raise raised from None
+
+    # Assert
+    assert exc_info.value is raised
+
+
+async def test_exception_raised_while_handling_another_propagates_unchanged_through_resource():
+    """
+    A resource passing an exception through doesn't regroup it with its __context__.
+
+    Given: An active scope holding an entered resource that re-raises whatever reaches it,
+    When: the block raises a ValueError while handling a KeyError,
+    Then: the resource sees the ValueError, and the ValueError itself propagates.
+    """
+    # Arrange
+    scope = AsyncScope("request")
+    seen: list[BaseException] = []
+
+    @scope.cache()
+    @async_resource
+    async def get_connection():
+        try:
+            yield object()
+        except Exception as exc:
+            seen.append(exc)
+            raise
+
+    raised = ValueError("translated")
+
+    # Act
+    with pytest.raises(ValueError) as exc_info:
+        async with scope.activate():
+            await get_connection()
+            try:
+                raise KeyError("missing")
+            except KeyError:
+                raise raised from None
+
+    # Assert
+    assert seen == [raised]
+    assert exc_info.value is raised

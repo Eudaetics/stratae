@@ -1,10 +1,14 @@
 """Smoke tests for the FastAPI lifecycle integration, using a real FastAPI app."""
 
+import asyncio
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import Any
+
 import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
@@ -140,6 +144,20 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
             raise ValueError("deliberate mid-stream failure swallowed by resource cleanup")
 
         return StreamingResponse(body())
+
+    @fastapi_app.get("/http-exception-while-handling")
+    async def http_exception_while_handling() -> None:  # pyright: ignore[reportUnusedFunction]
+        await get_transaction()
+        try:
+            raise KeyError("missing")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="deliberate 404 while handling") from None
+
+    @fastapi_app.get("/suspend")
+    async def suspend() -> None:  # pyright: ignore[reportUnusedFunction]
+        await get_transaction()
+        events.append("suspended")
+        await asyncio.Event().wait()
 
     return fastapi_app
 
@@ -360,3 +378,77 @@ def test_streaming_response_exception_still_propagates_when_resource_swallows_it
 
     # Assert
     assert events == ["open", "swallowed", "close"]
+
+
+def test_http_exception_raised_while_handling_another_keeps_its_status(
+    app: FastAPI, events: list[str]
+):
+    """
+    An HTTPException raised inside an except block should still produce its own status.
+
+    Given: A FastAPI app whose route class activates the request scope
+    When: A route raises HTTPException(404) while handling a KeyError
+    Then: The client gets the 404, and the request-scoped resource rolls back
+    """
+    # Act
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/http-exception-while-handling")
+
+    # Assert
+    assert response.status_code == 404
+    assert events == ["open", "rollback", "close"]
+
+
+async def test_cancelled_request_still_closes_resource(
+    app: FastAPI, events: list[str], cancel_mid_request: Callable[..., Awaitable[None]]
+):
+    """
+    A request cancelled mid-handler should still close its request-scoped resource.
+
+    Given: A FastAPI app whose route class activates the request scope
+    When: The request is cancelled (a client disconnect or timeout) while the handler is suspended
+    Then: The request-scoped resource is closed without committing
+    """
+    # Act
+    await cancel_mid_request(app, "/suspend", lambda: "suspended" in events)
+
+    # Assert
+    assert "commit" not in events
+    assert events[-1] == "close"
+
+
+def test_route_subclass_can_post_process_the_response(async_request_scope: AsyncScope):
+    """
+    A route class built on scoped_route can still modify the response its handler returns.
+
+    Given: A route class subclassing scoped_route's, setting a header on every response
+    When: A request is handled
+    Then: The request succeeds, and the response carries the header
+    """
+
+    # Arrange
+    class TimedRoute(scoped_route(async_request_scope)):
+        def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+            handler = super().get_route_handler()
+
+            async def timed(request: Request) -> Response:
+                response = await handler(request)
+                response.headers["X-Response-Time"] = "1ms"
+                return response
+
+            return timed
+
+    timed_app = FastAPI()
+    timed_app.router.route_class = TimedRoute
+
+    @timed_app.get("/ok")
+    async def ok() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+        return {"status": "ok"}
+
+    # Act
+    client = TestClient(timed_app, raise_server_exceptions=False)
+    response = client.get("/ok")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.headers["X-Response-Time"] == "1ms"

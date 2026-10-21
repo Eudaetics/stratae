@@ -107,8 +107,8 @@ addopts = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
-    "fastapi: FastAPI integration smoke tests (requires fastapi, httpx)",
-    "starlette: Starlette integration smoke tests (requires starlette, httpx)",
+    "fastapi: FastAPI integration smoke tests (requires fastapi, httpx2)",
+    "starlette: Starlette integration smoke tests (requires starlette, httpx2)",
     "msgspec: msgspec integration tests (requires msgspec)",
     "rabbitmq: RabbitMQ integration tests (requires aiormq, msgspec, and a live broker)",
 ]

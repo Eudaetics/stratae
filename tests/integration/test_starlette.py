@@ -1,5 +1,8 @@
 """Smoke tests for the Starlette lifecycle integration, using a real Starlette app."""
 
+import asyncio
+from collections.abc import Awaitable, Callable
+
 import pytest
 
 pytest.importorskip("starlette")
@@ -128,6 +131,19 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> Starlette:
 
         return StreamingResponse(body())
 
+    async def http_exception_while_handling(request: Request) -> JSONResponse:
+        await get_transaction()
+        try:
+            raise KeyError("missing")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="deliberate 404 while handling") from None
+
+    async def suspend(request: Request) -> JSONResponse:
+        await get_transaction()
+        events.append("suspended")
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
     Route = scoped_route(async_request_scope)
     return Starlette(
         routes=[
@@ -143,6 +159,8 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> Starlette:
             Route("/stream-then-fail", stream_then_fail),
             Route("/swallowed-exception", swallowed_exception_route),
             Route("/stream-swallowed-exception", stream_swallowed_exception),
+            Route("/http-exception-while-handling", http_exception_while_handling),
+            Route("/suspend", suspend),
         ],
     )
 
@@ -365,3 +383,63 @@ def test_streaming_response_exception_still_propagates_when_resource_swallows_it
 
     # Assert
     assert events == ["open", "swallowed", "close"]
+
+
+def test_http_exception_raised_while_handling_another_keeps_its_status(
+    app: Starlette, events: list[str]
+):
+    """
+    An HTTPException raised inside an except block should still produce its own status.
+
+    Given: A Starlette app whose routes activate the request scope via scoped_route
+    When: A route raises HTTPException(404) while handling a KeyError
+    Then: The client gets the 404, and the request-scoped resource rolls back
+    """
+    # Act
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/http-exception-while-handling")
+
+    # Assert
+    assert response.status_code == 404
+    assert events == ["open", "rollback", "close"]
+
+
+async def test_cancelled_request_still_closes_resource(
+    app: Starlette, events: list[str], cancel_mid_request: Callable[..., Awaitable[None]]
+):
+    """
+    A request cancelled mid-handler should still close its request-scoped resource.
+
+    Given: A Starlette app whose routes activate the request scope via scoped_route
+    When: The request is cancelled (a client disconnect or timeout) while the handler is suspended
+    Then: The request-scoped resource is closed without committing
+    """
+    # Act
+    await cancel_mid_request(app, "/suspend", lambda: "suspended" in events)
+
+    # Assert
+    assert "commit" not in events
+    assert events[-1] == "close"
+
+
+def test_route_keeps_endpoint_name_for_url_lookup(async_request_scope: AsyncScope):
+    """
+    A scoped route is named after its endpoint, so URL lookups by name still work.
+
+    Given: A Starlette app with a scoped route for an endpoint named read_product
+    When: A URL is looked up by that endpoint's name
+    Then: The route's path is returned
+    """
+
+    # Arrange
+    async def read_product(request: Request) -> JSONResponse:
+        return JSONResponse({})
+
+    Route = scoped_route(async_request_scope)
+    named_app = Starlette(routes=[Route("/products/{product_id}", read_product)])
+
+    # Act
+    path = named_app.url_path_for("read_product", product_id="1")
+
+    # Assert
+    assert path == "/products/1"

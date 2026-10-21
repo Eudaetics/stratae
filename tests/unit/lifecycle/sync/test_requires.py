@@ -1,10 +1,9 @@
 """
 Unit tests for Scope's `requires` parent relationship.
 
-Net-new behavior compared to the old Lifecycle/Scope split: a scope can declare another
-scope as its required parent. activate() raises immediately unless that parent is already
-active, and the parent tracks a live-dependent count (reserved slot 1) that blocks its own
-deactivation while a scope requiring it is still active.
+A scope can declare another scope as its required parent. activate() raises immediately
+unless that parent is already active, and the parent tracks a live-dependent count (reserved
+slot 1) that blocks its own deactivation while a scope requiring it is still active.
 """
 
 from unittest.mock import Mock
@@ -271,3 +270,28 @@ def test_deactivate_child_without_resource_returns_none(storage: str):
 
     # Assert
     assert not child.is_active()
+
+
+def test_failed_activate_does_not_count_as_live_dependent():
+    """
+    A child activation that fails leaves no live dependent behind on its parent.
+
+    Given: An active shared parent, and a shared child scope requiring it that's already active,
+    When: the child is activated a second time, which fails, and its first activation is then
+          deactivated,
+    Then: the parent can still be deactivated.
+    """
+    # Arrange
+    parent = Scope("application", "shared")
+    child = Scope("worker", "shared", requires=parent)
+    parent_activation = parent.activate()
+    child_activation = child.activate()
+    with pytest.raises(ScopeActivationError, match="already active"):
+        child.activate()
+    child.deactivate(child_activation)
+
+    # Act
+    parent.deactivate(parent_activation)
+
+    # Assert
+    assert not parent.is_active()

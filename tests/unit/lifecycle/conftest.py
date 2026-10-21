@@ -1,4 +1,4 @@
-"""Shared fixtures for the scope2 (stratae.lifecycle._scope2) test suite."""
+"""Shared fixtures for the stratae.lifecycle unit tests."""
 
 import pytest
 

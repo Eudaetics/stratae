@@ -91,6 +91,7 @@ with TestClient(app) as client:
 ````
 """
 
+from functools import wraps
 from typing import Any, Awaitable, Callable
 
 from starlette.requests import Request
@@ -102,26 +103,25 @@ from starlette.types import Scope as ASGIScope
 from stratae.lifecycle import AsyncScope
 from stratae.lifecycle.scope import AsyncActivation
 
+_ACTIVATION_KEY = "stratae.activation"
+"""ASGI scope key holding a request's open activation, until whichever side closes it."""
 
-class _ScopedResponse(Response):
-    """Wrap a Response so its scope activation stays open until the response finishes sending."""
 
-    def __init__(self, response: Response, activation: AsyncActivation) -> None:
-        self._response = response
-        self._activation = activation
-
-    async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
-        try:
-            await self._response(scope, receive, send)
-        except Exception as exc:
-            await self._activation.__aexit__(type(exc), exc, exc.__traceback__)
-            raise
-        else:
-            await self._activation.__aexit__(None, None, None)
+async def _close_activation(asgi_scope: ASGIScope, exc: BaseException | None) -> None:
+    """Close the request's activation with `exc`, unless the other side already closed it."""
+    activation: AsyncActivation | None = asgi_scope.pop(_ACTIVATION_KEY, None)
+    if activation is None:
+        return
+    if exc is None:
+        await activation.__aexit__(None, None, None)
+    else:
+        await activation.__aexit__(type(exc), exc, exc.__traceback__)
 
 
 def scoped_route(scope: AsyncScope) -> type[Route]:
     """Build a Route subclass that activates `scope` around every request it handles."""
+    # Bound to a new name: handle()'s own `scope` parameter, the ASGI scope, shadows it.
+    lifecycle_scope = scope
 
     class ScopedRoute(Route):
         def __init__(
@@ -130,15 +130,23 @@ def scoped_route(scope: AsyncScope) -> type[Route]:
             endpoint: Callable[[Request], Awaitable[Response]],
             **kwargs: Any,
         ) -> None:
+            @wraps(endpoint)
             async def scoped_endpoint(request: Request) -> Response:
-                activation = scope.activate()
                 try:
-                    response = await endpoint(request)
-                except Exception as exc:
-                    await activation.__aexit__(type(exc), exc, exc.__traceback__)
+                    return await endpoint(request)
+                except BaseException as exc:
+                    await _close_activation(request.scope, exc)
                     raise
-                return _ScopedResponse(response, activation)
 
             super().__init__(path, scoped_endpoint, **kwargs)
+
+        async def handle(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
+            scope[_ACTIVATION_KEY] = lifecycle_scope.activate()
+            try:
+                await super().handle(scope, receive, send)
+            except BaseException as exc:
+                await _close_activation(scope, exc)
+                raise
+            await _close_activation(scope, None)
 
     return ScopedRoute
