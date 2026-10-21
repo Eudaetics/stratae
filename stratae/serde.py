@@ -207,6 +207,25 @@ def _decode_any(value: Any) -> Any:
     return value
 
 
+_ARRAY_TYPES = (list, tuple, set, frozenset)
+
+
+def _require_array(value: Any, target: str) -> None:
+    """
+    Raise unless `value` is a container a typed list/set/frozenset/tuple target accepts.
+
+    Checked before recursing, since a str or dict is iterable too and would otherwise be
+    split into its characters or keys. It only checks, never converts: converting to a
+    set first would fail on elements that are only hashable once constructed.
+
+    :raises TypeError: If `value` isn't a list, tuple, set, or frozenset.
+    """
+    if not isinstance(value, _ARRAY_TYPES):
+        raise TypeError(
+            f"Cannot deserialize {value!r} into {target}: not a list, tuple, set, or frozenset"
+        )
+
+
 class Deserialize:
     """
     Simple implementation of the `Deserializer` protocol for per-type registration.
@@ -311,23 +330,36 @@ class Deserialize:
     def _construct_list(self, args: tuple[Any, ...], value: Any) -> list[Any]:
         """Recurse into each element of a `list[T]` target."""
         (item_type,) = args
+        _require_array(value, "list")
         return [self.construct(item_type, item) for item in value]
 
     def _construct_set(self, args: tuple[Any, ...], value: Any) -> set[Any]:
         """Recurse into each element of a `set[T]` target."""
         (item_type,) = args
+        _require_array(value, "set")
         return {self.construct(item_type, item) for item in value}
 
     def _construct_frozenset(self, args: tuple[Any, ...], value: Any) -> frozenset[Any]:
         """Recurse into each element of a `frozenset[T]` target."""
         (item_type,) = args
+        _require_array(value, "frozenset")
         return frozenset(self.construct(item_type, item) for item in value)
 
     def _construct_tuple(self, args: tuple[Any, ...], value: Any) -> tuple[Any, ...]:
         """Recurse into each element of a `tuple[...]` target, fixed-length or variadic."""
+        _require_array(value, "tuple")
         if len(args) == 2 and args[1] is Ellipsis:
             item_type = args[0]
             return tuple(self.construct(item_type, item) for item in value)
+        return self._construct_fixed_tuple(args, value)
+
+    def _construct_fixed_tuple(self, args: tuple[Any, ...], value: Any) -> tuple[Any, ...]:
+        """Recurse into each element of a fixed-length `tuple[...]` target, checking its length."""
+        if len(value) != len(args):
+            raise TypeError(
+                f"Cannot deserialize {value!r} into tuple: expected {len(args)} elements, "
+                f"got {len(value)}"
+            )
         return tuple(
             self.construct(item_type, item) for item_type, item in zip(args, value, strict=True)
         )
@@ -335,9 +367,11 @@ class Deserialize:
     def _construct_dict(self, args: tuple[Any, ...], value: Any) -> dict[Any, Any]:
         """Recurse into each key and value of a `dict[K, V]` target."""
         key_type, value_type = args
+        if not isinstance(value, dict):
+            raise TypeError(f"Cannot deserialize {value!r} into dict: not a dict")
         return {
             self.construct(key_type, key): self.construct(value_type, item)
-            for key, item in value.items()
+            for key, item in cast(dict[Any, Any], value).items()
         }
 
     def _construct_union(self, args: tuple[Any, ...], value: Any) -> Any:

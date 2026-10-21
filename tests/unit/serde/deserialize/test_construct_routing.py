@@ -445,19 +445,24 @@ def test_deserialize_tuple_fixed_length_with_subtype():
     assert result == (value, "sprocket")
 
 
-def test_deserialize_tuple_fixed_length_mismatch_raises():
+@pytest.mark.parametrize(
+    "value",
+    [[1, "two"], [1, "two", True, 4]],
+    ids=["too-few", "too-many"],
+)
+def test_deserialize_tuple_fixed_length_mismatch_raises(value: list[Any]):
     """
     A fixed-length tuple target rejects a mismatched element count.
 
-    Given: A JSON array with fewer elements than the declared tuple type.
+    Given: A JSON array with fewer or more elements than the declared tuple type.
     When: deserialize is called with a fixed-length tuple target.
-    Then: ValueError is raised for the length mismatch.
+    Then: TypeError is raised for the length mismatch.
     """
     # Arrange
-    data = json.dumps([1, "two"]).encode()
+    data = json.dumps(value).encode()
 
     # Act & Assert
-    with pytest.raises(ValueError, match="zip"):
+    with pytest.raises(TypeError, match="expected 3 elements"):
         deserialize(data, type=tuple[int, str, bool])
 
 
@@ -495,6 +500,46 @@ def test_deserialize_parameterized_frozenset():
 
     # Assert
     assert result == frozenset({1, 2, 3})
+
+
+@pytest.mark.parametrize(
+    ("target", "value"),
+    [
+        (list[str], "abc"),
+        (list[str], {"a": 1}),
+        (set[str], "abc"),
+        (frozenset[str], {"a": 1}),
+        (tuple[str, ...], "abc"),
+        (tuple[str, str], "ab"),
+        (dict[str, int], [["a", 1]]),
+        (dict[str, int], "a"),
+    ],
+    ids=[
+        "list-from-str",
+        "list-from-object",
+        "set-from-str",
+        "frozenset-from-object",
+        "variadic-tuple-from-str",
+        "fixed-tuple-from-str",
+        "dict-from-array",
+        "dict-from-str",
+    ],
+)
+def test_deserialize_parameterized_container_rejects_wrong_container(target: Any, value: Any):
+    """
+    A parameterized container target rejects a value that isn't that kind of container.
+
+    Given: A JSON string, object, or array whose shape doesn't match the target container.
+    When: deserialize is called with a parameterized list/set/frozenset/tuple/dict target.
+    Then: TypeError is raised, rather than iterating the string's characters or the
+        object's keys into the container.
+    """
+    # Arrange
+    data = json.dumps(value).encode()
+
+    # Act & Assert
+    with pytest.raises(TypeError, match="Cannot deserialize"):
+        deserialize(data, type=target)
 
 
 # endregion
