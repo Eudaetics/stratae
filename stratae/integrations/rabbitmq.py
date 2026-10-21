@@ -30,13 +30,21 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConsumer,
     RabbitMQPublisher,
 )
+from stratae.serde import deserialize, encode
 
 class OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-    def to_dict(self) -> dict[str, int]:
-        return {"order_id": self.order_id}
+# The publisher's default serializer and the consumer's default deserializer
+# only handle types registered with them.
+@encode.register
+def encode_order_placed(order: OrderPlaced) -> dict[str, int]:
+    return {"order_id": order.order_id}
+
+@deserialize.register(OrderPlaced)
+def decode_order_placed(value: dict[str, int]) -> OrderPlaced:
+    return OrderPlaced(**value)
 
 order_placed_event = Event(PubSub, OrderPlaced)
 
@@ -433,7 +441,10 @@ class RabbitMQConsumer:
     {py:class}`Deserializer <stratae.serde.Deserializer>` called as
     `deserializer(body, type=schema)` with each event's `schema`. The
     default, {py:obj}`stratae.serde.deserialize`, decodes JSON and
-    constructs the type from keyword arguments. Pass a compatible decoder
+    constructs the type with the handler registered for it via
+    `@deserialize.register`. It has no handler for an arbitrary class, so a
+    schema without one fails to decode, and every message for it is nacked
+    and dropped as described below. Pass a compatible decoder
     such as `msgspec.json.decode` to swap the format adapter-wide. A
     per-registration `deserializer` overrides it for one queue. Sync and
     async handlers are both supported. A message is acked after its handler

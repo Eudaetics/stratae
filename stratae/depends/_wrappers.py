@@ -85,7 +85,7 @@ def _get_annotations(params: list[Parameter]):
 def _finalize(
     writer: Writer,
     func: Callable[..., Any],
-    kept: list[Parameter],
+    kept: Signature,
     resolved_deps: dict[str, Provider],
 ) -> Callable[..., Any]:
     """
@@ -94,7 +94,9 @@ def _finalize(
     exec() has no closures, so func and each dependency provider are threaded in by
     name through the namespace instead. Metadata is copied back afterward so tools
     that introspect the wrapper (help(), other DI/framework code) see it as the
-    original callable, even though its runtime signature is the trimmed `kept` list.
+    original callable, even though its runtime signature is the trimmed `kept` one.
+    `kept` keeps func's return annotation: frameworks read it from the signature, e.g.
+    FastAPI infers a route's response_model from it and filters the response by it.
     """
     namespace: dict[str, Any] = {
         "__func__": func,
@@ -106,10 +108,10 @@ def _finalize(
 
     wrapper = namespace["wrapper"]
     wraps(func)(wrapper)
-    wrapper.__signature__ = Signature(kept)
+    wrapper.__signature__ = kept
     wrapper.__defaults__ = metadata_source.__defaults__
     wrapper.__kwdefaults__ = metadata_source.__kwdefaults__
-    wrapper.__annotations__ = _get_annotations(kept)
+    wrapper.__annotations__ = _get_annotations(list(kept.parameters.values()))
     if not isclass(func) and "return" in metadata_source.__annotations__:
         wrapper.__annotations__["return"] = metadata_source.__annotations__["return"]
     wrapper.__stratae_resolved__ = True
@@ -123,7 +125,8 @@ def _build_wrapper(
     write_body: Callable[[Writer, str], None],
 ):
     """Share the setup common to every wrapper kind."""
-    params = list(signature(func).parameters.values())
+    sig = signature(func)
+    params = list(sig.parameters.values())
     kept = _kept_parameters(params, resolved_deps)
 
     writer = Writer()
@@ -131,7 +134,7 @@ def _build_wrapper(
     with writer.block():
         write_body(writer, _render_call_arguments(params, resolved_deps))
 
-    return _finalize(writer, func, kept, resolved_deps)
+    return _finalize(writer, func, sig.replace(parameters=kept), resolved_deps)
 
 
 def create_sync_wrapper(

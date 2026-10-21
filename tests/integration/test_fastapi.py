@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Any
+from typing import Annotated, Any
 
 import pytest
 
@@ -11,7 +11,9 @@ pytest.importorskip("fastapi")
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
+from stratae.depends import Depends, inject
 from stratae.integrations.fastapi import scoped_route
 from stratae.lifecycle import AsyncScope, async_resource
 from stratae.lifecycle.exceptions import ScopeInactiveError
@@ -668,3 +670,39 @@ def test_background_task_uses_request_resources_after_commit(
         "background: connection",
         "connection-close",
     ]
+
+
+def test_injected_route_filters_response_by_return_annotation():
+    """
+    An injected route's return annotation still acts as its response model.
+
+    Given: A FastAPI route wrapped with inject, annotated to return a public model
+    When: The route returns a subclass instance carrying an extra private field
+    Then: FastAPI filters the response down to the annotated model's fields
+    """
+
+    # Arrange
+    class PublicUser(BaseModel):
+        name: str
+
+    class StoredUser(PublicUser):
+        email: str
+
+    def get_store() -> dict[str, StoredUser]:
+        return {"ada": StoredUser(name="ada", email="ada@example.com")}
+
+    fastapi_app = FastAPI()
+
+    @fastapi_app.get("/users/{name}")
+    @inject
+    def read_user(  # pyright: ignore[reportUnusedFunction]
+        name: str, store: Annotated[dict[str, StoredUser], Depends(get_store)]
+    ) -> PublicUser:
+        return store[name]
+
+    # Act
+    response = TestClient(fastapi_app).get("/users/ada")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {"name": "ada"}

@@ -1,6 +1,7 @@
 """Test suite for the Dependency Injection Resolver."""
 
 import asyncio
+import inspect
 from contextlib import asynccontextmanager, contextmanager
 from functools import wraps
 from typing import Annotated, Any, AsyncGenerator, Callable, Generator
@@ -781,3 +782,26 @@ def test_resolve_function_with_var_positional_and_var_keyword():
 
     # Assert
     assert resolved_function(1, 2, a=3, b=4) == 11
+
+
+def test_resolve_function_keeps_return_annotation_in_signature():
+    """
+    Verify the resolved function's signature keeps the original return annotation.
+
+    Given: a function with an injected dependency and a return annotation,
+    When: resolve_function is called,
+    Then: the resolved function's signature should drop the dependency but keep the
+            return annotation, since frameworks read it from the signature.
+    """
+
+    # Arrange
+    def sample_function(value: str, dep: Annotated[int, Depends(get_dep)]) -> Dependency:
+        return Dependency(dep)
+
+    # Act
+    resolved_function = _resolve_function(sample_function)
+
+    # Assert
+    resolved_signature = inspect.signature(resolved_function)
+    assert list(resolved_signature.parameters) == ["value"]
+    assert resolved_signature.return_annotation is Dependency
