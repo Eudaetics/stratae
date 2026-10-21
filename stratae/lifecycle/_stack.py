@@ -21,10 +21,20 @@ def _record(
     if outcome is None:
         return []
     if pending is None:
-        pending = [] if current is None else [current]
+        return _seed(current, outcome)
     if not any(outcome is exc for exc in pending):
         pending.append(outcome)
     return pending
+
+
+def _seed(current: BaseException | None, outcome: BaseException) -> list[BaseException]:
+    """
+    Start the pending list at the first exit outcome that differs from what it was handed.
+
+    `outcome` is never `current` itself - the caller only records an outcome that differs -
+    so it needs no duplicate check.
+    """
+    return [outcome] if current is None else [current, outcome]
 
 
 def _settle(pending: list[BaseException], received: BaseException | None) -> bool:

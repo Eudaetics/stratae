@@ -2,12 +2,14 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
 
 pytest.importorskip("starlette")
 
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
@@ -15,6 +17,7 @@ from starlette.testclient import TestClient
 
 from stratae.integrations.starlette import scoped_route
 from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle.exceptions import ScopeInactiveError
 
 pytestmark = pytest.mark.starlette
 
@@ -443,3 +446,217 @@ def test_route_keeps_endpoint_name_for_url_lookup(async_request_scope: AsyncScop
 
     # Assert
     assert path == "/products/1"
+
+
+@pytest.fixture
+def commit_fails() -> dict[str, bool]:
+    """Provide a switch the transaction app's commit checks, to make it fail on demand."""
+    return {"commit": False}
+
+
+@pytest.fixture
+def transaction_app(
+    events: list[str],
+    commit_fails: dict[str, bool],
+    record_response_start: Callable[..., Any],
+) -> Any:
+    """
+    Build a Starlette app with a request scope and a transaction scope nested in it.
+
+    The connection is request-scoped, released once the response is fully sent; the
+    transaction is scoped to the endpoint, committing or rolling back when it returns.
+    """
+    request_scope = AsyncScope("request")
+    transaction_scope = AsyncScope("transaction", requires=request_scope)
+
+    @request_scope.cache()
+    @async_resource
+    async def get_connection():
+        events.append("connection-open")
+        try:
+            yield "connection"
+        finally:
+            events.append("connection-close")
+
+    @transaction_scope.cache()
+    @async_resource
+    async def get_transaction():
+        await get_connection()
+        events.append("begin")
+        try:
+            yield "transaction"
+            if commit_fails["commit"]:
+                raise RuntimeError("deliberate commit failure")
+            events.append("commit")
+        except BaseException:
+            events.append("rollback")
+            raise
+
+    async def write(request: Request) -> JSONResponse:
+        await get_transaction()
+        return JSONResponse({"status": "written"})
+
+    async def write_conflict(request: Request) -> JSONResponse:
+        await get_transaction()
+        raise HTTPException(status_code=409, detail="deliberate conflict")
+
+    async def write_then_stream(request: Request) -> StreamingResponse:
+        await get_transaction()
+
+        async def body():
+            events.append(f"stream: {await get_connection()}")
+            try:
+                await get_transaction()
+            except ScopeInactiveError:
+                events.append("stream: transaction ended")
+            yield b"chunk"
+
+        return StreamingResponse(body())
+
+    async def write_then_background(request: Request) -> JSONResponse:
+        await get_transaction()
+
+        async def notify() -> None:
+            events.append(f"background: {await get_connection()}")
+
+        return JSONResponse({"status": "written"}, background=BackgroundTask(notify))
+
+    Route = scoped_route(request_scope, handler=transaction_scope)
+    starlette_app = Starlette(
+        routes=[
+            Route("/write", write, methods=["POST"]),
+            Route("/write-conflict", write_conflict, methods=["POST"]),
+            Route("/write-then-stream", write_then_stream, methods=["POST"]),
+            Route("/write-then-background", write_then_background, methods=["POST"]),
+        ]
+    )
+    return record_response_start(starlette_app, events)
+
+
+def test_transaction_commits_before_response_starts(transaction_app: Any, events: list[str]):
+    """
+    An endpoint-scoped transaction commits before the response starts.
+
+    Given: A Starlette app whose routes activate a request scope, with a transaction scope
+        nested around the endpoint
+    When: An endpoint using the transaction returns normally
+    Then: The transaction commits before the response starts, and the request-scoped
+        connection is released only after the response
+    """
+    # Act
+    response = TestClient(transaction_app).post("/write")
+
+    # Assert
+    assert response.status_code == 200
+    assert events == [
+        "connection-open",
+        "begin",
+        "commit",
+        "response-start: 200",
+        "connection-close",
+    ]
+
+
+def test_failed_commit_returns_server_error(
+    transaction_app: Any, events: list[str], commit_fails: dict[str, bool]
+):
+    """
+    A commit that fails turns the response into a 500, since it runs before the response.
+
+    Given: A Starlette app with an endpoint-scoped transaction whose commit fails
+    When: An endpoint using the transaction returns normally
+    Then: The transaction rolls back, and the client gets a 500 instead of a success. The
+        unhandled error leaves the route, so the request scope also ends before the 500,
+        which the server-error middleware outside the route sends.
+    """
+    # Arrange
+    commit_fails["commit"] = True
+
+    # Act
+    response = TestClient(transaction_app, raise_server_exceptions=False).post("/write")
+
+    # Assert
+    assert response.status_code == 500
+    assert events == [
+        "connection-open",
+        "begin",
+        "rollback",
+        "connection-close",
+        "response-start: 500",
+    ]
+
+
+def test_http_exception_rolls_back_transaction_before_response(
+    transaction_app: Any, events: list[str]
+):
+    """
+    An HTTPException rolls back the endpoint-scoped transaction before its response is sent.
+
+    Given: A Starlette app with an endpoint-scoped transaction
+    When: An endpoint using the transaction raises HTTPException(409)
+    Then: The transaction rolls back before the 409 starts, and the connection is released after
+    """
+    # Act
+    response = TestClient(transaction_app).post("/write-conflict")
+
+    # Assert
+    assert response.status_code == 409
+    assert events == [
+        "connection-open",
+        "begin",
+        "rollback",
+        "response-start: 409",
+        "connection-close",
+    ]
+
+
+def test_streamed_body_uses_request_resources_after_commit(transaction_app: Any, events: list[str]):
+    """
+    A streamed body still has the request's resources, but not the ended transaction.
+
+    Given: A Starlette app with an endpoint-scoped transaction
+    When: An endpoint commits and returns a StreamingResponse whose body uses the connection,
+        then reaches for the transaction
+    Then: The body gets the connection after the commit, the transaction raises
+        ScopeInactiveError there, and the connection is released only after the body
+    """
+    # Act
+    response = TestClient(transaction_app).post("/write-then-stream")
+
+    # Assert
+    assert response.status_code == 200
+    assert events == [
+        "connection-open",
+        "begin",
+        "commit",
+        "response-start: 200",
+        "stream: connection",
+        "stream: transaction ended",
+        "connection-close",
+    ]
+
+
+def test_background_task_uses_request_resources_after_commit(
+    transaction_app: Any, events: list[str]
+):
+    """
+    A background task runs after the commit, with the request's resources still open.
+
+    Given: A Starlette app with an endpoint-scoped transaction
+    When: An endpoint commits and attaches a background task that uses the connection
+    Then: The task runs after the commit and the response, and the connection is released
+        only after the task
+    """
+    # Act
+    response = TestClient(transaction_app).post("/write-then-background")
+
+    # Assert
+    assert response.status_code == 200
+    assert events == [
+        "connection-open",
+        "begin",
+        "commit",
+        "response-start: 200",
+        "background: connection",
+        "connection-close",
+    ]

@@ -7,7 +7,13 @@ request it handles. Pass it in place of `Route` when constructing routes. A
 cached resource then opens once per request and closes when the request
 finishes, even if a handler calls it more than once.
 
-````{example} Caching a database connection and a per-request cursor
+Work that must finish before the response starts, such as committing a
+transaction, belongs in a second scope nested inside the request scope and
+passed as `handler`. It's active only while the endpoint runs, so a commit
+happens - or fails, becoming a 500 - before any response is sent, while the
+request scope's resources stay open for a streamed body and background tasks.
+
+````{example} Committing a per-request transaction before the response
 ```{code-block} python
 import sqlite3
 from contextlib import asynccontextmanager
@@ -22,6 +28,7 @@ from stratae.lifecycle import AsyncScope, async_resource
 
 application = AsyncScope("application", isolation="shared")
 request = AsyncScope("request", requires=application)
+transaction = AsyncScope("transaction", requires=request)
 
 @application.cache()
 @async_resource
@@ -37,15 +44,24 @@ async def get_connection():
 @request.cache()
 @async_resource
 async def get_cursor():
-    conn = await get_connection()
-    cur = conn.cursor()
+    cur = (await get_connection()).cursor()
     try:
         yield cur
-        conn.commit()
     finally:
         cur.close()
 
-type CursorDep = Annotated[sqlite3.Cursor, Depends(get_cursor)]
+@transaction.cache()
+@async_resource
+async def get_transaction():
+    conn = await get_connection()
+    try:
+        yield await get_cursor()
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+type CursorDep = Annotated[sqlite3.Cursor, Depends(get_transaction)]
 
 # inject strips cur from the wrapper's exposed signature, so the wrapped
 # endpoint still matches Starlette's request-only calling convention.
@@ -71,7 +87,7 @@ async def lifespan(app: Starlette):
     async with application.activate():
         yield
 
-ScopedRoute = scoped_route(request)
+ScopedRoute = scoped_route(request, handler=transaction)
 app = Starlette(
     lifespan=lifespan,
     routes=[
@@ -107,21 +123,29 @@ _ACTIVATION_KEY = "stratae.activation"
 """ASGI scope key holding a request's open activation, until whichever side closes it."""
 
 
-async def _close_activation(asgi_scope: ASGIScope, exc: BaseException | None) -> None:
+async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
     """Close the request's activation with `exc`, unless the other side already closed it."""
     activation: AsyncActivation | None = asgi_scope.pop(_ACTIVATION_KEY, None)
     if activation is None:
         return
-    if exc is None:
-        await activation.__aexit__(None, None, None)
-    else:
-        await activation.__aexit__(type(exc), exc, exc.__traceback__)
+    await activation.__aexit__(type(exc), exc, exc.__traceback__)
 
 
-def scoped_route(scope: AsyncScope) -> type[Route]:
-    """Build a Route subclass that activates `scope` around every request it handles."""
-    # Bound to a new name: handle()'s own `scope` parameter, the ASGI scope, shadows it.
+def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> type[Route]:
+    """
+    Build a Route subclass that activates `scope` around every request it handles.
+
+    :param scope: Active until the response is fully sent, including a streamed body and
+        background tasks. Its resources' cleanup runs after the response, so suits
+        releasing resources rather than work whose failure should change the response.
+    :param handler: An optional scope nested inside `scope`, active only while the endpoint
+        runs. It ends before the response starts, so a transaction cached in it commits,
+        or rolls back on an exception, in time for a failed commit to become a 500. Omit
+        it when no work needs to finish before the response.
+    :returns: The Route subclass, to use in place of `Route` when building routes.
+    """
     lifecycle_scope = scope
+    handler_scope = handler
 
     class ScopedRoute(Route):
         def __init__(
@@ -132,6 +156,9 @@ def scoped_route(scope: AsyncScope) -> type[Route]:
         ) -> None:
             @wraps(endpoint)
             async def scoped_endpoint(request: Request) -> Response:
+                if handler_scope is not None:
+                    async with handler_scope.activate():
+                        return await endpoint(request)
                 try:
                     return await endpoint(request)
                 except BaseException as exc:
@@ -147,6 +174,10 @@ def scoped_route(scope: AsyncScope) -> type[Route]:
             except BaseException as exc:
                 await _close_activation(scope, exc)
                 raise
-            await _close_activation(scope, None)
+            # Inlined rather than awaiting _close_activation: the success path runs on
+            # every request, and this saves a coroutine per request.
+            activation: AsyncActivation | None = scope.pop(_ACTIVATION_KEY, None)
+            if activation is not None:
+                await activation.__aexit__(None, None, None)
 
     return ScopedRoute

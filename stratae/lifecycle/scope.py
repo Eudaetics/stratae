@@ -126,6 +126,9 @@ from stratae.lifecycle.exceptions import (
     ScopeInactiveError,
 )
 
+_NO_LOCK: AbstractContextManager[Any] = nullcontext()
+"""Shared stand-in for a context-isolated parent's counter lock - nullcontext is reusable."""
+
 IsolationType = Literal["shared", "context"]
 StorageType = Literal["dense", "sparse"]
 
@@ -160,6 +163,7 @@ class BaseScope:
         "_template",
         "_counter",
         "_free_slots",
+        "_parent_lock",
     )
 
     _exit_stack_cls: type[ExitStack] | type[AsyncExitStack]
@@ -171,6 +175,7 @@ class BaseScope:
     _template: SlotStorage
     _counter: int
     _free_slots: list[int]
+    _parent_lock: AbstractContextManager[Any]
 
     def __init__(
         self,
@@ -213,6 +218,12 @@ class BaseScope:
         self._var = ContextVar(name) if isolation == "context" else SharedVar(name)
         self._counter = 2
         self._free_slots = []
+        # Fixed with `requires`, so resolved once here rather than on every activation.
+        self._parent_lock = (
+            requires._var.counter_lock
+            if requires is not None and isinstance(requires._var, SharedVar)
+            else _NO_LOCK
+        )
 
     @property
     def isolation(self) -> IsolationType:
@@ -454,14 +465,9 @@ class Scope(BaseScope):
                     f"Cannot activate {self.name!r}: required scope "
                     f"{requires.name!r} is not active."
                 )
-            parent_lock = (
-                requires._var.counter_lock
-                if isinstance(requires._var, SharedVar)
-                else nullcontext()
-            )
         else:
             parent_slots = None
-            parent_lock = nullcontext()
+        parent_lock = self._parent_lock
         slots = self._template.copy()
         slots[0] = self._exit_stack_cls()
         var = self._var
@@ -552,14 +558,9 @@ class AsyncScope(BaseScope):
                     f"Cannot activate {self.name!r}: required scope "
                     f"{requires.name!r} is not active."
                 )
-            parent_lock = (
-                requires._var.counter_lock
-                if isinstance(requires._var, SharedVar)
-                else nullcontext()
-            )
         else:
             parent_slots = None
-            parent_lock = nullcontext()
+        parent_lock = self._parent_lock
         slots = self._template.copy()
         slots[0] = self._exit_stack_cls()
         var = self._var

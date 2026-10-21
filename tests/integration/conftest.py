@@ -52,3 +52,26 @@ def cancel_mid_request() -> Callable[[ASGIApp, str, Callable[[], bool]], Awaitab
             await task
 
     return drive
+
+
+@pytest.fixture
+def record_response_start() -> Callable[[ASGIApp, list[str]], ASGIApp]:
+    """
+    Provide a wrapper that logs when an app starts its response, into a given event list.
+
+    Lets a test place the response's start - the point after which the status can no longer
+    change - among the events its resources record.
+    """
+
+    def wrap(app: ASGIApp, events: list[str]) -> ASGIApp:
+        async def recording_app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+            async def recording_send(message: dict[str, Any]) -> None:
+                if message["type"] == "http.response.start":
+                    events.append(f"response-start: {message['status']}")
+                await send(message)
+
+            await app(scope, receive, recording_send)
+
+        return recording_app
+
+    return wrap
