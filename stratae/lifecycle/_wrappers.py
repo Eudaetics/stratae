@@ -56,6 +56,87 @@ class Cached[**P, T, U](Protocol):
         ...
 
 
+class _SlotCode:
+    """
+    Source text for reading and writing one wrapper's dedicated slot.
+
+    A reused slot in a context scope can still hold a dead wrapper's value in other live
+    activations, so an owned slot boxes its values in its own `__Owned__` type and treats
+    anything else as a miss.
+    """
+
+    __slots__ = ("index", "owned")
+
+    def __init__(self, index: int, owned: bool) -> None:
+        """Describe slot `index`, boxing its values when `owned`."""
+        self.index = index
+        self.owned = owned
+
+    def namespace(self) -> dict[str, Any]:
+        """Return the namespace bindings this slot's code needs."""
+        if not self.owned:
+            return {}
+
+        class Owned:
+            __slots__ = ("value",)
+
+            def __init__(self, value: Any) -> None:
+                self.value = value
+
+        return {"__Owned__": Owned}
+
+    def write_read(self, writer: Writer, target: str, scope: "BaseScope | None" = None) -> None:
+        """Write a read of this slot, resolving __slots__ first when `scope` is given."""
+        read = f"{'__entry__' if self.owned else target} = __slots__[{self.index}]"
+        if scope is None:
+            writer.write(read)
+        else:
+            _write_resolve_first_read(writer, scope, read)
+
+    def write_branch(
+        self,
+        writer: Writer,
+        target: str,
+        write_hit: Callable[[], None] | None = None,
+        write_miss: Callable[[], None] | None = None,
+    ) -> None:
+        """Write the hit/miss branch on the last read, leaving a hit's value in `target`."""
+        if self.owned:
+            hit, miss = "__entry__.__class__ is __Owned__", "__entry__.__class__ is not __Owned__"
+        else:
+            hit, miss = f"{target} is not __UNSET__", f"{target} is __UNSET__"
+
+        def write_hit_body() -> None:
+            if self.owned:
+                writer.write(f"{target} = __entry__.value")
+            if write_hit is not None:
+                write_hit()
+
+        if write_miss is None:
+            writer.write(f"if {hit}:")
+            with writer.block():
+                write_hit_body()
+            return
+        writer.write(f"if {miss}:")
+        with writer.block():
+            write_miss()
+        if self.owned or write_hit is not None:
+            writer.write("else:")
+            with writer.block():
+                write_hit_body()
+
+    def write(self, source: str) -> str:
+        """Render the store of `source` into this slot."""
+        value = f"__Owned__({source})" if self.owned else source
+        return f"__slots__[{self.index}] = {value}"
+
+
+def _allocate_slot(scope: "BaseScope") -> _SlotCode:
+    """Allocate a slot, owned if it's reused in a context scope."""
+    index, reused = scope.allocate_slot()
+    return _SlotCode(index, reused and not scope.is_shared())
+
+
 def _is_slot_eligible(
     params: list[Parameter], cache_key: Callable[..., Hashable] | None, ignore_params: bool
 ) -> bool:
@@ -111,7 +192,7 @@ def _render_key_expression(
     Render the source expression used as the cache key for a non-slot-eligible function.
 
     The key never folds in which function it's for: each keyed function has its own
-    dedicated dict (see _write_keyed_cache_guard), so the key only distinguishes calls to
+    dedicated dict (see _write_new_cache), so the key only distinguishes calls to
     *that* function. A custom cache_key is called with the parameters forwarded directly.
     Otherwise the key is a flat tuple of every parameter's local, in signature order -
     keyword-only params are ordinary locals, and only a true **kwargs (whose names vary
@@ -209,7 +290,7 @@ def _raise_ended(scope: "BaseScope") -> NoReturn:
 
 
 def _build_namespace(
-    func: Callable[..., Any], scope: "BaseScope", is_async: bool = False
+    func: Callable[..., Any], scope: "BaseScope", slot: _SlotCode, is_async: bool = False
 ) -> dict[str, Any]:
     """Build the namespace bindings every codegen'd wrapper compiles against."""
     namespace: dict[str, Any] = {
@@ -217,6 +298,7 @@ def _build_namespace(
         "__scope__": scope,
         "__UNSET__": UNSET,
         "__var__": scope.activation_var(),
+        **slot.namespace(),
     }
     style = _claim_style(scope, is_async)
     if style == "locked":
@@ -234,33 +316,19 @@ def _build_namespace(
     return namespace
 
 
-def _write_slot_guard(writer: Writer, slot: int, scope: "BaseScope") -> None:
+def _write_new_cache(writer: Writer, slot: _SlotCode) -> None:
     """
-    Write the guard that checks the dedicated slot for a slot-eligible call's direct value.
-
-    Reads the slot into __value__ once, rather than indexing __slots__ again on both the
-    hit-path return and the miss-path store. The caller opens the miss block.
-    """
-    _write_resolve_first_read(writer, scope, f"__value__ = __slots__[{slot}]")
-    writer.write("if __value__ is __UNSET__:")
-
-
-def _write_keyed_cache_guard(writer: Writer, slot: int, scope: "BaseScope") -> None:
-    """
-    Write the guard that resolves a keyed function's own dedicated cache dict.
+    Write the creation of a keyed function's own dedicated cache dict into its slot.
 
     The dict is built lazily on first use: UNSET is cheaper to fill every slot with up
     front than allocating an empty dict for every keyed function in the scope whether or
     not it's ever actually called.
     """
-    _write_resolve_first_read(writer, scope, f"__cache__ = __slots__[{slot}]")
-    writer.write("if __cache__ is __UNSET__:")
-    with writer.block():
-        writer.write("__cache__ = {}")
-        writer.write(f"__slots__[{slot}] = __cache__")
+    writer.write("__cache__ = {}")
+    writer.write(slot.write("__cache__"))
 
 
-def _write_slot_store(writer: Writer, slot: int, scope: "BaseScope") -> None:
+def _write_slot_store(writer: Writer, slot: _SlotCode, scope: "BaseScope") -> None:
     """
     Write the store of __value__ into a slot-eligible function's slot.
 
@@ -272,14 +340,14 @@ def _write_slot_store(writer: Writer, slot: int, scope: "BaseScope") -> None:
     if scope.storage == "dense":
         writer.write("try:")
         with writer.block():
-            writer.write(f"__slots__[{slot}] = __value__")
+            writer.write(slot.write("__value__"))
         writer.write("except IndexError:")
         with writer.block():
             writer.write("pass")
         return
     writer.write("if __slots__:")
     with writer.block():
-        writer.write(f"__slots__[{slot}] = __value__")
+        writer.write(slot.write("__value__"))
 
 
 def _write_claimed_compute(
@@ -359,7 +427,7 @@ def _write_task_claimed_compute(
 
 def _write_claimed_slot_miss(
     writer: Writer,
-    slot: int,
+    slot: _SlotCode,
     scope: "BaseScope",
     style: ClaimStyle,
     is_async: bool,
@@ -375,23 +443,23 @@ def _write_claimed_slot_miss(
     """
 
     def write_recheck() -> None:
-        writer.write(f"__value__ = __slots__[{slot}]")
-        writer.write("if __value__ is not __UNSET__:")
-        with writer.block():
-            writer.write("return __value__")
+        slot.write_read(writer, "__value__")
+        slot.write_branch(writer, "__value__", write_hit=lambda: writer.write("return __value__"))
 
     def write_store() -> None:
         _write_slot_store(writer, slot, scope)
 
     if style == "task":
-        _write_task_claimed_compute(writer, str(slot), write_recheck, write_compute, write_store)
+        _write_task_claimed_compute(
+            writer, str(slot.index), write_recheck, write_compute, write_store
+        )
     else:
         _write_claimed_compute(writer, "None", is_async, write_recheck, write_compute, write_store)
 
 
 def _write_claimed_keyed_body(
     writer: Writer,
-    slot: int,
+    slot: _SlotCode,
     scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
@@ -409,41 +477,31 @@ def _write_claimed_keyed_body(
     interleave before claiming, so they build it without one. write_compute writes the
     result into __value__.
     """
-    _write_resolve_first_read(writer, scope, f"__cache__ = __slots__[{slot}]")
+    slot.write_read(writer, "__cache__", scope)
     _write_key(writer, cache_key, params)
-    writer.write("if __cache__ is not __UNSET__ and __ck__ in __cache__:")
-    with writer.block():
-        writer.write("return __cache__[__ck__]")
+    slot.write_branch(
+        writer,
+        "__cache__",
+        write_hit=lambda: _write_cache_check(writer),
+        write_miss=(lambda: _write_new_cache(writer, slot)) if style == "task" else None,
+    )
 
     def write_store() -> None:
         writer.write("__cache__[__ck__] = __value__")
 
     if style == "task":
-        writer.write("if __cache__ is __UNSET__:")
-        with writer.block():
-            writer.write("__cache__ = {}")
-            writer.write(f"__slots__[{slot}] = __cache__")
-        writer.write(f"__pk__ = ({slot}, __ck__)")
-
-        def write_task_recheck() -> None:
-            writer.write("if __ck__ in __cache__:")
-            with writer.block():
-                writer.write("return __cache__[__ck__]")
-
+        writer.write(f"__pk__ = ({slot.index}, __ck__)")
         _write_task_claimed_compute(
-            writer, "__pk__", write_task_recheck, write_compute, write_store
+            writer, "__pk__", lambda: _write_cache_check(writer), write_compute, write_store
         )
     else:
 
         def write_recheck() -> None:
-            writer.write(f"__cache__ = __slots__[{slot}]")
-            writer.write("if __cache__ is __UNSET__:")
-            with writer.block():
-                writer.write("__cache__ = {}")
-                writer.write(f"__slots__[{slot}] = __cache__")
-            writer.write("if __ck__ in __cache__:")
-            with writer.block():
-                writer.write("return __cache__[__ck__]")
+            slot.write_read(writer, "__cache__")
+            slot.write_branch(
+                writer, "__cache__", write_miss=lambda: _write_new_cache(writer, slot)
+            )
+            _write_cache_check(writer)
 
         _write_claimed_compute(
             writer, "__ck__", is_async, write_recheck, write_compute, write_store
@@ -453,7 +511,7 @@ def _write_claimed_keyed_body(
 
 def _write_slot_body(
     writer: Writer,
-    slot: int,
+    slot: _SlotCode,
     scope: "BaseScope",
     write_compute: Callable[[], None],
     is_async: bool = False,
@@ -465,19 +523,22 @@ def _write_slot_body(
     context-manager entry for a resource.
     """
     style = _claim_style(scope, is_async)
-    _write_slot_guard(writer, slot, scope)
-    with writer.block():
+
+    def write_miss() -> None:
         if style is not None:
             _write_claimed_slot_miss(writer, slot, scope, style, is_async, write_compute)
         else:
             write_compute()
             _write_slot_store(writer, slot, scope)
+
+    slot.write_read(writer, "__value__", scope)
+    slot.write_branch(writer, "__value__", write_miss=write_miss)
     writer.write("return __value__")
 
 
 def _write_keyed_body(
     writer: Writer,
-    slot: int,
+    slot: _SlotCode,
     scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
@@ -496,7 +557,8 @@ def _write_keyed_body(
             writer, slot, scope, cache_key, params, style, is_async, write_compute
         )
         return
-    _write_keyed_cache_guard(writer, slot, scope)
+    slot.write_read(writer, "__cache__", scope)
+    slot.write_branch(writer, "__cache__", write_miss=lambda: _write_new_cache(writer, slot))
     _write_key(writer, cache_key, params)
     _write_cache_check(writer)
     write_compute()
@@ -552,7 +614,7 @@ def _create_sync_wrapper_impl(
 ) -> Callable[..., Any]:
     """Build the codegen'd wrapper shared by the sync and sync-in-async cache decorators."""
     params = list(signature(func).parameters.values())
-    slot = scope.allocate_slot()
+    slot = _allocate_slot(scope)
 
     writer = Writer()
     writer.write(f"def wrapper({render_parameters(params)}):")
@@ -567,11 +629,11 @@ def _create_sync_wrapper_impl(
         else:
             _write_keyed_body(writer, slot, scope, cache_key, params, write_call)
 
-    namespace = _build_namespace(func, scope)
+    namespace = _build_namespace(func, scope, slot)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
-    weakref.finalize(wrapper, scope.release_slot, slot)
+    weakref.finalize(wrapper, scope.release_slot, slot.index)
     return wrapper
 
 
@@ -661,7 +723,7 @@ def create_async_wrapper[**P, T](
 
     """
     params = list(signature(func).parameters.values())
-    slot = scope.allocate_slot()
+    slot = _allocate_slot(scope)
 
     writer = Writer()
     writer.write(f"async def wrapper({render_parameters(params)}):")
@@ -676,14 +738,14 @@ def create_async_wrapper[**P, T](
         else:
             _write_keyed_body(writer, slot, scope, cache_key, params, write_call, is_async=True)
 
-    namespace = _build_namespace(func, scope, is_async=True)
+    namespace = _build_namespace(func, scope, slot, is_async=True)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = cast(
         Cached[P, Awaitable[T], Awaitable[T]],
         _finalize(writer, func, params, namespace),
     )
-    weakref.finalize(wrapper, scope.release_slot, slot)
+    weakref.finalize(wrapper, scope.release_slot, slot.index)
     return wrapper
 
 
@@ -707,7 +769,7 @@ def _create_cm_wrapper_impl(
 ) -> Callable[..., Any]:
     """Build the codegen'd wrapper shared by the sync and async context-manager decorators."""
     params = list(signature(func).parameters.values())
-    slot = scope.allocate_slot()
+    slot = _allocate_slot(scope)
 
     writer = Writer()
     def_kw = "async def" if is_async else "def"
@@ -724,11 +786,11 @@ def _create_cm_wrapper_impl(
         else:
             _write_keyed_body(writer, slot, scope, cache_key, params, write_enter, is_async)
 
-    namespace = _build_namespace(func, scope, is_async=is_async)
+    namespace = _build_namespace(func, scope, slot, is_async=is_async)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
-    weakref.finalize(wrapper, scope.release_slot, slot)
+    weakref.finalize(wrapper, scope.release_slot, slot.index)
     return wrapper
 
 

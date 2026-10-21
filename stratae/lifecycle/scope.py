@@ -297,7 +297,7 @@ class BaseScope:
         """
         return self._exit_stack_cls
 
-    def allocate_slot(self) -> int:
+    def allocate_slot(self) -> tuple[int, bool]:
         """
         Allocate a dedicated slot for a cached function - a value directly, or a dict entry.
 
@@ -306,28 +306,32 @@ class BaseScope:
         slot is 2.
 
         :returns: The allocated slot's index/key, to be passed to
-            {py:meth}`BaseScope.release_slot` once the owning wrapper is garbage collected.
+            {py:meth}`BaseScope.release_slot` once the owning wrapper is garbage collected,
+            and whether it was reused from the free pool.
         """
         if free := self._free_slots:
-            return free.pop()
+            return free.pop(), True
         if isinstance(self._template, SlotDict):
             slot = self._counter
             self._counter = slot + 1
-            return slot
+            return slot, False
         self._template.append(UNSET)
         if active := self._var.get(None):
             self._extend(active)
-        return len(self._template) - 1
+        return len(self._template) - 1, False
 
     def release_slot(self, slot: int) -> None:
         """
         Return a slot to the free pool once its owning cache wrapper is gone.
 
+        Only the calling context's activation is cleared; a reused slot's next wrapper
+        ignores what other activations still hold.
+
         :param slot: The slot index/key returned by {py:meth}`BaseScope.allocate_slot`.
         """
         active = self._var.get(None)
         if isinstance(active, list):
-            if active:
+            if slot < len(active):
                 active[slot] = UNSET
         elif active is not None:
             active.pop(slot, None)

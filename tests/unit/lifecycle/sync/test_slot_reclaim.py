@@ -1,9 +1,12 @@
 """Test suite for reclaiming dead cache-decorated functions' slots in dense/sparse scopes."""
 
 import gc
+from contextvars import copy_context
 from unittest.mock import Mock, call
 
-from stratae.lifecycle.scope import Scope
+import pytest
+
+from stratae.lifecycle.scope import Scope, StorageType
 
 
 class SimpleObject:
@@ -101,3 +104,76 @@ def test_hot_loop_template_growth_is_bounded(scope: Scope):
             gc.collect()
 
     assert len(scope._template) == 3  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("storage", ["dense", "sparse"])
+def test_reclaimed_slot_is_cleared_in_another_contexts_activation(storage: StorageType):
+    """
+    A reclaimed slot is cleared in every live activation, not just the releasing context's.
+
+    Given: A context-isolated scope activated in a separate context, as a concurrent
+        request would be, where a cache-decorated closure has cached a value
+    When: The closure is collected outside that context, and a second closure is decorated
+        afterward and assigned the same slot
+    Then: The second closure computes its own value in that activation, rather than
+        reading the dead closure's
+    """
+    # Arrange
+    request = Scope("request", "context", storage)
+
+    def make_cached(value: int):
+        @request.cache()
+        def get_value():
+            return SimpleObject(value)
+
+        return get_value
+
+    old = make_cached(1)
+    other_context = copy_context()
+    activation = other_context.run(request.activate)
+    other_context.run(old)
+
+    # Act
+    del old
+    gc.collect()
+    new = make_cached(2)
+    result = other_context.run(new)
+
+    # Assert
+    assert result.value == 2
+    other_context.run(request.deactivate, activation)
+
+
+def test_reclaimed_slot_is_freed_when_released_inside_an_unextended_activation(
+    context_scope: Scope,
+):
+    """
+    Releasing a slot inside an activation whose dense storage never reached it still frees it.
+
+    Given: A context-isolated dense scope activated before a closure's slot was allocated,
+        so that activation's storage was never extended to the slot
+    When: The closure is collected while running inside that activation's context
+    Then: The slot still returns to the free pool, and the next closure reuses it
+    """
+    # Arrange
+    other_context = copy_context()
+    activation = other_context.run(context_scope.activate)
+
+    @context_scope.cache()
+    def get_value():
+        return SimpleObject(1)
+
+    # Act
+    del get_value
+    other_context.run(gc.collect)
+
+    @context_scope.cache()
+    def get_other():
+        return SimpleObject(2)
+
+    result = other_context.run(get_other)
+
+    # Assert
+    assert result.value == 2
+    assert len(context_scope._template) == 3  # pyright: ignore[reportPrivateUsage]
+    other_context.run(context_scope.deactivate, activation)

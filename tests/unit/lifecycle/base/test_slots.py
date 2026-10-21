@@ -23,15 +23,15 @@ def test_allocate_slot_sequential_dense():
 
     Given: A dense-backed scope with no functions registered yet,
     When: allocate_slot is called repeatedly,
-    Then: it returns 2, 3, 4, ...
+    Then: it returns 2, 3, 4, ..., none of them reused.
     """
     # Arrange
     scope = Scope("application", "shared")
 
     # Act & Assert
-    assert scope.allocate_slot() == 2
-    assert scope.allocate_slot() == 3
-    assert scope.allocate_slot() == 4
+    assert scope.allocate_slot() == (2, False)
+    assert scope.allocate_slot() == (3, False)
+    assert scope.allocate_slot() == (4, False)
 
 
 def test_allocate_slot_sequential_sparse():
@@ -40,15 +40,15 @@ def test_allocate_slot_sequential_sparse():
 
     Given: A sparse-backed scope with no functions registered yet,
     When: allocate_slot is called repeatedly,
-    Then: it returns 2, 3, 4, ...
+    Then: it returns 2, 3, 4, ..., none of them reused.
     """
     # Arrange
     scope = Scope("application", "shared", "sparse")
 
     # Act & Assert
-    assert scope.allocate_slot() == 2
-    assert scope.allocate_slot() == 3
-    assert scope.allocate_slot() == 4
+    assert scope.allocate_slot() == (2, False)
+    assert scope.allocate_slot() == (3, False)
+    assert scope.allocate_slot() == (4, False)
 
 
 def test_allocate_slot_reuses_released_slot_dense():
@@ -57,20 +57,22 @@ def test_allocate_slot_reuses_released_slot_dense():
 
     Given: A dense scope with two slots already allocated,
     When: The first slot is released and a third allocation is requested,
-    Then: The released slot is handed back out instead of growing past the second slot.
+    Then: The released slot is handed back out, marked reused, instead of growing past the
+        second slot.
     """
     # Arrange
     scope = Scope("application", "shared")
-    slot_a = scope.allocate_slot()
-    slot_b = scope.allocate_slot()
+    slot_a, _ = scope.allocate_slot()
+    slot_b, _ = scope.allocate_slot()
 
     # Act
     scope.release_slot(slot_a)
-    slot_c = scope.allocate_slot()
+    slot_c, reused = scope.allocate_slot()
 
     # Assert
     assert slot_c == slot_a
     assert slot_c != slot_b
+    assert reused
 
 
 def test_allocate_slot_reuses_released_slot_sparse():
@@ -79,20 +81,22 @@ def test_allocate_slot_reuses_released_slot_sparse():
 
     Given: A sparse-backed scope with two keys already allocated,
     When: The first key is released and a third allocation is requested,
-    Then: The released key is handed back out instead of advancing the counter.
+    Then: The released key is handed back out, marked reused, instead of advancing the
+        counter.
     """
     # Arrange
     scope = Scope("application", "shared", "sparse")
-    key_a = scope.allocate_slot()
-    key_b = scope.allocate_slot()
+    key_a, _ = scope.allocate_slot()
+    key_b, _ = scope.allocate_slot()
 
     # Act
     scope.release_slot(key_a)
-    key_c = scope.allocate_slot()
+    key_c, reused = scope.allocate_slot()
 
     # Assert
     assert key_c == key_a
     assert key_c != key_b
+    assert reused
 
 
 def test_allocate_slot_dense_grows_template():
@@ -146,7 +150,7 @@ def test_release_slot_deletes_unwritten_sparse_key():
     # Arrange
     scope = Scope("application", "shared", "sparse")
     scope.activate()
-    key = scope.allocate_slot()
+    key, _ = scope.allocate_slot()
 
     # Act
     scope.release_slot(key)

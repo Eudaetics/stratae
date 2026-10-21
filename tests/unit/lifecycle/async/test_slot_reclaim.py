@@ -1,6 +1,8 @@
 """Test suite for reclaiming dead cache-decorated functions' slots in dense/sparse scopes."""
 
+import asyncio
 import gc
+from typing import Any
 from unittest.mock import Mock, call
 
 from stratae.lifecycle.scope import AsyncScope
@@ -98,3 +100,46 @@ async def test_context_scope_template_growth_is_bounded(async_context_scope: Asy
         gc.collect()
 
     assert len(async_context_scope._template) == 3  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_reclaimed_slot_is_cleared_in_a_concurrent_request(async_context_scope: AsyncScope):
+    """
+    A reclaimed slot is cleared in a concurrent task's activation, not just the releasing one.
+
+    Given: A task holding a context-isolated activation open, in which an async
+        cache-decorated closure has cached a value
+    When: Elsewhere the closure is collected and a replacement is decorated, taking the
+        same slot, before the task calls it again
+    Then: The task gets the replacement's value, not the dead closure's
+    """
+
+    # Arrange
+    def make_cached(value: int):
+        @async_context_scope.cache()
+        async def get_value():
+            return SimpleObject(value)
+
+        return get_value
+
+    holder: dict[str, Any] = {"get": make_cached(1)}
+    replaced = asyncio.Event()
+
+    async def request() -> tuple[int, int]:
+        async with async_context_scope.activate():
+            first = await holder["get"]()
+            await replaced.wait()
+            second = await holder["get"]()
+            return first.value, second.value
+
+    task = asyncio.create_task(request())
+    await asyncio.sleep(0)
+
+    # Act
+    holder["get"] = None
+    gc.collect()
+    holder["get"] = make_cached(2)
+    replaced.set()
+    result = await task
+
+    # Assert
+    assert result == (1, 2)
