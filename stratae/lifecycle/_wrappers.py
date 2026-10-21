@@ -13,7 +13,7 @@ import weakref
 from asyncio import current_task
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
-from inspect import Parameter, signature
+from inspect import Parameter
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -26,7 +26,7 @@ from typing import (
     cast,
 )
 
-from stratae.codegen import Writer, render_parameters
+from stratae.codegen import Writer, read_signature, render_parameters
 from stratae.codegen.util import wrapper_filename
 from stratae.lifecycle._inflight import AsyncPending, Pending, WatchedClaim, wait_for_claim
 from stratae.lifecycle._slots import UNSET
@@ -613,7 +613,7 @@ def _create_sync_wrapper_impl(
     ignore_params: bool,
 ) -> Callable[..., Any]:
     """Build the codegen'd wrapper shared by the sync and sync-in-async cache decorators."""
-    params = list(signature(func).parameters.values())
+    params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
 
     writer = Writer()
@@ -722,7 +722,7 @@ def create_async_wrapper[**P, T](
         itself.
 
     """
-    params = list(signature(func).parameters.values())
+    params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
 
     writer = Writer()
@@ -768,7 +768,7 @@ def _create_cm_wrapper_impl(
     enter_expr: str,
 ) -> Callable[..., Any]:
     """Build the codegen'd wrapper shared by the sync and async context-manager decorators."""
-    params = list(signature(func).parameters.values())
+    params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
 
     writer = Writer()

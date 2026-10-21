@@ -1,9 +1,24 @@
-"""Render function signatures into source text."""
+"""Read function signatures, and render them into source text."""
 
+import sys
 from enum import Enum, auto
-from inspect import Parameter
+from inspect import Parameter, Signature, signature
+from typing import Any, Callable
 
 from stratae.codegen.exceptions import InvalidTransitionError
+
+# On 3.14+, signature() evaluates annotations, raising NameError for a forward reference or
+# a TYPE_CHECKING-only import; FORWARDREF leaves just those names unresolved instead.
+_SIGNATURE_OPTIONS: dict[str, Any] = (
+    {"annotation_format": __import__("annotationlib").Format.FORWARDREF}
+    if sys.version_info >= (3, 14)
+    else {}
+)
+
+
+def read_signature(func: Callable[..., Any]) -> Signature:
+    """Return `func`'s signature, leaving annotations that can't be resolved unresolved."""
+    return signature(func, **_SIGNATURE_OPTIONS)
 
 
 class _Section(Enum):

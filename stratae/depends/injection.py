@@ -17,7 +17,11 @@ Providers may themselves declare injected parameters, which are resolved
 recursively when the using function is decorated. Sync functions may only
 depend on sync providers, which is validated at decoration time, raising
 {py:exc}`InjectionSignatureError <stratae.depends.exceptions.InjectionSignatureError>`.
-Async functions may mix sync and async providers.
+Async functions may mix sync and async providers. Modules using
+`from __future__ import annotations` aren't supported: injection reads the
+annotation objects themselves, so a function or provider from such a module
+with a required parameter raises
+{py:exc}`InjectionSignatureError <stratae.depends.exceptions.InjectionSignatureError>`.
 
 ```{note}
 This module only handles wiring: calling a provider and passing its
@@ -76,16 +80,20 @@ See {py:func}`Depends` and {py:func}`inject` for the rest of the module's API.
 
 """
 
+import __future__
+
 from inspect import (
     Parameter,
     Signature,
     isasyncgenfunction,
+    isclass,
     iscoroutinefunction,
     isgeneratorfunction,
-    signature,
+    unwrap,
 )
 from typing import Annotated, Any, Awaitable, Callable, get_origin, overload
 
+from stratae.codegen import read_signature
 from stratae.depends._provide import Provider
 from stratae.depends._wrappers import (
     create_async_gen_wrapper,
@@ -168,7 +176,9 @@ def inject(
         arguments. A function with no injected parameters is returned
         unchanged.
     :raises InjectionSignatureError: An injected parameter has a default
-        value, or a sync function depends on an async provider.
+        value, a sync function depends on an async provider, or a function
+        or provider from a module using `from __future__ import annotations`
+        has a required parameter.
     :raises CircularDependencyError: Providers depend on each other in a
         cycle.
     """
@@ -194,10 +204,38 @@ def _resolve_function[**P, R](
         raise CircularDependencyError(f"Circular dependency detected for {func}.")
 
     _resolving.add(func)
-    resolved_deps: dict[str, Provider] = _resolve_parameters(signature(func), _resolving)
+    sig = read_signature(func)
+    _reject_future_annotations(func, sig)
+    resolved_deps: dict[str, Provider] = _resolve_parameters(sig, _resolving)
 
     _validate_sync_async_constraint(func, resolved_deps)
     return _create_wrapper(func, resolved_deps)
+
+
+def _uses_future_annotations(func: Callable[..., Any]) -> bool:
+    """Whether `func`'s module uses `from __future__ import annotations`."""
+    code = getattr(unwrap(func.__init__ if isclass(func) else func), "__code__", None)
+    return code is not None and bool(code.co_flags & __future__.annotations.compiler_flag)
+
+
+def _reject_future_annotations(func: Callable[..., Any], sig: Signature) -> None:
+    """
+    Raise if `func` could have an injected parameter whose annotation is only a string.
+
+    Every annotation in such a module is a string, and an injected parameter never has
+    a default, so any required parameter might be one.
+    """
+    variadic = (Parameter.VAR_POSITIONAL, Parameter.VAR_KEYWORD)
+    required = any(
+        param.default is Parameter.empty and param.kind not in variadic
+        for param in sig.parameters.values()
+    )
+    if required and _uses_future_annotations(func):
+        raise InjectionSignatureError(
+            f"{func.__qualname__} is from a module using 'from __future__ import annotations', "
+            "which inject doesn't support: its annotations are strings, so injected "
+            "parameters can't be found."
+        )
 
 
 def _resolve_parameters(sig: Signature, _resolving: set[Callable[..., Any]]) -> dict[str, Provider]:

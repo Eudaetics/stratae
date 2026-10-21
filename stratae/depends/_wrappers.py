@@ -8,10 +8,10 @@ introspection by other tooling.
 """
 
 from functools import wraps
-from inspect import Parameter, Signature, isclass, markcoroutinefunction, signature
+from inspect import Parameter, Signature, isclass, markcoroutinefunction
 from typing import Any, Callable
 
-from stratae.codegen import Writer, render_parameters, wrapper_filename
+from stratae.codegen import Writer, read_signature, render_parameters, wrapper_filename
 from stratae.depends._provide import Provider
 
 
@@ -112,8 +112,8 @@ def _finalize(
     wrapper.__defaults__ = metadata_source.__defaults__
     wrapper.__kwdefaults__ = metadata_source.__kwdefaults__
     wrapper.__annotations__ = _get_annotations(list(kept.parameters.values()))
-    if not isclass(func) and "return" in metadata_source.__annotations__:
-        wrapper.__annotations__["return"] = metadata_source.__annotations__["return"]
+    if kept.return_annotation is not Signature.empty:
+        wrapper.__annotations__["return"] = kept.return_annotation
     wrapper.__stratae_resolved__ = True
     return wrapper
 
@@ -125,7 +125,7 @@ def _build_wrapper(
     write_body: Callable[[Writer, str], None],
 ):
     """Share the setup common to every wrapper kind."""
-    sig = signature(func)
+    sig = read_signature(func)
     params = list(sig.parameters.values())
     kept = _kept_parameters(params, resolved_deps)
 
