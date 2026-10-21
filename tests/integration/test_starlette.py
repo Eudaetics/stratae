@@ -1,7 +1,9 @@
 """Smoke tests for the Starlette lifecycle integration, using a real Starlette app."""
 
 import asyncio
+import threading
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 
 import pytest
@@ -10,13 +12,14 @@ pytest.importorskip("starlette")
 
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
+from starlette.endpoints import HTTPEndpoint
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.testclient import TestClient
 
 from stratae.integrations.starlette import scoped_route
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope, async_resource, resource
 from stratae.lifecycle.exceptions import ScopeInactiveError
 
 pytestmark = pytest.mark.starlette
@@ -660,3 +663,247 @@ def test_background_task_uses_request_resources_after_commit(
         "background: connection",
         "connection-close",
     ]
+
+
+@pytest.fixture
+def sync_app(events: list[str], record_response_start: Callable[..., Any]) -> Any:
+    """
+    Build a Starlette app of sync endpoints, with a request scope and a nested transaction scope.
+
+    Both resources are sync, since a sync endpoint can't await. The connection is
+    request-scoped; the transaction is scoped to the endpoint on the routes built with
+    `handler=`.
+    """
+    request_scope = AsyncScope("request")
+    transaction_scope = AsyncScope("transaction", requires=request_scope)
+
+    @request_scope.cache()
+    @resource
+    def get_connection():
+        events.append("connection-open")
+        try:
+            yield "connection"
+        except Exception:
+            events.append("connection-rollback")
+            raise
+        finally:
+            events.append("connection-close")
+
+    @transaction_scope.cache()
+    @resource
+    def get_transaction():
+        get_connection()
+        events.append("begin")
+        try:
+            yield "transaction"
+            events.append("commit")
+        except BaseException:
+            events.append("rollback")
+            raise
+
+    def read(request: Request) -> JSONResponse:
+        connection = get_connection()
+        on_worker = threading.current_thread() is not threading.main_thread()
+        return JSONResponse({"connection": connection, "on_worker_thread": on_worker})
+
+    def conflict(request: Request) -> JSONResponse:
+        get_connection()
+        raise HTTPException(status_code=409, detail="deliberate conflict")
+
+    def write(request: Request) -> JSONResponse:
+        get_transaction()
+        return JSONResponse({"status": "written"})
+
+    Route = scoped_route(request_scope)
+    TransactionRoute = scoped_route(request_scope, handler=transaction_scope)
+    starlette_app = Starlette(
+        routes=[
+            Route("/read", read),
+            Route("/conflict", conflict),
+            TransactionRoute("/write", write, methods=["POST"]),
+        ]
+    )
+    return record_response_start(starlette_app, events)
+
+
+def test_sync_endpoint_runs_on_worker_thread_with_request_scope(sync_app: Any, events: list[str]):
+    """
+    A sync endpoint runs in Starlette's threadpool, with the request scope still visible.
+
+    Given: A Starlette app whose scoped route wraps a sync endpoint using a request-scoped
+        sync resource
+    When: The endpoint is requested
+    Then: It runs on a worker thread, as Starlette runs sync endpoints, gets the resource,
+        and the resource is released after the response
+    """
+    # Act
+    response = TestClient(sync_app).get("/read")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {"connection": "connection", "on_worker_thread": True}
+    assert events == ["connection-open", "response-start: 200", "connection-close"]
+
+
+def test_sync_endpoint_http_exception_rolls_back_request_scope(sync_app: Any, events: list[str]):
+    """
+    An HTTPException from a sync endpoint still rolls back the request-scoped resource.
+
+    Given: A Starlette app whose scoped route wraps a sync endpoint using a request-scoped
+        sync resource
+    When: The endpoint raises HTTPException(409)
+    Then: The client gets the 409, and the resource sees the exception before the response
+    """
+    # Act
+    response = TestClient(sync_app).get("/conflict")
+
+    # Assert
+    assert response.status_code == 409
+    assert events == [
+        "connection-open",
+        "connection-rollback",
+        "connection-close",
+        "response-start: 409",
+    ]
+
+
+def test_sync_endpoint_transaction_commits_before_response(sync_app: Any, events: list[str]):
+    """
+    A sync endpoint's handler-scoped transaction commits before the response starts.
+
+    Given: A Starlette app whose scoped route, built with a handler scope, wraps a sync
+        endpoint using a handler-scoped sync transaction
+    When: The endpoint returns normally
+    Then: The transaction commits before the response starts, and the request-scoped
+        connection is released after it
+    """
+    # Act
+    response = TestClient(sync_app).post("/write")
+
+    # Assert
+    assert response.status_code == 200
+    assert events == [
+        "connection-open",
+        "begin",
+        "commit",
+        "response-start: 200",
+        "connection-close",
+    ]
+
+
+def test_sync_route_keeps_endpoint_name_for_url_lookup(async_request_scope: AsyncScope):
+    """
+    A scoped route for a sync endpoint is named after it, so URL lookups by name work.
+
+    Given: A Starlette app with a scoped route for a sync endpoint named read_product
+    When: A URL is looked up by that endpoint's name
+    Then: The route's path is returned
+    """
+
+    # Arrange
+    def read_product(request: Request) -> JSONResponse:
+        return JSONResponse({})
+
+    Route = scoped_route(async_request_scope)
+    named_app = Starlette(routes=[Route("/products/{product_id}", read_product)])
+
+    # Act
+    path = named_app.url_path_for("read_product", product_id="1")
+
+    # Assert
+    assert path == "/products/1"
+
+
+def test_partial_sync_endpoint_runs_on_worker_thread(
+    async_request_scope: AsyncScope, events: list[str]
+):
+    """
+    A sync endpoint wrapped in functools.partial is still recognised as sync.
+
+    Given: A Starlette app whose scoped route wraps a partial of a sync endpoint function
+    When: The endpoint is requested
+    Then: It runs on a worker thread, with the partial's bound argument applied
+    """
+
+    # Arrange
+    def greet(greeting: str, request: Request) -> JSONResponse:
+        on_worker = threading.current_thread() is not threading.main_thread()
+        return JSONResponse({"greeting": greeting, "on_worker_thread": on_worker})
+
+    Route = scoped_route(async_request_scope)
+    partial_app = Starlette(routes=[Route("/greet", partial(greet, "hello"))])
+
+    # Act
+    response = TestClient(partial_app).get("/greet")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {"greeting": "hello", "on_worker_thread": True}
+
+
+def test_class_based_endpoint_is_rejected_when_route_is_built(async_request_scope: AsyncScope):
+    """
+    A class-based endpoint fails clearly when its scoped route is built, not on first request.
+
+    Given: An HTTPEndpoint subclass, which Starlette runs as an ASGI app rather than as a
+        request handler
+    When: A scoped route is built for it
+    Then: A TypeError explains that scoped routes take function or method endpoints
+    """
+
+    # Arrange
+    class ProductEndpoint(HTTPEndpoint):
+        async def get(self, request: Request) -> JSONResponse:
+            return JSONResponse({})
+
+    Route = scoped_route(async_request_scope)
+
+    # Act & Assert
+    with pytest.raises(TypeError, match="function or method endpoint"):
+        Route("/products", ProductEndpoint)
+
+
+def test_asgi_app_endpoint_is_rejected_when_route_is_built(async_request_scope: AsyncScope):
+    """
+    A raw ASGI app endpoint fails clearly when its scoped route is built.
+
+    Given: A callable object implementing the ASGI interface
+    When: A scoped route is built for it
+    Then: A TypeError explains that scoped routes take function or method endpoints
+    """
+
+    # Arrange
+    class App:
+        async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+            pass
+
+    Route = scoped_route(async_request_scope)
+
+    # Act & Assert
+    with pytest.raises(TypeError, match="function or method endpoint"):
+        Route("/app", App())
+
+
+def test_method_endpoint_is_accepted(async_request_scope: AsyncScope):
+    """
+    A bound method endpoint works like a function endpoint, as it does in Starlette.
+
+    Given: A Starlette app whose scoped route wraps a bound async method
+    When: The endpoint is requested
+    Then: The method handles the request
+    """
+
+    # Arrange
+    class Products:
+        async def read(self, request: Request) -> JSONResponse:
+            return JSONResponse({"handled_by": type(self).__name__})
+
+    Route = scoped_route(async_request_scope)
+    method_app = Starlette(routes=[Route("/products", Products().read)])
+
+    # Act
+    response = TestClient(method_app).get("/products")
+
+    # Assert
+    assert response.status_code == 200
+    assert response.json() == {"handled_by": "Products"}

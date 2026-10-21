@@ -107,9 +107,11 @@ with TestClient(app) as client:
 ````
 """
 
-from functools import wraps
-from typing import Any, Awaitable, Callable
+from functools import partial, wraps
+from inspect import iscoroutinefunction, isfunction, ismethod
+from typing import Any, Awaitable, Callable, cast
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
@@ -131,6 +133,44 @@ async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
     await activation.__aexit__(type(exc), exc, exc.__traceback__)
 
 
+def _endpoint_function(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Return the function or method behind `endpoint`, seeing through `functools.partial`.
+
+    :raises TypeError: If it's neither. Starlette runs any other endpoint - a class such as
+        an `HTTPEndpoint` subclass, or an ASGI app - as an ASGI app that sends its own
+        response, which a scoped route doesn't support.
+    """
+    target = endpoint
+    while isinstance(target, partial):
+        target = target.func
+    if not (isfunction(target) or ismethod(target)):
+        raise TypeError(
+            f"scoped_route needs a function or method endpoint, got {endpoint!r}. "
+            "Class-based endpoints such as HTTPEndpoint aren't supported."
+        )
+    return target
+
+
+def _as_async(
+    endpoint: Callable[[Request], Awaitable[Response] | Response],
+) -> Callable[[Request], Awaitable[Response]]:
+    """
+    Return `endpoint` itself if async, or a coroutine running it in Starlette's threadpool.
+
+    Starlette runs a sync endpoint in its threadpool, so the scoped wrapper, which is always
+    async, does the same. The threadpool copies the calling context, so the request scope -
+    and a handler scope - stay visible to the endpoint there.
+    """
+    if iscoroutinefunction(_endpoint_function(endpoint)):
+        return cast(Callable[[Request], Awaitable[Response]], endpoint)
+
+    async def run_sync(request: Request) -> Response:
+        return await run_in_threadpool(cast(Callable[[Request], Response], endpoint), request)
+
+    return run_sync
+
+
 def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> type[Route]:
     """
     Build a Route subclass that activates `scope` around every request it handles.
@@ -142,7 +182,9 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
         runs. It ends before the response starts, so a transaction cached in it commits,
         or rolls back on an exception, in time for a failed commit to become a 500. Omit
         it when no work needs to finish before the response.
-    :returns: The Route subclass, to use in place of `Route` when building routes.
+    :returns: The Route subclass, to use in place of `Route` when building routes. Its
+        endpoints must be functions or methods, sync or async; building one for any other
+        endpoint, such as an `HTTPEndpoint` class, raises TypeError.
     """
     lifecycle_scope = scope
     handler_scope = handler
@@ -151,16 +193,18 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
         def __init__(
             self,
             path: str,
-            endpoint: Callable[[Request], Awaitable[Response]],
+            endpoint: Callable[[Request], Awaitable[Response] | Response],
             **kwargs: Any,
         ) -> None:
+            call = _as_async(endpoint)
+
             @wraps(endpoint)
             async def scoped_endpoint(request: Request) -> Response:
                 if handler_scope is not None:
                     async with handler_scope.activate():
-                        return await endpoint(request)
+                        return await call(request)
                 try:
-                    return await endpoint(request)
+                    return await call(request)
                 except BaseException as exc:
                     await _close_activation(request.scope, exc)
                     raise

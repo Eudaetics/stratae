@@ -25,7 +25,9 @@ compute it themselves if it raised. A computation may call other cached function
 its own function with different arguments. A call that would wait on its own unfinished
 computation, such as a no-parameter function calling itself, raises
 {py:exc}`CacheCycleError <stratae.lifecycle.exceptions.CacheCycleError>` instead of
-deadlocking.
+deadlocking. Only a call from the thread or task doing the computation is detected: a
+computation that waits on another task or thread which needs that same entry, such as a
+child task it awaits, deadlocks.
 
 A context scope's activation is shared by the tasks started inside it, since they inherit
 its context. When those tasks miss the same entry of an async cached function or
@@ -261,6 +263,11 @@ class BaseScope:
         """
         Get this scope's live slot storage for the current activation.
 
+        Dense storage is first brought up to date with any slots allocated since the
+        activation started: an allocation only extends the activation live in the
+        allocating context, so another context's activation is missing those slots until
+        a cached wrapper's read of one fails and falls back here.
+
         :returns: The scope's live slot storage.
         :raises ScopeInactiveError: If the scope has no active activation in the calling
             context.
@@ -273,7 +280,14 @@ class BaseScope:
             # Emptied when its activation ended - reached from a task that copied the
             # context while the activation was live.
             raise ScopeInactiveError(f"Scope {self.name!r} is not active: its activation ended.")
+        self._extend(slots)
         return slots
+
+    def _extend(self, slots: SlotStorage) -> None:
+        """Extend live dense storage with any slots allocated since it was copied."""
+        template = self._template
+        if isinstance(template, list) and isinstance(slots, list) and len(slots) < len(template):
+            slots.extend(template[len(slots) :])
 
     def exit_stack_type(self) -> type[ExitStack] | type[AsyncExitStack]:
         """
@@ -301,9 +315,8 @@ class BaseScope:
             self._counter = slot + 1
             return slot
         self._template.append(UNSET)
-        active = self._var.get(None)
-        if isinstance(active, list) and active:
-            active.append(UNSET)
+        if active := self._var.get(None):
+            self._extend(active)
         return len(self._template) - 1
 
     def release_slot(self, slot: int) -> None:
