@@ -3,17 +3,18 @@ Test decode_enum and decode_enum_by_name.
 
 decode_enum confirms a native member of the target enum, or looks one up by
 value. The same handler covers `Enum` subclasses through MRO fallback when
-n registered on `Enum` itself via `takes_type=True`. decode_enum_by_name
+registered on `Enum` itself via `takes_type=True`. decode_enum_by_name
 does the same by member name instead.
 
-Covers direct calls to both, deserializing into a plain Enum and an
-IntEnum, invalid values/names being rejected, the shared handler applying
-inside a list, a subclass's own handler taking priority over the shared
-one, and decode_enum_by_name working end-to-end once registered.
+Covers direct calls to both, deserializing into a plain Enum, an IntEnum,
+and a StrEnum (whose mixed-in int/str base must not win over Enum),
+invalid values/names being rejected, the shared handler applying inside a
+list, a subclass's own handler taking priority over the shared one, and
+decode_enum_by_name working end-to-end once registered.
 """
 
 import json
-from enum import Enum, IntEnum
+from enum import Enum, IntEnum, StrEnum
 from typing import Any
 
 import pytest
@@ -338,3 +339,101 @@ def test_deserialize_uses_decode_enum_by_name_when_registered(register_enum_by_n
 
     # Assert
     assert result is Color.RED
+
+
+def test_deserialize_int_enum_uses_shared_enum_handler_over_int(register_enum: None):
+    """
+    An IntEnum target reaches the shared Enum handler, not the int handler.
+
+    Given: JSON bytes holding an IntEnum member's raw value, and decode_enum
+        registered on Enum.
+    When: deserialize is called with the IntEnum as the target type.
+    Then: The matching member is returned, not a plain int, even though int
+        comes before Enum in IntEnum's MRO.
+    """
+
+    # Arrange
+    class Priority(IntEnum):
+        LOW = 1
+        HIGH = 2
+
+    data = json.dumps(2).encode()
+
+    # Act
+    result = deserialize(data, type=Priority)
+
+    # Assert
+    assert result is Priority.HIGH
+
+
+def test_deserialize_int_enum_by_name_uses_shared_enum_handler(register_enum_by_name: None):
+    """
+    An IntEnum target decodes by name when decode_enum_by_name is registered on Enum.
+
+    Given: JSON bytes holding an IntEnum member's name, and decode_enum_by_name
+        registered on Enum.
+    When: deserialize is called with the IntEnum as the target type.
+    Then: The member with that name is returned, rather than the int handler
+        rejecting the name as not int-shaped.
+    """
+
+    # Arrange
+    class Priority(IntEnum):
+        LOW = 1
+        HIGH = 2
+
+    data = json.dumps("HIGH").encode()
+
+    # Act
+    result = deserialize(data, type=Priority)
+
+    # Assert
+    assert result is Priority.HIGH
+
+
+def test_deserialize_str_enum_by_name_uses_shared_enum_handler(register_enum_by_name: None):
+    """
+    A StrEnum target reaches the shared Enum handler, not the str handler.
+
+    Given: JSON bytes holding a StrEnum member's name, and decode_enum_by_name
+        registered on Enum.
+    When: deserialize is called with the StrEnum as the target type.
+    Then: The member with that name is returned, not the name as a plain str.
+    """
+
+    # Arrange
+    class Shade(StrEnum):
+        LIGHT = "light"
+        DARK = "dark"
+
+    data = json.dumps("DARK").encode()
+
+    # Act
+    result = deserialize(data, type=Shade)
+
+    # Assert
+    assert result is Shade.DARK
+
+
+@pytest.mark.parametrize(
+    ("base", "value"),
+    [(Enum, "light"), (IntEnum, 1), (StrEnum, "light")],
+    ids=["enum", "int-enum", "str-enum"],
+)
+def test_deserialize_enum_without_handler_raises(base: type[Enum], value: Any):
+    """
+    An enum target with no Enum handler registered raises, whatever its mixed-in type.
+
+    Given: JSON bytes holding an enum member's raw value, and no handler registered
+        for the enum or any Enum base.
+    When: deserialize is called with a plain Enum, IntEnum, or StrEnum as the target.
+    Then: TypeError is raised for the missing handler, rather than the int or str
+        handler building a plain value, since value-or-name is the application's choice.
+    """
+    # Arrange
+    Shade = base("Shade", {"LIGHT": value})
+    data = json.dumps(value).encode()
+
+    # Act & Assert
+    with pytest.raises(TypeError, match="no handler registered"):
+        deserialize(data, type=Shade)

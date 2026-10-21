@@ -59,7 +59,7 @@ See {py:func}`encode`, {py:func}`serialize`, {py:class}`Deserializer`, and
 import json
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
+from enum import Enum, EnumType
 from functools import singledispatch
 from types import NoneType, UnionType
 from typing import (
@@ -67,6 +67,7 @@ from typing import (
     Callable,
     Literal,
     Protocol,
+    Sequence,
     TypeAliasType,
     Union,
     cast,
@@ -207,6 +208,24 @@ def _decode_any(value: Any) -> Any:
     return value
 
 
+def _dispatch_bases(type_: Any) -> Sequence[Any]:
+    """
+    Return the bases to check for a handler, in order, once `type_` itself has none.
+
+    That's `type_`'s MRO without `type_`, except that an `Enum` subclass checks only its
+    `Enum` bases. Python orders a mixed-in data type ahead of `Enum` - `IntEnum`'s MRO
+    is `IntEnum, int, ReprEnum, Enum, object` - so the `int` handler would otherwise
+    build a plain int in place of a member, deciding by value when no `Enum` handler is
+    registered. Whether an enum decodes by value or by name is the application's choice,
+    so an enum with no handler of its own or on an `Enum` base raises instead, the same
+    as a plain `Enum`.
+    """
+    bases: tuple[Any, ...] = getattr(type_, "__mro__", ())[1:]
+    if isinstance(type_, EnumType):
+        return [base for base in bases if issubclass(base, Enum)]
+    return bases
+
+
 _ARRAY_TYPES = (list, tuple, set, frozenset)
 
 
@@ -315,14 +334,16 @@ class Deserialize:
 
         Mirrors `functools.singledispatch`'s own dispatch: a handler
         registered for a base class also covers its subclasses, unless a
-        more specific handler is registered for the subclass itself. `type`
+        more specific handler is registered for the subclass itself. The one
+        difference is an `Enum` subclass, which checks only its `Enum` bases,
+        skipping a mixed-in type like `int` (see `_dispatch_bases`). `type`
         may not be a real class at all (a `UnionType`, a generic alias,
         `Any`), in which case it has no `__mro__` and only the exact lookup
         applies.
         """
         if found := self._handlers.get(type):
             return found
-        for base in getattr(type, "__mro__", ())[1:]:
+        for base in _dispatch_bases(type):
             if found := self._handlers.get(base):
                 return found
         return None
