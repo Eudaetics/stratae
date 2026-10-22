@@ -64,22 +64,23 @@ class Pending:
 
 class AsyncPending:
     """
-    A claimed entry's async computation - its owning task, and an event set on release.
+    A claimed entry's async computation - its owning task, and a future per waiting task.
 
-    The event is only created once another task waits, so an uncontended miss never
-    allocates one.
+    A shared scope's waiters can be on other threads' event loops, so each waits on a
+    future of its own loop, which `release` completes through that loop thread-safely.
+    No future is created until a task waits, so an uncontended miss allocates nothing.
     """
 
-    __slots__ = ("owner", "done")
+    __slots__ = ("owner", "waiters")
 
     def __init__(self) -> None:
         """Claim for the calling task."""
         self.owner = asyncio.current_task()
-        self.done: asyncio.Event | None = None
+        self.waiters: list[asyncio.Future[None]] | None = None
 
-    def watch(self) -> asyncio.Event:
+    def watch(self) -> asyncio.Future[None]:
         """
-        Return the event to wait on until this computation is released.
+        Return a future to await until this computation is released.
 
         Must be called under the wrapper's lock, which `release` also holds.
 
@@ -87,14 +88,24 @@ class AsyncPending:
         """
         if self.owner is asyncio.current_task():
             raise CacheCycleError("Cached call depends on its own in-progress computation.")
-        if self.done is None:
-            self.done = asyncio.Event()
-        return self.done
+        waiter = asyncio.get_running_loop().create_future()
+        if self.waiters is None:
+            self.waiters = [waiter]
+        else:
+            self.waiters.append(waiter)
+        return waiter
 
     def release(self) -> None:
-        """Wake every task waiting on this computation."""
-        if self.done is not None:
-            self.done.set()
+        """Wake every task still waiting on this computation, each on its own loop."""
+        for waiter in self.waiters or ():
+            if not waiter.done():
+                waiter.get_loop().call_soon_threadsafe(_wake, waiter)
+
+
+def _wake(waiter: asyncio.Future[None]) -> None:
+    """Complete `waiter` on its own loop, unless it was cancelled since being scheduled."""
+    if not waiter.done():
+        waiter.set_result(None)
 
 
 class WatchedClaim:

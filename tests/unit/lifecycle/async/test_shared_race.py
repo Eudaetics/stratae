@@ -1,6 +1,8 @@
 """Tests for shared-scope cache races - concurrent tasks computing the same cached slot."""
 
 import asyncio
+import threading
+from typing import Any
 
 import pytest
 
@@ -255,3 +257,132 @@ async def test_shared_scope_waiter_recomputes_after_owner_fails(async_scope: Asy
     assert waiter_outcome == 42
     assert cached == 42
     assert calls == 2
+
+
+@pytest.mark.parametrize("debug", [False, True], ids=["normal", "asyncio_debug"])
+def test_shared_scope_waiter_on_another_threads_loop_is_woken(debug: bool):
+    """
+    A waiter on another thread's event loop is woken as soon as the owner releases.
+
+    Given: A shared AsyncScope used from two threads, each running its own event loop,
+        with thread B's call waiting on thread A's in-progress computation
+    When: Thread A's computation finishes
+    Then: B gets the value at once, without its loop being woken from outside, and in
+        asyncio debug mode neither call fails on a cross-thread loop operation
+    """
+    # Arrange
+    scope = AsyncScope("application", "shared")
+    claimed = threading.Event()
+
+    @scope.cache()
+    async def get_value() -> str:
+        claimed.set()
+        await asyncio.sleep(0.05)
+        return "value"
+
+    results: dict[str, str] = {}
+
+    def run(name: str) -> None:
+        async def main() -> None:
+            if name == "waiter":
+                claimed.wait()
+            results[name] = await get_value()
+
+        asyncio.run(main(), debug=debug)
+
+    activation = scope.activate()
+    threads = [
+        threading.Thread(target=run, args=(name,), daemon=True) for name in ("owner", "waiter")
+    ]
+
+    # Act
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    # Assert
+    assert not any(thread.is_alive() for thread in threads)
+    assert results == {"owner": "value", "waiter": "value"}
+    asyncio.run(scope.deactivate(activation))
+
+
+async def test_shared_scope_cancelled_waiter_is_skipped_on_release(async_scope: AsyncScope):
+    """
+    A waiter cancelled before the computation finishes doesn't break its release.
+
+    Given: A shared scope whose cached computation another task is waiting on
+    When: The waiting task is cancelled, then the computation finishes
+    Then: The owner gets its value without error, and the value is cached
+    """
+    # Arrange
+    proceed = asyncio.Event()
+    calls: list[int] = []
+
+    @async_scope.cache()
+    async def get_value() -> int:
+        calls.append(1)
+        await proceed.wait()
+        return 5
+
+    async with async_scope.activate():
+        owner = asyncio.ensure_future(get_value())
+        await asyncio.sleep(0)
+        waiter = asyncio.ensure_future(get_value())
+        await asyncio.sleep(0)
+
+        # Act
+        waiter.cancel()
+        await asyncio.sleep(0)
+        proceed.set()
+        result = await owner
+
+        # Assert
+        assert waiter.cancelled()
+        assert result == 5
+        assert await get_value() == 5
+        assert calls == [1]
+
+
+async def test_shared_scope_waiter_cancelled_after_release_is_not_woken(async_scope: AsyncScope):
+    """
+    A waiter cancelled after its wake-up is scheduled, but before it runs, isn't woken.
+
+    Given: A shared scope's computation with a task waiting on it, whose cancellation is
+        queued ahead of the wake-up its release will schedule
+    When: The computation finishes and the loop runs both callbacks
+    Then: The waiter ends cancelled, and waking it reports no error to the loop
+    """
+    # Arrange
+    loop = asyncio.get_running_loop()
+    reported: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _, context: reported.append(context))
+    proceed = asyncio.Event()
+
+    @async_scope.cache()
+    async def get_value() -> int:
+        await proceed.wait()
+        # Queued now, so it runs after this computation's release, but before the wake-up
+        # release schedules - asyncio runs callbacks in the order they were queued.
+        loop.call_soon(waiter.cancel)
+        return 5
+
+    try:
+        async with async_scope.activate():
+            owner = asyncio.ensure_future(get_value())
+            await asyncio.sleep(0)
+            waiter = asyncio.ensure_future(get_value())
+            await asyncio.sleep(0)
+
+            # Act
+            proceed.set()
+            result = await owner
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+
+    # Assert
+    assert result == 5
+    assert waiter.cancelled()
+    assert reported == []

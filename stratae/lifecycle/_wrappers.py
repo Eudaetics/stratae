@@ -370,7 +370,7 @@ def _write_claimed_compute(
                 writer.write(f"__inflight__[{key}] = __Pending__()")
                 writer.write("break")
             writer.write("__done__ = __pending__.watch()")
-        writer.write(f"{'await ' if is_async else ''}__done__.wait()")
+        writer.write("await __done__" if is_async else "__done__.wait()")
         writer.write("if not __slots__:")
         with writer.block():
             writer.write("__ended__(__scope__)")
