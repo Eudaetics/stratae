@@ -180,23 +180,44 @@ def create_async_wrapper(
     return markcoroutinefunction(create_sync_wrapper(func, resolved_deps))
 
 
-def _write_async_gen_body(writer: Writer, call: str) -> None:
-    """Write the body for an async generator wrapper."""
-    writer.write(f"async for __item__ in __func__({call}):")
+def _write_stop_on_exhaustion(writer: Writer, statement: str) -> None:
+    """Write `statement`, returning from the wrapper once the inner generator is exhausted."""
+    writer.write("try:")
     with writer.block():
-        writer.write("yield __item__")
+        writer.write(statement)
+    writer.write("except StopAsyncIteration:")
+    with writer.block():
+        writer.write("return")
+
+
+def _write_async_gen_body(writer: Writer, call: str) -> None:
+    """
+    Write the body for an async generator wrapper, delegating like `yield from`.
+
+    Async generators have no `yield from`, and re-yielding with `async for` drops whatever
+    is sent or thrown in, so each value sent, exception thrown, and close is forwarded.
+    """
+    writer.write(f"__gen__ = __func__({call})")
+    _write_stop_on_exhaustion(writer, "__value__ = await __gen__.__anext__()")
+    writer.write("while True:")
+    with writer.block():
+        writer.write("try:")
+        with writer.block():
+            writer.write("__sent__ = yield __value__")
+        writer.write("except GeneratorExit:")
+        with writer.block():
+            writer.write("await __gen__.aclose()")
+            writer.write("raise")
+        writer.write("except BaseException as __exc__:")
+        with writer.block():
+            _write_stop_on_exhaustion(writer, "__value__ = await __gen__.athrow(__exc__)")
+        writer.write("else:")
+        with writer.block():
+            _write_stop_on_exhaustion(writer, "__value__ = await __gen__.asend(__sent__)")
 
 
 def create_async_gen_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
-    """
-    Create an async generator wrapper; see _write_async_gen_body for why it re-yields items.
-
-    Async generators have no yield-from equivalent (there is no syntax for it), so
-    items must be pulled and re-yielded one at a time via an async for loop.
-    """
-    if _has_async_deps(resolved_deps):
-        return _build_wrapper(func, resolved_deps, True, write_body=_write_async_gen_body)
-
-    return create_sync_wrapper(func, resolved_deps)
+    """Create an async generator wrapper, itself an async generator function."""
+    return _build_wrapper(func, resolved_deps, True, write_body=_write_async_gen_body)
