@@ -469,8 +469,11 @@ class Activation(_BaseActivation):
                 if parent_lock is None:
                     parent_slots[1] -= 1
                 else:
-                    with parent_lock:
+                    parent_lock.acquire()
+                    try:
                         parent_slots[1] -= 1
+                    finally:
+                        parent_lock.release()
 
 
 class AsyncActivation(_BaseActivation):
@@ -538,8 +541,11 @@ class AsyncActivation(_BaseActivation):
                 if parent_lock is None:
                     parent_slots[1] -= 1
                 else:
-                    with parent_lock:
+                    parent_lock.acquire()
+                    try:
                         parent_slots[1] -= 1
+                    finally:
+                        parent_lock.release()
 
 
 class Scope(BaseScope):

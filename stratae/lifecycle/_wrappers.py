@@ -304,7 +304,9 @@ def _build_namespace(
     if style == "locked":
         # A thread lock even for async wrappers: it only guards claim/store bookkeeping,
         # never an await, so it can't block the event loop for long.
-        namespace["__lock__"] = threading.Lock()
+        lock = threading.Lock()
+        namespace["__acquire__"] = lock.acquire
+        namespace["__release__"] = lock.release
         namespace["__inflight__"] = {}
         namespace["__Pending__"] = AsyncPending if is_async else Pending
         namespace["__ended__"] = _raise_ended
@@ -350,6 +352,21 @@ def _write_slot_store(writer: Writer, slot: _SlotCode, scope: "BaseScope") -> No
         writer.write(slot.write("__value__"))
 
 
+def _write_locked(writer: Writer, write_body: Callable[[], None]) -> None:
+    """
+    Write `write_body` guarded by the wrapper's lock.
+
+    Written as acquire/try/finally rather than `with`, which costs about twice as much.
+    """
+    writer.write("__acquire__()")
+    writer.write("try:")
+    with writer.block():
+        write_body()
+    writer.write("finally:")
+    with writer.block():
+        writer.write("__release__()")
+
+
 def _write_claimed_compute(
     writer: Writer,
     key: str,
@@ -359,17 +376,19 @@ def _write_claimed_compute(
     write_store: Callable[[], None],
 ) -> None:
     """Write a shared scope's lock-guarded claim-then-compute miss path."""
+
+    def write_claim() -> None:
+        write_recheck()
+        writer.write(f"__pending__ = __inflight__.get({key})")
+        writer.write("if __pending__ is None:")
+        with writer.block():
+            writer.write(f"__inflight__[{key}] = __Pending__()")
+            writer.write("break")
+        writer.write("__done__ = __pending__.watch()")
+
     writer.write("while True:")
     with writer.block():
-        writer.write("with __lock__:")
-        with writer.block():
-            write_recheck()
-            writer.write(f"__pending__ = __inflight__.get({key})")
-            writer.write("if __pending__ is None:")
-            with writer.block():
-                writer.write(f"__inflight__[{key}] = __Pending__()")
-                writer.write("break")
-            writer.write("__done__ = __pending__.watch()")
+        _write_locked(writer, write_claim)
         writer.write("await __done__" if is_async else "__done__.wait()")
         writer.write("if not __slots__:")
         with writer.block():
@@ -380,9 +399,7 @@ def _write_claimed_compute(
         write_store()
     writer.write("finally:")
     with writer.block():
-        writer.write("with __lock__:")
-        with writer.block():
-            writer.write(f"__inflight__.pop({key}).release()")
+        _write_locked(writer, lambda: writer.write(f"__inflight__.pop({key}).release()"))
 
 
 def _write_task_claimed_compute(
