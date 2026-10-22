@@ -27,10 +27,6 @@ class SlotDict(dict[int, Any]):
             return UNSET
         raise KeyError(key)
 
-    def copy(self) -> "SlotDict":
-        """Return a shallow copy, preserving the `__missing__` behavior."""
-        return SlotDict(self)
-
 
 SlotStorage = list[Any] | SlotDict
 

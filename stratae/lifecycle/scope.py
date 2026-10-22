@@ -99,12 +99,13 @@ request 2 block 4: logging 102
 
 import threading
 from contextvars import ContextVar
+from functools import partial
 from types import TracebackType
 from typing import Any, Callable, Hashable, Literal, NoReturn, cast, get_args
 
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._slots import UNSET, ScopeVar, SharedVar, SlotDict, SlotStorage
-from stratae.lifecycle._stack import AsyncExitStack, ExitStack
+from stratae.lifecycle._stack import aclose, close
 from stratae.lifecycle.exceptions import (
     LifecycleConfigurationError,
     ScopeActivationError,
@@ -112,7 +113,10 @@ from stratae.lifecycle.exceptions import (
 )
 
 _RESERVED_SLOTS = 4
-"""Slots 0-3 hold the exit stack, live-dependent count, reset token, and parent's storage."""
+"""
+Slots 0-3 hold the entered resources, live-dependent count, reset token, and parent's
+storage - see `stratae.lifecycle._stack`.
+"""
 
 IsolationType = Literal["shared", "context"]
 StorageType = Literal["dense", "sparse"]
@@ -154,6 +158,7 @@ class BaseScope:
         "_requires",
         "_var",
         "_template",
+        "_new_slots",
         "_counter",
         "_free_slots",
         "_slot_lock",
@@ -161,13 +166,13 @@ class BaseScope:
         "_parent_lock",
     )
 
-    _exit_stack_cls: type[ExitStack] | type[AsyncExitStack]
     _isolation: IsolationType
     _storage: StorageType
     _threads: bool
     _requires: "BaseScope | None"
     _var: ScopeVar
     _template: SlotStorage
+    _new_slots: Callable[[], SlotStorage]
     _counter: int
     _free_slots: list[int]
     _slot_lock: threading.RLock
@@ -206,9 +211,13 @@ class BaseScope:
         self._storage = storage
         self._threads = threads
         self._requires = requires
-        self._template = (
-            [UNSET, 0, None, None] if storage == "dense" else SlotDict({1: 0, 2: None, 3: None})
-        )
+        if storage == "dense":
+            self._template = [UNSET, 0, None, None]
+            self._new_slots = self._template.copy
+        else:
+            self._template = SlotDict({1: 0, 2: None, 3: None})
+            # Built from a plain dict: faster than copying the SlotDict.
+            self._new_slots = partial(SlotDict, {1: 0, 2: None, 3: None})
         self._var = ContextVar(name) if isolation == "context" else SharedVar(name)
         self._counter = _RESERVED_SLOTS
         self._free_slots = []
@@ -293,8 +302,8 @@ class BaseScope:
                     parent_lock.release()
         else:
             parent_slots = None
-        slots = self._template.copy()
-        slots[0] = self._exit_stack_cls()
+        slots = self._new_slots()
+        slots[0] = []
         slots[3] = parent_slots
         try:
             slots[2] = self._var.set(slots)
@@ -312,7 +321,7 @@ class BaseScope:
         Check the current activation can end, then reset the scope's activation holder.
 
         :param expected: The activation's storage, or `None` for the current one.
-        :returns: The ended activation's storage, still to be closed and released.
+        :returns: The ended activation's storage, still to be emptied, closed, and released.
         :raises ScopeActivationError: If the activation can't be ended here.
         """
         var = self._var
@@ -339,10 +348,6 @@ class BaseScope:
         finally:
             if lock is not None:
                 lock.release()
-
-    def exit_stack_type(self) -> type[ExitStack] | type[AsyncExitStack]:
-        """Return this scope's exit stack type."""
-        return self._exit_stack_cls
 
     def allocate_slot(self) -> tuple[int, bool]:
         """
@@ -378,20 +383,17 @@ class BaseScope:
             self._free_slots.append(slot)
 
 
-def _release(slots: SlotStorage, parent_lock: threading.Lock | None) -> None:
-    """Empty an ended activation's storage and stop counting it against its parent."""
-    parent_slots = slots[3]
-    slots.clear()
-    if parent_slots is not None:
-        if parent_lock is None:
+def _release(parent_slots: SlotStorage, parent_lock: threading.Lock | None) -> None:
+    """Stop counting an ended, closed activation against its parent's storage."""
+    if parent_lock is None:
+        parent_slots[1] -= 1
+    else:
+        # Faster than `with` on this hot path.
+        parent_lock.acquire()
+        try:
             parent_slots[1] -= 1
-        else:
-            # Faster than `with` on this hot path.
-            parent_lock.acquire()
-            try:
-                parent_slots[1] -= 1
-            finally:
-                parent_lock.release()
+        finally:
+            parent_lock.release()
 
 
 def _raise_not_current(name: str, expected: SlotStorage) -> NoReturn:
@@ -470,15 +472,19 @@ class Scope(BaseScope):
 
     __slots__ = ()
 
-    _exit_stack_cls = ExitStack
-
     def __enter__(self) -> None:
         """
         Activate this scope for the duration of the `with` block.
 
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        self._activate()
+        # Inlined _activate for a scope without a parent: `with scope:` is the hot path.
+        if self._requires is None:
+            slots = self._new_slots()
+            slots[0] = []
+            slots[2] = self._var.set(slots)
+        else:
+            self._activate()
 
     def __exit__(
         self,
@@ -489,14 +495,13 @@ class Scope(BaseScope):
         """Deactivate this scope's current activation, closing its entered resources."""
         # Inlined deactivate: `with scope:` is the hot path.
         slots = self._end(None)
+        contexts, parent_slots = slots[0], slots[3]
+        slots.clear()
         try:
-            stack = slots[0]
-            if stack.contexts:
-                return stack.close(exc)
-            stack.closed = True
-            return False
+            return close(contexts, exc) if contexts else False
         finally:
-            _release(slots, self._parent_lock)
+            if parent_slots is not None:
+                _release(parent_slots, self._parent_lock)
 
     def activate(self) -> Activation:
         """
@@ -523,14 +528,13 @@ class Scope(BaseScope):
             a scope requiring this one is still active.
         """
         slots = self._end(None if activation is None else activation.slots)
+        contexts, parent_slots = slots[0], slots[3]
+        slots.clear()
         try:
-            stack = slots[0]
-            if stack.contexts:
-                return stack.close(exc)
-            stack.closed = True
-            return False
+            return close(contexts, exc) if contexts else False
         finally:
-            _release(slots, self._parent_lock)
+            if parent_slots is not None:
+                _release(parent_slots, self._parent_lock)
 
     def cache(
         self,
@@ -566,15 +570,19 @@ class AsyncScope(BaseScope):
 
     __slots__ = ()
 
-    _exit_stack_cls = AsyncExitStack
-
     async def __aenter__(self) -> None:
         """
         Activate this scope for the duration of the `async with` block.
 
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        self._activate()
+        # Inlined _activate for a scope without a parent: `async with scope:` is the hot path.
+        if self._requires is None:
+            slots = self._new_slots()
+            slots[0] = []
+            slots[2] = self._var.set(slots)
+        else:
+            self._activate()
 
     async def __aexit__(
         self,
@@ -585,14 +593,13 @@ class AsyncScope(BaseScope):
         """Deactivate this scope's current activation, closing its entered resources."""
         # Inlined deactivate: `async with scope:` is the hot path; this saves a coroutine.
         slots = self._end(None)
+        contexts, parent_slots = slots[0], slots[3]
+        slots.clear()
         try:
-            stack = slots[0]
-            if stack.contexts:
-                return await stack.aclose(exc)
-            stack.closed = True
-            return False
+            return await aclose(contexts, exc) if contexts else False
         finally:
-            _release(slots, self._parent_lock)
+            if parent_slots is not None:
+                _release(parent_slots, self._parent_lock)
 
     def activate(self) -> AsyncActivation:
         """
@@ -619,14 +626,13 @@ class AsyncScope(BaseScope):
             a scope requiring this one is still active.
         """
         slots = self._end(None if activation is None else activation.slots)
+        contexts, parent_slots = slots[0], slots[3]
+        slots.clear()
         try:
-            stack = slots[0]
-            if stack.contexts:
-                return await stack.aclose(exc)
-            stack.closed = True
-            return False
+            return await aclose(contexts, exc) if contexts else False
         finally:
-            _release(slots, self._parent_lock)
+            if parent_slots is not None:
+                _release(parent_slots, self._parent_lock)
 
     def cache(
         self,

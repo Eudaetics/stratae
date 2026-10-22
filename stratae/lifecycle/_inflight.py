@@ -3,12 +3,12 @@ Tracking of in-flight first computations, so concurrent misses compute each entr
 
 The first caller claims an entry under a brief lock and computes with it released, since
 the computation may call other cached functions. Later callers wait for the release, then
-re-check the cache. Shared scopes keep `Pending`/`AsyncPending` claims in a locked
-per-wrapper dict. Context scopes' sync wrappers use the same locked dict, keyed per
-activation, since threads can share an activation through a copied context; the claim is
-the owning thread's id, swapped for a `Pending` once another thread waits. Context scopes'
-async wrappers use the owning task as a lock-free claim, swapped for a `WatchedClaim` once
-another task waits.
+re-check the cache. Shared scopes keep claims in a locked per-wrapper dict: the owning
+thread's id or task, swapped for a `Pending` or `AsyncPending` once another caller waits.
+Context scopes with `threads=True` use the same locked dict, keyed per activation, since
+threads can share an activation through a copied context. Context scopes'
+async wrappers use the owning task as a lock-free claim in a per-wrapper dict, also keyed
+per activation, swapped for a `WatchedClaim` once another task waits.
 """
 
 import asyncio
@@ -55,9 +55,9 @@ class AsyncPending:
 
     __slots__ = ("owner", "waiters")
 
-    def __init__(self) -> None:
-        """Claim for the calling task."""
-        self.owner = asyncio.current_task()
+    def __init__(self, owner: asyncio.Task[Any] | None = None) -> None:
+        """Claim for task `owner`, or the calling task if omitted."""
+        self.owner = asyncio.current_task() if owner is None else owner
         self.waiters: list[asyncio.Future[None]] | None = None
 
     def watch(self) -> asyncio.Future[None]:
@@ -132,4 +132,17 @@ def watch_thread_claim(claims: dict[Hashable, Any], key: Hashable, claim: Any) -
     """
     if claim.__class__ is not Pending:
         claim = claims[key] = Pending(claim)
+    return claim.watch()
+
+
+def watch_task_claim(
+    claims: dict[Hashable, Any], key: Hashable, claim: Any
+) -> asyncio.Future[None]:
+    """
+    Return a future to await for a task's claim on `key`. Call under the wrapper's lock.
+
+    :raises CacheCycleError: If the calling task owns the claim.
+    """
+    if claim.__class__ is not AsyncPending:
+        claim = claims[key] = AsyncPending(claim)
     return claim.watch()

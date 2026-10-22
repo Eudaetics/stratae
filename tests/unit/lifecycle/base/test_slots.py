@@ -1,9 +1,8 @@
 """
-Unit tests for BaseScope.allocate_slot/release_slot/get_slots/exit_stack_type.
+Unit tests for BaseScope.allocate_slot/release_slot/get_slots.
 
-These are inherited unchanged by AsyncScope (the exit stack *type* differs per flavor, but
-the resolution logic is shared), so testing them through Scope covers both - there is no
-separate async test module for this.
+These are inherited unchanged by AsyncScope, so testing them through Scope covers both -
+there is no separate async test module for this.
 
 Slots 0 and 1 are reserved on every scope (the exit stack and the live-dependent count),
 so the first slot allocate_slot hands out is always 2.
@@ -12,9 +11,8 @@ so the first slot allocate_slot hands out is always 2.
 import pytest
 
 from stratae.lifecycle._slots import UNSET, SlotDict
-from stratae.lifecycle._stack import AsyncExitStack, ExitStack
 from stratae.lifecycle.exceptions import ScopeInactiveError
-from stratae.lifecycle.scope import AsyncScope, Scope
+from stratae.lifecycle.scope import Scope
 
 
 def test_allocate_slot_sequential_dense():
@@ -211,33 +209,3 @@ def test_get_slots_sparse_returns_slotdict():
     # Assert
     assert isinstance(slots, SlotDict)
     assert slots[99] is UNSET
-
-
-def test_exit_stack_type_sync():
-    """
-    Scope.exit_stack_type returns the sync ExitStack class.
-
-    Given: A Scope,
-    When: exit_stack_type is called,
-    Then: It returns ExitStack.
-    """
-    # Arrange
-    scope = Scope("application", "shared")
-
-    # Act & Assert
-    assert scope.exit_stack_type() is ExitStack
-
-
-def test_exit_stack_type_async():
-    """
-    AsyncScope.exit_stack_type returns the AsyncExitStack class.
-
-    Given: An AsyncScope,
-    When: exit_stack_type is called,
-    Then: It returns AsyncExitStack.
-    """
-    # Arrange
-    scope = AsyncScope("application", "shared")
-
-    # Act & Assert
-    assert scope.exit_stack_type() is AsyncExitStack

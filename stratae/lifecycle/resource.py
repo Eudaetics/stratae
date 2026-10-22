@@ -47,7 +47,7 @@ Closing audit.log
 
 from contextlib import asynccontextmanager, contextmanager
 from inspect import unwrap
-from typing import AsyncGenerator, Callable, Generator
+from typing import Any, AsyncGenerator, Callable, Generator, cast
 
 AUTO_ENTER_SYNC = object()
 """Sentinel tagging a function as a sync context manager for lifecycle to auto-enter."""
@@ -64,7 +64,9 @@ def resource[**P, T](func: Callable[P, Generator[T, None, None]]):
     :returns: The tagged context manager function.
     """
     unwrap(func).__auto_enter__ = AUTO_ENTER_SYNC
-    return contextmanager(func)
+    helper = contextmanager(func)
+    cast(Any, helper).__resource_generator__ = func
+    return helper
 
 
 def async_resource[**P, T](func: Callable[P, AsyncGenerator[T, None]]):
@@ -76,4 +78,19 @@ def async_resource[**P, T](func: Callable[P, AsyncGenerator[T, None]]):
     :returns: The tagged async context manager function.
     """
     unwrap(func).__auto_enter__ = AUTO_ENTER_ASYNC
-    return asynccontextmanager(func)
+    helper = asynccontextmanager(func)
+    cast(Any, helper).__resource_generator__ = func
+    return helper
+
+
+def resource_generator(func: Callable[..., Any]) -> Callable[..., Any] | None:
+    """
+    Return the generator function behind `func`, if `func` is exactly a resource helper.
+
+    A cache drives that generator itself, skipping the context manager. A decorator
+    wrapping the helper copies the attribute but not the identity, so it's still called.
+    """
+    generator = getattr(func, "__resource_generator__", None)
+    if generator is not None and getattr(func, "__wrapped__", None) is generator:
+        return generator
+    return None

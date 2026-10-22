@@ -10,7 +10,7 @@ import weakref
 from asyncio import current_task
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
-from inspect import Parameter
+from inspect import Parameter, isasyncgenfunction, isgeneratorfunction
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -30,10 +30,18 @@ from stratae.lifecycle._inflight import (
     Pending,
     WatchedClaim,
     wait_for_claim,
+    watch_task_claim,
     watch_thread_claim,
 )
 from stratae.lifecycle._slots import UNSET
+from stratae.lifecycle._stack import (
+    enter_async_context,
+    enter_async_generator,
+    enter_context,
+    enter_generator,
+)
 from stratae.lifecycle.exceptions import ScopeInactiveError
+from stratae.lifecycle.resource import resource_generator
 
 if TYPE_CHECKING:
     from stratae.lifecycle.scope import AsyncScope, BaseScope, Scope
@@ -211,6 +219,21 @@ def _write_cache_check(writer: Writer) -> None:
         writer.write("return __cache__[__ck__]")
 
 
+def _write_shared_cache_check(writer: Writer) -> None:
+    """
+    Write a shared scope's lock-free cache-hit fast path, with a single lookup.
+
+    A shared cache lives as long as the application, so hits dominate and outweigh the
+    raised KeyError on a miss.
+    """
+    writer.write("try:")
+    with writer.block():
+        writer.write("return __cache__[__ck__]")
+    writer.write("except KeyError:")
+    with writer.block():
+        writer.write("pass")
+
+
 def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> None:
     """
     Write the resolution of __slots__ and the first slot read.
@@ -250,8 +273,8 @@ def _claim_style(scope: "BaseScope", is_async: bool) -> ClaimStyle:
     `"locked"`: shared scope; claims live in a per-wrapper dict behind a lock.
     `"thread"`: context scope with `threads=True`; like `"locked"`, keyed by activation.
     `"task"`: context scope, async wrapper; the owning task is the claim, stored lock-free
-    in the activation's claims dict. `None`: context scope, sync wrapper; one thread uses
-    an activation at a time, so it skips claiming.
+    in a per-wrapper dict keyed by activation. `None`: context scope, sync wrapper; one
+    thread uses an activation at a time, so it skips claiming.
     """
     if scope.is_shared():
         return "locked"
@@ -284,13 +307,14 @@ def _build_namespace(
         namespace["__release__"] = lock.release
         namespace["__inflight__"] = {}
         namespace["__Pending__"] = AsyncPending if is_async else Pending
+        namespace["__claimant__"] = current_task if is_async else threading.get_ident
+        namespace["__watch__"] = watch_task_claim if is_async else watch_thread_claim
         namespace["__ended__"] = _raise_ended
     if style == "thread":
         namespace["__id__"] = id
-        if not is_async:
-            namespace["__ident__"] = threading.get_ident
-            namespace["__watch__"] = watch_thread_claim
     elif style == "task":
+        namespace["__id__"] = id
+        namespace["__claims__"] = {}
         namespace["__task__"] = current_task
         namespace["__wait_claim__"] = wait_for_claim
         namespace["__Watched__"] = WatchedClaim
@@ -338,7 +362,6 @@ def _write_locked(writer: Writer, write_body: Callable[[], None]) -> None:
 def _write_claimed_compute(
     writer: Writer,
     key: str,
-    style: ClaimStyle,
     is_async: bool,
     write_recheck: Callable[[], None],
     write_compute: Callable[[], None],
@@ -347,29 +370,20 @@ def _write_claimed_compute(
     """
     Write a lock-guarded claim-then-compute miss path, for a `"locked"` or `"thread"` style.
 
-    The claim is a `Pending` or `AsyncPending`, except a `"thread"` sync wrapper's: the
-    owning thread's id, replaced by a `Pending` only once another thread waits, so an
-    uncontended miss allocates nothing.
+    The claim is the owning thread's id or task, replaced by a `Pending` or `AsyncPending`
+    only once another caller waits, so an uncontended miss allocates nothing.
     """
-    by_thread = style == "thread" and not is_async
 
     def write_claim() -> None:
         write_recheck()
         writer.write(f"__pending__ = __inflight__.get({key})")
         writer.write("if __pending__ is None:")
         with writer.block():
-            claim = "__ident__()" if by_thread else "__Pending__()"
-            writer.write(f"__inflight__[{key}] = {claim}")
+            writer.write(f"__inflight__[{key}] = __claimant__()")
             writer.write("break")
-        if by_thread:
-            writer.write(f"__done__ = __watch__(__inflight__, {key}, __pending__)")
-        else:
-            writer.write("__done__ = __pending__.watch()")
+        writer.write(f"__done__ = __watch__(__inflight__, {key}, __pending__)")
 
     def write_unclaim() -> None:
-        if not by_thread:
-            writer.write(f"__inflight__.pop({key}).release()")
-            return
         writer.write(f"__claim__ = __inflight__.pop({key})")
         writer.write("if __claim__.__class__ is __Pending__:")
         with writer.block():
@@ -404,7 +418,6 @@ def _write_task_claimed_compute(
     The claim is the calling task, replaced by a WatchedClaim only once another task waits,
     so an uncontended miss allocates nothing.
     """
-    writer.write("__claims__ = __slots__[0].claims")
     writer.write("while True:")
     with writer.block():
         writer.write(f"__claim__ = __claims__.get({key})")
@@ -440,9 +453,8 @@ def _write_claimed_slot_miss(
     """
     Write a slot miss computed once across overlapping callers.
 
-    A shared scope claims under `None`. A `"task"` wrapper claims under the slot number,
-    since its claims dict is shared by the activation; a `"thread"` wrapper claims under the
-    activation's id, since its claims dict is the wrapper's own.
+    A shared scope claims under `None`; a `"task"` or `"thread"` wrapper claims under the
+    activation's id. The id is unique while claimed, since the claimant holds the storage.
     """
 
     def write_recheck() -> None:
@@ -453,15 +465,14 @@ def _write_claimed_slot_miss(
         _write_slot_store(writer, slot, scope)
 
     if style == "task":
-        _write_task_claimed_compute(
-            writer, str(slot.index), write_recheck, write_compute, write_store
-        )
+        writer.write("__pk__ = __id__(__slots__)")
+        _write_task_claimed_compute(writer, "__pk__", write_recheck, write_compute, write_store)
         return
     key = "None"
     if style == "thread":
         writer.write("__pk__ = __id__(__slots__)")
         key = "__pk__"
-    _write_claimed_compute(writer, key, style, is_async, write_recheck, write_compute, write_store)
+    _write_claimed_compute(writer, key, is_async, write_recheck, write_compute, write_store)
 
 
 def _write_keyed_body(
@@ -492,10 +503,11 @@ def _write_keyed_body(
         return
     slot.write_read(writer, "__cache__", scope)
     _write_key(writer, cache_key, params)
+    write_check = _write_shared_cache_check if style == "locked" else _write_cache_check
     slot.write_branch(
         writer,
         "__cache__",
-        write_hit=lambda: _write_cache_check(writer),
+        write_hit=lambda: write_check(writer),
         write_miss=(lambda: _write_new_cache(writer, slot)) if style == "task" else None,
     )
 
@@ -503,7 +515,7 @@ def _write_keyed_body(
         writer.write("__cache__[__ck__] = __value__")
 
     if style == "task":
-        writer.write(f"__pk__ = ({slot.index}, __ck__)")
+        writer.write("__pk__ = (__id__(__slots__), __ck__)")
         _write_task_claimed_compute(
             writer, "__pk__", lambda: _write_cache_check(writer), write_compute, write_store
         )
@@ -520,9 +532,7 @@ def _write_keyed_body(
         if style == "thread":
             writer.write("__pk__ = (__id__(__slots__), __ck__)")
             key = "__pk__"
-        _write_claimed_compute(
-            writer, key, style, is_async, write_recheck, write_compute, write_store
-        )
+        _write_claimed_compute(writer, key, is_async, write_recheck, write_compute, write_store)
     writer.write("return __value__")
 
 
@@ -699,20 +709,21 @@ def create_async_wrapper[**P, T](
     return wrapper
 
 
-def _write_resolve_exit_stack(writer: Writer) -> None:
-    """Write the read of the exit stack from reserved slot 0 into __stack__."""
-    writer.write("__stack__ = __slots__[0]")
-
-
 def _create_cm_wrapper_impl(
     func: Callable[..., Any],
     scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
     is_async: bool,
-    enter_expr: str,
+    enter: Callable[..., Any],
+    target: Callable[..., Any] | None = None,
 ) -> Callable[..., Any]:
-    """Build the wrapper shared by the sync and async context-manager decorators."""
+    """
+    Build the wrapper shared by the sync and async context-manager decorators.
+
+    `enter` registers the made object in the activation and returns its value. `target`,
+    when given, is called in place of `func` to make that object.
+    """
     params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
 
@@ -721,8 +732,7 @@ def _create_cm_wrapper_impl(
 
     def write_enter() -> None:
         writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-        _write_resolve_exit_stack(writer)
-        writer.write(f"__value__ = {enter_expr}")
+        writer.write(f"__value__ = {'await ' if is_async else ''}__enter__(__slots__, __ctx__)")
 
     writer.write(f"{def_kw} wrapper({render_parameters(params)}):")
     with writer.block():
@@ -731,7 +741,8 @@ def _create_cm_wrapper_impl(
         else:
             _write_keyed_body(writer, slot, scope, cache_key, params, write_enter, is_async)
 
-    namespace = _build_namespace(func, scope, slot, is_async=is_async)
+    namespace = _build_namespace(target or func, scope, slot, is_async=is_async)
+    namespace["__enter__"] = enter
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
@@ -748,7 +759,8 @@ def create_synccm_wrapper[**P, T](
     """
     Create a wrapper that enters a sync context manager and caches its yielded value.
 
-    The context manager is exited when the scope's activation ends.
+    The context manager is exited when the scope's activation ends. A function returned
+    directly by `resource` has its generator driven in place of the context manager.
 
     :param func: The `resource`-tagged function to wrap.
     :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>` or
@@ -757,16 +769,14 @@ def create_synccm_wrapper[**P, T](
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
+    generator = resource_generator(func)
+    if generator is not None and isgeneratorfunction(generator):
+        enter: Callable[..., Any] = enter_generator
+    else:
+        generator, enter = None, enter_context
     return cast(
         Cached[P, T, AbstractContextManager[T]],
-        _create_cm_wrapper_impl(
-            func,
-            scope,
-            cache_key,
-            ignore_params,
-            is_async=False,
-            enter_expr="__stack__.enter_context(__ctx__)",
-        ),
+        _create_cm_wrapper_impl(func, scope, cache_key, ignore_params, False, enter, generator),
     )
 
 
@@ -779,7 +789,8 @@ def create_asynccm_wrapper[**P, T](
     """
     Create a wrapper that enters an async context manager and caches its yielded value.
 
-    The context manager is exited when the scope's activation ends.
+    The context manager is exited when the scope's activation ends. A function returned
+    directly by `async_resource` has its generator driven in place of the context manager.
 
     :param func: The `async_resource`-tagged function to wrap.
     :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
@@ -788,14 +799,12 @@ def create_asynccm_wrapper[**P, T](
     :returns: An async wrapper matching `func`'s signature, with `func` as its `uncached`
         attribute.
     """
+    generator = resource_generator(func)
+    if generator is not None and isasyncgenfunction(generator):
+        enter: Callable[..., Any] = enter_async_generator
+    else:
+        generator, enter = None, enter_async_context
     return cast(
         Cached[P, Awaitable[T], AbstractAsyncContextManager[T]],
-        _create_cm_wrapper_impl(
-            func,
-            scope,
-            cache_key,
-            ignore_params,
-            is_async=True,
-            enter_expr="await __stack__.enter_async_context(__ctx__)",
-        ),
+        _create_cm_wrapper_impl(func, scope, cache_key, ignore_params, True, enter, generator),
     )
