@@ -1,13 +1,22 @@
 """Test suite for verifying dependency injection in class methods and constructors."""
 
-from typing import Annotated
+from functools import partial
+from typing import Annotated, Any, Callable
+
+import pytest
 
 from stratae.depends import Depends, inject
+from stratae.depends.exceptions import InjectionSignatureError
 
 
 def get_dep():
     """Dependent function returning an integer."""
     return 42
+
+
+async def get_async_dep() -> int:
+    """Async dependent function returning an integer."""
+    return 43
 
 
 def test_class_init():
@@ -300,3 +309,101 @@ def test_injecting_classes():
 
     # Assert
     assert instance.dep.get_value() == 50
+
+
+class _SyncHandler:
+    def __call__(self, value: Annotated[int, Depends(get_dep)]) -> int:
+        return value
+
+
+class _AsyncHandler:
+    async def __call__(self, value: Annotated[int, Depends(get_async_dep)]) -> int:
+        return value
+
+
+def _add(value: Annotated[int, Depends(get_dep)], other: int) -> int:
+    return value + other
+
+
+@pytest.mark.parametrize(
+    "target",
+    [_SyncHandler(), _AsyncHandler(), partial(_add, other=1)],
+    ids=["sync_object", "async_object", "partial"],
+)
+def test_callable_object_with_injected_parameters_rejected(target: Callable[..., Any]):
+    """
+    Test that injecting into a callable object raises a clear error.
+
+    Given: A callable object - an instance with __call__, or a functools.partial - with
+        an injected parameter.
+    When: inject is applied to it.
+    Then: InjectionSignatureError is raised, pointing at decorating __call__ instead,
+        since inject would replace the object with a function.
+    """
+    with pytest.raises(InjectionSignatureError, match="Decorate its __call__ method"):
+        inject(target)
+
+
+def test_callable_object_provider_with_injected_parameters_rejected():
+    """
+    Test that a callable object provider with injected parameters raises a clear error.
+
+    Given: A callable object whose __call__ has an injected parameter, used as a provider.
+    When: A function depending on it is injected.
+    Then: InjectionSignatureError is raised for the provider.
+    """
+    handler = _SyncHandler()
+
+    def consumer(result: Annotated[int, Depends(handler)]) -> int:
+        return result
+
+    with pytest.raises(InjectionSignatureError, match="Cannot inject into"):
+        inject(consumer)
+
+
+def test_callable_object_provider_without_injected_parameters_allowed():
+    """
+    Test that a callable object with no injected parameters works as a provider.
+
+    Given: A callable object taking no injected parameters, used as a provider.
+    When: A function depending on it is injected and called.
+    Then: The object's return value is injected.
+    """
+
+    # Arrange
+    class Settings:
+        def __call__(self) -> int:
+            return 7
+
+    @inject
+    def consumer(value: Annotated[int, Depends(Settings())]) -> int:
+        return value
+
+    # Act & Assert
+    assert consumer() == 7
+
+
+def test_injected_call_method_on_callable_object():
+    """
+    Test that decorating __call__ with inject injects into a callable object.
+
+    Given: A class whose __call__ is decorated with inject.
+    When: An instance is called directly, and used as a provider.
+    Then: The dependency is injected both ways.
+    """
+
+    # Arrange
+    class Handler:
+        @inject
+        def __call__(self, value: Annotated[int, Depends(get_dep)]) -> int:
+            return value
+
+    handler = Handler()
+
+    @inject
+    def consumer(result: Annotated[int, Depends(handler)]) -> int:
+        return result
+
+    # Act & Assert
+    assert handler() == 42
+    assert consumer() == 42

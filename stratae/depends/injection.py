@@ -88,7 +88,9 @@ from inspect import (
     isasyncgenfunction,
     isclass,
     iscoroutinefunction,
+    isfunction,
     isgeneratorfunction,
+    ismethod,
     unwrap,
 )
 from typing import Annotated, Any, Awaitable, Callable, get_origin, overload
@@ -176,9 +178,10 @@ def inject(
         arguments. A function with no injected parameters is returned
         unchanged.
     :raises InjectionSignatureError: An injected parameter has a default
-        value, a sync function depends on an async provider, or a function
+        value, a sync function depends on an async provider, a function
         or provider from a module using `from __future__ import annotations`
-        has a required parameter.
+        has a required parameter, or injected parameters are found on a
+        callable object rather than a function, method, or class.
     :raises CircularDependencyError: Providers depend on each other in a
         cycle.
     """
@@ -208,8 +211,24 @@ def _resolve_function[**P, R](
     _reject_future_annotations(func, sig)
     resolved_deps: dict[str, Provider] = _resolve_parameters(sig, _resolving)
 
+    _reject_callable_objects(func, resolved_deps)
     _validate_sync_async_constraint(func, resolved_deps)
     return _create_wrapper(func, resolved_deps)
+
+
+def _reject_callable_objects(func: Callable[..., Any], resolved_deps: dict[str, Provider]) -> None:
+    """
+    Raise if `func` has injected parameters but is a callable object, not a function or class.
+
+    Injecting into an object - one with `__call__`, or a `functools.partial` - would replace
+    it with a function, losing what the object is, and leave unclear whether it's the
+    object's `__call__` or `__init__` being injected.
+    """
+    if resolved_deps and not (isfunction(func) or ismethod(func) or isclass(func)):
+        raise InjectionSignatureError(
+            f"Cannot inject into {func!r}: inject supports functions, methods, and classes. "
+            "Decorate its __call__ method with @inject instead, or wrap it in a function."
+        )
 
 
 def _uses_future_annotations(func: Callable[..., Any]) -> bool:
