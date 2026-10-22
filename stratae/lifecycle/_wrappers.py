@@ -25,7 +25,13 @@ from typing import (
 
 from stratae.codegen import Writer, read_signature, render_parameters
 from stratae.codegen.util import wrapper_filename
-from stratae.lifecycle._inflight import AsyncPending, Pending, WatchedClaim, wait_for_claim
+from stratae.lifecycle._inflight import (
+    AsyncPending,
+    Pending,
+    WatchedClaim,
+    wait_for_claim,
+    watch_thread_claim,
+)
 from stratae.lifecycle._slots import UNSET
 from stratae.lifecycle.exceptions import ScopeInactiveError
 
@@ -205,12 +211,6 @@ def _write_cache_check(writer: Writer) -> None:
         writer.write("return __cache__[__ck__]")
 
 
-def _write_cache_store(writer: Writer) -> None:
-    """Write the cache-miss store of __value__ under __ck__."""
-    writer.write("__cache__[__ck__] = __value__")
-    writer.write("return __value__")
-
-
 def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> None:
     """
     Write the resolution of __slots__ and the first slot read.
@@ -240,7 +240,7 @@ def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> 
         writer.write(read)
 
 
-type ClaimStyle = Literal["locked", "task"] | None
+type ClaimStyle = Literal["locked", "task", "thread"] | None
 
 
 def _claim_style(scope: "BaseScope", is_async: bool) -> ClaimStyle:
@@ -248,12 +248,15 @@ def _claim_style(scope: "BaseScope", is_async: bool) -> ClaimStyle:
     How a wrapper ensures overlapping callers compute each entry once.
 
     `"locked"`: shared scope; claims live in a per-wrapper dict behind a lock.
+    `"thread"`: context scope with `threads=True`; like `"locked"`, keyed by activation.
     `"task"`: context scope, async wrapper; the owning task is the claim, stored lock-free
-    in the activation's claims dict. `None`: context scope, sync wrapper; it can't be
-    interleaved, so it skips claiming.
+    in the activation's claims dict. `None`: context scope, sync wrapper; one thread uses
+    an activation at a time, so it skips claiming.
     """
     if scope.is_shared():
         return "locked"
+    if scope.threads:
+        return "thread"
     return "task" if is_async else None
 
 
@@ -274,7 +277,7 @@ def _build_namespace(
         **slot.namespace(),
     }
     style = _claim_style(scope, is_async)
-    if style == "locked":
+    if style == "locked" or style == "thread":
         # A thread lock even for async wrappers: it never guards an await.
         lock = threading.Lock()
         namespace["__acquire__"] = lock.acquire
@@ -282,6 +285,11 @@ def _build_namespace(
         namespace["__inflight__"] = {}
         namespace["__Pending__"] = AsyncPending if is_async else Pending
         namespace["__ended__"] = _raise_ended
+    if style == "thread":
+        namespace["__id__"] = id
+        if not is_async:
+            namespace["__ident__"] = threading.get_ident
+            namespace["__watch__"] = watch_thread_claim
     elif style == "task":
         namespace["__task__"] = current_task
         namespace["__wait_claim__"] = wait_for_claim
@@ -330,21 +338,42 @@ def _write_locked(writer: Writer, write_body: Callable[[], None]) -> None:
 def _write_claimed_compute(
     writer: Writer,
     key: str,
+    style: ClaimStyle,
     is_async: bool,
     write_recheck: Callable[[], None],
     write_compute: Callable[[], None],
     write_store: Callable[[], None],
 ) -> None:
-    """Write a shared scope's lock-guarded claim-then-compute miss path."""
+    """
+    Write a lock-guarded claim-then-compute miss path, for a `"locked"` or `"thread"` style.
+
+    The claim is a `Pending` or `AsyncPending`, except a `"thread"` sync wrapper's: the
+    owning thread's id, replaced by a `Pending` only once another thread waits, so an
+    uncontended miss allocates nothing.
+    """
+    by_thread = style == "thread" and not is_async
 
     def write_claim() -> None:
         write_recheck()
         writer.write(f"__pending__ = __inflight__.get({key})")
         writer.write("if __pending__ is None:")
         with writer.block():
-            writer.write(f"__inflight__[{key}] = __Pending__()")
+            claim = "__ident__()" if by_thread else "__Pending__()"
+            writer.write(f"__inflight__[{key}] = {claim}")
             writer.write("break")
-        writer.write("__done__ = __pending__.watch()")
+        if by_thread:
+            writer.write(f"__done__ = __watch__(__inflight__, {key}, __pending__)")
+        else:
+            writer.write("__done__ = __pending__.watch()")
+
+    def write_unclaim() -> None:
+        if not by_thread:
+            writer.write(f"__inflight__.pop({key}).release()")
+            return
+        writer.write(f"__claim__ = __inflight__.pop({key})")
+        writer.write("if __claim__.__class__ is __Pending__:")
+        with writer.block():
+            writer.write("__claim__.release()")
 
     writer.write("while True:")
     with writer.block():
@@ -359,7 +388,7 @@ def _write_claimed_compute(
         write_store()
     writer.write("finally:")
     with writer.block():
-        _write_locked(writer, lambda: writer.write(f"__inflight__.pop({key}).release()"))
+        _write_locked(writer, write_unclaim)
 
 
 def _write_task_claimed_compute(
@@ -411,8 +440,9 @@ def _write_claimed_slot_miss(
     """
     Write a slot miss computed once across overlapping callers.
 
-    A shared scope claims under `None`; a context scope claims under the slot number, since
-    its claims dict is shared by the activation.
+    A shared scope claims under `None`. A `"task"` wrapper claims under the slot number,
+    since its claims dict is shared by the activation; a `"thread"` wrapper claims under the
+    activation's id, since its claims dict is the wrapper's own.
     """
 
     def write_recheck() -> None:
@@ -426,26 +456,40 @@ def _write_claimed_slot_miss(
         _write_task_claimed_compute(
             writer, str(slot.index), write_recheck, write_compute, write_store
         )
-    else:
-        _write_claimed_compute(writer, "None", is_async, write_recheck, write_compute, write_store)
+        return
+    key = "None"
+    if style == "thread":
+        writer.write("__pk__ = __id__(__slots__)")
+        key = "__pk__"
+    _write_claimed_compute(writer, key, style, is_async, write_recheck, write_compute, write_store)
 
 
-def _write_claimed_keyed_body(
+def _write_keyed_body(
     writer: Writer,
     slot: _SlotCode,
     scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
-    style: ClaimStyle,
-    is_async: bool,
     write_compute: Callable[[], None],
+    is_async: bool = False,
 ) -> None:
     """
-    Write a keyed cache access that computes each key once across overlapping callers.
+    Write the body of a keyed wrapper; write_compute fills __value__.
 
-    In a shared scope the dict's lazy creation happens under the lock, since two threads
+    A claiming wrapper computes each key once across overlapping callers. Unless it's a
+    `"task"` wrapper, the dict's lazy creation happens under the lock, since two threads
     could otherwise each build one and lose inserts.
     """
+    style = _claim_style(scope, is_async)
+    if style is None:
+        slot.write_read(writer, "__cache__", scope)
+        slot.write_branch(writer, "__cache__", write_miss=lambda: _write_new_cache(writer, slot))
+        _write_key(writer, cache_key, params)
+        _write_cache_check(writer)
+        write_compute()
+        writer.write("__cache__[__ck__] = __value__")
+        writer.write("return __value__")
+        return
     slot.write_read(writer, "__cache__", scope)
     _write_key(writer, cache_key, params)
     slot.write_branch(
@@ -472,8 +516,12 @@ def _write_claimed_keyed_body(
             )
             _write_cache_check(writer)
 
+        key = "__ck__"
+        if style == "thread":
+            writer.write("__pk__ = (__id__(__slots__), __ck__)")
+            key = "__pk__"
         _write_claimed_compute(
-            writer, "__ck__", is_async, write_recheck, write_compute, write_store
+            writer, key, style, is_async, write_recheck, write_compute, write_store
         )
     writer.write("return __value__")
 
@@ -498,30 +546,6 @@ def _write_slot_body(
     slot.write_read(writer, "__value__", scope)
     slot.write_branch(writer, "__value__", write_miss=write_miss)
     writer.write("return __value__")
-
-
-def _write_keyed_body(
-    writer: Writer,
-    slot: _SlotCode,
-    scope: "BaseScope",
-    cache_key: Callable[..., Hashable] | None,
-    params: list[Parameter],
-    write_compute: Callable[[], None],
-    is_async: bool = False,
-) -> None:
-    """Write the body of a keyed wrapper; write_compute fills __value__."""
-    style = _claim_style(scope, is_async)
-    if style is not None:
-        _write_claimed_keyed_body(
-            writer, slot, scope, cache_key, params, style, is_async, write_compute
-        )
-        return
-    slot.write_read(writer, "__cache__", scope)
-    slot.write_branch(writer, "__cache__", write_miss=lambda: _write_new_cache(writer, slot))
-    _write_key(writer, cache_key, params)
-    _write_cache_check(writer)
-    write_compute()
-    _write_cache_store(writer)
 
 
 def _aggregate_defaults(params: list[Parameter]):

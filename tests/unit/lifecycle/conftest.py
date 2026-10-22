@@ -30,6 +30,18 @@ def async_context_scope():
 
 
 @pytest.fixture
+def threaded_scope():
+    """Provide a single context-isolation, dense-storage Scope with threads=True."""
+    yield Scope("request", "context", threads=True)
+
+
+@pytest.fixture
+def async_threaded_scope():
+    """Provide a single context-isolation, dense-storage AsyncScope with threads=True."""
+    yield AsyncScope("request", "context", threads=True)
+
+
+@pytest.fixture
 def scope_chain():
     """Provide three Scopes chained by requires: application <- session <- request."""
     application = Scope("application", "shared")

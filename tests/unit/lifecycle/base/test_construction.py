@@ -33,11 +33,12 @@ def test_scope_init_positional():
 
 def test_scope_init_defaults():
     """
-    Scope should default to context isolation, dense storage, and no required parent.
+    Scope should default to context isolation, dense storage, no required parent, no threads.
 
     Given: only a name,
-    When: Scope is constructed without isolation, storage, or requires,
-    Then: it should default isolation to "context", storage to "dense", and requires to None.
+    When: Scope is constructed without isolation, storage, requires, or threads,
+    Then: it should default isolation to "context", storage to "dense", requires to None,
+        and threads to False.
     """
     # Arrange
     name = "request"
@@ -49,6 +50,7 @@ def test_scope_init_defaults():
     assert scope.isolation == "context"
     assert scope.storage == "dense"
     assert scope.requires is None
+    assert scope.threads is False
 
 
 def test_scope_init_keyword():
@@ -102,6 +104,37 @@ def test_scope_init_with_invalid_storage():
         LifecycleConfigurationError, match="Invalid scope storage given for application."
     ):
         Scope("application", "shared", "bogus")  # pyright: ignore[reportArgumentType]
+
+
+def test_scope_init_context_with_threads():
+    """
+    A context scope accepts threads=True.
+
+    Given: a context-isolated scope,
+    When: it's constructed with threads=True,
+    Then: it should report threads as True.
+    """
+    # Act
+    scope = Scope("request", threads=True)
+
+    # Assert
+    assert scope.threads is True
+
+
+def test_scope_init_shared_with_threads_raises():
+    """
+    A shared scope cannot take threads=True.
+
+    Given: a shared-isolation scope,
+    When: it's constructed with threads=True,
+    Then: a LifecycleConfigurationError should be raised.
+    """
+    # Act & Assert
+    with pytest.raises(
+        LifecycleConfigurationError,
+        match="Shared scope 'application' cannot take threads=True",
+    ):
+        Scope("application", "shared", threads=True)
 
 
 def test_scope_init_shared_requiring_context_raises():

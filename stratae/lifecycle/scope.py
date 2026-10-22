@@ -20,6 +20,13 @@ Async cached functions in a context scope get the same treatment across tasks sh
 activation. A task that outlives the activation gets
 {py:exc}`ScopeInactiveError <stratae.lifecycle.exceptions.ScopeInactiveError>`.
 
+A context scope assumes one thread uses an activation at a time. Threads can share one
+through a copied context, as `asyncio.to_thread` does; pass `threads=True` to extend the
+compute-once guarantee across them. Without it, overlapping threads may each compute an
+entry, leaving callers with different values, and awaiting an async cached entry that an
+event loop on another thread is computing raises
+{py:exc}`LifecycleConfigurationError <stratae.lifecycle.exceptions.LifecycleConfigurationError>`.
+
 A scope can require a parent scope with `requires`; activating it raises unless the parent
 is active.
 
@@ -118,6 +125,13 @@ def _validate_types(name: str, isolation: IsolationType, storage: StorageType) -
         raise LifecycleConfigurationError(f"Invalid scope storage given for {name}.")
 
 
+def _validate_threads(name: str, isolation: IsolationType, threads: bool) -> None:
+    if threads and isolation == "shared":
+        raise LifecycleConfigurationError(
+            f"Shared scope {name!r} cannot take threads=True: it's already thread-safe."
+        )
+
+
 def _validate_requires(name: str, isolation: IsolationType, requires: "BaseScope | None") -> None:
     if requires and isolation == "shared" and requires.isolation == "context":
         raise LifecycleConfigurationError(
@@ -136,6 +150,7 @@ class BaseScope:
         "name",
         "_isolation",
         "_storage",
+        "_threads",
         "_requires",
         "_var",
         "_template",
@@ -149,6 +164,7 @@ class BaseScope:
     _exit_stack_cls: type[ExitStack] | type[AsyncExitStack]
     _isolation: IsolationType
     _storage: StorageType
+    _threads: bool
     _requires: "BaseScope | None"
     _var: ScopeVar
     _template: SlotStorage
@@ -164,6 +180,7 @@ class BaseScope:
         isolation: IsolationType = "context",
         storage: StorageType = "dense",
         requires: "BaseScope | None" = None,
+        threads: bool = False,
     ) -> None:
         """
         Create a scope.
@@ -175,15 +192,19 @@ class BaseScope:
             allocated ones.
         :param requires: A scope that must be active before this one activates. A shared
             scope can't require a context scope.
-        :raises LifecycleConfigurationError: If `isolation` or `storage` is invalid, or a
-            shared scope requires a context scope.
+        :param threads: Compute each entry once even when threads share an activation of this
+            context scope. Slows each entry's first computation.
+        :raises LifecycleConfigurationError: If `isolation` or `storage` is invalid, a shared
+            scope requires a context scope, or a shared scope takes `threads=True`.
         """
         _validate_types(name, isolation, storage)
+        _validate_threads(name, isolation, threads)
         _validate_requires(name, isolation, requires)
 
         self.name = name
         self._isolation = isolation
         self._storage = storage
+        self._threads = threads
         self._requires = requires
         self._template = (
             [UNSET, 0, None, None] if storage == "dense" else SlotDict({1: 0, 2: None, 3: None})
@@ -204,6 +225,11 @@ class BaseScope:
     def storage(self) -> StorageType:
         """Slot storage strategy for this scope."""
         return self._storage
+
+    @property
+    def threads(self) -> bool:
+        """Whether cached entries are computed once across threads sharing an activation."""
+        return self._threads
 
     @property
     def requires(self) -> "BaseScope | None":
