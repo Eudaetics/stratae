@@ -16,6 +16,7 @@ AsyncDirectBus:
 - dispatch invokes all handlers registered on the channel.
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
+- A handler's CancelledError is re-raised in a BaseExceptionGroup, not swallowed.
 - A schema-less PubSub event's sync and async handlers are called with no arguments.
 
 AsyncDirectBus (request events):
@@ -36,6 +37,7 @@ AsyncDirectBus (with envelope):
 - A request reply is returned when envelope tracking is enabled.
 """
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
@@ -400,6 +402,29 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncDirec
         await bus.dispatch(payload, config=_task_created)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
+
+
+async def test_handler_cancelled_error_is_not_swallowed(bus: AsyncDirectBus):
+    """
+    A handler's CancelledError is re-raised alongside other handler exceptions.
+
+    Given: Two handlers registered to an Event, one raising CancelledError and one ValueError
+    When: an event is dispatched
+    Then: A BaseExceptionGroup containing both is raised, rather than the CancelledError
+        being dropped
+    """
+    # Arrange
+    error = ValueError("failed")
+    bus.handle(_task_created, AsyncMock(side_effect=asyncio.CancelledError()))
+    bus.handle(_task_created, AsyncMock(side_effect=error))
+
+    # Act / Assert
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        await bus.dispatch(_TaskCreated(12), config=_task_created)
+
+    assert not isinstance(exc_info.value, ExceptionGroup)
+    assert {type(exc) for exc in exc_info.value.exceptions} == {asyncio.CancelledError, ValueError}
+    assert error in exc_info.value.exceptions
 
 
 async def test_signal_pubsub_calls_sync_handler_with_no_arguments(bus: AsyncDirectBus):

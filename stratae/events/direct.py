@@ -398,7 +398,8 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
 
         {py:class}`PubSub <stratae.events.event.PubSub>` events fan out to
         every registered handler concurrently; handler exceptions are
-        collected into an {py:exc}`ExceptionGroup`.
+        collected into an {py:exc}`ExceptionGroup`, or a
+        {py:exc}`BaseExceptionGroup` if one is a `BaseException` such as `CancelledError`.
         {py:class}`Request <stratae.events.event.Request>` events dispatch to
         exactly one responder, await its reply, and propagate its exceptions
         directly.
@@ -515,9 +516,10 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         :param payload: The constructed payload instance to dispatch.
         :param config: The {py:class}`Event <stratae.events.event.Event>`
             used as the handler lookup key.
-        :raises ExceptionGroup: If any handler raises. Gathers every
+        :raises BaseExceptionGroup: If any handler raises. Gathers every
             handler's failure, since all handlers run regardless of earlier
-            ones failing.
+            ones failing. It's an `ExceptionGroup` unless a handler raised a
+            `BaseException` such as `CancelledError`.
         """
 
         async def _call(handler: Handler[Any, _AnyEvent, Any]) -> None:
@@ -530,6 +532,6 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
             *(_call(h) for h in self._handlers.get(config, [])),
             return_exceptions=True,
         )
-        exceptions = [r for r in results if isinstance(r, Exception)]
+        exceptions = [r for r in results if isinstance(r, BaseException)]
         if exceptions:
-            raise ExceptionGroup("handler errors", exceptions)
+            raise BaseExceptionGroup("handler errors", exceptions)
