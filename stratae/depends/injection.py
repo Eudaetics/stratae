@@ -21,7 +21,9 @@ Async functions may mix sync and async providers. Modules using
 `from __future__ import annotations` aren't supported: injection reads the
 annotation objects themselves, so a function or provider from such a module
 with a required parameter raises
-{py:exc}`InjectionSignatureError <stratae.depends.exceptions.InjectionSignatureError>`.
+{py:exc}`InjectionSignatureError <stratae.depends.exceptions.InjectionSignatureError>`,
+as does any injected parameter whose annotation is a string, such as a
+dataclass field from such a module.
 
 ```{note}
 This module only handles wiring: calling a provider and passing its
@@ -121,8 +123,9 @@ def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:  # n
     """
     Mark a callable as the provider for an injected parameter.
 
-    Used inside an annotation, e.g. `Annotated[int, Depends(get_value)]`
-    or `Annotated[int, Depends(get_value)]`. Passing the same callable
+    Used inside an annotation, e.g. `Annotated[int, Depends(get_value)]`,
+    or through a type alias such as
+    `type Value = Annotated[int, Depends(get_value)]`. Passing the same callable
     twice returns the same {py:class}`Provider <stratae.depends._provide.Provider>`,
     so every injection site of a provider shares one registration.
 
@@ -180,7 +183,8 @@ def inject(
     :raises InjectionSignatureError: An injected parameter has a default
         value, a sync function depends on an async provider, a function
         or provider from a module using `from __future__ import annotations`
-        has a required parameter, or injected parameters are found on a
+        has a required parameter, an injected parameter's annotation is a
+        string, or injected parameters are found on a
         callable object rather than a function, method, or class.
     :raises CircularDependencyError: Providers depend on each other in a
         cycle.
@@ -209,6 +213,7 @@ def _resolve_function[**P, R](
     _resolving.add(func)
     sig = read_signature(func)
     _reject_future_annotations(func, sig)
+    _reject_quoted_dependencies(func, sig)
     resolved_deps: dict[str, Provider] = _resolve_parameters(sig, _resolving)
 
     _reject_callable_objects(func, resolved_deps)
@@ -231,9 +236,14 @@ def _reject_callable_objects(func: Callable[..., Any], resolved_deps: dict[str, 
         )
 
 
+def _annotated_function(func: Callable[..., Any]) -> Any:
+    """Return the function whose code and globals `func`'s parameter annotations come from."""
+    return unwrap(func.__init__ if isclass(func) else func)
+
+
 def _uses_future_annotations(func: Callable[..., Any]) -> bool:
     """Whether `func`'s module uses `from __future__ import annotations`."""
-    code = getattr(unwrap(func.__init__ if isclass(func) else func), "__code__", None)
+    code = getattr(_annotated_function(func), "__code__", None)
     return code is not None and bool(code.co_flags & __future__.annotations.compiler_flag)
 
 
@@ -255,6 +265,38 @@ def _reject_future_annotations(func: Callable[..., Any], sig: Signature) -> None
             "which inject doesn't support: its annotations are strings, so injected "
             "parameters can't be found."
         )
+
+
+def _is_quoted_dependency(annotation: Any, namespace: dict[str, Any]) -> bool:
+    """Whether `annotation` is a string that evaluates to an injected parameter's annotation."""
+    if not isinstance(annotation, str):
+        return False
+    try:
+        value = eval(annotation, namespace)  # noqa: S307
+    except Exception:
+        # A forward reference or TYPE_CHECKING-only name - not resolvable, so not injected.
+        return False
+    value = _unwrap_type(value)
+    return get_origin(value) is Annotated and _get_annotated_info(value) is not None
+
+
+def _reject_quoted_dependencies(func: Callable[..., Any], sig: Signature) -> None:
+    """
+    Raise if one of `func`'s parameters is an injected parameter written as a string.
+
+    Catches what `_reject_future_annotations` can't see from code flags: a hand-quoted
+    annotation, or a class whose `__init__` was generated, like a dataclass's, from a
+    module using `from __future__ import annotations`. Each string is evaluated in the
+    globals `func` was defined in, the same way `typing.get_type_hints` would.
+    """
+    namespace: dict[str, Any] = getattr(_annotated_function(func), "__globals__", {})
+    for param in sig.parameters.values():
+        if _is_quoted_dependency(param.annotation, namespace):
+            raise InjectionSignatureError(
+                f"{func.__qualname__} parameter {param.name!r} has a string annotation, which "
+                "inject doesn't support: it reads annotation objects, so the dependency "
+                "can't be found. Unquote it, or remove 'from __future__ import annotations'."
+            )
 
 
 def _resolve_parameters(sig: Signature, _resolving: set[Callable[..., Any]]) -> dict[str, Provider]:

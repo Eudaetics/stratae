@@ -84,25 +84,28 @@ class _ReusableAwaitable:
 
 
 class _Override:
-    __slots__ = ("dep", "value", "token")
+    __slots__ = ("dep", "value", "tokens")
 
     def __init__(self, dep: Provider, value: Any):
         self.dep = dep
         self.value = value
-        self.token: Token[Any]
+        # A stack, so the same override can be re-entered while it's already held.
+        self.tokens: list[Token[Any]] = []
 
     def __enter__(self):
         with self.dep.lock:
             if self.dep.override_count == 0:
                 self.dep.provide = self.dep.provide_override
             self.dep.override_count += 1
-            self.token = self.dep.override.set(
-                _ReusableAwaitable(self.value) if self.dep.is_async else self.value
+            self.tokens.append(
+                self.dep.override.set(
+                    _ReusableAwaitable(self.value) if self.dep.is_async else self.value
+                )
             )
 
     def __exit__(self, *_: object) -> None:
         with self.dep.lock:
-            self.dep.override.reset(self.token)
+            self.dep.override.reset(self.tokens.pop())
             self.dep.override_count -= 1
             if self.dep.override_count == 0:
                 self.dep.provide = self.dep.dependency
@@ -128,7 +131,7 @@ class _Overrides:
             raise
 
     def __exit__(self, *_: object) -> None:
-        for o in self._items:
+        for o in reversed(self._items):
             o.__exit__()
 
 
@@ -140,7 +143,8 @@ def override(func: Callable[..., Any], value: Any) -> _Override:
         {py:func}`Depends <stratae.depends.injection.Depends>`.
     :param value: Value injected in place of calling the provider. Used
         as-is; it is not called, even if the provider is async.
-    :returns: A context manager holding the override between entry and exit.
+    :returns: A context manager holding the override between entry and exit. It can be
+        re-entered while held, but not shared between tasks or threads entering it at once.
     :raises DependencyNotFoundError: If `func` was never passed to
         {py:func}`Depends <stratae.depends.injection.Depends>`.
     """
@@ -155,9 +159,11 @@ def overrides(mapping: _OverrideMap) -> _Overrides:
         {py:func}`Depends <stratae.depends.injection.Depends>`, to their
         replacement values.
     :returns: A context manager applying every override on entry and
-        restoring the previous state on exit. If applying one override
-        fails, those already applied are unwound before the error
-        propagates.
+        restoring the previous state on exit, in reverse order. If applying
+        one override fails, those already applied are unwound before the
+        error propagates. Like {py:func}`override`, it can be re-entered
+        while held, but not shared between tasks or threads entering it at
+        once.
     :raises ValueError: If `mapping` is empty.
     :raises DependencyNotFoundError: If any key was never passed to
         {py:func}`Depends <stratae.depends.injection.Depends>`.

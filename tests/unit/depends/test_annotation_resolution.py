@@ -3,6 +3,7 @@
 import __future__
 
 import sys
+import types
 from typing import Any
 
 import pytest
@@ -170,3 +171,54 @@ def test_injected_type_defined_later_is_allowed():
 
     # Assert
     assert result == 1
+
+
+def test_hand_quoted_injected_parameter_raises():
+    """
+    An injected parameter whose whole annotation is quoted raises instead of going uninjected.
+
+    Given: A function whose injected parameter's annotation is a string, compiled without
+        the future import
+    When: inject is applied to it
+    Then: InjectionSignatureError names the parameter
+    """
+    # Arrange
+    handler = _run("def handler(n: 'Annotated[int, Depends(get_number)]') -> int:\n    return n\n")[
+        "handler"
+    ]
+
+    # Act & Assert
+    with pytest.raises(InjectionSignatureError, match="parameter 'n' has a string annotation"):
+        inject(handler)
+
+
+def test_future_annotations_dataclass_with_injected_field_raises():
+    """
+    A dataclass from a module using the future import, with an injected field, raises.
+
+    Its generated `__init__` doesn't carry the module's future flag, so it's caught by
+    evaluating the field's string annotation instead.
+
+    Given: A dataclass compiled with the future import, with an injected field
+    When: inject is applied to it
+    Then: InjectionSignatureError names the field
+    """
+    # Arrange
+    module = types.ModuleType("stratae_test_future_dataclass")
+    sys.modules[module.__name__] = module
+    try:
+        source = (
+            _PRELUDE
+            + "from dataclasses import dataclass\n"
+            + "@dataclass\n"
+            + "class Config:\n"
+            + "    n: Annotated[int, Depends(get_number)]\n"
+        )
+        flags = __future__.annotations.compiler_flag
+        exec(compile(source, "<test>", "exec", flags=flags), module.__dict__)  # noqa: S102
+
+        # Act & Assert
+        with pytest.raises(InjectionSignatureError, match="parameter 'n' has a string annotation"):
+            inject(module.Config)
+    finally:
+        del sys.modules[module.__name__]

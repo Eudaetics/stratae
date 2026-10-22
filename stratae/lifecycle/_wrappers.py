@@ -646,20 +646,15 @@ def create_sync_wrapper[**P, T](
     """
     Create a synchronous wrapper function that caches based on the scope's activation.
 
-    Args:
-        func: The function whose result should be cached.
-        scope: The `Scope` that owns the cached value.
-        cache_key: Callable deriving a hashable cache key from `func`'s
-            arguments. When omitted, the key is `func`'s arguments
-            themselves.
-        ignore_params: Cache a single value per scope activation regardless
-            of arguments, instead of keying by argument values.
-
-    Returns:
-        A wrapper matching `func`'s signature that returns the cached value
-        for the current scope activation, computing and storing it on the
-        first call. Its `uncached` attribute is `func` itself.
-
+    :param func: The function whose result should be cached.
+    :param scope: The {py:class}`Scope <stratae.lifecycle.scope.Scope>` that owns the cached value.
+    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
+        the key is `func`'s arguments themselves.
+    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
+        of keying by argument values.
+    :returns: A wrapper matching `func`'s signature that returns the cached value for the current
+        scope activation, computing and storing it on the first call. Its `uncached` attribute is
+        `func` itself.
     """
     return cast(
         Cached[P, T, T],
@@ -676,20 +671,16 @@ def create_sync_in_async_wrapper[**P, T](
     """
     Create a synchronous wrapper function for use within an async scope.
 
-    Args:
-        func: The function whose result should be cached.
-        scope: The `AsyncScope` that owns the cached value.
-        cache_key: Callable deriving a hashable cache key from `func`'s
-            arguments. When omitted, the key is `func`'s arguments
-            themselves.
-        ignore_params: Cache a single value per scope activation regardless
-            of arguments, instead of keying by argument values.
-
-    Returns:
-        A wrapper matching `func`'s signature that returns the cached value
-        for the current scope activation, computing and storing it on the
-        first call. Its `uncached` attribute is `func` itself.
-
+    :param func: The function whose result should be cached.
+    :param scope: The {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` that owns the
+        cached value.
+    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
+        the key is `func`'s arguments themselves.
+    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
+        of keying by argument values.
+    :returns: A wrapper matching `func`'s signature that returns the cached value for the current
+        scope activation, computing and storing it on the first call. Its `uncached` attribute is
+        `func` itself.
     """
     return cast(
         Cached[P, T, T],
@@ -706,21 +697,16 @@ def create_async_wrapper[**P, T](
     """
     Create an asynchronous wrapper function that caches based on the scope's activation.
 
-    Args:
-        func: The async function whose result should be cached.
-        scope: The `AsyncScope` that owns the cached value.
-        cache_key: Callable deriving a hashable cache key from `func`'s
-            arguments. When omitted, the key is `func`'s arguments
-            themselves.
-        ignore_params: Cache a single value per scope activation regardless
-            of arguments, instead of keying by argument values.
-
-    Returns:
-        An async wrapper matching `func`'s signature that returns the
-        cached value for the current scope activation, computing and
-        storing it on the first call. Its `uncached` attribute is `func`
-        itself.
-
+    :param func: The async function whose result should be cached.
+    :param scope: The {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` that owns the
+        cached value.
+    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
+        the key is `func`'s arguments themselves.
+    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
+        of keying by argument values.
+    :returns: An async wrapper matching `func`'s signature that returns the cached value for the
+        current scope activation, computing and storing it on the first call. Its `uncached`
+        attribute is `func` itself.
     """
     params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
@@ -808,21 +794,17 @@ def create_synccm_wrapper[**P, T](
     exit stack, so it is exited when the owning scope deactivates rather
     than when the wrapper returns.
 
-    Args:
-        func: The context-manager-returning function to wrap.
-        scope: The `Scope`/`AsyncScope` that owns the cached value and exit stack.
-        cache_key: Callable deriving a hashable cache key from `func`'s
-            arguments. When omitted, the key is `func`'s arguments
-            themselves.
-        ignore_params: Cache a single value per scope activation regardless
-            of arguments, instead of keying by argument values.
-
-    Returns:
-        A wrapper matching `func`'s signature that returns the entered
-        value for the current scope activation, entering the context
-        manager on the first call. Its `uncached` attribute is `func`
-        itself - the unentered context manager function.
-
+    :param func: The context-manager-returning function to wrap.
+    :param scope: The {py:class}`Scope <stratae.lifecycle.scope.Scope>`/
+        {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` that owns the cached value
+        and exit stack.
+    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
+        the key is `func`'s arguments themselves.
+    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
+        of keying by argument values.
+    :returns: A wrapper matching `func`'s signature that returns the entered value for the current
+        scope activation, entering the context manager on the first call. Its `uncached` attribute
+        is `func` itself - the unentered context manager function.
     """
     return cast(
         Cached[P, T, AbstractContextManager[T]],
@@ -851,21 +833,16 @@ def create_asynccm_wrapper[**P, T](
     scope's exit stack, so it is exited when the owning scope deactivates
     rather than when the wrapper returns.
 
-    Args:
-        func: The async-context-manager-returning function to wrap.
-        scope: The `AsyncScope` that owns the cached value and exit stack.
-        cache_key: Callable deriving a hashable cache key from `func`'s
-            arguments. When omitted, the key is `func`'s arguments
-            themselves.
-        ignore_params: Cache a single value per scope activation regardless
-            of arguments, instead of keying by argument values.
-
-    Returns:
-        An async wrapper matching `func`'s signature that returns the
-        entered value for the current scope activation, entering the
-        context manager on the first call. Its `uncached` attribute is
-        `func` itself - the unentered async context manager function.
-
+    :param func: The async-context-manager-returning function to wrap.
+    :param scope: The {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` that owns the
+        cached value and exit stack.
+    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
+        the key is `func`'s arguments themselves.
+    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
+        of keying by argument values.
+    :returns: An async wrapper matching `func`'s signature that returns the entered value for the
+        current scope activation, entering the context manager on the first call. Its `uncached`
+        attribute is `func` itself - the unentered async context manager function.
     """
     return cast(
         Cached[P, Awaitable[T], AbstractAsyncContextManager[T]],

@@ -322,3 +322,45 @@ def test_override_thread_isolation():
     assert results["a"] == "value-a"
     assert results["b"] == "value-b"
     assert depends.provide() == "real"
+
+
+def test_override_can_be_reentered_while_held():
+    """
+    The same override object can be entered again while it's already held.
+
+    Given: an override context manager for a dependency,
+    When: it is entered, entered again inside itself, and both are exited,
+    Then: the override applies throughout, and the real dependency is restored at the end.
+    """
+    # Arrange
+    dep = Mock(return_value="real")
+    depends = Provider(dep)
+    ctx = override(dep, "fake")
+
+    # Act & Assert
+    with ctx:
+        with ctx:
+            assert depends.provide() == "fake"
+        assert depends.provide() == "fake"
+    assert depends.provide() == "real"
+
+
+def test_overrides_can_be_reentered_while_held():
+    """
+    The same overrides object can be entered again while it's already held.
+
+    Given: an overrides context manager for two dependencies,
+    When: it is entered, entered again inside itself, and both are exited,
+    Then: both overrides apply throughout, and the real dependencies are restored at the end.
+    """
+    # Arrange
+    dep_a, dep_b = Mock(return_value="real_a"), Mock(return_value="real_b")
+    depends_a, depends_b = Provider(dep_a), Provider(dep_b)
+    ctx = overrides({dep_a: "fake_a", dep_b: "fake_b"})
+
+    # Act & Assert
+    with ctx:
+        with ctx:
+            assert (depends_a.provide(), depends_b.provide()) == ("fake_a", "fake_b")
+        assert (depends_a.provide(), depends_b.provide()) == ("fake_a", "fake_b")
+    assert (depends_a.provide(), depends_b.provide()) == ("real_a", "real_b")

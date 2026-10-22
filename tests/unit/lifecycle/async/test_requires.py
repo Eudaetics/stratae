@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from stratae.lifecycle._slots import SharedVar, SlotStorage
 from stratae.lifecycle.exceptions import ScopeActivationError
 from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
@@ -288,3 +289,40 @@ async def test_failed_activate_does_not_count_as_live_dependent():
 
     # Assert
     assert not parent.is_active()
+
+
+async def test_parent_cannot_deactivate_while_child_is_mid_activation():
+    """
+    A child counts itself on its parent before activating, so the parent can't end under it.
+
+    Given: An active shared parent, and a shared child requiring it whose activation is
+          interrupted - as by another thread - by an attempt to deactivate the parent,
+    When: the child is activated,
+    Then: the parent's deactivation is refused, and the child activates under a live parent.
+    """
+    # Arrange
+    parent = AsyncScope("application", "shared")
+    child = AsyncScope("worker", "shared", requires=parent)
+    parent_activation = parent.activate()
+    refused: list[ScopeActivationError] = []
+
+    class InterruptedVar(SharedVar):
+        __slots__ = ()
+
+        def set(self, value: SlotStorage) -> None:
+            try:
+                parent_activation.__aexit__(None, None, None).send(None)
+            except ScopeActivationError as exc:
+                refused.append(exc)
+            super().set(value)
+
+    child._var = InterruptedVar("worker")  # pyright: ignore[reportPrivateUsage]
+
+    # Act
+    async with child.activate():
+        child_active, parent_active = child.is_active(), parent.is_active()
+
+    # Assert
+    assert child_active and parent_active
+    assert len(refused) == 1
+    assert "a scope requiring it is still active" in str(refused[0])

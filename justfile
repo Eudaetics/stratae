@@ -4,6 +4,12 @@ format:
 lint:
     uv run ruff check --fix .
 
+format-check:
+    uv run ruff format --check .
+
+lint-check:
+    uv run ruff check .
+
 typecheck:
     uv run pyright
 
@@ -37,4 +43,5 @@ type-ignore-check:
 pyright-ignore-check:
     ! grep -rn --include='*.py' 'pyright: ignore' stratae
 
-check: format lint typecheck test no-cover-check type-ignore-check pyright-ignore-check radon-cc radon-mi
+# Mirrors CI without modifying files; run `just format lint` first to auto-fix.
+check: format-check lint-check typecheck test no-cover-check type-ignore-check pyright-ignore-check radon-cc radon-mi

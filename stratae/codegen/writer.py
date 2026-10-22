@@ -25,19 +25,13 @@ class Writer:
         """
         Initialize the writer.
 
-        Args:
-            width: Number of spaces per indent level for a block.
-                Ignored if `use_tabs` is True.
-            use_tabs: If True, indent with a single tab character per level
-                instead of spaces.
-
-        Raises:
-            ValueError: If `use_tabs` is False and `width` is less than 1.
-
+        :param width: Number of spaces per indent level for a block. Ignored if `use_tabs` is True.
+        :param use_tabs: If True, indent with a single tab character per level instead of spaces.
+        :raises ValueError: If `use_tabs` is False and `width` is less than 1.
         """
         if not use_tabs and width < 1:
             raise ValueError(
-                "Indent width must be a positive integer."
+                "Indent width must be a positive integer. "
                 "The recommended indent width per PEP 8 is 4 spaces."
             )
         self._whitespace = " " * width if not use_tabs else "\t"
