@@ -1,10 +1,8 @@
 """
 Stratae: Composable tools for building applications in Python.
 
-Stratae provides lightweight, high-performance building blocks for composing
-applications: dependency injection, lifecycle-scoped caching and cleanup,
-guard checks, typed events, context variables, and serialization. Built on
-Python's native features, it works anywhere: APIs, CLIs, workers, and tests.
+Lightweight building blocks for dependency injection, scoped caching and cleanup, guard
+checks, typed events, context variables, and serialization.
 
 ```{code-block} python
 :caption: Cache a database connection

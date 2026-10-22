@@ -1,19 +1,8 @@
 """
 Wrap event handler callables with async detection and identity semantics.
 
-{py:class}`Handler` stores a callable together with its adapter-specific
-routing config, and detects at construction time whether the callable is a
-coroutine function. Dispatchers can branch on `is_async` once instead of
-re-inspecting the callable on every dispatch. Calling a {py:class}`Handler`
-delegates directly to the wrapped callable, so an async handler's coroutine
-comes back from `__call__` for the caller to await.
-
-Registration produces a distinct `Handler` instance each time, using plain
-object identity rather than equality on the wrapped callable. That instance
-is the token a caller holds onto to unregister later: `remove` takes back
-the exact `Handler` a prior `handle` call returned. See
-{py:class}`Consumer <stratae.events.protocols.Consumer>` for how adapters
-expose `handle` and `remove`.
+{py:class}`Handler` pairs a callable with its routing config and records whether it's async.
+Each registration returns a distinct `Handler`, which is the token `remove` takes back.
 
 ````{example} Using a returned Handler to unregister it later
 ```{code-block} python
@@ -33,8 +22,7 @@ def write_to_log(entry: LogMessage) -> None:
 
 log(text="first")
 
-# handle's decorator form returns the Handler in place of the function it
-# wraps, so write_to_log now holds the exact token remove needs.
+# The decorator returned the Handler, so write_to_log is the token.
 bus.remove(write_to_log)
 log(text="second")
 ```
@@ -52,19 +40,9 @@ from stratae._callables import is_async_callable
 
 class Handler[**P, HandlerConfig, R]:
     """
-    Wrap an event handler callable with async detection and identity semantics.
+    An event handler callable with its routing config.
 
-    Stores the callable together with `HandlerConfig`, the adapter-specific
-    routing config used to key registrations, and detects at construction
-    time whether the callable is a coroutine function, so dispatchers can
-    check `is_async` once instead of re-inspecting the callable on every
-    dispatch.
-
-    Identity is plain object identity. Each registration produces a
-    distinct `Handler` instance, so the same callable can be registered
-    multiple times, with different config or independently, without being
-    deduplicated. Callers remove a registration by passing back the exact
-    `Handler` instance it returned.
+    Compared by identity, so the same callable can be registered more than once.
     """
 
     __slots__ = ("call", "config", "is_async")
@@ -73,28 +51,16 @@ class Handler[**P, HandlerConfig, R]:
         self, call: Callable[P, R], config: HandlerConfig, is_async: bool | None = None
     ) -> None:
         """
-        Store the callable, its routing config, and whether it's async.
+        Wrap a handler.
 
-        :param call: The sync or async callable to wrap. Must accept a single
-            payload instance as its argument.
-        :param config: The adapter-specific routing config for this handler.
-        :param is_async: Whether `call` is a coroutine function. When
-            omitted, detected automatically by inspecting `call`.
+        :param call: Sync or async callable taking the payload.
+        :param config: The handler's routing config.
+        :param is_async: Whether `call` is async. Detected if omitted.
         """
         self.call = call
         self.config = config
         self.is_async = is_async_callable(call) if is_async is None else is_async
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
-        """
-        Invoke the wrapped callable with the given arguments.
-
-        For a sync handler, returns its return value directly. For an async
-        handler, returns the coroutine object; the caller must await it,
-        since a sync `__call__` wrapping an async callable naturally returns
-        the coroutine without `__call__` itself needing to be `async`.
-
-        :returns: The wrapped callable's return value for a sync handler, or
-            an unawaited coroutine for an async handler.
-        """
+        """Call the handler. An async handler returns an unawaited coroutine."""
         return self.call(*args, **kwargs)

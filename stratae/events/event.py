@@ -1,18 +1,10 @@
 """
 Define events as payload types bound to a dispatch pattern.
 
-An event definition captures what an event IS: a payload schema and a
-dispatch pattern, independent of any bus, factory, or routing config.
-{py:class}`DispatchPattern` subclasses describe the dispatch pattern.
-{py:class}`PubSub` is fire and forget. {py:class}`Request` is
-request/reply; subscript it with the reply type, e.g. `Request[BookFound]`.
-
-{py:class}`Event` binds a payload schema to a `DispatchPattern`
-discriminant. Omitting the schema leaves it `NoPayload`, for events whose
-occurrence is the whole message. {py:func}`is_request` and
-{py:func}`reply_type` inspect an `Event`'s discriminant:
-{py:func}`is_request` reports whether it's a subscripted `Request`, and
-{py:func}`reply_type` recovers the reply type from one.
+An {py:class}`Event` pairs a payload schema with a dispatch pattern, independent of any
+bus. {py:class}`PubSub` is fire-and-forget. {py:class}`Request` is request/reply,
+subscripted with the reply type, e.g. `Request[BookFound]`. {py:func}`is_request` and
+{py:func}`reply_type` inspect an event's pattern.
 
 ````{example} Reusing one event definition across bus instances
 ```{code-block} python
@@ -24,8 +16,6 @@ class LogMessage:
 
 log_message_event = Event(PubSub, LogMessage)
 
-# The same Event carries no bus-specific state, so it binds to any
-# number of different bus instances.
 primary = DirectBus()
 audit = DirectBus()
 
@@ -42,10 +32,6 @@ primary_log(text="hello")
 log: hello
 ```
 ````
-
-See {py:class}`Event`, {py:func}`is_request`, and {py:func}`reply_type` for
-the rest of the module's API.
-
 """
 
 from __future__ import annotations
@@ -64,27 +50,14 @@ class DispatchPattern[EmitR, HandleR]:
 
 
 class PubSub(DispatchPattern[None, Any]):
-    """
-    Fire-and-forget dispatch pattern discriminant.
-
-    Emitting an event with this discriminant returns immediately; there is
-    no reply to wait for. A handler's return value is unconstrained and
-    ignored. Pass it as the `pattern` argument to {py:class}`Event`.
-    """
+    """Fire-and-forget dispatch pattern. Handler return values are ignored."""
 
 
 class Request[Reply](DispatchPattern[Reply, Reply]):
     """
-    Request/reply dispatch pattern discriminant.
+    Request/reply dispatch pattern, subscripted with the reply type, e.g. `Request[BookFound]`.
 
-    Emitting an event with this discriminant blocks until a responder
-    returns a `Reply` value. Always subscript with the reply type, e.g.
-    `Request[BookFound]`.
-
-    {py:class}`Event` rejects a bare, unsubscripted `Request` since the
-    reply type could not be recovered at runtime for dispatch or
-    deserialization. Use {py:func}`reply_type` to recover it from a
-    request event's discriminant.
+    {py:class}`Event` rejects a bare `Request`, since the reply type is needed at runtime.
     """
 
 
@@ -94,7 +67,7 @@ def _is_dispatch_pattern(discriminant: object) -> bool:
 
 
 def _is_unsubscripted_request(pattern: type[DispatchPattern[Any, Any]], origin: object) -> bool:
-    """Return whether `pattern` is the bare, unsubscripted `Request` (sub)class."""
+    """Return whether `pattern` is a bare, unsubscripted `Request`."""
     return origin is None and issubclass(pattern, Request)
 
 
@@ -108,33 +81,16 @@ def _validate_pattern(pattern: type[DispatchPattern[Any, Any]]):
 
 
 class NoPayload:
-    """
-    Sentinel schema for an Event that carries no payload at all.
-
-    Distinct from `None`/`NoneType`, which remain available as an ordinary,
-    if degenerate, payload type. Using a dedicated sentinel lets the type
-    system tell "no payload" and "payload is `None`" apart, which collapsing
-    onto `NoneType` could not.
-    """
+    """Schema for an event with no payload, distinct from a payload of `None`."""
 
 
 class Event[T: DispatchPattern[Any, Any], S, Signal: bool]:
     """
     Bus-agnostic event definition binding a schema to a dispatch pattern.
 
-    An `Event` captures what an event IS: the payload schema and the
-    dispatch pattern, independent of any bus, factory, or routing config.
-    It's the shareable definition that both a producer's `bind` and a
-    consumer's `handle` reference.
-
-    `Signal` is a phantom type parameter, never read at runtime: `Literal[True]`
-    for a payload-less event, `Literal[False]` for a schema'd one.
-
-    Omitting `schema` leaves it `NoPayload`, defining an event that carries
-    no payload at all. Its occurrence is the whole message: a heartbeat, a
-    cache invalidation, a shutdown notice. Binding one produces a callable
-    taking no arguments, since there's nothing to pass. It must be given a
-    `name`, since there's no schema to name it after.
+    Shared by a producer's `bind` and a consumer's `handle`. Without a `schema`, the event
+    carries no payload and binds to a zero-argument callable. `Signal` is a type-only
+    parameter marking payload-less events.
     """
 
     __slots__ = ("name", "_pattern", "schema")
@@ -162,17 +118,14 @@ class Event[T: DispatchPattern[Any, Any], S, Signal: bool]:
         name: str | None = None,
     ) -> None:
         """
-        Define an event with a dispatch pattern and schema type.
+        Define an event.
 
-        :param pattern: The dispatch pattern discriminant class.
-        :param schema: The payload type this event carries. Omit it for a
-            payload-less event, leaving the schema `NoPayload`.
-        :param name: Human-readable identifier for this event. Defaults to
-            `schema.__name__`; required for a payload-less event, which has no
-            schema to name it after.
-        :raises TypeError: If `pattern` is an unsubscripted `Request`, or a
-            payload-less event is given no `name`.
-
+        :param pattern: The dispatch pattern.
+        :param schema: The payload type. Omit for a payload-less event.
+        :param name: Identifier for the event. Defaults to `schema.__name__`; required without
+            a schema.
+        :raises TypeError: If `pattern` is a bare `Request`, or a payload-less event has no
+            `name`.
         """
         _validate_pattern(pattern)
         if name is None and schema is NoPayload:
@@ -185,21 +138,16 @@ class Event[T: DispatchPattern[Any, Any], S, Signal: bool]:
 
     @property
     def pattern(self) -> type[T]:
-        """The dispatch pattern discriminant, read-only so pyright can infer `T` as covariant."""
+        """The dispatch pattern; read-only so `T` is covariant."""
         return self._pattern
 
 
 def is_request[T: DispatchPattern[Any, Any], S, Signal: bool](event: Event[T, S, Signal]) -> bool:
     """
-    Report whether the event carries a subscripted Request discriminant.
-
-    Adapters branch on this at dispatch time to select request/reply
-    semantics over fire-and-forget dispatch.
+    Whether the event's pattern is a subscripted {py:class}`Request`.
 
     :param event: Any {py:class}`Event`.
-    :returns: `True` when the event's discriminant is a subscripted
-        {py:class}`Request` (or a subscripted subclass of it), `False`
-        otherwise.
+    :returns: `True` for a request event, otherwise `False`.
     """
     origin: object = get_origin(event.pattern)
     return isinstance(origin, type) and issubclass(origin, Request)
@@ -207,19 +155,11 @@ def is_request[T: DispatchPattern[Any, Any], S, Signal: bool](event: Event[T, S,
 
 def reply_type[R, S, Signal: bool](event: Event[Request[R], S, Signal]) -> type[R]:
     """
-    Recover the reply type from a request event's discriminant.
+    Return the reply type of a request event.
 
-    Adapters use this to know what a blocking emit resolves to at runtime.
-    For example, to deserialize a reply arriving from the far side of a
-    broker.
-
-    :param event: An {py:class}`Event` whose discriminant is a subscripted
-        {py:class}`Request`.
-    :returns: The type `Request` was subscripted with when the event was
-        defined.
-    :raises TypeError: If the event's discriminant is not a subscripted
-        `Request`. Unreachable for type-checked callers; guards dynamic
-            construction paths.
+    :param event: An {py:class}`Event` with a subscripted {py:class}`Request` pattern.
+    :returns: The reply type.
+    :raises TypeError: If the event isn't a request event.
     """
     if not is_request(event):
         raise TypeError(_NOT_A_REQUEST)

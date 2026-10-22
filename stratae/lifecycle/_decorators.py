@@ -1,11 +1,7 @@
 """
-Decorator objects returned by `Scope.cache`/`AsyncScope.cache`.
+Decorator objects returned by `Scope.cache` and `AsyncScope.cache`.
 
-Each decorator binds its `Scope`/`AsyncScope` object directly, and enforces that a function
-is only ever cached in one scope: caching a function's result in more than one scope has no
-fixed, declared home for it - which scope wins would depend on which scopes happen to be
-active when it's called, exactly the kind of runtime-resolved cache placement this design
-rejects elsewhere.
+A function may be cached in only one scope, so its cache always has one fixed home.
 """
 
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
@@ -31,35 +27,29 @@ if TYPE_CHECKING:
 def _is_awaitable[**P, T](
     f: Callable[P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T],
 ) -> TypeGuard[Callable[P, Awaitable[T]]]:
-    """Type guard to narrow func type when it is awaitable."""
+    """Narrow func to its async form."""
     return is_async_callable(f)
 
 
 def _is_auto_sync_cm[**P, T](
     f: Callable[P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T],
 ) -> TypeGuard[Callable[P, AbstractContextManager[T]]]:
-    """Type guard to narrow func type when auto_enter is 'sync'."""
+    """Narrow func to a sync resource."""
     return getattr(unwrap(f), "__auto_enter__", None) == AUTO_ENTER_SYNC
 
 
 def _is_auto_async_cm[**P, T, U](
     f: Callable[P, U | Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[U]],
 ) -> TypeGuard[Callable[P, AbstractAsyncContextManager[U]]]:
-    """Type guard to narrow func type when auto_enter is 'async'."""
+    """Narrow func to an async resource."""
     return getattr(unwrap(f), "__auto_enter__", None) == AUTO_ENTER_ASYNC
 
 
 def _mark_as_scoped(func: Callable[..., Any], scope: "BaseScope") -> None:
     """
-    Mark func's underlying identity as cached in scope, raising if it's already claimed.
+    Mark func's unwrapped identity as cached in scope.
 
-    Marks the same target `resource`/`async_resource` tag - `unwrap(func)` - so caching a
-    `resource`-wrapped generator is checked against its true identity, not the
-    `contextlib.contextmanager` wrapper `resource()` produces. A target that can't hold
-    the mark is rejected rather than left unchecked.
-
-    :raises LifecycleConfigurationError: If func is already cached in a different (or the same)
-        scope, or can't hold the mark - a builtin or a bound method, say.
+    :raises LifecycleConfigurationError: If func is already cached, or can't hold the mark.
     """
     target = unwrap(func)
     existing: "BaseScope | None" = getattr(target, "__cache_scope__", None)
@@ -78,13 +68,7 @@ def _mark_as_scoped(func: Callable[..., Any], scope: "BaseScope") -> None:
 
 
 class CacheDecorator:
-    """
-    Decorator object returned by `Scope.cache`; caches a function within that scope.
-
-    Returned by `Scope.cache()`, not constructed directly. Applying it to a function
-    returns a wrapper whose result is cached for the lifetime of the scope's active
-    activation.
-    """
+    """Decorator returned by `Scope.cache()`."""
 
     __slots__ = ("_scope", "_cache_key", "_ignore_params")
 
@@ -95,13 +79,11 @@ class CacheDecorator:
         ignore_params: bool = False,
     ) -> None:
         """
-        Initialize the CacheDecorator bound to a specific scope.
+        Bind the decorator to a scope.
 
-        :param scope: The {py:class}`Scope <stratae.lifecycle.scope.Scope>` owning the cached value.
-        :param cache_key: Callable deriving a hashable cache key from the decorated function's
-            arguments. When omitted, the key is the arguments themselves.
-        :param ignore_params: Cache a single value per scope activation regardless of arguments,
-            instead of keying by argument values.
+        :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>`.
+        :param cache_key: Derives a hashable key from the arguments.
+        :param ignore_params: Cache one value per activation regardless of arguments.
         """
         self._scope = scope
         self._cache_key = cache_key
@@ -120,16 +102,12 @@ class CacheDecorator:
         func: Callable[P, T | AbstractContextManager[T]],
     ) -> Cached[P, T, T | AbstractContextManager[T]]:
         """
-        Wrap `func` so its result is cached for the lifetime of the scope's activation.
+        Wrap `func` so its result is cached per scope activation.
 
-        :param func: The function to cache. A
-            {py:func}`resource <stratae.lifecycle.resource.resource>`-tagged context manager
-            function is entered automatically, with its yielded value cached in place of the
-            context manager itself.
-        :returns: A wrapper matching `func`'s signature, minus context-manager entry for a
-            {py:func}`resource <stratae.lifecycle.resource.resource>`-tagged `func`. Its `uncached`
-            attribute is `func` itself, callable whether or not the scope is active.
-        :raises LifecycleConfigurationError: If `func` is already cached in some scope.
+        :param func: The function, or a {py:func}`resource <stratae.lifecycle.resource.resource>`
+            to enter.
+        :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
+        :raises LifecycleConfigurationError: If `func` is already cached in a scope.
         """
         _mark_as_scoped(func, self._scope)
 
@@ -147,14 +125,7 @@ class CacheDecorator:
 
 
 class AsyncCacheDecorator:
-    """
-    Decorator object returned by `AsyncScope.cache`; caches a function within that scope.
-
-    Returned by `AsyncScope.cache()`, not constructed directly. Applying it to a function
-    returns a wrapper whose result is cached for the lifetime of the scope's active
-    activation. Accepts sync functions, async functions, and `resource`/`async_resource`
-    -tagged context managers of either flavor.
-    """
+    """Decorator returned by `AsyncScope.cache()`."""
 
     __slots__ = ("_scope", "_cache_key", "_ignore_params")
 
@@ -165,14 +136,11 @@ class AsyncCacheDecorator:
         ignore_params: bool = False,
     ) -> None:
         """
-        Initialize the AsyncCacheDecorator bound to a specific scope.
+        Bind the decorator to a scope.
 
-        :param scope: The {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` owning the
-            cached value.
-        :param cache_key: Callable deriving a hashable cache key from the decorated function's
-            arguments. When omitted, the key is the arguments themselves.
-        :param ignore_params: Cache a single value per scope activation regardless of arguments,
-            instead of keying by argument values.
+        :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+        :param cache_key: Derives a hashable key from the arguments.
+        :param ignore_params: Cache one value per activation regardless of arguments.
         """
         self._scope = scope
         self._cache_key = cache_key
@@ -207,17 +175,12 @@ class AsyncCacheDecorator:
         Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T,
     ]:
         """
-        Wrap `func` so its result is cached for the lifetime of the scope's activation.
+        Wrap `func` so its result is cached per scope activation.
 
-        :param func: The function to cache - sync, async, or a
-            {py:func}`resource <stratae.lifecycle.resource.resource>`/
-            {py:func}`async_resource <stratae.lifecycle.resource.async_resource>`-tagged context
-            manager function of either flavor. A tagged function is entered automatically, with
-            its yielded value cached in place of the context manager itself.
-        :returns: A wrapper matching `func`'s signature, minus context-manager entry for a tagged
-            `func`. Async unless `func` is a plain sync function. Its `uncached` attribute is `func`
-            itself, callable whether or not the scope is active.
-        :raises LifecycleConfigurationError: If `func` is already cached in some scope.
+        :param func: A sync or async function, or a resource of either kind to enter.
+        :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
+            Async unless `func` is a plain sync function.
+        :raises LifecycleConfigurationError: If `func` is already cached in a scope.
         """
         _mark_as_scoped(func, self._scope)
 

@@ -1,48 +1,27 @@
 """
 Scope activation and per-scope function-result caching.
 
-{py:class}`Scope` (sync) and {py:class}`AsyncScope` (async) hold the isolation, storage,
-and cached results for one scope. A scope is itself a context manager: `with scope:`
-(`async with` for {py:class}`AsyncScope`) activates it for the block's duration. For
-split-callback lifecycles, where activation and deactivation happen in different functions,
-{py:meth}`Scope.activate` returns a token to pass to {py:meth}`Scope.deactivate` instead.
-`@scope.cache()` (via {py:meth}`Scope.cache`/{py:meth}`AsyncScope.cache`) decorates a
-function so its result is cached for the lifetime of that scope's active activation. A
-{py:func}`resource <stratae.lifecycle.resource.resource>`/
-{py:func}`async_resource <stratae.lifecycle.resource.async_resource>`-tagged function is
-entered automatically when cached. Its yielded value is cached in place of the context
-manager itself.
+{py:class}`Scope` and {py:class}`AsyncScope` hold the cached results for one scope.
+Activate one with `with scope:` (`async with` for {py:class}`AsyncScope`), or with
+{py:meth}`Scope.activate` and {py:meth}`Scope.deactivate` when the two happen in different
+callbacks. `@scope.cache()` caches a function's result for the active activation. A
+{py:func}`resource <stratae.lifecycle.resource.resource>`-tagged function is entered when
+cached, and its yielded value is cached in its place.
 
-Each scope chooses its own isolation and storage independently. `isolation="shared"`
-uses one cache visible to every thread and task while the scope is active. Use it for
-application-wide state like a connection pool. `isolation="context"` (the default)
-isolates the cache per execution context through a `contextvars.ContextVar`. Use it for
-request- or session-scoped state. `storage="dense"` (the default) indexes slots directly
-by position. `storage="sparse"` allocates slots lazily. Use sparse storage for a scope
-that registers many functions but touches only a handful per activation.
+`isolation="shared"` uses one cache across all threads and tasks, for application-wide
+state. `isolation="context"` (the default) gives each execution context its own cache, for
+request-scoped state. `storage="sparse"` allocates slots lazily, for scopes that register
+many functions but use few per activation.
 
-A shared scope computes each cached entry once, even when several threads or tasks miss it
-at the same time. Later callers wait for that first computation and reuse its result, or
-compute it themselves if it raised. A computation may call other cached functions, including
-its own function with different arguments. A call that would wait on its own unfinished
-computation, such as a no-parameter function calling itself, raises
-{py:exc}`CacheCycleError <stratae.lifecycle.exceptions.CacheCycleError>` instead of
-deadlocking. Only a call from the thread or task doing the computation is detected: a
-computation that waits on another task or thread which needs that same entry, such as a
-child task it awaits, deadlocks.
+A shared scope computes each cached entry once, even under concurrent misses; later callers
+wait for it, or recompute if it raised. A call that would wait on its own unfinished
+computation raises {py:exc}`CacheCycleError <stratae.lifecycle.exceptions.CacheCycleError>`.
+Async cached functions in a context scope get the same treatment across tasks sharing its
+activation. A task that outlives the activation gets
+{py:exc}`ScopeInactiveError <stratae.lifecycle.exceptions.ScopeInactiveError>`.
 
-A context scope's activation is shared by the tasks started inside it, since they inherit
-its context. When those tasks miss the same entry of an async cached function or
-`async_resource` at once, it's computed once, with the same waiting, retrying, and
-{py:exc}`CacheCycleError <stratae.lifecycle.exceptions.CacheCycleError>` rules as a shared
-scope. A sync cached function can't be interrupted by another task part-way through, so it
-isn't guarded this way; only threads running a copied context could overlap it. A task or
-copied context that outlives the activation can't keep using it: its cached calls raise
-{py:exc}`ScopeInactiveError <stratae.lifecycle.exceptions.ScopeInactiveError>`, and
-{py:meth}`BaseScope.is_active` reports `False` there.
-
-A scope can declare another scope as a parent with `requires`. Activating it raises
-immediately unless that scope is already active.
+A scope can require a parent scope with `requires`; activating it raises unless the parent
+is active.
 
 ````{example} Three scope tiers working together: application, request, and block
 ```{code-block} python
@@ -94,8 +73,6 @@ async def handle_order(order_id: int) -> None:
 
 async def main() -> None:
     async with application:
-        # Activating a scope doesn't eagerly cache anything. get_pool() runs
-        # on its first real call, inside process_order below.
         await handle_order(101)
         await handle_order(102)
 
@@ -111,9 +88,6 @@ request 2 block 3: processing 102
 request 2 block 4: logging 102
 ```
 ````
-
-See {py:class}`BaseScope`, {py:class}`Scope`, and {py:class}`AsyncScope` for the rest of
-the module's API.
 """
 
 import threading
@@ -192,27 +166,17 @@ class BaseScope:
         requires: "BaseScope | None" = None,
     ) -> None:
         """
-        Initialize the scope's identity, isolation, and storage, and build its state.
+        Create a scope.
 
-        :param name: Identifier for the scope (e.g. `"request"`, `"application"`). Must
-            be a valid Python identifier.
-        :param isolation: Cache isolation strategy for this scope, one of the
-            {py:data}`IsolationType` values. `"shared"` uses a single cache visible to
-            every concurrent task/thread while the scope is active. `"context"` (the
-            default) isolates the cache per execution context, backed by a
-            `contextvars.ContextVar`.
-        :param storage: Slot storage strategy for this scope's cached values, one of the
-            {py:data}`StorageType` values. `"dense"` (the default) indexes slots directly
-            by position. `"sparse"` allocates slots lazily.
-        :param requires: The scope that must be active before this one can activate, or
-            `None` for no such requirement. A `"shared"` scope cannot require a
-            `"context"`-isolated scope: a context scope's activity is per-execution-context,
-            so there's no single active/inactive answer for a shared scope's concurrent
-            callers to all rely on.
-        :raises LifecycleConfigurationError: If `isolation`/`storage` is not one of their
-            allowed values, or this scope is `"shared"` while `requires` is a
-            `"context"`-isolated scope.
-
+        :param name: Identifier for the scope, e.g. `"request"`.
+        :param isolation: `"shared"` for one cache across all threads and tasks, or
+            `"context"` (default) for one per execution context.
+        :param storage: `"dense"` (default) for positional slots, or `"sparse"` for lazily
+            allocated ones.
+        :param requires: A scope that must be active before this one activates. A shared
+            scope can't require a context scope.
+        :raises LifecycleConfigurationError: If `isolation` or `storage` is invalid, or a
+            shared scope requires a context scope.
         """
         _validate_types(name, isolation, storage)
         _validate_requires(name, isolation, requires)
@@ -233,12 +197,12 @@ class BaseScope:
 
     @property
     def isolation(self) -> IsolationType:
-        """Cache isolation strategy for this scope - fixed at construction, never reassignable."""
+        """Cache isolation strategy for this scope."""
         return self._isolation
 
     @property
     def storage(self) -> StorageType:
-        """Slot storage strategy for this scope - fixed at construction, never reassignable."""
+        """Slot storage strategy for this scope."""
         return self._storage
 
     @property
@@ -248,41 +212,28 @@ class BaseScope:
 
     def is_active(self) -> bool:
         """Whether this scope has a live activation in the calling context."""
-        # Live storage is never empty; an ended activation's storage is emptied.
         return bool(self._var.get(None))
 
     def is_shared(self) -> bool:
-        """Whether this scope's activation holder is a SharedVar, needing lock-guarded access."""
+        """Whether this scope's activation holder is a lock-guarded SharedVar."""
         return isinstance(self._var, SharedVar)
 
     def activation_var(self) -> ScopeVar:
-        """
-        Return the scope's raw activation holder - a ContextVar or SharedVar.
-
-        :returns: The scope's `ContextVar`/`SharedVar`.
-        """
+        """Return the scope's raw `ContextVar` or `SharedVar`."""
         return self._var
 
     def get_slots(self) -> SlotStorage:
         """
-        Get this scope's live slot storage for the current activation.
-
-        Dense storage is first brought up to date with any slots allocated since the
-        activation started: an allocation only extends the activation live in the
-        allocating context, so another context's activation is missing those slots until
-        a cached wrapper's read of one fails and falls back here.
+        Get this scope's live slot storage, extended with any slots allocated since activation.
 
         :returns: The scope's live slot storage.
-        :raises ScopeInactiveError: If the scope has no active activation in the calling
-            context.
+        :raises ScopeInactiveError: If the scope isn't active in the calling context.
         """
         try:
             slots = self._var.get()
         except LookupError:
             raise ScopeInactiveError(f"Scope {self.name!r} is not active.") from None
         if not slots:
-            # Emptied when its activation ended - reached from a task that copied the
-            # context while the activation was live.
             raise ScopeInactiveError(f"Scope {self.name!r} is not active: its activation ended.")
         self._extend(slots)
         return slots
@@ -296,9 +247,6 @@ class BaseScope:
     def _activate(self) -> SlotStorage:
         """
         Activate this scope, returning the new activation's storage.
-
-        The activation's own state - its reset token and its parent's storage - is kept in
-        reserved slots of that storage, so ending it needs nothing but the storage itself.
 
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
@@ -337,12 +285,9 @@ class BaseScope:
         """
         Check the current activation can end, then reset the scope's activation holder.
 
-        :param expected: The storage of the activation a token is ending, which must be the
-            current one, or `None` to end whichever is current.
+        :param expected: The activation's storage, or `None` for the current one.
         :returns: The ended activation's storage, still to be closed and released.
-        :raises ScopeActivationError: If the scope isn't active, the expected activation already
-            ended or isn't the current one, or a scope requiring it is still active, or it's
-            deactivated outside the context that activated it.
+        :raises ScopeActivationError: If the activation can't be ended here.
         """
         var = self._var
         lock = self._lock
@@ -370,24 +315,14 @@ class BaseScope:
                 lock.release()
 
     def exit_stack_type(self) -> type[ExitStack] | type[AsyncExitStack]:
-        """
-        Return this scope's exit stack type.
-
-        :returns: `ExitStack` for a `Scope`, `AsyncExitStack` for an `AsyncScope`.
-        """
+        """Return this scope's exit stack type."""
         return self._exit_stack_cls
 
     def allocate_slot(self) -> tuple[int, bool]:
         """
-        Allocate a dedicated slot for a cached function - a value directly, or a dict entry.
+        Allocate a slot for a cached function. Internal to the cache decorators.
 
-        Internal to the cache decorators; not meant to be called directly. Slots 0 through 3
-        are reserved (the exit stack, the live-dependent count, the reset token, and the
-        parent's storage), so the first allocated slot is 4.
-
-        :returns: The allocated slot's index/key, to be passed to
-            {py:meth}`BaseScope.release_slot` once the owning wrapper is garbage collected,
-            and whether it was reused from the free pool.
+        :returns: The slot's index, and whether it was reused from the free pool.
         """
         with self._slot_lock:
             if free := self._free_slots:
@@ -404,9 +339,6 @@ class BaseScope:
     def release_slot(self, slot: int) -> None:
         """
         Return a slot to the free pool once its owning cache wrapper is gone.
-
-        Only the calling context's activation is cleared; a reused slot's next wrapper
-        ignores what other activations still hold.
 
         :param slot: The slot index/key returned by {py:meth}`BaseScope.allocate_slot`.
         """
@@ -428,7 +360,7 @@ def _release(slots: SlotStorage, parent_lock: threading.Lock | None) -> None:
         if parent_lock is None:
             parent_slots[1] -= 1
         else:
-            # acquire/release rather than `with`: about half the cost on a hot path.
+            # Faster than `with` on this hot path.
             parent_lock.acquire()
             try:
                 parent_slots[1] -= 1
@@ -445,10 +377,10 @@ def _raise_not_current(name: str, expected: SlotStorage) -> NoReturn:
 
 class Activation:
     """
-    The token `Scope.activate()` returns - pass to `deactivate()`, or use as `with`.
+    Token for one activation of a sync scope.
 
-    Returned by {py:meth}`Scope.activate`, not constructed directly. Only needed for
-    split-callback lifecycles; `with scope:` activates without one.
+    Returned by {py:meth}`Scope.activate`. Pass it to {py:meth}`Scope.deactivate`, or use it
+    with `with`.
     """
 
     __slots__ = ("scope", "slots")
@@ -471,21 +403,16 @@ class Activation:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool | None:
-        """
-        Deactivate the scope this token belongs to.
-
-        :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
-            is still active, or it's deactivated outside the context that activated it.
-        """
+        """Deactivate the scope this token belongs to."""
         return self.scope.deactivate(self, exc)
 
 
 class AsyncActivation:
     """
-    The token `AsyncScope.activate()` returns - pass to `deactivate()`, or `async with`.
+    Token for one activation of an async scope.
 
-    Returned by {py:meth}`AsyncScope.activate`, not constructed directly. Only needed for
-    split-callback lifecycles; `async with scope:` activates without one.
+    Returned by {py:meth}`AsyncScope.activate`. Pass it to {py:meth}`AsyncScope.deactivate`,
+    or use it with `async with`.
     """
 
     __slots__ = ("scope", "slots")
@@ -508,12 +435,7 @@ class AsyncActivation:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool | None:
-        """
-        Deactivate the scope this token belongs to.
-
-        :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
-            is still active, or it's deactivated outside the context that activated it.
-        """
+        """Deactivate the scope this token belongs to."""
         return await self.scope.deactivate(self, exc)
 
 
@@ -538,13 +460,8 @@ class Scope(BaseScope):
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool | None:
-        """
-        Deactivate this scope's current activation, closing its entered resources.
-
-        :raises ScopeActivationError: If the scope isn't active, a scope requiring it is still
-            active, or it's deactivated outside the context that activated it.
-        """
-        # The body of deactivate, written out: `with scope:` is the hot path.
+        """Deactivate this scope's current activation, closing its entered resources."""
+        # Inlined deactivate: `with scope:` is the hot path.
         slots = self._end(None)
         try:
             stack = slots[0]
@@ -559,11 +476,9 @@ class Scope(BaseScope):
         """
         Activate this scope, returning a token to pass to `deactivate()`.
 
-        For a plain block, use `with scope:` instead - it needs no token, and is faster.
+        Prefer `with scope:` for a plain block; it's faster.
 
-        :returns: An `Activation` to hold onto and pass to {py:meth}`Scope.deactivate`, for
-            split-callback lifecycles where activation and deactivation happen in different
-            functions. It can also be used as `with`.
+        :returns: An {py:class}`Activation` token.
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
         return Activation(self, self._activate())
@@ -574,20 +489,18 @@ class Scope(BaseScope):
         """
         Deactivate an activation of this scope, closing the resources entered within it.
 
-        :param activation: The `Activation` returned by the matching {py:meth}`Scope.activate`
-            call, which must be the current one, or `None` to end the current activation.
-        :param exc: The exception ending the activation, if any, handed to each resource's
-            cleanup as `with` would.
-        :returns: Whether `exc` was suppressed by a resource's cleanup.
-        :raises ScopeActivationError: If the scope isn't active, `activation` already ended or
-            isn't the current one, or a scope requiring this one is still active.
+        :param activation: The token from {py:meth}`Scope.activate`, or `None` for the current
+            activation.
+        :param exc: The exception ending the activation, passed to each resource's cleanup.
+        :returns: Whether `exc` was suppressed.
+        :raises ScopeActivationError: If the scope isn't active, `activation` isn't current, or
+            a scope requiring this one is still active.
         """
         slots = self._end(None if activation is None else activation.slots)
         try:
             stack = slots[0]
             if stack.contexts:
                 return stack.close(exc)
-            # Nothing entered means nothing to close or suppress - what close would return.
             stack.closed = True
             return False
         finally:
@@ -602,32 +515,18 @@ class Scope(BaseScope):
         """
         Create a decorator that caches a function's result within this scope.
 
-        A {py:func}`resource <stratae.lifecycle.resource.resource>`-tagged function is
-        entered automatically. Its yielded value is cached in place of the context manager
-        itself, and exited when this scope's activation ends.
-
-        ```{note}
-        Cache keying behaves like `functools.lru_cache`: unless `ignore_params` is set, a
-        function that takes parameters gets one cached value per distinct set of arguments (or
-        per `cache_key` result), not one cached value for the whole scope activation. Calling it
-        again with different arguments computes and caches a separate value rather than reusing
-        the first one. A function that takes no parameters has only one possible argument set,
-        so it always uses the same fast slot path as `ignore_params=True`.
-        ```
+        Like `functools.lru_cache`, results are keyed by arguments. A
+        {py:func}`resource <stratae.lifecycle.resource.resource>`-tagged function is entered,
+        its yielded value cached, and exited when the activation ends.
 
         ```{tip}
-        If you know a function's result won't actually vary within a scope activation, even
-        though it still accepts parameters, pass `ignore_params=True`. That caches the value
-        directly in the function's slot instead of a keyed dict, trading per-argument caching
-        for a single, faster slot lookup.
+        Pass `ignore_params=True` when the result doesn't vary by argument within an
+        activation. It uses a single, faster slot instead of a keyed dict.
         ```
 
-        :param cache_key: Callable deriving a hashable cache key from the decorated
-            function's arguments. When omitted, the key is the arguments themselves.
-            Mutually exclusive with `ignore_params`.
-        :param ignore_params: Cache a single value per scope activation regardless of
-            arguments, instead of keying by argument values. Mutually exclusive with
-            `cache_key`.
+        :param cache_key: Derives a hashable key from the arguments. Defaults to the
+            arguments themselves.
+        :param ignore_params: Cache one value per activation regardless of arguments.
         :returns: A decorator, applied to the function whose result should be cached.
         :raises ValueError: If both `cache_key` and `ignore_params` are given.
         """
@@ -657,14 +556,8 @@ class AsyncScope(BaseScope):
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool | None:
-        """
-        Deactivate this scope's current activation, closing its entered resources.
-
-        :raises ScopeActivationError: If the scope isn't active, a scope requiring it is still
-            active, or it's deactivated outside the context that activated it.
-        """
-        # The body of deactivate, written out: `async with scope:` is the hot path, and
-        # awaiting deactivate would cost a coroutine.
+        """Deactivate this scope's current activation, closing its entered resources."""
+        # Inlined deactivate: `async with scope:` is the hot path; this saves a coroutine.
         slots = self._end(None)
         try:
             stack = slots[0]
@@ -679,11 +572,9 @@ class AsyncScope(BaseScope):
         """
         Activate this scope, returning a token to pass to `deactivate()`.
 
-        For a plain block, use `async with scope:` instead - it needs no token, and is faster.
+        Prefer `async with scope:` for a plain block; it's faster.
 
-        :returns: An `AsyncActivation` to hold onto and pass to
-            {py:meth}`AsyncScope.deactivate`, for split-callback lifecycles where activation
-            and deactivation happen in different functions. It can also be used as `async with`.
+        :returns: An {py:class}`AsyncActivation` token.
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
         return AsyncActivation(self, self._activate())
@@ -694,22 +585,18 @@ class AsyncScope(BaseScope):
         """
         Deactivate an activation of this scope, closing the resources entered within it.
 
-        :param activation: The `AsyncActivation` returned by the matching
-            {py:meth}`AsyncScope.activate` call, which must be the current one, or `None` to
-            end the current activation.
-        :param exc: The exception ending the activation, if any, handed to each resource's
-            cleanup as `async with` would.
-        :returns: Whether `exc` was suppressed by a resource's cleanup.
-        :raises ScopeActivationError: If the scope isn't active, `activation` already ended or
-            isn't the current one, or a scope requiring this one is still active.
+        :param activation: The token from {py:meth}`AsyncScope.activate`, or `None` for the
+            current activation.
+        :param exc: The exception ending the activation, passed to each resource's cleanup.
+        :returns: Whether `exc` was suppressed.
+        :raises ScopeActivationError: If the scope isn't active, `activation` isn't current, or
+            a scope requiring this one is still active.
         """
         slots = self._end(None if activation is None else activation.slots)
         try:
             stack = slots[0]
             if stack.contexts:
                 return await stack.aclose(exc)
-            # Nothing entered means nothing to close or suppress - what aclose would return,
-            # without the coroutine.
             stack.closed = True
             return False
         finally:
@@ -724,19 +611,14 @@ class AsyncScope(BaseScope):
         """
         Create a decorator that caches a function's result within this scope.
 
-        Accepts sync functions, async functions, and
-        {py:func}`resource <stratae.lifecycle.resource.resource>`/
-        {py:func}`async_resource <stratae.lifecycle.resource.async_resource>`-tagged
-        context managers of either flavor. A tagged function is entered automatically. Its
-        yielded value is cached in place of the context manager itself, and exited when
-        this scope's activation ends.
+        Accepts sync and async functions. A
+        {py:func}`resource <stratae.lifecycle.resource.resource>` or
+        {py:func}`async_resource <stratae.lifecycle.resource.async_resource>`-tagged function
+        is entered, its yielded value cached, and exited when the activation ends.
 
-        :param cache_key: Callable deriving a hashable cache key from the decorated
-            function's arguments. When omitted, the key is the arguments themselves.
-            Mutually exclusive with `ignore_params`.
-        :param ignore_params: Cache a single value per scope activation regardless of
-            arguments, instead of keying by argument values. Mutually exclusive with
-            `cache_key`.
+        :param cache_key: Derives a hashable key from the arguments. Defaults to the
+            arguments themselves.
+        :param ignore_params: Cache one value per activation regardless of arguments.
         :returns: A decorator, applied to the function whose result should be cached.
         :raises ValueError: If both `cache_key` and `ignore_params` are given.
         """

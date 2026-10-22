@@ -1,40 +1,16 @@
 """
-Core dependency injection module.
+Dependency injection.
 
-{py:func}`Depends` marks a callable as the provider for an injected
-parameter. Wrapping a callable in {py:func}`Depends` registers it as a
-{py:class}`Provider <stratae.depends._provide.Provider>`, the singleton
-that tracks that provider's resolution and override state. Passing the
-same callable twice returns the same
-{py:class}`Provider <stratae.depends._provide.Provider>`. Every
-injection site sharing a provider shares one registration.
-
-The {py:func}`inject` decorator inspects a function's signature at
-decoration time, finds parameters annotated with {py:func}`Depends`, and
-wraps the function. The wrapped function's parameters are resolved by calling
-their providers at call time rather than being passed in by the caller.
-Providers may themselves declare injected parameters, which are resolved
-recursively when the using function is decorated. Sync functions may only
-depend on sync providers, which is validated at decoration time, raising
-{py:exc}`InjectionSignatureError <stratae.depends.exceptions.InjectionSignatureError>`.
-Async functions may mix sync and async providers. Modules using
-`from __future__ import annotations` aren't supported: injection reads the
-annotation objects themselves, so a function or provider from such a module
-with a required parameter raises
-{py:exc}`InjectionSignatureError <stratae.depends.exceptions.InjectionSignatureError>`,
-as does any injected parameter whose annotation is a string, such as a
-dataclass field from such a module.
+{py:func}`Depends` marks a callable as the provider for a parameter, and {py:func}`inject`
+fills those parameters by calling their providers. Providers can declare injected
+parameters of their own. The dependency graph is resolved once, at decoration time. Sync
+functions may only depend on sync providers; async functions may use both. Modules using
+`from __future__ import annotations` aren't supported.
 
 ```{note}
-This module only handles wiring: calling a provider and passing its
-result to whatever declared it as a dependency. A provider runs again on
-every call unless it caches its own result. For singleton or
-scoped values (computed once per request, once per process, etc.),
-layer this with {py:mod}`stratae.lifecycle`. Decorate the provider with
-{py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>`
-(or its {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`
-counterpart) to compute it once per scope activation, then pass that
-cached provider to {py:func}`Depends` as usual.
+A provider runs on every call. To compute it once per scope, decorate it with
+{py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>` before passing it to
+{py:func}`Depends`.
 ```
 
 ````{example} Injecting a Stripe client backed by an API key provider
@@ -77,9 +53,6 @@ print(create_payment(2000))
 pi_2000_123456
 ```
 ````
-
-See {py:func}`Depends` and {py:func}`inject` for the rest of the module's API.
-
 """
 
 import __future__
@@ -123,17 +96,12 @@ def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:  # n
     """
     Mark a callable as the provider for an injected parameter.
 
-    Used inside an annotation, e.g. `Annotated[int, Depends(get_value)]`,
-    or through a type alias such as
-    `type Value = Annotated[int, Depends(get_value)]`. Passing the same callable
-    twice returns the same {py:class}`Provider <stratae.depends._provide.Provider>`,
-    so every injection site of a provider shares one registration.
+    Use it in an annotation, e.g. `Annotated[int, Depends(get_value)]`. The same callable
+    always returns the same {py:class}`Provider <stratae.depends._provide.Provider>`.
 
-    :param dependency: Callable invoked to produce the parameter's value. It
-        may declare injected parameters of its own, resolved recursively
-        when the using function is decorated.
-    :returns: The {py:class}`Provider <stratae.depends._provide.Provider>`
-        registered for the callable.
+    :param dependency: Callable producing the parameter's value. It may have injected
+        parameters of its own.
+    :returns: The callable's {py:class}`Provider <stratae.depends._provide.Provider>`.
     """
     return Provider(dependency=dependency)
 
@@ -156,38 +124,19 @@ def inject(
     sig: Callable[..., Any] | None = None,
 ) -> Any:
     """
-    Resolve a function's injected parameters and strip them from calls.
+    Fill a function's injected parameters from their providers at call time.
 
-    Each parameter annotated `Annotated[T, Depends(provider)]` is filled by
-    its provider when the function is called; callers do not pass it. The
-    dependency graph, including providers' own injected parameters, is
-    resolved once at decoration time.
-
-    By default the decorated function is typed as `Callable[..., R]`; its
-    parameters are not preserved. Injected parameters are stripped at
-    resolution time and there's no way to describe that generically. The
-    `sig` option is provided as a fallback to correct the signature for
-    use in type checking and IDE support. To give the decorated function
-    a precise signature, pass a stub function via `sig`. The decorated
-    function is typed as `sig`, not as the original function. It is
-    recommended to create type stubs instead, although this is provided
-    as a fallback.
+    Callers don't pass injected parameters. The decorated function is typed as
+    `Callable[..., R]`; pass `sig` to give type checkers a precise signature.
 
     :param func: The function to wrap, when used as a bare `@inject`.
-    :param sig: Stub function whose signature is presented to type checkers
-        and IDEs in place of the decorated function's. Has no runtime
-        effect.
-    :returns: The wrapped function, or a decorator when called with
-        arguments. A function with no injected parameters is returned
-        unchanged.
-    :raises InjectionSignatureError: An injected parameter has a default
-        value, a sync function depends on an async provider, a function
-        or provider from a module using `from __future__ import annotations`
-        has a required parameter, an injected parameter's annotation is a
-        string, or injected parameters are found on a
-        callable object rather than a function, method, or class.
-    :raises CircularDependencyError: Providers depend on each other in a
-        cycle.
+    :param sig: Stub function whose signature type checkers see instead. No runtime effect.
+    :returns: The wrapped function, or a decorator when called with arguments. A function
+        with no injected parameters is returned unchanged.
+    :raises InjectionSignatureError: If an injected parameter has a default or a string
+        annotation, a sync function depends on an async provider, a module uses
+        `from __future__ import annotations`, or the target is a callable object.
+    :raises CircularDependencyError: If providers depend on each other in a cycle.
     """
 
     def decorator(f: Callable[..., Any]) -> Any:
@@ -223,11 +172,10 @@ def _resolve_function[**P, R](
 
 def _reject_callable_objects(func: Callable[..., Any], resolved_deps: dict[str, Provider]) -> None:
     """
-    Raise if `func` has injected parameters but is a callable object, not a function or class.
+    Raise if `func` has injected parameters but is a callable object.
 
-    Injecting into an object - one with `__call__`, or a `functools.partial` - would replace
-    it with a function, losing what the object is, and leave unclear whether it's the
-    object's `__call__` or `__init__` being injected.
+    Injecting would replace the object with a function, and it's ambiguous whether
+    `__call__` or `__init__` is meant.
     """
     if resolved_deps and not (isfunction(func) or ismethod(func) or isclass(func)):
         raise InjectionSignatureError(
@@ -237,7 +185,7 @@ def _reject_callable_objects(func: Callable[..., Any], resolved_deps: dict[str, 
 
 
 def _annotated_function(func: Callable[..., Any]) -> Any:
-    """Return the function whose code and globals `func`'s parameter annotations come from."""
+    """Return the function whose globals `func`'s annotations come from."""
     return unwrap(func.__init__ if isclass(func) else func)
 
 
@@ -248,12 +196,7 @@ def _uses_future_annotations(func: Callable[..., Any]) -> bool:
 
 
 def _reject_future_annotations(func: Callable[..., Any], sig: Signature) -> None:
-    """
-    Raise if `func` could have an injected parameter whose annotation is only a string.
-
-    Every annotation in such a module is a string, and an injected parameter never has
-    a default, so any required parameter might be one.
-    """
+    """Raise if `func` has a required parameter in a module with stringified annotations."""
     variadic = (Parameter.VAR_POSITIONAL, Parameter.VAR_KEYWORD)
     required = any(
         param.default is Parameter.empty and param.kind not in variadic
@@ -268,13 +211,13 @@ def _reject_future_annotations(func: Callable[..., Any], sig: Signature) -> None
 
 
 def _is_quoted_dependency(annotation: Any, namespace: dict[str, Any]) -> bool:
-    """Whether `annotation` is a string that evaluates to an injected parameter's annotation."""
+    """Whether `annotation` is a string evaluating to an injected annotation."""
     if not isinstance(annotation, str):
         return False
     try:
         value = eval(annotation, namespace)  # noqa: S307
     except Exception:
-        # A forward reference or TYPE_CHECKING-only name - not resolvable, so not injected.
+        # An unresolvable forward reference, so not injected.
         return False
     value = _unwrap_type(value)
     return get_origin(value) is Annotated and _get_annotated_info(value) is not None
@@ -282,12 +225,9 @@ def _is_quoted_dependency(annotation: Any, namespace: dict[str, Any]) -> bool:
 
 def _reject_quoted_dependencies(func: Callable[..., Any], sig: Signature) -> None:
     """
-    Raise if one of `func`'s parameters is an injected parameter written as a string.
+    Raise if one of `func`'s injected parameters is annotated with a string.
 
-    Catches what `_reject_future_annotations` can't see from code flags: a hand-quoted
-    annotation, or a class whose `__init__` was generated, like a dataclass's, from a
-    module using `from __future__ import annotations`. Each string is evaluated in the
-    globals `func` was defined in, the same way `typing.get_type_hints` would.
+    Catches hand-quoted annotations and generated `__init__`s, such as a dataclass's.
     """
     namespace: dict[str, Any] = getattr(_annotated_function(func), "__globals__", {})
     for param in sig.parameters.values():
@@ -343,7 +283,7 @@ def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., Any]]) ->
 def _validate_sync_async_constraint(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> None:
-    """Check if a function has async dependencies."""
+    """Raise if a sync function has async dependencies."""
     if iscoroutinefunction(func) or isasyncgenfunction(func):
         return
 
@@ -365,7 +305,7 @@ def _create_wrapper(
 
 
 def _wrapper_factory(func: Callable[..., Any]) -> Callable[..., Callable[..., Any]]:
-    """Determine the correct create wrapper function based on the function type."""
+    """Pick the wrapper factory for the function's type."""
     if iscoroutinefunction(func):
         return create_async_wrapper
     elif isasyncgenfunction(func):

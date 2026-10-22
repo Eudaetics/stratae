@@ -7,8 +7,7 @@ from typing import Any, Callable
 
 from stratae.codegen.exceptions import InvalidTransitionError
 
-# On 3.14+, signature() evaluates annotations, raising NameError for a forward reference or
-# a TYPE_CHECKING-only import; FORWARDREF leaves just those names unresolved instead.
+# On 3.14+, signature() raises NameError on forward references unless given FORWARDREF.
 _SIGNATURE_OPTIONS: dict[str, Any] = (
     {"annotation_format": __import__("annotationlib").Format.FORWARDREF}
     if sys.version_info >= (3, 14)

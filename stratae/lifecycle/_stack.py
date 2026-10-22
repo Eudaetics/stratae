@@ -10,13 +10,9 @@ def _record(
     outcome: BaseException | None,
 ) -> list[BaseException]:
     """
-    Record a context manager's exit outcome that differs from the exception it was handed.
+    Record an exit outcome that differs from the exception it was handed.
 
-    Only called off the common path, once an exit raises something new or suppresses what
-    it was handed, so a close where nothing changes never builds the list. `pending` starts
-    as the exception that was propagating, if any. A new exception is appended; a
-    suppressed one clears everything, since each earlier exception is only reachable
-    through the one that was suppressed, same as with `contextlib.ExitStack`.
+    A suppressed exception clears the list, as with `contextlib.ExitStack`.
     """
     if outcome is None:
         return []
@@ -28,22 +24,16 @@ def _record(
 
 
 def _seed(current: BaseException | None, outcome: BaseException) -> list[BaseException]:
-    """
-    Start the pending list at the first exit outcome that differs from what it was handed.
-
-    `outcome` is never `current` itself - the caller only records an outcome that differs -
-    so it needs no duplicate check.
-    """
+    """Start the pending list at the first outcome that differs from what it was handed."""
     return [outcome] if current is None else [current, outcome]
 
 
 def _settle(pending: list[BaseException], received: BaseException | None) -> bool:
     """
-    Finish a close in which some exit raised something new or suppressed what it was handed.
+    Finish a close in which some exit raised or suppressed.
 
-    Returns `True` if everything was suppressed and there was a caller's exception to
-    suppress, else `False`. Raises the single exception still propagating, or a group of
-    every one, most recent first.
+    Returns whether the caller's exception was suppressed, or raises what's still
+    propagating.
     """
     if not pending:
         return received is not None
@@ -57,27 +47,20 @@ def _closed_error() -> ScopeInactiveError:
 
 
 class ExitStack:
-    """
-    Sync exit stack for context managers entered by resources within a scope activation.
-
-    Lives in a scope's reserved slot 0, created lazily on first use; `close`
-    unwinds every entered context manager in reverse order when the owning
-    scope deactivates.
-    """
+    """Sync exit stack for the resources entered in a scope activation."""
 
     __slots__ = ("contexts", "closed")
 
     def __init__(self) -> None:
-        """Initialize with no registered context managers."""
+        """Create an empty stack."""
         self.contexts: list[AbstractContextManager[Any]] = []
         self.closed = False
 
     def enter_context[R](self, ctx: AbstractContextManager[R]) -> R:
         """
-        Enter a context manager and register it for cleanup on close().
+        Enter a context manager, registering it for close().
 
-        :raises ScopeInactiveError: If the stack closed while `ctx` was being entered -
-            `ctx` is exited at once rather than left open with no cleanup coming.
+        :raises ScopeInactiveError: If the stack closed during entry; `ctx` is exited at once.
         """
         result = ctx.__enter__()
         if self.closed:
@@ -88,12 +71,11 @@ class ExitStack:
 
     def close(self, exc: BaseException | None = None) -> bool:
         """
-        Close every registered context manager, seeded with the caller's exception, if any.
+        Close every registered context manager, starting from the caller's exception.
 
-        :returns: Whether the caller's exception was suppressed - `False` when it should
-            propagate unchanged, or when there was none.
-        :raises BaseException: The one new exception a context manager raised while closing,
-            or a `BaseExceptionGroup` of every exception still propagating if there are more.
+        :returns: Whether the caller's exception was suppressed.
+        :raises BaseException: A new exception from closing, or a `BaseExceptionGroup` if
+            several are propagating.
         """
         received = exc
         pending: list[BaseException] | None = None
@@ -116,18 +98,12 @@ class ExitStack:
 
 
 class AsyncExitStack:
-    """
-    Async exit stack for context managers entered by resources within a scope activation.
-
-    Lives in a scope's reserved slot 0, created lazily on first use; `aclose`
-    unwinds every entered context manager in reverse order when the owning
-    scope deactivates, awaiting only the async ones.
-    """
+    """Async exit stack for the resources entered in a scope activation."""
 
     __slots__ = ("contexts", "closed", "claims")
 
     def __init__(self) -> None:
-        """Initialize with no registered context managers, and no claimed cache misses."""
+        """Create an empty stack with no claimed cache misses."""
         self.contexts: list[tuple[bool, Any]] = []
         self.closed = False
         self.claims: dict[Hashable, Any] = {}
@@ -136,10 +112,9 @@ class AsyncExitStack:
 
     def enter_context[T](self, ctx: AbstractContextManager[T]) -> T:
         """
-        Enter a sync context manager and register it for cleanup on aclose().
+        Enter a sync context manager, registering it for aclose().
 
-        :raises ScopeInactiveError: If the stack closed while `ctx` was being entered -
-            `ctx` is exited at once rather than left open with no cleanup coming.
+        :raises ScopeInactiveError: If the stack closed during entry; `ctx` is exited at once.
         """
         result = ctx.__enter__()
         if self.closed:
@@ -150,10 +125,9 @@ class AsyncExitStack:
 
     async def enter_async_context[T](self, ctx: AbstractAsyncContextManager[T]) -> T:
         """
-        Enter an async context manager and register it for cleanup on aclose().
+        Enter an async context manager, registering it for aclose().
 
-        :raises ScopeInactiveError: If the stack closed while `ctx` was being entered -
-            `ctx` is exited at once rather than left open with no cleanup coming.
+        :raises ScopeInactiveError: If the stack closed during entry; `ctx` is exited at once.
         """
         result = await ctx.__aenter__()
         if self.closed:
@@ -164,12 +138,11 @@ class AsyncExitStack:
 
     async def aclose(self, exc: BaseException | None = None) -> bool:
         """
-        Close every registered context manager, seeded with the caller's exception, if any.
+        Close every registered context manager, starting from the caller's exception.
 
-        :returns: Whether the caller's exception was suppressed - `False` when it should
-            propagate unchanged, or when there was none.
-        :raises BaseException: The one new exception a context manager raised while closing,
-            or a `BaseExceptionGroup` of every exception still propagating if there are more.
+        :returns: Whether the caller's exception was suppressed.
+        :raises BaseException: A new exception from closing, or a `BaseExceptionGroup` if
+            several are propagating.
         """
         received = exc
         pending: list[BaseException] | None = None

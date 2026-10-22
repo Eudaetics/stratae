@@ -1,20 +1,10 @@
 """
 Event envelope carrying correlation and causation identifiers across the call chain.
 
-{py:class}`Envelope` pairs a message id with a correlation id shared by every
-envelope descended from the same root, and a causation id pointing at
-whichever message produced it. {py:func}`Envelope.child` derives the next
-envelope in the same chain. {py:func}`Envelope.to_headers` and
-{py:func}`Envelope.from_headers` round-trip an envelope through the
-{py:data}`MESSAGE_ID_HEADER`, {py:data}`CORRELATION_ID_HEADER`,
-{py:data}`CAUSATION_ID_HEADER`, and {py:data}`TIMESTAMP_HEADER` message
-headers, for adapters that cross a real transport.
-
-{py:func}`Envelope.current` reads whichever envelope is active in the running
-context, or `None` if none is. {py:func}`Envelope.scope` sets the active
-envelope for the duration of a block, restoring the previous one on exit.
-Called with no envelope, it creates a child of the current one if there is
-one, or a fresh root envelope otherwise.
+{py:class}`Envelope` carries a message id, a correlation id shared across its chain, and
+a causation id pointing at its parent. {py:func}`Envelope.scope` sets the active envelope
+for a block, creating a child of the current one by default. {py:func}`Envelope.to_headers`
+and {py:func}`Envelope.from_headers` carry it across a transport.
 
 ````{example} Tracing a chained event through envelopes
 ```{code-block} python
@@ -39,10 +29,7 @@ schedule_shipment = bus.bind(shipment_scheduled_event, factory=ShipmentScheduled
 @bus.handle(order_placed_event)
 def on_order_placed(order: OrderPlaced) -> None:
     print(f"order placed:       {Envelope.current()}")
-    # Emitting from inside a handler opens a child envelope: same
-    # correlation_id, with causation_id set to this envelope's message_id.
-    # The payoff is bigger once a chain like this crosses a real transport,
-    # but it threads through in-process dispatch the same way.
+    # Opens a child envelope, caused by this one.
     schedule_shipment(order_id=order.order_id)
 
 @bus.handle(shipment_scheduled_event)
@@ -87,15 +74,9 @@ def _when(value: object | None) -> datetime:
 @dataclass(frozen=True)
 class Envelope:
     """
-    Immutable record of correlation and causation ids for one message in a causal chain.
+    Immutable correlation and causation ids for one message in a causal chain.
 
-    Every envelope carries a `message_id`, a `correlation_id` shared by every
-    envelope descended from the same root, and a `causation_id` pointing at
-    the `message_id` of whichever envelope produced it (`None` on a root
-    envelope). {py:func}`Envelope.child` derives the next envelope in the
-    chain. {py:func}`Envelope.scope` tracks the currently active envelope in
-    a `contextvars.ContextVar`, readable back via {py:func}`Envelope.current`.
-
+    `causation_id` is `None` on a root envelope.
     """
 
     message_id: UUID = field(default_factory=uuid4)
@@ -105,11 +86,9 @@ class Envelope:
 
     def child(self) -> Envelope:
         """
-        Derive a child envelope that continues the same correlation chain.
+        Derive the next envelope in this chain.
 
-        :returns: A new {py:class}`Envelope` with this envelope's `correlation_id`
-            and `causation_id` set to this envelope's `message_id`.
-
+        :returns: An {py:class}`Envelope` with this `correlation_id`, caused by this message.
         """
         return Envelope(
             correlation_id=self.correlation_id,
@@ -118,12 +97,9 @@ class Envelope:
 
     def to_headers(self) -> dict[str, str]:
         """
-        Serialize the envelope as portable `x-` message headers.
+        Serialize the envelope as `x-` message headers.
 
-        :returns: A `dict` with string values for {py:data}`MESSAGE_ID_HEADER`,
-            {py:data}`CORRELATION_ID_HEADER`, and {py:data}`TIMESTAMP_HEADER`,
-            plus {py:data}`CAUSATION_ID_HEADER` if `causation_id` is set.
-
+        :returns: A `dict` of string header values.
         """
         headers = {
             MESSAGE_ID_HEADER: str(self.message_id),
@@ -137,18 +113,11 @@ class Envelope:
     @classmethod
     def from_headers(cls, headers: Mapping[str, object]) -> Envelope:
         """
-        Rebuild an envelope from message headers.
+        Rebuild an envelope from message headers, generating any missing fields.
 
-        Fields absent from `headers` are minted fresh. A partial set, for
-        example a foreign message carrying only a message id, keeps what it
-        declares and defaults the rest.
-
-        :param headers: Header mapping to read, keyed by {py:data}`MESSAGE_ID_HEADER`,
-            {py:data}`CORRELATION_ID_HEADER`, {py:data}`CAUSATION_ID_HEADER`, and
-            {py:data}`TIMESTAMP_HEADER`. Missing keys fall back to their defaults.
-        :returns: The reconstructed {py:class}`Envelope`.
+        :param headers: The message headers.
+        :returns: The rebuilt {py:class}`Envelope`.
         :raises ValueError: If a header is present but unparseable.
-
         """
         return cls(
             message_id=_uuid(headers.get(MESSAGE_ID_HEADER)) or uuid4(),
@@ -159,31 +128,18 @@ class Envelope:
 
     @staticmethod
     def current() -> Envelope | None:
-        """
-        Retrieve the current envelope, or `None` if no envelope is active.
-
-        :returns: The {py:class}`Envelope` active in the calling context, or
-            `None` outside any {py:func}`Envelope.scope` block.
-
-        """
+        """Return the active envelope, or `None` outside any {py:func}`Envelope.scope` block."""
         return _current.get(None)
 
     @classmethod
     @contextmanager
     def scope(cls, envelope: Envelope | None = None) -> Generator[Envelope, None, None]:
         """
-        Set the active envelope for the duration of the block, then restore the previous one.
+        Set the active envelope for a block, restoring the previous one on exit.
 
-        If `envelope` is omitted, inherits from the currently active envelope,
-        creating a child of it via {py:func}`Envelope.child`, or creates a new
-        root envelope if none is active.
-
-        :param envelope: The envelope to make active for the block. When
-            omitted, one is derived from the current context as described
-            above.
-        :returns: A context manager yielding the active `Envelope` for the
-            duration of the block.
-
+        :param envelope: The envelope to activate. Defaults to a child of the current
+            envelope, or a new root.
+        :returns: A context manager yielding the active {py:class}`Envelope`.
         """
         if envelope is None:
             parent = _current.get(None)

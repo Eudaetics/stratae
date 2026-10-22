@@ -1,17 +1,11 @@
 """
-Serialization and deserialization tools for encoding/decoding data.
+Serialization and deserialization of payloads to and from bytes.
 
-{py:func}`serialize` turns a payload into bytes, using {py:func}`encode` to
-convert individual fields that aren't natively JSON-serializable.
-{py:class}`Serializer` is the structural protocol for adapters to use as the
-interface for using a serializer. {py:class}`Deserializer` is the structural
-counterpart on the decode side. It is a type-directed deserializer shaped like
-`msgspec.json.decode(data, type=T)`. {py:obj}`deserialize` is the default,
-dependency-free implementation. Register a type with
-`@encode.register`/`@serialize.register` on the way out and
-`@deserialize.register` on the way back in. See
-{py:mod}`stratae.integrations.msgspec` for a faster `serialize` registered
-for `msgspec.Struct` payloads.
+{py:func}`serialize` turns a payload into JSON bytes, using {py:func}`encode` for fields
+`json` can't handle. {py:obj}`deserialize` decodes bytes into a target type. Extend them with
+`@encode.register`, `@serialize.register`, and `@deserialize.register`. {py:class}`Serializer`
+and {py:class}`Deserializer` are the protocols adapters accept, so either side can be swapped
+out. See {py:mod}`stratae.integrations.msgspec` for a faster path for `msgspec.Struct`.
 
 ````{example} Round-tripping a dataclass through serialize and deserialize
 ```{code-block} python
@@ -50,10 +44,6 @@ b'{"id": "47e511ef-f16c-4699-98db-a0d44abcab90", "customer": "Acme Corp"}'
 True
 ```
 ````
-
-See {py:func}`encode`, {py:func}`serialize`, {py:class}`Deserializer`, and
-{py:obj}`deserialize` for the rest of the module's API.
-
 """
 
 import json
@@ -85,11 +75,8 @@ def encode(obj: object) -> Any:
     """
     Encode a field value for serialization.
 
-    Uses `functools.singledispatch`; register additional types via
-    `@encode.register`. Pre-registered with `UUID` ({py:func}`encode_uuid`),
-    `datetime` ({py:func}`encode_datetime`), and `Decimal`
-    ({py:func}`encode_decimal`). Used as the `default` hook by
-    {py:func}`serialize`.
+    A `functools.singledispatch` function used as {py:func}`serialize`'s `default` hook.
+    `UUID`, `datetime`, and `Decimal` are pre-registered.
 
     :param obj: The value to encode.
     :returns: A JSON-serializable representation of `obj`.
@@ -101,10 +88,9 @@ def encode(obj: object) -> Any:
 @encode.register
 def encode_uuid(obj: UUID) -> str:
     """
-    Encode a `UUID` as its string representation.
+    Encode a `UUID` as its string form.
 
-    Pre-registered on {py:func}`encode` as a common default. Overwrite it
-    with `@encode.register` if this doesn't match your requirements.
+    Pre-registered on {py:func}`encode`; override with `@encode.register`.
 
     :param obj: The UUID to encode.
     :returns: The string form of `obj`.
@@ -117,8 +103,7 @@ def encode_datetime(obj: datetime) -> str:
     """
     Encode a `datetime` as an ISO 8601 string.
 
-    Pre-registered on {py:func}`encode` as a common default. Overwrite it
-    with `@encode.register` if this doesn't match your requirements.
+    Pre-registered on {py:func}`encode`; override with `@encode.register`.
 
     :param obj: The datetime to encode.
     :returns: The ISO 8601 string form of `obj`.
@@ -131,8 +116,7 @@ def encode_decimal(obj: Decimal) -> str:
     """
     Encode a `Decimal` as its string form.
 
-    Pre-registered on {py:func}`encode` as a common default. Overwrite it
-    with `@encode.register` if this doesn't match your requirements.
+    Pre-registered on {py:func}`encode`; override with `@encode.register`.
 
     :param obj: The decimal to encode.
     :returns: The string form of `obj`.
@@ -142,13 +126,9 @@ def encode_decimal(obj: Decimal) -> str:
 
 class Serializer[T](Protocol):
     """
-    Structural protocol for a payload serializer.
+    Structural protocol for a payload serializer, shaped like {py:func}`serialize`.
 
-    Shaped after the call signature of {py:func}`serialize`. A caller can
-    type a parameter against this protocol instead of a bare `Callable` and
-    swap the serializer out entirely, for example passing
-    `msgspec.json.encode` directly and bypassing {py:func}`serialize`'s own
-    `singledispatch` registration.
+    Lets callers swap in another serializer, such as `msgspec.json.encode`.
     """
 
     def __call__(self, obj: T, /) -> bytes:
@@ -164,14 +144,10 @@ class Serializer[T](Protocol):
 @singledispatch
 def serialize(obj: object) -> bytes:
     """
-    Serialize a payload to bytes.
+    Serialize a payload to JSON bytes.
 
-    Falls back to `json.dumps`, using {py:func}`encode` as the field-level
-    hook for types not natively serializable by `json`. Register faster or
-    format-specific paths for particular payload types via
-    `@serialize.register`; see {py:mod}`stratae.integrations.msgspec` for a
-    registered path that uses `msgspec.json.encode` for `msgspec.Struct`
-    payloads.
+    Uses `json.dumps` with {py:func}`encode` as the field hook. Register faster paths for
+    specific payload types with `@serialize.register`.
 
     :param obj: The payload to serialize.
     :returns: The serialized payload as bytes.
@@ -183,10 +159,8 @@ class Deserializer(Protocol):
     """
     Structural protocol for a type-directed deserializer.
 
-    Shaped after the call signature of `msgspec.json.decode(data, type=T)`.
-    Adapters for other tools can be written as lambdas or thin wrappers
-    around that tool's own decode function. {py:obj}`deserialize` is the
-    default, dependency-free implementation.
+    Shaped like `msgspec.json.decode(data, type=T)`. {py:obj}`deserialize` is the default
+    implementation.
     """
 
     def __call__[S](self, data: bytes, /, *, type: type[S]) -> S:
@@ -210,15 +184,10 @@ def _decode_any(value: Any) -> Any:
 
 def _dispatch_bases(type_: Any) -> Sequence[Any]:
     """
-    Return the bases to check for a handler, in order, once `type_` itself has none.
+    Return the bases to check for a handler once `type_` itself has none.
 
-    That's `type_`'s MRO without `type_`, except that an `Enum` subclass checks only its
-    `Enum` bases. Python orders a mixed-in data type ahead of `Enum` - `IntEnum`'s MRO
-    is `IntEnum, int, ReprEnum, Enum, object` - so the `int` handler would otherwise
-    build a plain int in place of a member, deciding by value when no `Enum` handler is
-    registered. Whether an enum decodes by value or by name is the application's choice,
-    so an enum with no handler of its own or on an `Enum` base raises instead, the same
-    as a plain `Enum`.
+    That's the MRO minus `type_`, except an `Enum` subclass checks only its `Enum` bases.
+    Otherwise a mixed-in type like `int` would decode an `IntEnum` as a plain int.
     """
     bases: tuple[Any, ...] = getattr(type_, "__mro__", ())[1:]
     if isinstance(type_, EnumType):
@@ -231,13 +200,9 @@ _ARRAY_TYPES = (list, tuple, set, frozenset)
 
 def _require_array(value: Any, target: str) -> None:
     """
-    Raise unless `value` is a container a typed list/set/frozenset/tuple target accepts.
+    Raise unless `value` is a list, tuple, set, or frozenset.
 
-    Checked before recursing, since a str or dict is iterable too and would otherwise be
-    split into its characters or keys. It only checks, never converts: converting to a
-    set first would fail on elements that are only hashable once constructed.
-
-    :raises TypeError: If `value` isn't a list, tuple, set, or frozenset.
+    Guards against a str or dict being iterated into characters or keys.
     """
     if not isinstance(value, _ARRAY_TYPES):
         raise TypeError(
@@ -247,11 +212,10 @@ def _require_array(value: Any, target: str) -> None:
 
 class Deserialize:
     """
-    Simple implementation of the `Deserializer` protocol for per-type registration.
+    Default {py:class}`Deserializer` with per-type handler registration.
 
-    Since `functools.singledispatch` does not work by type in the way needed for
-    deserialization, this creates a similar registration-based method for
-    adding handlers on a per-type basis.
+    Like `functools.singledispatch`, but dispatching on the target type rather than the
+    argument's type.
     """
 
     def __init__(self) -> None:
@@ -282,12 +246,9 @@ class Deserialize:
         """
         Deserialize JSON bytes, optionally into an instance of `type`.
 
-        Decodes `data` exactly once. With no `type`, returns that decoded
-        value as-is, the same as plain `json.loads`.
-
-        A handler registered via {py:meth}`register` runs first, if one exists
-        for `type` or one of its parents in the mro. Otherwise `construct`
-        recurses element-wise for typed containers and similar structures.
+        With no `type`, behaves like `json.loads`. Otherwise a handler registered with
+        {py:meth}`register` for `type` or a base runs first, falling back to element-wise
+        construction of typed containers.
 
         :param data: The raw JSON bytes to decode.
         :param type: The type to reconstruct, if any.
@@ -300,21 +261,14 @@ class Deserialize:
 
     def construct(self, type_: Any, value: Any, /) -> Any:
         """
-        Construct `type` from an already-decoded JSON `value`.
+        Construct `type` from an already-decoded JSON value.
 
-        The registry is checked first, before anything else. A handler
-        registered for a type applies everywhere that type gets
-        constructed, a `list[T]` element or a `dict[K, V]` value included,
-        not just `__call__`'s own `type` argument directly. `Any` is
-        pre-registered there too, returning `value` unchanged. `Any` means
-        "no constraint," not "a type named Any to construct."
+        Registered handlers apply wherever `type` appears, including container elements.
 
         :param type: The type to reconstruct.
-        :param value: The decoded JSON value to construct it from.
+        :param value: The decoded JSON value.
         :returns: The reconstructed `type` instance.
-        :raises TypeError: If `type` has no registered handler and isn't
-            one of the structural generics `construct` already knows how to
-            recurse into.
+        :raises TypeError: If `type` has no handler and isn't a supported generic.
         """
         if found := self._lookup_handler(type_):
             handler, takes_type = found
@@ -330,16 +284,9 @@ class Deserialize:
 
     def _lookup_handler(self, type: Any) -> tuple[Callable[..., Any], bool] | None:
         """
-        Look up a registered handler for `type`, walking its MRO.
+        Look up a registered handler for `type`, walking its MRO like `singledispatch`.
 
-        Mirrors `functools.singledispatch`'s own dispatch: a handler
-        registered for a base class also covers its subclasses, unless a
-        more specific handler is registered for the subclass itself. The one
-        difference is an `Enum` subclass, which checks only its `Enum` bases,
-        skipping a mixed-in type like `int` (see `_dispatch_bases`). `type`
-        may not be a real class at all (a `UnionType`, a generic alias,
-        `Any`), in which case it has no `__mro__` and only the exact lookup
-        applies.
+        Types without an `__mro__`, such as unions and generic aliases, only match exactly.
         """
         if found := self._handlers.get(type):
             return found
@@ -367,7 +314,7 @@ class Deserialize:
         return frozenset(self.construct(item_type, item) for item in value)
 
     def _construct_tuple(self, args: tuple[Any, ...], value: Any) -> tuple[Any, ...]:
-        """Recurse into each element of a `tuple[...]` target, fixed-length or variadic."""
+        """Recurse into each element of a `tuple[...]` target."""
         _require_array(value, "tuple")
         if len(args) == 2 and args[1] is Ellipsis:
             item_type = args[0]
@@ -375,7 +322,7 @@ class Deserialize:
         return self._construct_fixed_tuple(args, value)
 
     def _construct_fixed_tuple(self, args: tuple[Any, ...], value: Any) -> tuple[Any, ...]:
-        """Recurse into each element of a fixed-length `tuple[...]` target, checking its length."""
+        """Recurse into a fixed-length `tuple[...]` target, checking its length."""
         if len(value) != len(args):
             raise TypeError(
                 f"Cannot deserialize {value!r} into tuple: expected {len(args)} elements, "
@@ -396,7 +343,7 @@ class Deserialize:
         }
 
     def _construct_union(self, args: tuple[Any, ...], value: Any) -> Any:
-        """Recurse against a union's one non-None member; None passes through unchanged."""
+        """Recurse against a union's one non-None member."""
         if value is None:
             return None
         members = [arg for arg in args if arg is not type(None)]
@@ -434,23 +381,13 @@ class Deserialize:
         """
         Register a handler that constructs `cls` from an already-decoded value.
 
-        `cls` doesn't have to be a plain class. A `UnionType` like `int | str`
-        or a `TypeAliasType` from a `type X = ...` statement can be
-        registered too, as can bare `None`. `Any` itself isn't registered
-        through this method. {py:meth}`__init__` populates that one
-        directly. The handler receives the decoded JSON value directly (a
-        dict, list, str, etc.), not raw bytes.
-
-        With `takes_type=True`, the handler is called as `handler(value,
-        cls)` instead of `handler(value)`. This allows the handler to work
-        for a family of types, such as `Enum` subclasses, letting the handler
-        create the correct data.
+        `cls` may also be a union, a `type X = ...` alias, or `None`. The handler receives
+        the decoded JSON value, not bytes.
 
         :param cls: The type to register a handler for.
-        :param takes_type: If `True`, call the handler as `handler(value,
-            cls)` instead of `handler(value)`.
-        :returns: A decorator that registers its wrapped function as `cls`'s
-            handler and returns the function unchanged.
+        :param takes_type: Call the handler as `handler(value, cls)`, so one handler can serve a
+            family of types such as `Enum` subclasses.
+        :returns: A decorator that registers the function and returns it unchanged.
         """
 
         def decorator(fn: F) -> F:
@@ -474,11 +411,9 @@ deserialize = Deserialize()
 @deserialize.register(str)
 def decode_str(value: Any) -> str:
     """
-    Validate a value already decoded as `str`.
+    Validate a decoded `str`.
 
-    Pre-registered on {py:obj}`deserialize`.
-
-    :param value: The decoded value to confirm.
+    :param value: The decoded value.
     :returns: `value` unchanged.
     :raises TypeError: If `value` isn't a str.
     """
@@ -489,14 +424,9 @@ def decode_str(value: Any) -> str:
 
 def _to_number(value: Any) -> int | float:
     """
-    Coerce a decoded value to `int` or `float`.
+    Coerce a decoded value to `int` or `float`, rejecting `bool`.
 
-    `bool` is rejected. A string is tried as `int` first, then `float`.
-
-    :param value: The decoded value to coerce.
-    :returns: `value` as an int or a float.
-    :raises ValueError: If `value` is a bool, or isn't a number or a
-        numeric string.
+    :raises ValueError: If `value` isn't a number or numeric string.
     """
     if isinstance(value, bool):
         raise ValueError("bool is not a number")
@@ -513,16 +443,14 @@ def _to_number(value: Any) -> int | float:
 @deserialize.register(int)
 def decode_int(value: Any) -> int:
     """
-    Validate a value already decoded as int, or parse something that cleanly represents one.
+    Validate a decoded int, or parse a value that cleanly represents one.
 
-    Pre-registered on {py:obj}`deserialize`. A whole-numbered `float`, or a
-    string representing one, like `42.0` or `"42.0"`, is accepted. A
-    fractional float, or a string representing one, is rejected.
+    Whole-numbered floats and strings like `42.0` or `"42"` are accepted; fractional ones
+    are rejected.
 
-    :param value: The decoded value to confirm or parse.
+    :param value: The decoded value.
     :returns: `value` as an int.
-    :raises TypeError: If `value` isn't cleanly representable as an int
-        without losing data.
+    :raises TypeError: If `value` can't become an int without losing data.
     """
     try:
         number = _to_number(value)
@@ -540,14 +468,11 @@ def decode_int(value: Any) -> int:
 @deserialize.register(float)
 def decode_float(value: Any) -> float:
     """
-    Validate a value already decoded as a number, or parse a string that represents one.
+    Validate a decoded number, or parse a numeric string.
 
-    Pre-registered on {py:obj}`deserialize`. An `int` value, or a numeric
-    string like `"31.5"` or `"42"`, is accepted.
-
-    :param value: The decoded value to confirm or parse.
-    :returns: `value` as a `float`.
-    :raises TypeError: If `value` isn't a number or a numeric string.
+    :param value: The decoded value.
+    :returns: `value` as a float.
+    :raises TypeError: If `value` isn't a number or numeric string.
     """
     try:
         number = _to_number(value)
@@ -561,12 +486,9 @@ def decode_float(value: Any) -> float:
 @deserialize.register(bool)
 def decode_bool(value: Any) -> bool:
     """
-    Validate a value already decoded as `bool`, or parse "true"/"false" case-insensitively.
+    Validate a decoded bool, or parse `"true"`/`"false"` in any casing.
 
-    Pre-registered on {py:obj}`deserialize`. The literal string spellings
-    of `true`/`false`, in any casing, are accepted.
-
-    :param value: The decoded value to confirm or parse.
+    :param value: The decoded value.
     :returns: `value` as a bool.
     :raises TypeError: If `value` isn't a bool or one of those strings.
     """
@@ -585,12 +507,9 @@ def decode_bool(value: Any) -> bool:
 @deserialize.register(None)
 def decode_none(value: Any) -> None:
     """
-    Validate a value already decoded as `None`.
+    Validate a decoded `None`. Registered under both `NoneType` and `None`.
 
-    Pre-registered on {py:obj}`deserialize` under both `NoneType` and bare
-    `None`.
-
-    :param value: The decoded value to confirm.
+    :param value: The decoded value.
     :returns: `None`.
     :raises TypeError: If `value` isn't `None`.
     """
@@ -602,13 +521,11 @@ def decode_none(value: Any) -> None:
 @deserialize.register(dict)
 def decode_dict(value: Any) -> dict[Any, Any]:
     """
-    Validate a value already decoded as a dict.
+    Validate a decoded dict.
 
-    Pre-registered on {py:obj}`deserialize` as shorthand for
-    `dict[Any, Any]`. Behaves identically, just without spelling the lack
-    of constraint out.
+    Pre-registered on {py:obj}`deserialize` as shorthand for `dict[Any, Any]`.
 
-    :param value: The already-decoded dict.
+    :param value: The decoded value.
     :returns: `value` unchanged.
     :raises TypeError: If `value` isn't a dict.
     """
@@ -620,14 +537,13 @@ def decode_dict(value: Any) -> dict[Any, Any]:
 @deserialize.register(list)
 def decode_list(value: Any) -> list[Any]:
     """
-    Validate a value already decoded as a list, or convert one decoded as a tuple/set/frozenset.
+    Validate a decoded list, or convert a decoded tuple, set, or frozenset.
 
     Pre-registered on {py:obj}`deserialize` as shorthand for `list[Any]`.
-    A `list`, `tuple`, `set`, or `frozenset` value is accepted.
 
-    :param value: The decoded value to confirm or convert.
+    :param value: The decoded value.
     :returns: `value` as a list.
-    :raises TypeError: If `value` isn't a list, tuple, set, or frozenset.
+    :raises TypeError: If `value` isn't one of those types.
     """
     if isinstance(value, list):
         return cast(list[Any], value)
@@ -639,15 +555,13 @@ def decode_list(value: Any) -> list[Any]:
 @deserialize.register(tuple)
 def decode_tuple(value: Any) -> tuple[Any, ...]:
     """
-    Validate a value already decoded as a tuple, or convert one decoded as a list/set/frozenset.
+    Validate a decoded tuple, or convert a decoded list, set, or frozenset.
 
-    Pre-registered on {py:obj}`deserialize` as shorthand for
-    `tuple[Any, ...]`. A `tuple`, `list`, `set`, or `frozenset` value is
-    accepted.
+    Pre-registered on {py:obj}`deserialize` as shorthand for `tuple[Any, ...]`.
 
-    :param value: The decoded value to confirm or convert.
+    :param value: The decoded value.
     :returns: `value` as a tuple.
-    :raises TypeError: If `value` isn't a tuple, list, set, or frozenset.
+    :raises TypeError: If `value` isn't one of those types.
     """
     if isinstance(value, tuple):
         return cast(tuple[Any, ...], value)
@@ -661,15 +575,13 @@ def decode_tuple(value: Any) -> tuple[Any, ...]:
 @deserialize.register(set)
 def decode_set(value: Any) -> set[Any]:
     """
-    Validate a value already decoded as a set, or convert one decoded as a list/tuple/frozenset.
+    Validate a decoded set, or convert a decoded list, tuple, or frozenset.
 
-    Pre-registered on {py:obj}`deserialize` as shorthand for `set[Any]`.
-    A `set`, `list`, `tuple`, or `frozenset` value is accepted. Converting
-    from a `list` or `tuple` drops duplicate elements.
+    Pre-registered on {py:obj}`deserialize` as shorthand for `set[Any]`. Duplicates are dropped.
 
-    :param value: The decoded value to confirm or convert.
+    :param value: The decoded value.
     :returns: `value` as a set.
-    :raises TypeError: If `value` isn't a set, list, tuple, or frozenset.
+    :raises TypeError: If `value` isn't one of those types.
     """
     if isinstance(value, set):
         return cast(set[Any], value)
@@ -681,15 +593,14 @@ def decode_set(value: Any) -> set[Any]:
 @deserialize.register(frozenset)
 def decode_frozenset(value: Any) -> frozenset[Any]:
     """
-    Validate a value already decoded as a frozenset, or convert one decoded as a list/tuple/set.
+    Validate a decoded frozenset, or convert a decoded list, tuple, or set.
 
-    Pre-registered on {py:obj}`deserialize` as shorthand for
-    `frozenset[Any]`. A `frozenset`, `list`, `tuple`, or `set` value is
-    accepted. Converting from a `list` or `tuple` drops duplicate elements.
+    Pre-registered on {py:obj}`deserialize` as shorthand for `frozenset[Any]`. Duplicates are
+    dropped.
 
-    :param value: The decoded value to confirm or convert.
+    :param value: The decoded value.
     :returns: `value` as a frozenset.
-    :raises TypeError: If `value` isn't a frozenset, list, tuple, or set.
+    :raises TypeError: If `value` isn't one of those types.
     """
     if isinstance(value, frozenset):
         return cast(frozenset[Any], value)
@@ -703,15 +614,12 @@ def decode_frozenset(value: Any) -> frozenset[Any]:
 @deserialize.register(UUID)
 def decode_uuid(value: Any) -> UUID:
     """
-    Validate a value already decoded as a `UUID`, or parse its string form.
+    Validate a decoded `UUID`, or parse its string form.
 
-    Pre-registered on {py:obj}`deserialize` as a common default, the decode
-    side of {py:func}`encode_uuid`. A source that already produces native
-    `UUID` instances is accepted as-is. Otherwise `value` must be a string,
-    matching what `encode_uuid` produces. Overwrite it with
-    `@deserialize.register(UUID)` if this doesn't match your requirements.
+    Pre-registered on {py:obj}`deserialize`, mirroring {py:func}`encode_uuid`. Override with
+    `@deserialize.register(UUID)`.
 
-    :param value: The decoded value to confirm or parse.
+    :param value: The decoded value.
     :returns: The UUID.
     :raises TypeError: If `value` is neither a UUID nor a string.
     """
@@ -725,16 +633,12 @@ def decode_uuid(value: Any) -> UUID:
 @deserialize.register(datetime)
 def decode_datetime(value: Any) -> datetime:
     """
-    Validate a value already decoded as a `datetime`, or parse its ISO 8601 string form.
+    Validate a decoded `datetime`, or parse its ISO 8601 string.
 
-    Pre-registered on {py:obj}`deserialize` as a common default, the decode
-    side of {py:func}`encode_datetime`. A source that already produces
-    native `datetime` instances is accepted as-is. Otherwise `value` must
-    be a string, matching what `encode_datetime` produces. Overwrite it
-    with `@deserialize.register(datetime)` if this doesn't match your
-    requirements.
+    Pre-registered on {py:obj}`deserialize`, mirroring {py:func}`encode_datetime`. Override with
+    `@deserialize.register(datetime)`.
 
-    :param value: The decoded value to confirm or parse.
+    :param value: The decoded value.
     :returns: The datetime.
     :raises TypeError: If `value` is neither a datetime nor a string.
     """
@@ -748,16 +652,12 @@ def decode_datetime(value: Any) -> datetime:
 @deserialize.register(Decimal)
 def decode_decimal(value: Any) -> Decimal:
     """
-    Validate a value already decoded as a `Decimal`, or parse its string form.
+    Validate a decoded `Decimal`, or parse its string form; floats are rejected.
 
-    Pre-registered on {py:obj}`deserialize` as a common default, the decode
-    side of {py:func}`encode_decimal`. A source that already produces
-    native `Decimal` instances is accepted as-is. Otherwise `value` must
-    be a string, matching what `encode_decimal` produces. A raw `float` is
-    not accepted. Overwrite it with `@deserialize.register(Decimal)` if
-    this doesn't match your requirements.
+    Pre-registered on {py:obj}`deserialize`, mirroring {py:func}`encode_decimal`. Override with
+    `@deserialize.register(Decimal)`.
 
-    :param value: The decoded value to confirm or parse.
+    :param value: The decoded value.
     :returns: The Decimal.
     :raises TypeError: If `value` is neither a Decimal nor a string.
     """
@@ -770,19 +670,15 @@ def decode_decimal(value: Any) -> Decimal:
 
 def decode_enum[T: Enum](value: Any, type_: type[T]) -> T:
     """
-    Validate an enum by value using the provided type to look up by member value.
+    Look up an enum member by value.
 
-    Not pre-registered on {py:obj}`deserialize`. This is provided as a
-    pre-configured option for deserializing enum by value. Register using
-    `deserialize.register(Enum, takes_type = True)` to deserialize
-    any Enum by value, or use a specific class or base class to only
-    deserialize matching enums.
+    Not pre-registered. Opt in with `deserialize.register(Enum, takes_type=True)`, or a
+    specific enum class.
 
-    :param value: The decoded value to confirm or look up.
-    :param type_: The concrete `Enum` subclass being constructed.
+    :param value: The decoded value.
+    :param type_: The `Enum` subclass being constructed.
     :returns: The matching member of `type_`.
-    :raises TypeError: If `value` isn't already a `type_` member and isn't
-        one of `type_`'s member values.
+    :raises TypeError: If `value` isn't a member or member value of `type_`.
     """
     if isinstance(value, type_):
         return value
@@ -796,19 +692,15 @@ def decode_enum[T: Enum](value: Any, type_: type[T]) -> T:
 
 def decode_enum_by_name(value: Any, type_: type[Enum]) -> Enum:
     """
-    Validate an enum by name using the provided type as a constructor.
+    Look up an enum member by name.
 
-    Not pre-registered on {py:obj}`deserialize`. This is provided as a
-    pre-configured option for deserializing enum by name. Register using
-    `deserialize.register(Enum, takes_type = True)` to deserialize
-    any Enum by name, or use a specific class or base class to only
-    deserialize matching enums.
+    Not pre-registered. Opt in with `deserialize.register(Enum, takes_type=True)`, or a
+    specific enum class.
 
-    :param value: The decoded value to confirm or look up.
-    :param type_: The concrete `Enum` subclass being constructed.
+    :param value: The decoded value.
+    :param type_: The `Enum` subclass being constructed.
     :returns: The matching member of `type_`.
-    :raises TypeError: If `value` isn't already a `type_` member and isn't
-        one of `type_`'s member names.
+    :raises TypeError: If `value` isn't a member or member name of `type_`.
     """
     if isinstance(value, type_):
         return value

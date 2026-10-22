@@ -2,16 +2,11 @@
 FastAPI integration for lifecycle management.
 
 {py:func}`scoped_route` builds an `APIRoute` subclass that activates an
-{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` around every
-request it handles. Set it as a router's `route_class`. A cached resource
-then opens once per request and closes when the request finishes, even if a
-handler calls it more than once.
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` around each request. Set it as
+a router's `route_class`.
 
-Work that must finish before the response starts, such as committing a
-transaction, belongs in a second scope nested inside the request scope and
-passed as `handler`. It's active only while the route handler runs, so a commit
-happens - or fails, becoming a 500 - before any response is sent, while the
-request scope's resources stay open for a streamed body and background tasks.
+Work that must finish before the response, like committing a transaction, belongs in a
+nested `handler` scope. It ends when the route handler returns, so a failed commit becomes a 500.
 
 ````{example} Committing a per-request transaction before the response
 ```{code-block} python
@@ -69,8 +64,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.router.route_class = scoped_route(request, handler=transaction)
 
-# inject strips cur from the wrapper's exposed signature, so FastAPI only
-# ever sees product_id/name when it inspects the route.
+# inject hides cur from the route's signature.
 @app.post("/products/{product_id}")
 @inject
 async def create_product(
@@ -113,7 +107,7 @@ _ACTIVATION_KEY = "stratae.activation"
 
 
 async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
-    """Close the request's activation with `exc`, unless the other side already closed it."""
+    """Close the request's activation with `exc`, unless already closed."""
     activation: AsyncActivation | None = asgi_scope.pop(_ACTIVATION_KEY, None)
     if activation is None:
         return
@@ -122,17 +116,14 @@ async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
 
 def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> type[APIRoute]:
     """
-    Build an APIRoute subclass that activates `scope` around every request it handles.
+    Build an APIRoute subclass that activates `scope` around every request.
 
-    :param scope: Active until the response is fully sent, including a streamed body and
-        background tasks. Its resources' cleanup runs after the response, so suits
-        releasing resources rather than work whose failure should change the response.
-    :param handler: An optional scope nested inside `scope`, active only while the route
-        handler runs - FastAPI's dependency solving, the endpoint, and response validation.
-        It ends before the response starts, so a transaction cached in it commits, or
-        rolls back on an exception, in time for a failed commit to become a 500. Omit it
-        when no work needs to finish before the response.
-    :returns: The APIRoute subclass, to set as a router's `route_class`.
+    :param scope: Active until the response is fully sent, including streaming and
+        background tasks.
+    :param handler: An optional nested scope, active only while the route handler runs,
+        including dependency solving and response validation. Use it for work like
+        commits that must finish before the response.
+    :returns: An APIRoute subclass, to set as a router's `route_class`.
     """
     lifecycle_scope = scope
     handler_scope = handler
@@ -145,8 +136,7 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
             except BaseException as exc:
                 await _close_activation(scope, exc)
                 raise
-            # Inlined rather than awaiting _close_activation: the success path runs on
-            # every request, and this saves a coroutine per request.
+            # Inlined _close_activation, saving a coroutine per request.
             activation: AsyncActivation | None = scope.pop(_ACTIVATION_KEY, None)
             if activation is not None:
                 await lifecycle_scope.deactivate(activation)

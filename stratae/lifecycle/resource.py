@@ -1,14 +1,10 @@
 """
 Decorators marking a generator function as an auto-entered lifecycle resource.
 
-{py:func}`resource` and {py:func}`async_resource` wrap a generator function
-with `contextlib.contextmanager`/`contextlib.asynccontextmanager`, same as
-calling those directly, but also tags the result with a marker. This marker lets
-{py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>` (or
-{py:meth}`AsyncScope.cache <stratae.lifecycle.scope.AsyncScope.cache>`)
-recognize it as a context manager to enter automatically rather than a plain
-value to cache as-is. The entered value is what gets cached; exit is deferred
-to the owning scope's exit stack, which unwinds when that scope deactivates.
+{py:func}`resource` and {py:func}`async_resource` wrap a generator function like
+`contextlib.contextmanager` and tag it, so
+{py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>` enters it and caches the
+yielded value. It exits when the scope deactivates.
 
 ````{example} Caching an auto-entered resource
 ```{code-block} python
@@ -47,8 +43,6 @@ audit.log: user viewed dashboard
 Closing audit.log
 ```
 ````
-
-See {py:func}`resource` and {py:func}`async_resource` for the rest of the module's API.
 """
 
 from contextlib import asynccontextmanager, contextmanager
@@ -64,18 +58,10 @@ AUTO_ENTER_ASYNC = object()
 
 def resource[**P, T](func: Callable[P, Generator[T, None, None]]):
     """
-    Mark a generator function as an auto-entered context manager for lifecycle caching.
+    Mark a generator function as a resource that a scope cache enters automatically.
 
-    Wraps `func` with `contextlib.contextmanager`, same as calling that
-    directly, and tags the result so
-    {py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>`
-    enters it automatically instead of caching the raw context manager
-    object. Use {py:func}`async_resource` for an async generator function
-    instead.
-
-    :param func: Generator function yielding exactly one value, in the shape
-        `contextlib.contextmanager` expects.
-    :returns: The wrapped context manager function, tagged for auto-entry.
+    :param func: A generator function yielding one value, as for `contextlib.contextmanager`.
+    :returns: The tagged context manager function.
     """
     unwrap(func).__auto_enter__ = AUTO_ENTER_SYNC
     return contextmanager(func)
@@ -83,17 +69,11 @@ def resource[**P, T](func: Callable[P, Generator[T, None, None]]):
 
 def async_resource[**P, T](func: Callable[P, AsyncGenerator[T, None]]):
     """
-    Mark an async generator function as an auto-entered async context manager.
+    Mark an async generator function as a resource that a scope cache enters automatically.
 
-    Wraps `func` with `contextlib.asynccontextmanager`, same as calling that
-    directly, and tags the result so
-    {py:meth}`AsyncScope.cache <stratae.lifecycle.scope.AsyncScope.cache>`
-    enters it automatically instead of caching the raw context manager
-    object. Use {py:func}`resource` for a sync generator function instead.
-
-    :param func: Async generator function yielding exactly one value, in the
-        shape `contextlib.asynccontextmanager` expects.
-    :returns: The wrapped async context manager function, tagged for auto-entry.
+    :param func: An async generator function yielding one value, as for
+        `contextlib.asynccontextmanager`.
+    :returns: The tagged async context manager function.
     """
     unwrap(func).__auto_enter__ = AUTO_ENTER_ASYNC
     return asynccontextmanager(func)

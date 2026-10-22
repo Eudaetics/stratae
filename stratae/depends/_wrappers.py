@@ -1,10 +1,8 @@
 """
-Wrappers for dependency injection in synchronous and asynchronous functions.
+Codegen'd wrappers for injected functions, sync and async.
 
-Wrapper bodies are generated as source text and compiled rather than written as a
-generic ``*args/**kwargs`` shim, so the compiled wrapper's signature, defaults, and
-annotations exactly match the dependency-free view of the original callable for
-introspection by other tooling.
+Generated wrappers expose the original signature minus injected parameters, so other
+tooling can introspect them.
 """
 
 from functools import wraps
@@ -18,32 +16,17 @@ from stratae.depends._provide import Provider
 def _kept_parameters(
     params: list[Parameter], resolved_deps: dict[str, Provider]
 ) -> list[Parameter]:
-    """
-    Return func's parameters minus the resolved dependencies.
-
-    Resolved dependencies are supplied by the wrapper itself, not the caller, so they
-    must not appear in the wrapper's public signature.
-    """
+    """Return func's parameters minus the injected ones."""
     return [param for param in params if param.name not in resolved_deps]
 
 
 def _render_dependency_source(name: str, dep: Provider) -> str:
-    """
-    Render the source expression that resolves a single dependency by name.
-
-    A dependency's provide() may itself be sync or async. This adds await
-    only if the dependency is async to prevent treating sync as async.
-    """
+    """Render the expression resolving one dependency, awaiting it if async."""
     return f"{'await ' if dep.is_async else ''}__dep_{name}__.provide()"
 
 
 def _render_argument_source(value: Any, param: Parameter):
-    """
-    Render a single call argument in the source text for the generated wrapper.
-
-    A bare name would break *args, **kwargs, and keyword-only parameters, so each
-    argument must be rendered in the same call convention as the original parameter.
-    """
+    """Render one call argument in its parameter's calling convention."""
     if param.kind is Parameter.VAR_POSITIONAL:
         return f"*{value}"
     elif param.kind is Parameter.VAR_KEYWORD:
@@ -66,12 +49,7 @@ def _render_call_arguments(params: list[Parameter], resolved_deps: dict[str, Pro
 
 
 def _get_source(func: Callable[..., Any]):
-    """
-    Return the callable that carries func's real metadata.
-
-    A class object has no __defaults__/__kwdefaults__/__annotations__ of its own;
-    that metadata lives on __init__.
-    """
+    """Return the callable carrying func's metadata: `__init__` for a class."""
     return func.__init__ if isclass(func) else func
 
 
@@ -89,14 +67,9 @@ def _finalize(
     resolved_deps: dict[str, Provider],
 ) -> Callable[..., Any]:
     """
-    Compile the generated wrapper source and restore its metadata.
+    Compile the wrapper source and copy func's metadata onto it.
 
-    exec() has no closures, so func and each dependency provider are threaded in by
-    name through the namespace instead. Metadata is copied back afterward so tools
-    that introspect the wrapper (help(), other DI/framework code) see it as the
-    original callable, even though its runtime signature is the trimmed `kept` one.
-    `kept` keeps func's return annotation: frameworks read it from the signature, e.g.
-    FastAPI infers a route's response_model from it and filters the response by it.
+    The return annotation is kept, since frameworks like FastAPI read it.
     """
     namespace: dict[str, Any] = {
         "__func__": func,
@@ -140,7 +113,7 @@ def _build_wrapper(
 def create_sync_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
-    """Create a synchronous wrapper; a plain call needs no await or yield handling."""
+    """Create a synchronous wrapper."""
     return _build_wrapper(
         func, resolved_deps, False, lambda w, call: w.write(f"return __func__({call})")
     )
@@ -149,12 +122,7 @@ def create_sync_wrapper(
 def create_sync_gen_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
-    """
-    Create a synchronous generator wrapper.
-
-    The call is delegated with yield from, rather than returned, so the wrapper
-    itself stays a generator function; a bare return would collect no items.
-    """
+    """Create a synchronous generator wrapper, delegating with `yield from`."""
     return _build_wrapper(
         func, resolved_deps, False, lambda w, call: w.write(f"yield from __func__({call})")
     )
@@ -167,12 +135,7 @@ def _has_async_deps(resolved_deps: dict[str, Provider]) -> bool:
 def create_async_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
-    """
-    Create an asynchronous wrapper.
-
-    func must be awaited so the wrapper resolves to the coroutine's result, rather
-    than returning an unawaited coroutine object to the caller.
-    """
+    """Create an asynchronous wrapper."""
     if _has_async_deps(resolved_deps):
         return _build_wrapper(
             func, resolved_deps, True, lambda w, call: w.write(f"return await __func__({call})")
@@ -192,10 +155,9 @@ def _write_stop_on_exhaustion(writer: Writer, statement: str) -> None:
 
 def _write_async_gen_body(writer: Writer, call: str) -> None:
     """
-    Write the body for an async generator wrapper, delegating like `yield from`.
+    Write an async generator wrapper body that delegates like `yield from`.
 
-    Async generators have no `yield from`, and re-yielding with `async for` drops whatever
-    is sent or thrown in, so each value sent, exception thrown, and close is forwarded.
+    Forwards sent values, thrown exceptions, and close, which `async for` would drop.
     """
     writer.write(f"__gen__ = __func__({call})")
     _write_stop_on_exhaustion(writer, "__value__ = await __gen__.__anext__()")

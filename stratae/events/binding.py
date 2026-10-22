@@ -1,21 +1,11 @@
 """
 Callable facades that bind an event definition to a concrete emitter and routing config.
 
-{py:func}`bind` and {py:func}`abind` bind an
-{py:class}`Event <stratae.events.event.Event>` to a sync or async emitter,
-respectively, along with adapter-specific routing config. Passed a
-`factory`, each returns a callable that builds the payload from the call's
-arguments and forwards it to the emitter. Omitting `factory` returns a
-callable that takes an already-built payload directly and forwards it the
-same way.
-
-Omitting `factory` for a payload-less event, one whose schema is `NoPayload`,
-returns a callable with no arguments at all.
-
-Both returned callables send the payload and associated settings to the
-emitter, returning whatever the emitter produces. `bind` requires a sync
-factory, since there isn't a simple way to await one from inside its
-synchronous result. `abind` accepts either a sync or async factory.
+{py:func}`bind` and {py:func}`abind` bind an {py:class}`Event <stratae.events.event.Event>`
+to a sync or async emitter and its routing config. With a `factory`, the result builds the
+payload from its arguments; without one, it takes a built payload, or nothing for a
+`NoPayload` event. {py:class}`BindMixin` and {py:class}`AsyncBindMixin` give an adapter its
+own typed `bind` method.
 
 ````{example} Binding an event to a generic emitter
 ```{code-block} python
@@ -32,9 +22,6 @@ class Order:
 
 order_created = Event(Request[Order], CreateOrder)
 
-# A generic emitter only needs to match EmitCallable's shape: event,
-# config, and payload in, some result out. This one does the work
-# directly, using config as the destination label to route to.
 def emit(
     event: Event[Request[Order], CreateOrder, Any],
     config: str,
@@ -55,14 +42,6 @@ print(f"created order: {created.order_id}")
 created order: 42
 ```
 ````
-
-{py:class}`BindMixin` and {py:class}`AsyncBindMixin` give an adapter a
-typed `bind` method of its own, wrapping its `emit`. Inheriting one of
-these mixins carries the overloads and the implementation together,
-stating them once instead of per adapter.
-
-See {py:func}`bind` and {py:func}`abind` for the rest of the module's API.
-
 """
 
 from __future__ import annotations
@@ -119,26 +98,16 @@ def bind(
     serializer: Callable[[Any], Any] | None = None,
 ) -> Callable[..., Any]:
     """
-    Bind an event to a sync emitter, with a factory, or without one for passthrough.
+    Bind an event to a sync emitter.
 
-    :param event: The {py:class}`Event <stratae.events.event.Event>` to
-        bind. One whose schema is `NoPayload` binds to a zero-argument
-        callable.
-    :param emitter: A callable that receives the `Event` being bound and
-        the payload, and returns `R`.
-    :param factory: Builds the payload from the bound call's arguments. When
-        omitted, the returned callable instead forwards an already-built
-        payload straight through.
-    :param config: The adapter-specific routing config for this binding.
-    :param serializer: Encodes the payload before dispatch. Format is
-        adapter-defined (bytes, a JSON string, etc.). When omitted, the
-        emitter falls back to its own default serializer, if any.
-    :returns: A callable that builds the payload via `factory` and forwards
-        it to `emitter` when `factory` is given, otherwise a callable that
-        forwards an already-built payload straight through, or takes no
-        arguments when the event carries no payload.
-    :raises TypeError: If `factory` is given and is async.
-
+    :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+    :param emitter: Called with the event, config, and payload.
+    :param factory: A sync callable building the payload from the call's arguments. If
+        omitted, the payload is passed directly.
+    :param config: The adapter's routing config.
+    :param serializer: Encodes the payload; defaults to the emitter's own.
+    :returns: A callable that dispatches through `emitter`.
+    :raises TypeError: If `factory` is async.
     """
     if factory is None:
 
@@ -198,26 +167,15 @@ def abind(
     serializer: Callable[[Any], Any] | None = None,
 ) -> Callable[..., Awaitable[Any]]:
     """
-    Bind an event to an async emitter, with a factory, or without one for passthrough.
+    Bind an event to an async emitter.
 
-    :param event: The {py:class}`Event <stratae.events.event.Event>` to
-        bind. One whose schema is `NoPayload` binds to a zero-argument
-        callable.
-    :param emitter: A coroutine callable that receives the `Event` being
-        bound and the payload, and returns an awaitable resolving to `R`.
-    :param factory: Builds the payload from the bound call's arguments, sync
-        or async. When omitted, the returned callable instead forwards an
-        already-built payload straight through.
-    :param config: The adapter-specific routing config for this binding.
-    :param serializer: Encodes the payload before dispatch. Format is
-        adapter-defined (bytes, a JSON string, etc.). When omitted, the
-        emitter falls back to its own default serializer, if any.
-    :returns: A callable that builds the payload via `factory`, sync or
-        async, and forwards it to `emitter` when `factory` is given,
-        otherwise a callable that forwards an already-built payload straight
-        through, or takes no arguments when the event carries no payload.
-        Either way, awaiting the callable resolves to `R`.
-
+    :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+    :param emitter: An async callable taking the event, config, and payload.
+    :param factory: A sync or async callable building the payload from the call's
+        arguments. If omitted, the payload is passed directly.
+    :param config: The adapter's routing config.
+    :param serializer: Encodes the payload; defaults to the emitter's own.
+    :returns: An async callable that dispatches through `emitter`.
     """
     if factory is None:
 
@@ -240,15 +198,9 @@ def abind(
 
 class BindMixin[C](ABC):
     """
-    Give a sync adapter a typed `bind` method wrapping its own `emit`.
+    Give a sync adapter a typed `bind` method wrapping its `emit`.
 
-    `C` is the adapter's routing config type. Inherit `BindMixin[None]` for
-    an adapter needing no config, where `config` can then be omitted at the
-    call site, or `BindMixin[SomeConfig]` for one that routes.
-
-    Subclasses supply `emit`. It's abstract so the mixin can call it, and
-    so an adapter that inherits this without providing one fails at
-    definition rather than at dispatch.
+    `C` is the adapter's config type; with `BindMixin[None]`, `config` can be omitted.
     """
 
     __slots__ = ()
@@ -263,13 +215,9 @@ class BindMixin[C](ABC):
         serializer: Callable[[S], Any] | None = None,
     ) -> R:
         """
-        Dispatch a payload. See {py:meth}`Producer.emit <stratae.events.protocols.Producer.emit>`.
+        Dispatch a payload.
 
-        :param event: The {py:class}`Event <stratae.events.event.Event>` being emitted.
-        :param config: Adapter-specific routing configuration.
-        :param payload: The constructed payload instance to dispatch.
-        :param serializer: Encodes `payload` before dispatch.
-        :returns: Adapter-defined result of dispatching the payload.
+        See {py:meth}`Producer.emit <stratae.events.protocols.Producer.emit>`.
         """
         ...
 
@@ -310,35 +258,22 @@ class BindMixin[C](ABC):
         serializer: Callable[[Any], Any] | None = None,
     ) -> Callable[..., Any]:
         """
-        Return a callable bound to this adapter's `emit` and an event.
+        Bind an event to this adapter's `emit`. See {py:func}`bind`.
 
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to
-            bind. One whose schema is `NoPayload` binds to a zero-argument
-            callable.
-        :param factory: Builds the payload from the bound call's arguments.
-            Omit it to pass an already-built payload straight through
-            instead.
-        :param config: The adapter-specific routing config for this binding.
-        :param serializer: Encodes the payload before dispatch.
-        :returns: A callable that builds the payload via `factory` when
-            given, otherwise one that forwards an already-built payload
-            straight through, or takes no arguments when the event carries
-            no payload; either way wrapping this adapter's `emit` and `event`.
+        :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+        :param factory: Builds the payload from the call's arguments.
+        :param config: The adapter's routing config.
+        :param serializer: Encodes the payload.
+        :returns: A callable that dispatches through this adapter.
         """
         return bind(event, self.emit, factory=factory, config=config, serializer=serializer)
 
 
 class AsyncBindMixin[C](ABC):
     """
-    Give an async adapter a typed `bind` method wrapping its own `emit`.
+    Give an async adapter a typed `bind` method wrapping its `emit`.
 
-    The awaitable counterpart to {py:class}`BindMixin`, delegating to
-    {py:func}`abind`. Every binding it produces resolves to `R` once
-    awaited, and `factory` may be sync or async.
-
-    Sync and async need separate mixins rather than one parameterized over
-    the wrapper, since `BindMixin[Awaitable]` would require higher-kinded
-    types.
+    The async counterpart to {py:class}`BindMixin`.
     """
 
     __slots__ = ()
@@ -353,17 +288,9 @@ class AsyncBindMixin[C](ABC):
         serializer: Callable[[S], Any] | None = None,
     ) -> Awaitable[R]:
         """
-        Dispatch a payload. See {py:meth}`Producer.emit <stratae.events.protocols.Producer.emit>`.
+        Dispatch a payload.
 
-        Declared as returning `Awaitable[R]` rather than as `async def`, so
-        an adapter's `async def emit` satisfies it without the mixin
-        constraining how the coroutine is produced.
-
-        :param event: The {py:class}`Event <stratae.events.event.Event>` being emitted.
-        :param config: Adapter-specific routing configuration.
-        :param payload: The constructed payload instance to dispatch.
-        :param serializer: Encodes `payload` before dispatch.
-        :returns: An awaitable resolving to the adapter-defined result.
+        See {py:meth}`Producer.emit <stratae.events.protocols.Producer.emit>`.
         """
         ...
 
@@ -404,20 +331,12 @@ class AsyncBindMixin[C](ABC):
         serializer: Callable[[Any], Any] | None = None,
     ) -> Callable[..., Awaitable[Any]]:
         """
-        Return an awaitable callable bound to this adapter's `emit` and an event.
+        Bind an event to this adapter's `emit`. See {py:func}`abind`.
 
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to
-            bind. One whose schema is `NoPayload` binds to a zero-argument
-            callable.
-        :param factory: Builds the payload from the bound call's arguments,
-            sync or async. Omit it to pass an already-built payload
-            straight through instead.
-        :param config: The adapter-specific routing config for this binding.
-        :param serializer: Encodes the payload before dispatch.
-        :returns: A callable that builds the payload via `factory` when
-            given, otherwise one that forwards an already-built payload
-            straight through, or takes no arguments when the event carries
-            no payload; either way wrapping this adapter's `emit` and
-            `event`, and resolving to its result once awaited.
+        :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+        :param factory: Builds the payload from the call's arguments, sync or async.
+        :param config: The adapter's routing config.
+        :param serializer: Encodes the payload.
+        :returns: An async callable that dispatches through this adapter.
         """
         return abind(event, self.emit, factory=factory, config=config, serializer=serializer)

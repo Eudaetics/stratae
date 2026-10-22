@@ -1,31 +1,13 @@
 """
 Hierarchical, scope-based caching and resource lifecycles for applications.
 
-Declare {py:class}`Scope <stratae.lifecycle.scope.Scope>` (sync) or
-{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` (async) objects directly -
-e.g. "application", "request" - and activate one by using it as a context manager:
-`with scope:` (`async with` for
-{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`). While active, functions
-decorated with {py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>` have their
-results cached for the lifetime of that activation, computed once per scope activation
-rather than once per process. A scope can declare another scope as a parent with
-`requires`; activating it then raises unless that parent scope is already active.
-
-Each {py:class}`Scope <stratae.lifecycle.scope.Scope>` chooses its own isolation and
-storage independently:
-
-* `isolation="shared"`: one cache visible to every thread/task while the
-  scope is active, suited to application-wide state such as connection pools.
-* `isolation="context"` (default): a cache isolated per execution context, backed by
-  a `contextvars.ContextVar`, suited to request- or session-scoped state.
-* `storage`: `"dense"` (default) or `"sparse"`; see
-  {py:class}`Scope <stratae.lifecycle.scope.Scope>` for the tradeoff between them.
-
-{py:func}`resource <stratae.lifecycle.resource.resource>` and
-{py:func}`async_resource <stratae.lifecycle.resource.async_resource>` mark a generator
-function as a context manager to auto-enter when cached. Exiting the associated scope's
-activation causes its cleanup (closing a connection, committing changes) to run without
-every caller having to handle it explicitly.
+Create {py:class}`Scope <stratae.lifecycle.scope.Scope>` or
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` objects, such as "application"
+and "request", and activate them with `with`. Functions decorated with
+{py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>` are computed once per
+activation. {py:func}`resource <stratae.lifecycle.resource.resource>` and
+{py:func}`async_resource <stratae.lifecycle.resource.async_resource>` mark generator
+functions whose cleanup runs when the scope deactivates.
 
 ````{example} Application- and request-scoped resources
 ```{code-block} python
@@ -84,12 +66,6 @@ commit
 Closing connection
 ```
 ````
-
-See {py:class}`Scope <stratae.lifecycle.scope.Scope>`,
-{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`,
-{py:func}`resource <stratae.lifecycle.resource.resource>`, and
-{py:func}`async_resource <stratae.lifecycle.resource.async_resource>` for the
-rest of the module's API.
 """
 
 from .resource import async_resource, resource

@@ -1,12 +1,8 @@
 """
 Context managers for temporarily replacing injected dependency values.
 
-{py:func}`override` swaps a single provider's value and {py:func}`overrides`
-swaps several at once. Both return context managers and the previous state is
-restored on exit. Overrides are stored per
-{py:class}`Provider <stratae.depends._provide.Provider>` in context-local
-state, so concurrent tasks can hold different overrides for the same
-provider without interfering.
+{py:func}`override` replaces one provider's value and {py:func}`overrides` replaces several,
+restoring them on exit. Overrides are context-local, so concurrent tasks don't interfere.
 
 ````{example} Swapping dependencies for test doubles
 ```{code-block} python
@@ -47,7 +43,6 @@ with overrides({
     get_user_repository: UserRepository({1: "test@example.com"}),
     get_email_service: EmailService(sender="test@example.com"),
 }):
-    # both dependencies are the test doubles within this scope
     print(notify_user(1))
 
 print(notify_user(1))
@@ -58,9 +53,6 @@ from=test@example.com to=test@example.com subject='Welcome!'
 from=notifications@example.com to=jane@example.com subject='Welcome!'
 ```
 ````
-
-See {py:func}`override` and {py:func}`overrides` for the rest of the module's API.
-
 """
 
 from contextvars import Token
@@ -138,36 +130,24 @@ class _Overrides:
 
 def override(func: Callable[..., Any], value: Any) -> _Override:
     """
-    Temporarily replace a single dependency's value within a scope.
+    Temporarily replace one dependency's value.
 
-    :param func: The provider callable that was passed to
-        {py:func}`Depends <stratae.depends.injection.Depends>`.
-    :param value: Value injected in place of calling the provider. Used
-        as-is; it is not called, even if the provider is async.
-    :returns: A context manager holding the override between entry and exit. It can be
-        re-entered while held, but not shared between tasks or threads entering it at once.
-    :raises DependencyNotFoundError: If `func` was never passed to
-        {py:func}`Depends <stratae.depends.injection.Depends>`.
+    :param func: A provider passed to {py:func}`Depends <stratae.depends.injection.Depends>`.
+    :param value: The value to inject. It's used as-is, never called.
+    :returns: A reentrant context manager, not safe to share between concurrent tasks.
+    :raises DependencyNotFoundError: If `func` was never passed to `Depends`.
     """
     return _Override(Provider.find(func), value)
 
 
 def overrides(mapping: _OverrideMap) -> _Overrides:
     """
-    Temporarily replace several dependencies' values within one scope.
+    Temporarily replace several dependencies' values.
 
-    :param mapping: Map of provider callables, as passed to
-        {py:func}`Depends <stratae.depends.injection.Depends>`, to their
-        replacement values.
-    :returns: A context manager applying every override on entry and
-        restoring the previous state on exit, in reverse order. If applying
-        one override fails, those already applied are unwound before the
-        error propagates. Like {py:func}`override`, it can be re-entered
-        while held, but not shared between tasks or threads entering it at
-        once.
+    :param mapping: Providers mapped to replacement values.
+    :returns: A context manager like {py:func}`override`'s, applying every override.
     :raises ValueError: If `mapping` is empty.
-    :raises DependencyNotFoundError: If any key was never passed to
-        {py:func}`Depends <stratae.depends.injection.Depends>`.
+    :raises DependencyNotFoundError: If any provider was never passed to `Depends`.
     """
     if not mapping:
         raise ValueError("overrides() requires at least one entry.")

@@ -1,22 +1,11 @@
 """
-Per-wrapper tracking of first computations still running, for wrappers that claim misses.
+Tracking of in-flight first computations, so concurrent misses compute each entry once.
 
-A cached wrapper whose callers can overlap - any wrapper in a shared scope, and an async
-wrapper in a context scope - must compute each entry once even when several callers miss
-it at the same time. It can't hold a lock while computing: the computation may call other
-cached functions, or the same function with another key, and a held non-reentrant lock
-would deadlock it. Instead, the first caller claims the entry under a brief lock, computes
-with the lock released, then stores and releases. Later callers that find the entry
-claimed wait for that release, then re-check the cache.
-
-A shared scope's wrapper keeps its claims in a plain dict of cache key to `Pending` (sync)
-or `AsyncPending` (async), guarded by the wrapper's lock, since its callers may be on any
-thread. A context scope's async wrappers keep theirs in the activation's own `claims` dict
-on its exit stack, with no lock: those callers are tasks sharing one event loop, and the
-claim bookkeeping never awaits, so it can't interleave. There a claim is just the owning
-task, so an uncontended miss allocates nothing; the first waiter swaps in a `WatchedClaim`.
-See `_write_claimed_compute` and `_write_task_claimed_compute` in
-`stratae.lifecycle._wrappers`.
+The first caller claims an entry under a brief lock and computes with it released, since
+the computation may call other cached functions. Later callers wait for the release, then
+re-check the cache. Shared scopes keep `Pending`/`AsyncPending` claims in a locked
+per-wrapper dict. Context scopes' async wrappers use the owning task as a lock-free claim,
+swapped for a `WatchedClaim` once another task waits.
 """
 
 import asyncio
@@ -27,12 +16,7 @@ from stratae.lifecycle.exceptions import CacheCycleError
 
 
 class Pending:
-    """
-    A claimed entry's sync computation - its owning thread, and an event set on release.
-
-    The event is only created once another caller waits, so an uncontended miss never
-    allocates one.
-    """
+    """A claimed sync computation: its owning thread, and an event created on first wait."""
 
     __slots__ = ("owner", "done")
 
@@ -43,12 +27,9 @@ class Pending:
 
     def watch(self) -> threading.Event:
         """
-        Return the event to wait on until this computation is released.
+        Return the event to wait on. Call under the wrapper's lock.
 
-        Must be called under the wrapper's lock, which `release` also holds.
-
-        :raises CacheCycleError: If the calling thread owns this computation - its sync
-            computation can't progress while it waits on itself.
+        :raises CacheCycleError: If the calling thread owns this computation.
         """
         if self.owner == threading.get_ident():
             raise CacheCycleError("Cached call depends on its own in-progress computation.")
@@ -64,11 +45,9 @@ class Pending:
 
 class AsyncPending:
     """
-    A claimed entry's async computation - its owning task, and a future per waiting task.
+    A claimed async computation: its owning task, and a future per waiter.
 
-    A shared scope's waiters can be on other threads' event loops, so each waits on a
-    future of its own loop, which `release` completes through that loop thread-safely.
-    No future is created until a task waits, so an uncontended miss allocates nothing.
+    Waiters may be on other threads' loops, so each future is completed on its own loop.
     """
 
     __slots__ = ("owner", "waiters")
@@ -80,9 +59,7 @@ class AsyncPending:
 
     def watch(self) -> asyncio.Future[None]:
         """
-        Return a future to await until this computation is released.
-
-        Must be called under the wrapper's lock, which `release` also holds.
+        Return a future to await. Call under the wrapper's lock.
 
         :raises CacheCycleError: If the calling task owns this computation.
         """
@@ -96,20 +73,20 @@ class AsyncPending:
         return waiter
 
     def release(self) -> None:
-        """Wake every task still waiting on this computation, each on its own loop."""
+        """Wake every waiting task on its own loop."""
         for waiter in self.waiters or ():
             if not waiter.done():
                 waiter.get_loop().call_soon_threadsafe(_wake, waiter)
 
 
 def _wake(waiter: asyncio.Future[None]) -> None:
-    """Complete `waiter` on its own loop, unless it was cancelled since being scheduled."""
+    """Complete `waiter` on its loop, unless it was cancelled."""
     if not waiter.done():
         waiter.set_result(None)
 
 
 class WatchedClaim:
-    """A context scope's claim once another task waits on it: its owning task, and an event."""
+    """A context scope's claim once a task waits on it: the owner and an event."""
 
     __slots__ = ("owner", "done")
 
@@ -121,10 +98,7 @@ class WatchedClaim:
 
 async def wait_for_claim(claims: dict[Hashable, Any], key: Hashable, claim: Any) -> None:
     """
-    Wait for another task's claim on `key` in a context scope activation to be released.
-
-    `claim` is the owning task itself until a first waiter swaps in a WatchedClaim, whose
-    event the owner sets when it releases the claim.
+    Wait for another task's claim on `key` to be released.
 
     :raises CacheCycleError: If the calling task owns the claim.
     """

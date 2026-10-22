@@ -2,16 +2,11 @@
 Starlette integration for lifecycle management.
 
 {py:func}`scoped_route` builds a `Route` subclass that activates an
-{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` around every
-request it handles. Pass it in place of `Route` when constructing routes. A
-cached resource then opens once per request and closes when the request
-finishes, even if a handler calls it more than once.
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` around each request. Use it in
+place of `Route`.
 
-Work that must finish before the response starts, such as committing a
-transaction, belongs in a second scope nested inside the request scope and
-passed as `handler`. It's active only while the endpoint runs, so a commit
-happens - or fails, becoming a 500 - before any response is sent, while the
-request scope's resources stay open for a streamed body and background tasks.
+Work that must finish before the response, like committing a transaction, belongs in a
+nested `handler` scope. It ends when the endpoint returns, so a failed commit becomes a 500.
 
 ````{example} Committing a per-request transaction before the response
 ```{code-block} python
@@ -63,8 +58,7 @@ async def get_transaction():
 
 type CursorDep = Annotated[sqlite3.Cursor, Depends(get_transaction)]
 
-# inject strips cur from the wrapper's exposed signature, so the wrapped
-# endpoint still matches Starlette's request-only calling convention.
+# inject hides cur from the route's signature.
 @inject
 async def create_product(request: Request, cur: CursorDep) -> JSONResponse:
     product_id = request.path_params["product_id"]
@@ -126,7 +120,7 @@ _ACTIVATION_KEY = "stratae.activation"
 
 
 async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
-    """Close the request's activation with `exc`, unless the other side already closed it."""
+    """Close the request's activation with `exc`, unless already closed."""
     activation: AsyncActivation | None = asgi_scope.pop(_ACTIVATION_KEY, None)
     if activation is None:
         return
@@ -135,11 +129,10 @@ async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
 
 def _endpoint_function(endpoint: Callable[..., Any]) -> Callable[..., Any]:
     """
-    Return the function or method behind `endpoint`, seeing through `functools.partial`.
+    Return the function or method behind `endpoint`, unwrapping `functools.partial`.
 
-    :raises TypeError: If it's neither. Starlette runs any other endpoint - a class such as
-        an `HTTPEndpoint` subclass, or an ASGI app - as an ASGI app that sends its own
-        response, which a scoped route doesn't support.
+    :raises TypeError: If it's an ASGI app or `HTTPEndpoint` class, which scoped routes
+        don't support.
     """
     target = endpoint
     while isinstance(target, partial):
@@ -156,11 +149,9 @@ def _as_async(
     endpoint: Callable[[Request], Awaitable[Response] | Response],
 ) -> Callable[[Request], Awaitable[Response]]:
     """
-    Return `endpoint` itself if async, or a coroutine running it in Starlette's threadpool.
+    Return `endpoint` if async, otherwise a coroutine running it in Starlette's threadpool.
 
-    Starlette runs a sync endpoint in its threadpool, so the scoped wrapper, which is always
-    async, does the same. The threadpool copies the calling context, so the request scope -
-    and a handler scope - stay visible to the endpoint there.
+    The threadpool copies the context, so scopes stay visible to the endpoint.
     """
     if iscoroutinefunction(_endpoint_function(endpoint)):
         return cast(Callable[[Request], Awaitable[Response]], endpoint)
@@ -173,18 +164,14 @@ def _as_async(
 
 def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> type[Route]:
     """
-    Build a Route subclass that activates `scope` around every request it handles.
+    Build a Route subclass that activates `scope` around every request.
 
-    :param scope: Active until the response is fully sent, including a streamed body and
-        background tasks. Its resources' cleanup runs after the response, so suits
-        releasing resources rather than work whose failure should change the response.
-    :param handler: An optional scope nested inside `scope`, active only while the endpoint
-        runs. It ends before the response starts, so a transaction cached in it commits,
-        or rolls back on an exception, in time for a failed commit to become a 500. Omit
-        it when no work needs to finish before the response.
-    :returns: The Route subclass, to use in place of `Route` when building routes. Its
-        endpoints must be functions or methods, sync or async; building one for any other
-        endpoint, such as an `HTTPEndpoint` class, raises TypeError.
+    :param scope: Active until the response is fully sent, including streaming and
+        background tasks.
+    :param handler: An optional nested scope, active only while the endpoint runs. Use it
+        for work like commits that must finish before the response.
+    :returns: A Route subclass. Its endpoints must be functions or methods; others raise
+        `TypeError`.
     """
     lifecycle_scope = scope
     handler_scope = handler
@@ -218,8 +205,7 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
             except BaseException as exc:
                 await _close_activation(scope, exc)
                 raise
-            # Inlined rather than awaiting _close_activation: the success path runs on
-            # every request, and this saves a coroutine per request.
+            # Inlined _close_activation, saving a coroutine per request.
             activation: AsyncActivation | None = scope.pop(_ACTIVATION_KEY, None)
             if activation is not None:
                 await lifecycle_scope.deactivate(activation)

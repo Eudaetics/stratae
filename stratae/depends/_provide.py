@@ -10,7 +10,7 @@ _UNSET = object()
 
 
 class Provider:
-    """Class used to wrap the dependency injection."""
+    """A registered dependency provider and its override state."""
 
     __slots__ = {
         "dependency",
@@ -34,9 +34,9 @@ class Provider:
 
     def __new__(cls, dependency: Callable[..., Any]) -> Self:
         """
-        Singleton factory for dependency wrappers.
+        Return the single Provider for `dependency`.
 
-        :raises InjectionSignatureError: If `dependency` is unhashable, so can't be registered.
+        :raises InjectionSignatureError: If `dependency` is unhashable.
         """
         try:
             existing = cls._registry.get(dependency)
@@ -66,7 +66,7 @@ class Provider:
         return ctx
 
     def update(self, dependency: Callable[..., Any]):
-        """Update the dependency while also correcting the provide."""
+        """Replace the dependency and its provide function."""
         with self.lock:
             self.dependency = dependency
             if self.override_count == 0:
@@ -74,7 +74,7 @@ class Provider:
 
     @classmethod
     def find(cls, func: Callable[..., Any]):
-        """Find the associated Provider for the injected dependency."""
+        """Find the Provider registered for a dependency."""
         try:
             return cls._registry[func]
         except KeyError:

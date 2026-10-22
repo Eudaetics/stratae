@@ -1,22 +1,14 @@
 """
 Run collections of zero-argument checks, raising or gathering their failures.
 
-A check is any zero-argument callable that raises on failure and returns
-normally on success. {py:func}`check` runs a sequence of sync checks, raising
-`TypeError` if any check returns an awaitable; {py:func}`check_async` runs a
-sequence that may mix sync and async checks, awaiting the async ones.
-{py:func}`require` is the decorator form, running checks before a wrapped
-function is called.
+A check is a zero-argument callable that raises on failure. {py:func}`check` runs sync
+checks, {py:func}`check_async` runs sync or async ones, and {py:func}`require` runs them
+before a decorated function. {py:func}`any_of` and {py:func}`all_of` nest groups. The
+`mode` keyword controls failure handling:
 
-Both {py:func}`check` and {py:func}`check_async` accept a `mode` keyword
-controlling failure handling:
-
-* `"all"` (default): stop at the first failing check and propagate its
-  exception.
-* `"gather"`: run every check regardless of earlier failures, then raise
-  an {py:exc}`ExceptionGroup` containing all of them.
-* `"any"`: return immediately on first successful check, ignoring errors
-  from earlier checks.
+* `"all"` (default): raise the first failure.
+* `"gather"`: run every check, then raise all failures as an {py:exc}`ExceptionGroup`.
+* `"any"`: pass on the first success; raise all failures if none succeed.
 
 
 ````{example} Using require to check authorization
@@ -49,10 +41,6 @@ except ExceptionGroup as exc:
 Access denied: resource is archived
 ```
 ````
-
-See {py:func}`check`, {py:func}`check_async`, and {py:func}`require` for
-the rest of the module's API.
-
 """
 
 from functools import wraps
@@ -67,7 +55,7 @@ _Check = Callable[[], Any]
 
 
 def _settle(exc: Exception, mode: CheckMode, exceptions: list[Exception]):
-    """Append to the exception list if mode="gather" or "any", else immediately raise."""
+    """Record exc for "gather" or "any" mode, or raise it for "all"."""
     if mode == "all":
         raise exc
     exceptions.append(exc)
@@ -81,26 +69,13 @@ def _raise_gathered(exceptions: list[Exception], label: str) -> None:
 
 def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
     """
-    Run each check in order, triggering side effects or raising errors.
+    Run sync checks in order.
 
-    :param checks: Zero-argument, synchronous callables to run in order. Each
-        should raise on failure. If a check returns an awaitable (for
-        example, it's a coroutine function), it's rejected with
-        `TypeError` rather than run; use {py:func}`check_async` for
-        checks that may be async.
-    :param mode: How to handle a failing check. "all" stops at the first
-        failure and propagates its exception. "gather" runs every
-        check regardless of earlier failures and raises them together
-        at the end. "any" returns immediately upon first successful
-        check, swallowing errors from any preceding check.
-    :raises Exception: The exception raised by the first failing check, when
-        mode is "all".
-    :raises TypeError: A check returned an awaitable instead of running
-        synchronously, whatever the mode - it's a misuse, not a failing
-        check. Checks earlier in the sequence have already run by this
-        point.
-    :raises ExceptionGroup: All exceptions raised by failing checks, when
-        mode is "gather", or "any" when all checks fail.
+    :param checks: Zero-argument sync callables that raise on failure.
+    :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs.
+    :raises Exception: The first failure, in "all" mode.
+    :raises TypeError: If a check returns an awaitable; use {py:func}`check_async`.
+    :raises ExceptionGroup: All failures, in "gather" mode, or "any" mode if every check fails.
     """
     exceptions: list[Exception] = []
     for fn in checks:
@@ -119,19 +94,12 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
 
 async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
     """
-    Run each check in order, awaiting async checks and calling sync ones directly.
+    Run sync or async checks in order, awaiting the async ones.
 
-    :param checks: Zero-argument callables to run in order. Each should raise
-        on failure. May be sync or async.
-    :param mode: How to handle a failing check. "all" stops at the first
-        failure and propagates its exception. "gather" runs every
-        check regardless of earlier failures and raises them together
-        at the end. "any" returns immediately upon first successful
-        check, swallowing errors from any preceding check.
-    :raises Exception: The exception raised by the first failing check, when
-        mode is "all".
-    :raises ExceptionGroup: All exceptions raised by failing checks, when
-        mode is "gather", or "any" when all checks fail.
+    :param checks: Zero-argument callables that raise on failure.
+    :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs.
+    :raises Exception: The first failure, in "all" mode.
+    :raises ExceptionGroup: All failures, in "gather" mode, or "any" mode if every check fails.
     """
     exceptions: list[Exception] = []
     for fn in checks:
@@ -148,24 +116,12 @@ async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
 
 def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
     """
-    Combine checks into a single deferred check that passes if any one does.
+    Combine checks into one that passes if any of them does.
 
-    Lets an "any" group nest inside an "all" group (or another "any"
-    group) letting boolean requirements like `(is_admin or is_owner) and
-    not_pending` be expressed directly.
+    The result is async if any check is async, and then needs {py:func}`check_async`.
 
-    If any of `checks` is an async function, the returned check is async
-    too, and can only be run through {py:func}`check_async` (directly, or
-    nested inside another group that is). If all of `checks` are sync,
-    the returned check is sync and works with either {py:func}`check` or
-    {py:func}`check_async`.
-
-    :param checks: Zero-argument callables to try, in order, until one
-        succeeds.
-    :returns: A single zero-argument callable that succeeds as soon as any of
-        `checks` succeeds, and raises an {py:exc}`ExceptionGroup` of all
-        their failures if none do. Async if any of `checks` is async,
-        sync otherwise.
+    :param checks: Zero-argument callables to try in order.
+    :returns: A check raising an {py:exc}`ExceptionGroup` of all failures if none pass.
     """
     if any(is_async_callable(fn) for fn in checks):
 
@@ -182,23 +138,12 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
 
 def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
     """
-    Combine checks into a single deferred check that passes only if all do.
+    Combine checks into one that passes only if all of them do.
 
-    Lets an "all" group nest inside an "any" group (or another "all"
-    group), so boolean requirements like `is_super_admin or (is_manager
-    and manages_target_user)` can be expressed within a check.
+    The result is async if any check is async, and then needs {py:func}`check_async`.
 
-    If any of `checks` is an async function, the returned check is async
-    too, and can only be run through {py:func}`check_async` (directly, or
-    nested inside another group that is). If all of `checks` are sync,
-    the returned check is sync and works with either {py:func}`check` or
-    {py:func}`check_async`.
-
-    :param checks: Zero-argument callables to run, in order. The first to
-        fail aborts the rest.
-    :returns: A single zero-argument callable that succeeds only if every one
-        of `checks` succeeds, and raises the first failure otherwise.
-        Async if any of `checks` is async, sync otherwise.
+    :param checks: Zero-argument callables to run in order.
+    :returns: A check raising the first failure.
     """
     if any(is_async_callable(fn) for fn in checks):
 
@@ -216,7 +161,7 @@ def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
 def _is_async_fn[**P, R](
     fn: Callable[P, R] | Callable[P, Awaitable[R]],
 ) -> TypeGuard[Callable[P, Awaitable[R]]]:
-    """Narrow a callable (zero-arg guard or arbitrary-signature fn) to its async form."""
+    """Narrow a callable to its async form."""
     return is_async_callable(fn)
 
 
@@ -253,39 +198,18 @@ def require[**P, R](
     *checks: _Check, mode: CheckMode = "all"
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
-    Run zero-arg guard checks before the decorated function.
+    Run checks before the decorated function.
 
-    Each check's return value is discarded; only side effects and raises
-    matter. Whether a failing check aborts the wrapped function depends on
-    `mode`: under "all" (the default) the first failure aborts it; under
-    "gather" every check still runs first, but a failure still aborts it;
-    under "any" it's only aborted if every check fails. Each check must be
-    a zero-arg callable. Use dependency injection, lambdas, or other tools
-    to ensure any function that relies on dynamic behavior can be called
-    without passing in arguments.
-
-    Sync functions only accept sync checks (an async check cannot be
-    awaited from inside a sync call); this is validated eagerly at
-    decoration time so a sync/async mismatch fails at import rather than
-    on first call. Async functions accept a mix of sync and async checks:
-    sync checks run inline and async checks are awaited, in the order
-    given. With no checks, the function is returned unchanged.
+    A sync function accepts only sync checks. An async function accepts both. With no
+    checks, the function is returned unchanged.
 
     :param P: Parameter specification of the decorated function.
     :param R: Return type of the decorated function.
-    :param checks: Zero-argument guard callables to run, in order, before `fn`.
-    :param mode: How to handle a failing check. "all" (default) stops at the
-        first failure and propagates its exception, so `fn` is never
-        called. "gather" runs every check regardless of earlier
-        failures and raises them together as an {py:exc}`ExceptionGroup`,
-        still short-circuiting `fn`. "any" proceeds to call `fn`
-        as soon as any one check succeeds, only short-circuiting it
-        if every check fails.
-    :returns: A decorator that wraps its target function with the given checks,
-        preserving its signature.
-    :raises TypeError: At decoration time, if the decorated function is sync
-        but a check is async, since there is no safe way to await an
-        async check from inside a sync function.
+    :param checks: Zero-argument callables to run before the function.
+    :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs. The function is only
+        called if the checks pass.
+    :returns: A decorator preserving the function's signature.
+    :raises TypeError: At decoration, if a sync function is given an async check.
     """
 
     @overload

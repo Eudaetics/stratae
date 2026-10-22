@@ -1,44 +1,17 @@
 """
 Event system combining event definitions, bound-event facades, buses, and dispatch protocols.
 
-{py:class}`Event <stratae.events.event.Event>` binds a payload schema to a
-{py:class}`DispatchPattern <stratae.events.event.DispatchPattern>`
-discriminant. {py:class}`PubSub <stratae.events.event.PubSub>` marks
-fire-and-forget dispatch. {py:class}`Request <stratae.events.event.Request>`
-marks request/reply, where emit blocks until a responder returns.
-{py:func}`is_request <stratae.events.event.is_request>` and
-{py:func}`reply_type <stratae.events.event.reply_type>` inspect an
-`Event`'s discriminant.
-
+An {py:class}`Event <stratae.events.event.Event>` pairs a payload schema with a dispatch
+pattern: {py:class}`PubSub <stratae.events.event.PubSub>` or
+{py:class}`Request <stratae.events.event.Request>`.
 {py:func}`bind <stratae.events.binding.bind>` and
-{py:func}`abind <stratae.events.binding.abind>` attach an emitter and
-adapter-specific routing config to an `Event`. Passed a `factory`, each
-returns a callable that builds the payload from the call's arguments before
-forwarding it to the emitter. Omitting `factory` returns a callable that
-takes an already-built payload directly and forwards it the same way.
-
-Emitters and handler registries are described structurally by the
-{py:class}`Producer <stratae.events.protocols.Producer>` and
-{py:class}`Consumer <stratae.events.protocols.Consumer>` protocols. A single
-bound emit call is described by
-{py:class}`EmitCallable <stratae.events.protocols.EmitCallable>`. Registered
-callables are wrapped as {py:class}`Handler <stratae.events.handler.Handler>`
-instances, which detect once whether the wrapped callable is async.
-
+{py:func}`abind <stratae.events.binding.abind>` turn an event into a callable that emits it.
 {py:class}`DirectBus <stratae.events.direct.DirectBus>` and
-{py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>` are
-in-process bus adapters implementing both protocols. Pub/sub events fan out
-to every registered handler. Request events route to a single responder.
-
-{py:class}`Envelope <stratae.events.envelope.Envelope>` carries correlation
-and causation identifiers across an emission's call chain, scoped via
-{py:meth}`Envelope.scope <stratae.events.envelope.Envelope.scope>`. It
-round-trips through message headers
-({py:data}`CAUSATION_ID_HEADER <stratae.events.envelope.CAUSATION_ID_HEADER>`,
-{py:data}`CORRELATION_ID_HEADER <stratae.events.envelope.CORRELATION_ID_HEADER>`,
-{py:data}`MESSAGE_ID_HEADER <stratae.events.envelope.MESSAGE_ID_HEADER>`,
-{py:data}`TIMESTAMP_HEADER <stratae.events.envelope.TIMESTAMP_HEADER>`) for
-adapters that cross a real transport.
+{py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>` dispatch in-process;
+other adapters implement the {py:class}`Producer <stratae.events.protocols.Producer>` and
+{py:class}`Consumer <stratae.events.protocols.Consumer>` protocols.
+{py:class}`Envelope <stratae.events.envelope.Envelope>` carries correlation ids across a
+chain of emissions.
 
 ````{example} Create event triggering a logging event
 ```{code-block} python
@@ -86,12 +59,6 @@ log: creating user ada
 created user: ada
 ```
 ````
-
-See {py:class}`DirectBus <stratae.events.direct.DirectBus>`,
-{py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>`,
-{py:func}`bind <stratae.events.binding.bind>`, and
-{py:func}`abind <stratae.events.binding.abind>` for the rest of the module's API.
-
 """
 
 from .binding import abind, bind

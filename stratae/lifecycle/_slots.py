@@ -10,20 +10,18 @@ _MISSING: Any = object()
 
 class SlotDict(dict[int, Any]):
     """
-    Dict-backed slot storage - missing slots read as UNSET without inserting them.
+    Dict slot storage where missing slots read as UNSET.
 
-    An ended activation's storage is emptied (see `Scope.__exit__`). Live storage always
-    holds the reserved slots 0-3, so an empty SlotDict is an ended one, and its reads
-    raise KeyError like an emptied list's raise IndexError.
+    Live storage always holds slots 0-3, so an empty SlotDict is an ended activation.
     """
 
     __slots__ = ()
 
     def __missing__(self, key: int) -> Any:
         """
-        Return UNSET for a slot that was never written, without inserting it.
+        Return UNSET for an unwritten slot.
 
-        :raises KeyError: If the storage is empty - its activation has ended.
+        :raises KeyError: If the activation has ended.
         """
         if self:
             return UNSET

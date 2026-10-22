@@ -1,27 +1,10 @@
 """
 Register a faster serialize path for msgspec.Struct payloads.
 
-Registers a `msgspec.Struct`-specific implementation of {py:func}`serialize
-<stratae.serde.serialize>` that uses `msgspec.json.encode` in place of
-`json.dumps`. {py:func}`encode <stratae.serde.encode>` is wired in as
-`msgspec`'s `enc_hook`. Whatever `msgspec` doesn't already know how to
-encode natively falls through to the same handling the default `serialize`
-uses. That includes anything registered via `@encode.register`.
-
-The registration only takes effect once this module has actually been
-imported, since {py:func}`serialize <stratae.serde.serialize>` is a
-`functools.singledispatch` function and only dispatches to implementations
-from modules the interpreter has run. Import `stratae.integrations.msgspec`
-once, for its side effect, before serializing any `msgspec.Struct`.
-Installing `msgspec` itself is not enough. Without that import, `serialize`
-still runs on a `msgspec.Struct` by falling back to its generic
-`json.dumps`-based path, so the fallback can go unnoticed rather than
-failing loudly.
-
-The decode side has the same symmetry: `deserialize.construct` has the
-same `(type, obj) -> Any` shape as msgspec's `dec_hook`, so passing it
-directly as `dec_hook` covers `msgspec.Struct` fields the same way
-`encode` already covers them as `enc_hook`.
+Importing this module registers a {py:func}`serialize <stratae.serde.serialize>` path that
+uses `msgspec.json.encode`, with {py:func}`encode <stratae.serde.encode>` as its `enc_hook`.
+Without the import, `serialize` silently falls back to `json.dumps`. For decoding, pass
+`deserialize.construct` as msgspec's `dec_hook`.
 
 ````{example} Serializing a msgspec.Struct with a field msgspec can't natively encode
 ```{code-block} python
@@ -58,10 +41,6 @@ print(restored.total.value, restored.total.currency)
 19.99 usd
 ```
 ````
-
-See {py:func}`serialize <stratae.serde.serialize>` and {py:func}`encode
-<stratae.serde.encode>` for the rest of the module's API.
-
 """
 
 import msgspec

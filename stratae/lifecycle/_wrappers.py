@@ -1,11 +1,8 @@
 """
-Wrappers for scope-managed functions and context managers.
+Codegen'd wrappers for scope-cached functions and context managers.
 
-Wrapper bodies are generated as source text and compiled rather than written as a
-generic ``*args/**kwargs`` shim, so the compiled wrapper's signature and defaults
-exactly match the original callable's, and so a cache hit costs one slot read
-instead of a keyed dict lookup whenever the function's result doesn't vary by
-argument values.
+Generated wrappers match the original signature exactly, and a function whose result
+doesn't vary by argument reads one slot instead of a keyed dict.
 """
 
 import threading
@@ -38,13 +35,10 @@ if TYPE_CHECKING:
 
 class Cached[**P, T, U](Protocol):
     """
-    The shape of a function returned by `Scope.cache`/`AsyncScope.cache`.
+    A function returned by `Scope.cache` or `AsyncScope.cache`.
 
-    Calling it directly (`__call__`) returns the cached value, computing it on the first
-    call within the current scope activation. `uncached` is the original, pre-decoration
-    function itself - unentered (for a `resource`/`async_resource`-tagged function) and
-    uncached, callable whether or not the owning scope is active. Use it for one-off calls
-    where you know the scope won't be active, or don't want the result cached.
+    Calling it returns the value cached for the current activation. `uncached` is the
+    original function, callable without an active scope.
     """
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
@@ -52,7 +46,7 @@ class Cached[**P, T, U](Protocol):
         ...
 
     def uncached(self, *args: P.args, **kwargs: P.kwargs) -> U:
-        """Call the original function directly, bypassing caching and scope activation."""
+        """Call the original function, bypassing the cache."""
         ...
 
 
@@ -60,9 +54,9 @@ class _SlotCode:
     """
     Source text for reading and writing one wrapper's dedicated slot.
 
-    A reused slot in a context scope can still hold a dead wrapper's value in other live
-    activations, so an owned slot boxes its values in its own `__Owned__` type and treats
-    anything else as a miss.
+    A reused slot in a context scope may still hold a dead wrapper's value in other
+    activations, so an owned slot boxes its values in `__Owned__` and treats anything else
+    as a miss.
     """
 
     __slots__ = ("index", "owned")
@@ -140,18 +134,12 @@ def _allocate_slot(scope: "BaseScope") -> _SlotCode:
 def _is_slot_eligible(
     params: list[Parameter], cache_key: Callable[..., Hashable] | None, ignore_params: bool
 ) -> bool:
-    """
-    Determine whether a function's result never varies by argument values.
-
-    That's true when ignore_params is set, or when there's no custom cache_key and the
-    function takes no parameters at all - both cases cache exactly one value per scope
-    activation, so the value can live directly in the function's slot with no dict.
-    """
+    """Whether a function caches one value per activation, stored directly in its slot."""
     return ignore_params or (cache_key is None and not params)
 
 
 def _render_forward_arguments(params: list[Parameter]) -> str:
-    """Render the call arguments used to forward parameters directly to the wrapped function."""
+    """Render the call arguments that forward parameters to the wrapped function."""
     args: list[str] = []
     for param in params:
         if param.kind is Parameter.VAR_POSITIONAL:
@@ -189,17 +177,11 @@ def _render_key_expression(
     cache_key: Callable[..., Hashable] | None, params: list[Parameter]
 ) -> str:
     """
-    Render the source expression used as the cache key for a non-slot-eligible function.
+    Render the cache-key expression for a keyed function.
 
-    The key never folds in which function it's for: each keyed function has its own
-    dedicated dict (see _write_new_cache), so the key only distinguishes calls to
-    *that* function. A custom cache_key is called with the parameters forwarded directly.
-    Otherwise the key is a flat tuple of every parameter's local, in signature order -
-    keyword-only params are ordinary locals, and only a true **kwargs (whose names vary
-    call to call) needs the frozenset(items()) treatment. Flat is unambiguous: only *args
-    varies the tuple's length, so equal keys always align the same values to the same
-    parameters. A single-parameter function skips the tuple wrapper entirely - its bare
-    local already distinguishes calls (and a lone *args local is already a tuple).
+    Each keyed function has its own dict, so the key only distinguishes its calls. It's a
+    flat tuple of parameter locals, or the bare local for a single parameter. Only a true
+    `**kwargs` needs `frozenset(items())`.
     """
     if cache_key is not None:
         return f"__cache_key__({_render_forward_arguments(params)})"
@@ -212,37 +194,31 @@ def _render_key_expression(
 def _write_key(
     writer: Writer, cache_key: Callable[..., Hashable] | None, params: list[Parameter]
 ) -> None:
-    """Write the __ck__ assignment once, reused by both the hit check and the miss store."""
+    """Write the __ck__ assignment shared by the hit check and the miss store."""
     writer.write(f"__ck__ = {_render_key_expression(cache_key, params)}")
 
 
 def _write_cache_check(writer: Writer) -> None:
-    """Write the cache-hit fast path: return immediately if __ck__ is already cached."""
+    """Write the cache-hit fast path."""
     writer.write("if __ck__ in __cache__:")
     with writer.block():
         writer.write("return __cache__[__ck__]")
 
 
 def _write_cache_store(writer: Writer) -> None:
-    """Write the cache-miss tail: store __value__ under __ck__ and return it."""
+    """Write the cache-miss store of __value__ under __ck__."""
     writer.write("__cache__[__ck__] = __value__")
     writer.write("return __value__")
 
 
 def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> None:
     """
-    Write the fast-path resolution of __slots__ plus the first slot read into it.
+    Write the resolution of __slots__ and the first slot read.
 
-    Which lookup is written depends on the scope's isolation (see _build_namespace for
-    the matching namespace binding). A shared scope reads its SharedVar's storage attribute,
-    unguarded - when the scope is inactive the attribute holds UNSET, whose subscript in the
-    read raises TypeError, so the active path pays no explicit check. Storage read just
-    before another thread deactivates the scope is emptied under it, so the read raises
-    IndexError or KeyError instead. A context-isolated scope's ContextVar is bound straight
-    into the wrapper's namespace at codegen time, and its get() shares one try with the
-    read: an inactive scope raises LookupError from get(), and an ended activation's
-    emptied storage raises IndexError or KeyError - both LookupErrors - from the read. Any
-    miss falls back to get_slots(), which raises the right error.
+    No explicit active check is paid. A shared scope reads its SharedVar's storage directly;
+    an inactive scope's UNSET raises TypeError on subscript. A context scope's `get()` raises
+    LookupError when inactive. An ended activation's emptied storage raises IndexError or
+    KeyError. Every miss falls back to get_slots(), which raises the right error.
     """
     if scope.is_shared():
         writer.write("__slots__ = __var__.storage")
@@ -269,15 +245,12 @@ type ClaimStyle = Literal["locked", "task"] | None
 
 def _claim_style(scope: "BaseScope", is_async: bool) -> ClaimStyle:
     """
-    How a wrapper claims its misses so overlapping callers compute each entry once, if at all.
+    How a wrapper ensures overlapping callers compute each entry once.
 
-    `"locked"`: a shared scope's callers can be on any thread, so its claims live in a
-    per-wrapper dict guarded by a lock. `"task"`: a context scope's async wrapper - callers
-    overlapping one activation are its child tasks, sharing one event loop. Its claim
-    bookkeeping never awaits, so it needs no lock, and it lives in the activation's own
-    claims dict, with the owning task itself as the claim. `None`: a context scope's sync
-    wrapper computes without suspending, so only threads running a copied context could
-    overlap it - it skips claiming to keep that miss path free of the bookkeeping.
+    `"locked"`: shared scope; claims live in a per-wrapper dict behind a lock.
+    `"task"`: context scope, async wrapper; the owning task is the claim, stored lock-free
+    in the activation's claims dict. `None`: context scope, sync wrapper; it can't be
+    interleaved, so it skips claiming.
     """
     if scope.is_shared():
         return "locked"
@@ -302,8 +275,7 @@ def _build_namespace(
     }
     style = _claim_style(scope, is_async)
     if style == "locked":
-        # A thread lock even for async wrappers: it only guards claim/store bookkeeping,
-        # never an await, so it can't block the event loop for long.
+        # A thread lock even for async wrappers: it never guards an await.
         lock = threading.Lock()
         namespace["__acquire__"] = lock.acquire
         namespace["__release__"] = lock.release
@@ -319,13 +291,7 @@ def _build_namespace(
 
 
 def _write_new_cache(writer: Writer, slot: _SlotCode) -> None:
-    """
-    Write the creation of a keyed function's own dedicated cache dict into its slot.
-
-    The dict is built lazily on first use: UNSET is cheaper to fill every slot with up
-    front than allocating an empty dict for every keyed function in the scope whether or
-    not it's ever actually called.
-    """
+    """Write the lazy creation of a keyed function's cache dict into its slot."""
     writer.write("__cache__ = {}")
     writer.write(slot.write("__cache__"))
 
@@ -334,10 +300,8 @@ def _write_slot_store(writer: Writer, slot: _SlotCode, scope: "BaseScope") -> No
     """
     Write the store of __value__ into a slot-eligible function's slot.
 
-    A computation still running when its activation ends finds that storage emptied, and
-    mustn't refill it: a later call reaching the ended storage would hit the value instead
-    of raising. Into an emptied list the store raises IndexError, caught at no cost to a
-    live store; an emptied SlotDict would accept it, so a sparse store checks first.
+    An activation that ended mid-computation must not be refilled. An emptied list raises
+    IndexError for free; an emptied SlotDict wouldn't, so sparse stores check first.
     """
     if scope.storage == "dense":
         writer.write("try:")
@@ -353,11 +317,7 @@ def _write_slot_store(writer: Writer, slot: _SlotCode, scope: "BaseScope") -> No
 
 
 def _write_locked(writer: Writer, write_body: Callable[[], None]) -> None:
-    """
-    Write `write_body` guarded by the wrapper's lock.
-
-    Written as acquire/try/finally rather than `with`, which costs about twice as much.
-    """
+    """Write `write_body` guarded by the wrapper's lock, via acquire/try/finally for speed."""
     writer.write("__acquire__()")
     writer.write("try:")
     with writer.block():
@@ -410,12 +370,10 @@ def _write_task_claimed_compute(
     write_store: Callable[[], None],
 ) -> None:
     """
-    Write a context scope's lockless claim-then-compute miss path, for an async wrapper.
+    Write a context scope's lock-free claim-then-compute miss path, for an async wrapper.
 
-    Only reached right after a miss, with no await since, so there's nothing to re-check
-    until a wait. The claim is the calling task itself in the activation's claims dict,
-    replaced by a WatchedClaim only once another task waits on it - so an uncontended miss
-    adds a few dict operations and no allocation.
+    The claim is the calling task, replaced by a WatchedClaim only once another task waits,
+    so an uncontended miss allocates nothing.
     """
     writer.write("__claims__ = __slots__[0].claims")
     writer.write("while True:")
@@ -451,12 +409,10 @@ def _write_claimed_slot_miss(
     write_compute: Callable[[], None],
 ) -> None:
     """
-    Write a claiming slot miss, computed once across overlapping callers.
+    Write a slot miss computed once across overlapping callers.
 
-    Only reached once the lock-free fast-path read outside already saw UNSET. A shared
-    scope's wrapper claims under `None`, since the slot holds one value per activation and
-    its claims are its own; a context scope's claims share the activation's dict, so they
-    claim under the slot number.
+    A shared scope claims under `None`; a context scope claims under the slot number, since
+    its claims dict is shared by the activation.
     """
 
     def write_recheck() -> None:
@@ -485,14 +441,10 @@ def _write_claimed_keyed_body(
     write_compute: Callable[[], None],
 ) -> None:
     """
-    Write a claiming keyed cache access, computing each key once across overlapping callers.
+    Write a keyed cache access that computes each key once across overlapping callers.
 
-    Claims are per key, so computing one key never waits on another. In a shared scope the
-    dict's lazy creation moves inside the lock too: two callers on different threads can
-    each see the slot as UNSET and each build a fresh dict, silently discarding whichever's
-    inserts came first, so only the hit check stays lock-free. A context scope's tasks can't
-    interleave before claiming, so they build it without one. write_compute writes the
-    result into __value__.
+    In a shared scope the dict's lazy creation happens under the lock, since two threads
+    could otherwise each build one and lose inserts.
     """
     slot.write_read(writer, "__cache__", scope)
     _write_key(writer, cache_key, params)
@@ -533,12 +485,7 @@ def _write_slot_body(
     write_compute: Callable[[], None],
     is_async: bool = False,
 ) -> None:
-    """
-    Write the whole body of a slot-eligible wrapper.
-
-    write_compute writes the result into __value__ - a plain call for a function, a
-    context-manager entry for a resource.
-    """
+    """Write the body of a slot-eligible wrapper; write_compute fills __value__."""
     style = _claim_style(scope, is_async)
 
     def write_miss() -> None:
@@ -562,12 +509,7 @@ def _write_keyed_body(
     write_compute: Callable[[], None],
     is_async: bool = False,
 ) -> None:
-    """
-    Write the whole body of a keyed wrapper.
-
-    write_compute writes the result into __value__ - a plain call for a function, a
-    context-manager entry for a resource.
-    """
+    """Write the body of a keyed wrapper; write_compute fills __value__."""
     style = _claim_style(scope, is_async)
     if style is not None:
         _write_claimed_keyed_body(
@@ -583,7 +525,7 @@ def _write_keyed_body(
 
 
 def _aggregate_defaults(params: list[Parameter]):
-    """Build the __defaults__ tuple for the wrapper from its positional parameters' defaults."""
+    """Build the wrapper's __defaults__ from its positional parameters."""
     return (
         tuple(
             param.default
@@ -596,7 +538,7 @@ def _aggregate_defaults(params: list[Parameter]):
 
 
 def _aggregate_kwdefaults(params: list[Parameter]):
-    """Build the __kwdefaults__ dict for the wrapper from its keyword-only parameters' defaults."""
+    """Build the wrapper's __kwdefaults__ from its keyword-only parameters."""
     return {
         param.name: param.default
         for param in params
@@ -607,12 +549,7 @@ def _aggregate_kwdefaults(params: list[Parameter]):
 def _finalize(
     writer: Writer, func: Callable[..., Any], params: list[Parameter], namespace: dict[str, Any]
 ) -> Callable[..., Any]:
-    """
-    Compile the generated wrapper source and restore its metadata and defaults.
-
-    render_parameters emits the signature without defaults, so they are restored through
-    __defaults__/__kwdefaults__ for calls that omit arguments.
-    """
+    """Compile the wrapper source and restore its metadata and defaults."""
     exec(compile(writer.render(), wrapper_filename(func), "exec"), namespace)  # noqa: S102
 
     wrapper = namespace["wrapper"]
@@ -629,7 +566,7 @@ def _create_sync_wrapper_impl(
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
 ) -> Callable[..., Any]:
-    """Build the codegen'd wrapper shared by the sync and sync-in-async cache decorators."""
+    """Build the wrapper shared by the sync and sync-in-async decorators."""
     params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
 
@@ -661,17 +598,13 @@ def create_sync_wrapper[**P, T](
     ignore_params: bool = False,
 ) -> Cached[P, T, T]:
     """
-    Create a synchronous wrapper function that caches based on the scope's activation.
+    Create a sync wrapper that caches `func`'s result per scope activation.
 
-    :param func: The function whose result should be cached.
-    :param scope: The {py:class}`Scope <stratae.lifecycle.scope.Scope>` that owns the cached value.
-    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
-        the key is `func`'s arguments themselves.
-    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
-        of keying by argument values.
-    :returns: A wrapper matching `func`'s signature that returns the cached value for the current
-        scope activation, computing and storing it on the first call. Its `uncached` attribute is
-        `func` itself.
+    :param func: The function to cache.
+    :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>`.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
         Cached[P, T, T],
@@ -686,18 +619,13 @@ def create_sync_in_async_wrapper[**P, T](
     ignore_params: bool = False,
 ) -> Cached[P, T, T]:
     """
-    Create a synchronous wrapper function for use within an async scope.
+    Create a sync wrapper that caches `func`'s result in an async scope.
 
-    :param func: The function whose result should be cached.
-    :param scope: The {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` that owns the
-        cached value.
-    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
-        the key is `func`'s arguments themselves.
-    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
-        of keying by argument values.
-    :returns: A wrapper matching `func`'s signature that returns the cached value for the current
-        scope activation, computing and storing it on the first call. Its `uncached` attribute is
-        `func` itself.
+    :param func: The function to cache.
+    :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
         Cached[P, T, T],
@@ -712,18 +640,13 @@ def create_async_wrapper[**P, T](
     ignore_params: bool = False,
 ) -> Cached[P, Awaitable[T], Awaitable[T]]:
     """
-    Create an asynchronous wrapper function that caches based on the scope's activation.
+    Create an async wrapper that caches `func`'s result per scope activation.
 
-    :param func: The async function whose result should be cached.
-    :param scope: The {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` that owns the
-        cached value.
-    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
-        the key is `func`'s arguments themselves.
-    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
-        of keying by argument values.
-    :returns: An async wrapper matching `func`'s signature that returns the cached value for the
-        current scope activation, computing and storing it on the first call. Its `uncached`
-        attribute is `func` itself.
+    :param func: The async function to cache.
+    :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
@@ -753,12 +676,7 @@ def create_async_wrapper[**P, T](
 
 
 def _write_resolve_exit_stack(writer: Writer) -> None:
-    """
-    Write the read of the scope's exit stack from reserved slot 0 into __stack__.
-
-    Slot 0 is populated eagerly when the scope activates (see Scope.activate/
-    AsyncScope.activate), so this is a plain read - never UNSET.
-    """
+    """Write the read of the exit stack from reserved slot 0 into __stack__."""
     writer.write("__stack__ = __slots__[0]")
 
 
@@ -770,7 +688,7 @@ def _create_cm_wrapper_impl(
     is_async: bool,
     enter_expr: str,
 ) -> Callable[..., Any]:
-    """Build the codegen'd wrapper shared by the sync and async context-manager decorators."""
+    """Build the wrapper shared by the sync and async context-manager decorators."""
     params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
 
@@ -806,22 +724,14 @@ def create_synccm_wrapper[**P, T](
     """
     Create a wrapper that enters a sync context manager and caches its yielded value.
 
-    Used for functions decorated with `resource`: the underlying context
-    manager is entered once per cache key and registered with the scope's
-    exit stack, so it is exited when the owning scope deactivates rather
-    than when the wrapper returns.
+    The context manager is exited when the scope's activation ends.
 
-    :param func: The context-manager-returning function to wrap.
-    :param scope: The {py:class}`Scope <stratae.lifecycle.scope.Scope>`/
-        {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` that owns the cached value
-        and exit stack.
-    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
-        the key is `func`'s arguments themselves.
-    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
-        of keying by argument values.
-    :returns: A wrapper matching `func`'s signature that returns the entered value for the current
-        scope activation, entering the context manager on the first call. Its `uncached` attribute
-        is `func` itself - the unentered context manager function.
+    :param func: The `resource`-tagged function to wrap.
+    :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>` or
+        {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
         Cached[P, T, AbstractContextManager[T]],
@@ -845,21 +755,14 @@ def create_asynccm_wrapper[**P, T](
     """
     Create a wrapper that enters an async context manager and caches its yielded value.
 
-    Used for functions decorated with `async_resource`: the underlying
-    context manager is entered once per cache key and registered with the
-    scope's exit stack, so it is exited when the owning scope deactivates
-    rather than when the wrapper returns.
+    The context manager is exited when the scope's activation ends.
 
-    :param func: The async-context-manager-returning function to wrap.
-    :param scope: The {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` that owns the
-        cached value and exit stack.
-    :param cache_key: Callable deriving a hashable cache key from `func`'s arguments. When omitted,
-        the key is `func`'s arguments themselves.
-    :param ignore_params: Cache a single value per scope activation regardless of arguments, instead
-        of keying by argument values.
-    :returns: An async wrapper matching `func`'s signature that returns the entered value for the
-        current scope activation, entering the context manager on the first call. Its `uncached`
-        attribute is `func` itself - the unentered async context manager function.
+    :param func: The `async_resource`-tagged function to wrap.
+    :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :returns: An async wrapper matching `func`'s signature, with `func` as its `uncached`
+        attribute.
     """
     return cast(
         Cached[P, Awaitable[T], AbstractAsyncContextManager[T]],
