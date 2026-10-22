@@ -10,6 +10,8 @@ RabbitMQConfig:
 RabbitMQPublisher:
 - Entering the context opens the connection and allocates a channel.
 - Exiting the context closes the connection.
+- Entering the context while already connected raises AlreadyConnectedError.
+- A failed close on exit still leaves the publisher disconnected.
 - emit raises NotConnectedError before the context is entered.
 - emit publishes the serialized payload to the configured exchange
   and routing key.
@@ -41,7 +43,7 @@ from stratae.events import (
     PubSub,
     Request,
 )
-from stratae.events.exceptions import NotConnectedError
+from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError
 from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
 from stratae.serde import encode, serialize
 
@@ -156,6 +158,47 @@ async def test_context_closes_connection_on_exit(
 
     # Assert
     connection.close.assert_awaited_once()
+
+
+async def test_context_reentered_while_connected_raises(
+    publisher: RabbitMQPublisher, connect_mock: AsyncMock
+):
+    """
+    Entering the context again while connected should raise instead of orphaning the connection.
+
+    Given: A publisher whose context has been entered
+    When: The context is entered again
+    Then: AlreadyConnectedError should be raised without opening a second connection
+    """
+    # Act & Assert
+    async with publisher:
+        with pytest.raises(AlreadyConnectedError):
+            await publisher.__aenter__()
+
+    connect_mock.assert_awaited_once()
+
+
+async def test_failed_close_leaves_publisher_disconnected(
+    publisher: RabbitMQPublisher, connection: AsyncMock
+):
+    """
+    A close that raises on exit should still leave the publisher disconnected.
+
+    Given: A publisher whose connection's close raises
+    When: The context exits
+    Then: The error propagates, and emitting afterwards raises NotConnectedError
+    """
+    # Arrange
+    connection.close.side_effect = ConnectionError("broker gone")
+
+    # Act
+    with pytest.raises(ConnectionError):
+        async with publisher:
+            pass
+
+    # Assert
+    with pytest.raises(NotConnectedError):
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
 
 
 async def test_emit_without_connection_raises(publisher: RabbitMQPublisher):

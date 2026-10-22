@@ -13,6 +13,8 @@ RabbitMQConsumer:
   registrations made beforehand.
 - Registrations made while connected start consuming immediately.
 - Exiting the context closes the connection.
+- Entering the context while already connected raises AlreadyConnectedError.
+- A failed close on exit still leaves the consumer disconnected.
 - handle registers directly or as a decorator, returning the Handler.
 - Delivered messages are decoded with the default deserialize and the
   message is acked after the handler returns.
@@ -63,6 +65,7 @@ from stratae.events import (
     Handler,
     PubSub,
 )
+from stratae.events.exceptions import AlreadyConnectedError
 from stratae.integrations.rabbitmq import RabbitMQConsumeConfig, RabbitMQConsumer
 from stratae.serde import deserialize
 
@@ -227,6 +230,49 @@ async def test_context_closes_connection_on_exit(consumer: RabbitMQConsumer, con
 
     # Assert
     connection.close.assert_awaited_once()
+
+
+async def test_context_reentered_while_connected_raises(
+    consumer: RabbitMQConsumer, connect_mock: AsyncMock
+):
+    """
+    Entering the context again while connected should raise instead of orphaning the connection.
+
+    Given: A consumer whose context has been entered
+    When: The context is entered again
+    Then: AlreadyConnectedError should be raised without opening a second connection
+    """
+    # Act & Assert
+    async with consumer:
+        with pytest.raises(AlreadyConnectedError):
+            await consumer.__aenter__()
+
+    connect_mock.assert_awaited_once()
+
+
+async def test_failed_close_leaves_consumer_disconnected(
+    consumer: RabbitMQConsumer, connect_mock: AsyncMock, connection: AsyncMock
+):
+    """
+    A close that raises on exit should still leave the consumer disconnected.
+
+    Given: A consumer whose connection's close raises
+    When: The context exits
+    Then: The error propagates, and the consumer can be entered again
+    """
+    # Arrange
+    connection.close.side_effect = ConnectionError("broker gone")
+
+    # Act
+    with pytest.raises(ConnectionError):
+        async with consumer:
+            pass
+    connection.close.side_effect = None
+    async with consumer:
+        pass
+
+    # Assert
+    assert connect_mock.await_count == 2
 
 
 def test_handle_returns_handler_directly(consumer: RabbitMQConsumer):

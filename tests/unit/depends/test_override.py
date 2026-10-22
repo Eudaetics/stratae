@@ -1,5 +1,6 @@
 """Test suite for the override tool in the dependency injection module."""
 
+import contextvars
 import threading
 from unittest.mock import AsyncMock, Mock
 
@@ -364,3 +365,26 @@ def test_overrides_can_be_reentered_while_held():
             assert (depends_a.provide(), depends_b.provide()) == ("fake_a", "fake_b")
         assert (depends_a.provide(), depends_b.provide()) == ("fake_a", "fake_b")
     assert (depends_a.provide(), depends_b.provide()) == ("real_a", "real_b")
+
+
+def test_override_exit_in_other_context_still_restores_provide():
+    """
+    An override exited outside the context that entered it should still stop counting itself.
+
+    Given: an override entered in one context,
+    When: it is exited from a copied context, where resetting its token fails,
+    Then: the reset error propagates, and provide is restored to the real dependency.
+    """
+    # Arrange
+    dep = Mock(return_value="real")
+    depends = Provider(dep)
+    ctx = override(dep, "fake")
+    ctx.__enter__()
+
+    # Act
+    with pytest.raises(ValueError):
+        contextvars.copy_context().run(ctx.__exit__)
+
+    # Assert
+    assert depends.override_count == 0
+    assert depends.provide() == "real"

@@ -4,7 +4,7 @@ from typing import Any, Callable, Hashable, Self
 from weakref import WeakValueDictionary
 
 from stratae._callables import is_async_callable
-from stratae.depends.exceptions import DependencyNotFoundError
+from stratae.depends.exceptions import DependencyNotFoundError, InjectionSignatureError
 
 _UNSET = object()
 
@@ -33,8 +33,18 @@ class Provider:
     resolved: bool
 
     def __new__(cls, dependency: Callable[..., Any]) -> Self:
-        """Singleton factory for dependency wrappers."""
-        existing = cls._registry.get(dependency)
+        """
+        Singleton factory for dependency wrappers.
+
+        :raises InjectionSignatureError: If `dependency` is unhashable, so can't be registered.
+        """
+        try:
+            existing = cls._registry.get(dependency)
+        except TypeError:
+            raise InjectionSignatureError(
+                f"Cannot use {dependency!r} as a dependency: it's unhashable. "
+                "Wrap it in a function instead."
+            ) from None
         if existing is not None:
             return existing
         instance = super().__new__(cls)

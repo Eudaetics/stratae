@@ -6,7 +6,8 @@ All inherit from {py:exc}`EventDispatchError`. {py:exc}`NoResponderError` and
 {py:class}`Request <stratae.events.event.Request>` event whose registered
 responder count isn't exactly one, too few and too many respectively.
 {py:exc}`NotConnectedError` is raised separately, when emitting through an
-adapter whose underlying connection is not open.
+adapter whose underlying connection is not open, and
+{py:exc}`AlreadyConnectedError` when opening an adapter that's already open.
 """
 
 
@@ -43,4 +44,15 @@ class NotConnectedError(EventDispatchError):
     Raised by event bus adapters, such as
     {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.RabbitMQPublisher>`,
     when asked to publish before their underlying connection has been opened.
+    """
+
+
+class AlreadyConnectedError(EventDispatchError):
+    """
+    Exception raised when opening an adapter whose connection is already open.
+
+    Raised by event bus adapters, such as
+    {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.RabbitMQPublisher>`,
+    when entered again while still connected, which would otherwise orphan the open
+    connection.
     """

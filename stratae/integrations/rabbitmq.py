@@ -122,7 +122,7 @@ from stratae.events import (
     is_request,
 )
 from stratae.events.binding import AsyncBindMixin
-from stratae.events.exceptions import NotConnectedError
+from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError
 from stratae.serde import Deserializer, Serializer, deserialize, serialize
 
 if TYPE_CHECKING:
@@ -131,6 +131,8 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 _NOT_CONNECTED = "publisher is not connected; open it with 'async with' before emitting"
+
+_ALREADY_CONNECTED = "{} is already connected; exit it before entering it again"
 
 _REQUEST_REPLY_NOT_IMPLEMENTED = "RabbitMQ request/reply is not yet implemented"
 
@@ -252,8 +254,11 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         The connection is closed again if allocating the channel fails.
 
         :returns: `self`, ready to publish.
+        :raises AlreadyConnectedError: When the publisher is already connected.
 
         """
+        if self._connection is not None:
+            raise AlreadyConnectedError(_ALREADY_CONNECTED.format("publisher"))
         self._connection = await connect(self._url)
         try:
             self._channel = await self._connection.channel()
@@ -264,11 +269,13 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
 
     async def __aexit__(self, *_: object) -> None:
         """Close the AMQP connection, if one was opened."""
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
-            self._channel = None
-            self._declared.clear()
+        connection = self._connection
+        # Forgotten before closing, so a failed close can't leave stale state behind.
+        self._connection = None
+        self._channel = None
+        self._declared.clear()
+        if connection is not None:
+            await connection.close()
 
     async def emit[S, R, Signal: bool](
         self,
@@ -453,7 +460,10 @@ class RabbitMQConsumer:
     and dropped as described below. Pass a compatible decoder
     such as `msgspec.json.decode` to swap the format adapter-wide. A
     per-registration `deserializer` overrides it for one queue. Sync and
-    async handlers are both supported. A message is acked after its handler
+    async handlers are both supported. A sync handler runs directly on the
+    event loop, blocking every other delivery on the connection until it
+    returns, so offload slow or blocking work from it, e.g. with
+    `asyncio.to_thread` inside an async handler. A message is acked after its handler
     returns. When deserialization or handling raises, the message is nacked
     without requeue and the exception is logged. This keeps poison messages
     from redelivering forever, and it shields the channel from handler
@@ -495,8 +505,11 @@ class RabbitMQConsumer:
         The connection is closed again if any of that setup fails.
 
         :returns: `self`, consuming in the background.
+        :raises AlreadyConnectedError: When the consumer is already connected.
 
         """
+        if self._connection is not None:
+            raise AlreadyConnectedError(_ALREADY_CONNECTED.format("consumer"))
         self._connection = await connect(self._url)
         try:
             channel = await self._connection.channel()
@@ -514,12 +527,14 @@ class RabbitMQConsumer:
         """Close the AMQP connection, if one was opened."""
         for task in tuple(self._starting):
             task.cancel()
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
-            self._channel = None
+        connection = self._connection
+        # Forgotten before closing, so a failed close can't leave stale state behind.
+        self._connection = None
+        self._channel = None
         for registration in self._registrations.values():
             registration.consumer_tag = None
+        if connection is not None:
+            await connection.close()
 
     @overload
     def handle[R](

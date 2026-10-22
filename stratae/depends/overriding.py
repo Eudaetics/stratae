@@ -89,7 +89,6 @@ class _Override:
     def __init__(self, dep: Provider, value: Any):
         self.dep = dep
         self.value = value
-        # A stack, so the same override can be re-entered while it's already held.
         self.tokens: list[Token[Any]] = []
 
     def __enter__(self):
@@ -105,10 +104,12 @@ class _Override:
 
     def __exit__(self, *_: object) -> None:
         with self.dep.lock:
-            self.dep.override.reset(self.tokens.pop())
-            self.dep.override_count -= 1
-            if self.dep.override_count == 0:
-                self.dep.provide = self.dep.dependency
+            try:
+                self.dep.override.reset(self.tokens.pop())
+            finally:
+                self.dep.override_count -= 1
+                if self.dep.override_count == 0:
+                    self.dep.provide = self.dep.dependency
 
 
 class _Overrides:
