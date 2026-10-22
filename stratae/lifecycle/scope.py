@@ -115,10 +115,9 @@ the module's API.
 """
 
 import threading
-from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from types import TracebackType
-from typing import Any, Callable, Hashable, Literal, get_args
+from typing import Any, Callable, Hashable, Literal, cast, get_args
 
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._slots import UNSET, ScopeVar, SharedVar, SlotDict, SlotStorage
@@ -128,9 +127,6 @@ from stratae.lifecycle.exceptions import (
     ScopeActivationError,
     ScopeInactiveError,
 )
-
-_NO_LOCK: AbstractContextManager[Any] = nullcontext()
-"""Shared stand-in for a context-isolated scope's lock - nullcontext is reusable."""
 
 IsolationType = Literal["shared", "context"]
 StorageType = Literal["dense", "sparse"]
@@ -181,8 +177,8 @@ class BaseScope:
     _counter: int
     _free_slots: list[int]
     _slot_lock: threading.RLock
-    _lock: AbstractContextManager[Any]
-    _parent_lock: AbstractContextManager[Any]
+    _lock: threading.Lock | None
+    _parent_lock: threading.Lock | None
 
     def __init__(
         self,
@@ -225,14 +221,9 @@ class BaseScope:
         self._var = ContextVar(name) if isolation == "context" else SharedVar(name)
         self._counter = 2
         self._free_slots = []
-        # Reentrant: release_slot runs from a weakref finalizer, which can fire on this
-        # thread in the middle of allocate_slot.
         self._slot_lock = threading.RLock()
-        # Guards this scope's activation state against a requiring scope activating on
-        # another thread. A context scope's activation is per-context, so needs none.
-        self._lock = self._var.lock if isinstance(self._var, SharedVar) else _NO_LOCK
-        # Fixed with `requires`, so resolved once here rather than on every activation.
-        self._parent_lock = requires._lock if requires is not None else _NO_LOCK
+        self._lock = self._var.lock if isinstance(self._var, SharedVar) else None
+        self._parent_lock = requires._lock if requires is not None else None
 
     @property
     def isolation(self) -> IsolationType:
@@ -304,7 +295,9 @@ class BaseScope:
         """
         parent_lock = self._parent_lock
         if requires := self._requires:
-            with parent_lock:
+            if parent_lock is not None:
+                parent_lock.acquire()
+            try:
                 parent_slots = requires._var.get(None)
                 if not parent_slots:
                     raise ScopeActivationError(
@@ -312,6 +305,9 @@ class BaseScope:
                         f"{requires.name!r} is not active."
                     )
                 parent_slots[1] += 1
+            finally:
+                if parent_lock is not None:
+                    parent_lock.release()
         else:
             parent_slots = None
         slots = self._template.copy()
@@ -321,7 +317,9 @@ class BaseScope:
             token = var.set(slots)
         except BaseException:
             if parent_slots is not None:
-                with parent_lock:
+                # Only a shared scope's set raises, and a shared scope can only require
+                # another shared scope, so there's always a parent lock here.
+                with cast(threading.Lock, parent_lock):
                     parent_slots[1] -= 1
             raise
         return self._activation_cls(var, token, slots, self._lock, parent_slots, parent_lock)
@@ -379,7 +377,7 @@ class BaseScope:
 
 class _BaseActivation:
     """
-    State and deactivation checks shared by Activation and AsyncActivation.
+    State shared by Activation and AsyncActivation.
 
     See {py:class}`Activation` and {py:class}`AsyncActivation` for the concrete tokens.
     """
@@ -394,9 +392,9 @@ class _BaseActivation:
         var: ScopeVar,
         token: Any,
         slots: SlotStorage,
-        lock: AbstractContextManager[Any],
+        lock: threading.Lock | None,
         parent_slots: SlotStorage | None,
-        parent_lock: AbstractContextManager[Any],
+        parent_lock: threading.Lock | None,
     ) -> None:
         """Construct the activation state for a scope."""
         self.var = var
@@ -405,39 +403,6 @@ class _BaseActivation:
         self.lock = lock
         self.parent_slots = parent_slots
         self.parent_lock = parent_lock
-
-    def _end(self) -> None:
-        """
-        Check this activation can end, then reset the scope's activation holder.
-
-        :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
-            is still active, or it's deactivated outside the context that activated it.
-        """
-        slots = self.slots
-        # Checked and reset under the lock a requiring scope takes to count itself in, so
-        # none can activate between the check and the reset.
-        with self.lock:
-            if not slots:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r}: already deactivated."
-                )
-            if slots[1] > 0:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
-                )
-            try:
-                self.var.reset(self.token)
-            except ValueError:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r} outside the context that activated it."
-                ) from None
-
-    def _release(self) -> None:
-        """Empty this activation's storage and stop counting it against its parent."""
-        self.slots.clear()
-        if self.parent_slots is not None:
-            with self.parent_lock:
-                self.parent_slots[1] -= 1
 
 
 class Activation(_BaseActivation):
@@ -467,11 +432,45 @@ class Activation(_BaseActivation):
         :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
             is still active, or it's deactivated outside the context that activated it.
         """
-        self._end()
+        slots = self.slots
+        lock = self.lock
+        if lock is not None:
+            lock.acquire()
         try:
-            return self.slots[0].close(exc)
+            if not slots:
+                raise ScopeActivationError(
+                    f"Cannot deactivate {self.var.name!r}: already deactivated."
+                )
+            if slots[1] > 0:
+                raise ScopeActivationError(
+                    f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
+                )
+            try:
+                self.var.reset(self.token)
+            except ValueError:
+                raise ScopeActivationError(
+                    f"Cannot deactivate {self.var.name!r} outside the context that activated it."
+                ) from None
         finally:
-            self._release()
+            if lock is not None:
+                lock.release()
+        try:
+            stack = slots[0]
+            if stack.contexts:
+                return stack.close(exc)
+            # Nothing entered means nothing to close or suppress - what close would return.
+            stack.closed = True
+            return False
+        finally:
+            slots.clear()
+            parent_slots = self.parent_slots
+            if parent_slots is not None:
+                parent_lock = self.parent_lock
+                if parent_lock is None:
+                    parent_slots[1] -= 1
+                else:
+                    with parent_lock:
+                        parent_slots[1] -= 1
 
 
 class AsyncActivation(_BaseActivation):
@@ -501,11 +500,46 @@ class AsyncActivation(_BaseActivation):
         :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
             is still active, or it's deactivated outside the context that activated it.
         """
-        self._end()
+        slots = self.slots
+        lock = self.lock
+        if lock is not None:
+            lock.acquire()
         try:
-            return await self.slots[0].aclose(exc)
+            if not slots:
+                raise ScopeActivationError(
+                    f"Cannot deactivate {self.var.name!r}: already deactivated."
+                )
+            if slots[1] > 0:
+                raise ScopeActivationError(
+                    f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
+                )
+            try:
+                self.var.reset(self.token)
+            except ValueError:
+                raise ScopeActivationError(
+                    f"Cannot deactivate {self.var.name!r} outside the context that activated it."
+                ) from None
         finally:
-            self._release()
+            if lock is not None:
+                lock.release()
+        try:
+            stack = slots[0]
+            if stack.contexts:
+                return await stack.aclose(exc)
+            # Nothing entered means nothing to close or suppress - what aclose would return,
+            # without the coroutine.
+            stack.closed = True
+            return False
+        finally:
+            slots.clear()
+            parent_slots = self.parent_slots
+            if parent_slots is not None:
+                parent_lock = self.parent_lock
+                if parent_lock is None:
+                    parent_slots[1] -= 1
+                else:
+                    with parent_lock:
+                        parent_slots[1] -= 1
 
 
 class Scope(BaseScope):

@@ -29,7 +29,7 @@ test-lowest:
     uv run --isolated --resolution lowest-direct --all-extras pytest --no-cov
 
 radon-cc:
-    uv run radon cc stratae -n B
+    uv run radon cc stratae -n C
 
 radon-mi:
     uv run radon mi stratae -n B

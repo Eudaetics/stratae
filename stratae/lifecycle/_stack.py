@@ -56,28 +56,6 @@ def _closed_error() -> ScopeInactiveError:
     return ScopeInactiveError("Cannot enter a resource: its scope activation has ended.")
 
 
-def _close_one(ctx: AbstractContextManager[Any], exc: BaseException | None) -> BaseException | None:
-    exc_type = type(exc) if exc else None
-    tb = exc.__traceback__ if exc else None
-    try:
-        suppressed = ctx.__exit__(exc_type, exc, tb)
-    except BaseException as new_exc:
-        return new_exc
-    return None if suppressed else exc
-
-
-async def _aclose_one(
-    ctx: AbstractAsyncContextManager[Any], exc: BaseException | None
-) -> BaseException | None:
-    exc_type = type(exc) if exc else None
-    tb = exc.__traceback__ if exc else None
-    try:
-        suppressed = await ctx.__aexit__(exc_type, exc, tb)
-    except BaseException as new_exc:
-        return new_exc
-    return None if suppressed else exc
-
-
 class ExitStack:
     """
     Sync exit stack for context managers entered by resources within a scope activation.
@@ -87,12 +65,12 @@ class ExitStack:
     scope deactivates.
     """
 
-    __slots__ = ("_contexts", "_closed")
+    __slots__ = ("contexts", "closed")
 
     def __init__(self) -> None:
         """Initialize with no registered context managers."""
-        self._contexts: list[AbstractContextManager[Any]] = []
-        self._closed = False
+        self.contexts: list[AbstractContextManager[Any]] = []
+        self.closed = False
 
     def enter_context[R](self, ctx: AbstractContextManager[R]) -> R:
         """
@@ -102,10 +80,10 @@ class ExitStack:
             `ctx` is exited at once rather than left open with no cleanup coming.
         """
         result = ctx.__enter__()
-        if self._closed:
+        if self.closed:
             ctx.__exit__(None, None, None)
             raise _closed_error()
-        self._contexts.append(ctx)
+        self.contexts.append(ctx)
         return result
 
     def close(self, exc: BaseException | None = None) -> bool:
@@ -119,12 +97,21 @@ class ExitStack:
         """
         received = exc
         pending: list[BaseException] | None = None
-        while self._contexts:
-            outcome = _close_one(self._contexts.pop(), exc)
+        contexts = self.contexts
+        while contexts:
+            ctx = contexts.pop()
+            try:
+                suppressed = ctx.__exit__(
+                    type(exc) if exc else None, exc, exc.__traceback__ if exc else None
+                )
+            except BaseException as new_exc:
+                outcome = new_exc
+            else:
+                outcome = None if suppressed else exc
             if outcome is not exc:
                 pending = _record(pending, exc, outcome)
                 exc = outcome
-        self._closed = True
+        self.closed = True
         return False if pending is None else _settle(pending, received)
 
 
@@ -137,12 +124,12 @@ class AsyncExitStack:
     scope deactivates, awaiting only the async ones.
     """
 
-    __slots__ = ("_contexts", "_closed", "claims")
+    __slots__ = ("contexts", "closed", "claims")
 
     def __init__(self) -> None:
         """Initialize with no registered context managers, and no claimed cache misses."""
-        self._contexts: list[tuple[bool, Any]] = []
-        self._closed = False
+        self.contexts: list[tuple[bool, Any]] = []
+        self.closed = False
         self.claims: dict[Hashable, Any] = {}
         """This activation's in-progress cache misses, claimed by a context scope's async
         wrappers - see `stratae.lifecycle._inflight`."""
@@ -155,10 +142,10 @@ class AsyncExitStack:
             `ctx` is exited at once rather than left open with no cleanup coming.
         """
         result = ctx.__enter__()
-        if self._closed:
+        if self.closed:
             ctx.__exit__(None, None, None)
             raise _closed_error()
-        self._contexts.append((False, ctx))
+        self.contexts.append((False, ctx))
         return result
 
     async def enter_async_context[T](self, ctx: AbstractAsyncContextManager[T]) -> T:
@@ -169,10 +156,10 @@ class AsyncExitStack:
             `ctx` is exited at once rather than left open with no cleanup coming.
         """
         result = await ctx.__aenter__()
-        if self._closed:
+        if self.closed:
             await ctx.__aexit__(None, None, None)
             raise _closed_error()
-        self._contexts.append((True, ctx))
+        self.contexts.append((True, ctx))
         return result
 
     async def aclose(self, exc: BaseException | None = None) -> bool:
@@ -186,11 +173,22 @@ class AsyncExitStack:
         """
         received = exc
         pending: list[BaseException] | None = None
-        while self._contexts:
-            is_async, ctx = self._contexts.pop()
-            outcome = await _aclose_one(ctx, exc) if is_async else _close_one(ctx, exc)
+        contexts = self.contexts
+        while contexts:
+            is_async, ctx = contexts.pop()
+            exc_type = type(exc) if exc else None
+            tb = exc.__traceback__ if exc else None
+            try:
+                if is_async:
+                    suppressed = await ctx.__aexit__(exc_type, exc, tb)
+                else:
+                    suppressed = ctx.__exit__(exc_type, exc, tb)
+            except BaseException as new_exc:
+                outcome = new_exc
+            else:
+                outcome = None if suppressed else exc
             if outcome is not exc:
                 pending = _record(pending, exc, outcome)
                 exc = outcome
-        self._closed = True
+        self.closed = True
         return False if pending is None else _settle(pending, received)
