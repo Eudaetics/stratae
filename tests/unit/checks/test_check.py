@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-from stratae.checks import all_of, any_of, check, check_async
+from stratae.checks import CheckMode, all_of, any_of, check, check_async
 
 
 def test_check_runs_all_functions():
@@ -587,3 +587,69 @@ async def test_all_of_and_any_of_treat_async_callable_object_as_async():
     # Assert
     assert all(iscoroutinefunction(group) for group in combined)
     assert async_check.calls == 2
+
+
+@pytest.mark.parametrize("mode", ["any", "gather"])
+def test_check_async_check_type_error_propagates_whatever_the_mode(mode: CheckMode):
+    """
+    `check` raises its "returned an awaitable" TypeError even when failures are collected.
+
+    Given: An async check followed by a passing sync check.
+    When: `check` runs them in a mode that collects failures.
+    Then: The TypeError propagates, rather than counting as a failed check - in "any" mode
+        the passing check would otherwise swallow it.
+    """
+
+    # Arrange
+    async def async_check() -> None: ...
+
+    passing = Mock()
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="returned an awaitable"):
+        check(async_check, passing, mode=mode)
+    passing.assert_not_called()
+
+
+def test_check_any_mode_without_checks_passes():
+    """
+    `check` with mode="any" and no checks passes: "any" only fails if every check raises.
+
+    Given: No checks, as when an empty tuple is spread into the call.
+    When: `check` is called with mode="any".
+    Then: It passes.
+    """
+    check(mode="any")
+
+
+async def test_check_async_any_mode_without_checks_passes():
+    """
+    `check_async` with mode="any" and no checks passes: none of them raised.
+
+    Given: No checks, as when an empty tuple is spread into the call.
+    When: `check_async` is called with mode="any".
+    Then: It passes.
+    """
+    await check_async(mode="any")
+
+
+def test_any_of_without_checks_passes():
+    """
+    `any_of` with no checks passes: "any" only fails if every check raises.
+
+    Given: No checks, as when an empty tuple is spread into the call.
+    When: The group `any_of` builds is run through `check`.
+    Then: It passes.
+    """
+    check(any_of())
+
+
+def test_all_of_without_checks_passes():
+    """
+    `all_of` with no checks passes: all of no checks is vacuously true.
+
+    Given: No checks.
+    When: The group `all_of` builds is run through `check`.
+    Then: It passes.
+    """
+    check(all_of())

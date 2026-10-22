@@ -96,8 +96,9 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
     :raises Exception: The exception raised by the first failing check, when
         mode is "all".
     :raises TypeError: A check returned an awaitable instead of running
-        synchronously. Checks earlier in the sequence have already
-        run by this point.
+        synchronously, whatever the mode - it's a misuse, not a failing
+        check. Checks earlier in the sequence have already run by this
+        point.
     :raises ExceptionGroup: All exceptions raised by failing checks, when
         mode is "gather", or "any" when all checks fail.
     """
@@ -105,13 +106,14 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
     for fn in checks:
         try:
             result = fn()
-            if isawaitable(result):
-                getattr(result, "close", lambda: None)()
-                raise TypeError(f"{fn!r} returned an awaitable; use check_async() instead.")
-            if mode == "any":
-                return
         except Exception as exc:
             _settle(exc, mode, exceptions)
+            continue
+        if isawaitable(result):
+            getattr(result, "close", lambda: None)()
+            raise TypeError(f"{fn!r} returned an awaitable; use check_async() instead.")
+        if mode == "any":
+            return
     _raise_gathered(exceptions, "check")
 
 
