@@ -249,11 +249,17 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         """
         Open the AMQP connection and allocate a channel.
 
+        The connection is closed again if allocating the channel fails.
+
         :returns: `self`, ready to publish.
 
         """
         self._connection = await connect(self._url)
-        self._channel = await self._connection.channel()
+        try:
+            self._channel = await self._connection.channel()
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
         return self
 
     async def __aexit__(self, *_: object) -> None:
@@ -486,16 +492,22 @@ class RabbitMQConsumer:
         """
         Open the AMQP connection and start consuming for every registration.
 
+        The connection is closed again if any of that setup fails.
+
         :returns: `self`, consuming in the background.
 
         """
         self._connection = await connect(self._url)
-        channel = await self._connection.channel()
-        if self._prefetch_count is not None:
-            await channel.basic_qos(prefetch_count=self._prefetch_count)
-        self._channel = channel
-        for registration in self._registrations.values():
-            await self._start(channel, registration)
+        try:
+            channel = await self._connection.channel()
+            if self._prefetch_count is not None:
+                await channel.basic_qos(prefetch_count=self._prefetch_count)
+            self._channel = channel
+            for registration in self._registrations.values():
+                await self._start(channel, registration)
+        except BaseException:
+            await self.__aexit__(None, None, None)
+            raise
         return self
 
     async def __aexit__(self, *_: object) -> None:

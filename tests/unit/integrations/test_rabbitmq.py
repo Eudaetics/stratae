@@ -363,3 +363,27 @@ async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: Asyn
     assert call.args[0] == serialize(_OrderPlaced(7))
     assert call.kwargs["exchange"] == "events"
     assert call.kwargs["routing_key"] == "order.placed"
+
+
+async def test_failed_channel_allocation_closes_connection(
+    publisher: RabbitMQPublisher, connection: AsyncMock
+):
+    """
+    A failure while entering the context should close the connection it opened.
+
+    Given: A publisher whose connection fails to allocate a channel
+    When: The context is entered
+    Then: The error propagates, the connection is closed, and emit reports not connected
+    """
+    # Arrange
+    connection.channel.side_effect = RuntimeError("no channel")
+
+    # Act
+    with pytest.raises(RuntimeError, match="no channel"):
+        async with publisher:
+            pass
+
+    # Assert
+    connection.close.assert_awaited_once()
+    with pytest.raises(NotConnectedError):
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1))

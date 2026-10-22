@@ -887,3 +887,26 @@ async def test_async_callable_object_handler_awaited(
     # Assert
     assert handler.received[0].order_id == 7
     message.channel.basic_ack.assert_awaited_once_with(11)
+
+
+async def test_failed_start_on_enter_closes_connection(
+    consumer: RabbitMQConsumer, connection: AsyncMock, channel: AsyncMock
+):
+    """
+    A registration failing to start while entering the context closes the connection.
+
+    Given: A consumer with a registration whose queue declaration fails
+    When: The context is entered
+    Then: The error propagates and the connection the consumer opened is closed
+    """
+    # Arrange
+    consumer.handle(_order_placed, lambda _: None, config=_config)
+    channel.queue_declare.side_effect = RuntimeError("declare failed")
+
+    # Act
+    with pytest.raises(RuntimeError, match="declare failed"):
+        async with consumer:
+            pass
+
+    # Assert
+    connection.close.assert_awaited_once()
