@@ -176,8 +176,8 @@ class BaseScope:
     _counter: int
     _free_slots: list[int]
     _slot_lock: threading.RLock
-    _lock: threading.Lock | None
-    _parent_lock: threading.Lock | None
+    _lock: "threading.Lock | None"
+    _parent_lock: "threading.Lock | None"
 
     def __init__(
         self,
@@ -383,7 +383,7 @@ class BaseScope:
             self._free_slots.append(slot)
 
 
-def _release(parent_slots: SlotStorage, parent_lock: threading.Lock | None) -> None:
+def _release(parent_slots: SlotStorage, parent_lock: "threading.Lock | None") -> None:
     """Stop counting an ended, closed activation against its parent's storage."""
     if parent_lock is None:
         parent_slots[1] -= 1
