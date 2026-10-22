@@ -1,30 +1,53 @@
 """
 Run collections of zero-argument checks, raising or gathering their failures.
 
-A check is any zero-argument callable that raises on failure and returns
-normally on success. `check` runs a sequence of sync checks, raising
-``TypeError`` if any check returns an awaitable; `check_async` runs a
-sequence that may mix sync and async checks, awaiting the async ones.
-`require` is the decorator form, running checks before a wrapped function
-is called.
+A check is a zero-argument callable that raises on failure. {py:func}`check` runs sync
+checks, {py:func}`check_async` runs sync or async ones, and {py:func}`require` runs them
+before a decorated function. {py:func}`any_of` and {py:func}`all_of` nest groups. The
+`mode` keyword controls failure handling:
 
-Both `check` and `check_async` accept a `mode` keyword controlling failure
-handling:
+* `"all"` (default): raise the first failure.
+* `"gather"`: run every check, then raise all failures as an {py:exc}`ExceptionGroup`.
+* `"any"`: pass on the first success; raise all failures if none succeed.
 
-* ``"all"`` (default): stop at the first failing check and propagate its
-  exception.
-* ``"gather"``: run every check regardless of earlier failures, then raise
-  an :class:`ExceptionGroup` containing all of them.
-* ``"any"``: return immediately on first successful check, ignoring errors
-  from earlier checks.
 
-See :func:`check`, :func:`check_async`, and :func:`require` for examples.
+````{example} Using require to check authorization
+```{code-block} python
+from types import SimpleNamespace
+from stratae.checks import all_of, require
+
+user = SimpleNamespace(id=7, is_admin=False)
+resource = SimpleNamespace(id=101, owner_id=7, archived=True)
+
+def is_admin():
+    assert user.is_admin, "not an admin"
+
+def is_owner():
+    assert resource.owner_id == user.id, "not the owner"
+
+def not_archived():
+    assert not resource.archived, "resource is archived"
+
+@require(is_admin, all_of(is_owner, not_archived), mode="any")
+def delete_resource(resource_id: int):
+    print(f"Deleting resource: {resource_id}")
+
+try:
+    delete_resource(resource.id)
+except ExceptionGroup as exc:
+    print("Access denied:", exc.exceptions[-1])
+```
+```{output}
+Access denied: resource is archived
+```
+````
 """
 
-import inspect
 from functools import wraps
-from inspect import isawaitable, iscoroutinefunction
+from inspect import isawaitable
 from typing import Any, Awaitable, Callable, Literal, TypeGuard, cast, overload
+
+from stratae._callables import is_async_callable
 
 type CheckMode = Literal["all", "gather", "any"]
 
@@ -32,7 +55,7 @@ _Check = Callable[[], Any]
 
 
 def _settle(exc: Exception, mode: CheckMode, exceptions: list[Exception]):
-    """Append to the exception list if errors="gather"."""
+    """Record exc for "gather" or "any" mode, or raise it for "all"."""
     if mode == "all":
         raise exc
     exceptions.append(exc)
@@ -46,118 +69,37 @@ def _raise_gathered(exceptions: list[Exception], label: str) -> None:
 
 def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
     """
-    Run each check in order, triggering side effects or raising errors.
+    Run sync checks in order.
 
-    Args:
-        checks: Zero-argument, synchronous callables to run in order. Each
-            should raise on failure. If a check returns an awaitable (for
-            example, it's a coroutine function), it's rejected with
-            ``TypeError`` rather than run; use :func:`check_async` for
-            checks that may be async.
-        mode: How to handle a failing check. "all" stops at the first
-            failure and propagates its exception. "gather" runs every
-            check regardless of earlier failures and raises them together
-            at the end. "any" returns immediately upon first successful
-            check, swallowing errors from any preceding check.
-
-    Raises:
-        Exception: The exception raised by the first failing check, when
-            errors is "raise".
-        TypeError: A check returned an awaitable instead of running
-            synchronously. Checks earlier in the sequence have already
-            run by this point.
-        ExceptionGroup: All exceptions raised by failing checks, when
-            errors is "gather", or "any" when all checks fail.
-
-    Example:
-        Validate a batch of form fields, stopping at the first failure::
-
-            username = "sam"
-            email = "not-an-email"
-
-            def check_username_not_empty():
-                assert username.strip(), "username must not be empty"
-
-            def check_email_has_at_sign():
-                assert "@" in email, "email must contain '@'"
-
-            check(check_username_not_empty, check_email_has_at_sign)
-            # raises AssertionError: email must contain '@'
-
-        Collect every failing validation instead of stopping at the first::
-
-            check(check_username_not_empty, check_email_has_at_sign, errors="gather")
-            # raises ExceptionGroup: Failures in check (1 sub-exception)
-
-        Succeed as soon as any one of several equivalent checks passes::
-
-            def check_is_admin():
-                assert user.is_admin, "not an admin"
-
-            def check_owns_resource():
-                assert resource.owner_id == user.id, "not the owner"
-
-            check(check_is_admin, check_owns_resource, mode="any")
-            # passes if either check succeeds; raises ExceptionGroup only if both fail
-
+    :param checks: Zero-argument sync callables that raise on failure.
+    :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs.
+    :raises Exception: The first failure, in "all" mode.
+    :raises TypeError: If a check returns an awaitable; use {py:func}`check_async`.
+    :raises ExceptionGroup: All failures, in "gather" mode, or "any" mode if every check fails.
     """
     exceptions: list[Exception] = []
     for fn in checks:
         try:
             result = fn()
-            if isawaitable(result):
-                getattr(result, "close", lambda: None)()
-                raise TypeError(f"{fn!r} returned an awaitable; use check_async() instead.")
-            if mode == "any":
-                return
         except Exception as exc:
             _settle(exc, mode, exceptions)
+            continue
+        if isawaitable(result):
+            getattr(result, "close", lambda: None)()
+            raise TypeError(f"{fn!r} returned an awaitable; use check_async() instead.")
+        if mode == "any":
+            return
     _raise_gathered(exceptions, "check")
 
 
 async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
     """
-    Run each check in order, awaiting async checks and calling sync ones directly.
+    Run sync or async checks in order, awaiting the async ones.
 
-    Args:
-        checks: Zero-argument callables to run in order. Each should raise
-            on failure. May be sync or async.
-        mode: How to handle a failing check. "all" stops at the first
-            failure and propagates its exception. "gather" runs every
-            check regardless of earlier failures and raises them together
-            at the end. "any" returns immediately upon first successful
-            check, swallowing errors from any preceding check.
-
-    Raises:
-        Exception: The exception raised by the first failing check, when
-            errors is "all".
-        ExceptionGroup: All exceptions raised by failing checks, when
-            errors is "gather", or "any" when all checks fail.
-
-    Example:
-        Mix a local format check with a remote uniqueness check::
-
-            username = "sam"
-
-            def check_username_not_empty():
-                assert username.strip(), "username must not be empty"
-
-            async def check_username_available():
-                assert not await is_username_taken(username)
-
-            await check_async(check_username_not_empty, check_username_available)
-
-        Try a fast local check before falling back to a slower remote one::
-
-            def check_in_local_cache():
-                assert username in local_cache, "not cached locally"
-
-            async def check_in_remote_store():
-                assert await remote_store.exists(username), "not found remotely"
-
-            await check_async(check_in_local_cache, check_in_remote_store, mode="any")
-            # passes if either succeeds; raises ExceptionGroup only if both fail
-
+    :param checks: Zero-argument callables that raise on failure.
+    :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs.
+    :raises Exception: The first failure, in "all" mode.
+    :raises ExceptionGroup: All failures, in "gather" mode, or "any" mode if every check fails.
     """
     exceptions: list[Exception] = []
     for fn in checks:
@@ -174,37 +116,14 @@ async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
 
 def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
     """
-    Combine checks into a single deferred check that passes if any one does.
+    Combine checks into one that passes if any of them does.
 
-    Lets an "any" group nest inside an "all" group (or another "any"
-    group), so boolean requirements like ``(is_admin or is_owner) and
-    not_pending`` can be expressed directly::
+    The result is async if any check is async, and then needs {py:func}`check_async`.
 
-        check(any_of(is_admin, is_owner), not_pending)
-
-    If any of `checks` is an async function, the returned check is async
-    too, and can only be run through :func:`check_async` (directly, or
-    nested inside another group that is). If all of `checks` are sync,
-    the returned check is sync and works with either :func:`check` or
-    :func:`check_async`.
-
-    Args:
-        checks: Zero-argument callables to try, in order, until one
-            succeeds.
-
-    Returns:
-        A single zero-argument callable that succeeds as soon as any of
-        `checks` succeeds, and raises an :class:`ExceptionGroup` of all
-        their failures if none do. Async if any of `checks` is async,
-        sync otherwise.
-
-    Example:
-        .. code-block:: python
-
-            check(any_of(is_admin, is_owner), not_pending)
-
+    :param checks: Zero-argument callables to try in order.
+    :returns: A check raising an {py:exc}`ExceptionGroup` of all failures if none pass.
     """
-    if any(iscoroutinefunction(fn) for fn in checks):
+    if any(is_async_callable(fn) for fn in checks):
 
         async def _any_of_async() -> None:
             await check_async(*checks, mode="any")
@@ -219,37 +138,14 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
 
 def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
     """
-    Combine checks into a single deferred check that passes only if all do.
+    Combine checks into one that passes only if all of them do.
 
-    Lets an "all" group nest inside an "any" group (or another "all"
-    group), so boolean requirements like ``is_super_admin or (is_manager
-    and manages_target_user)`` can be expressed as a single check inside
-    an outer "any"::
+    The result is async if any check is async, and then needs {py:func}`check_async`.
 
-        check(is_super_admin, all_of(is_manager, manages_target_user), mode="any")
-
-    If any of `checks` is an async function, the returned check is async
-    too, and can only be run through :func:`check_async` (directly, or
-    nested inside another group that is). If all of `checks` are sync,
-    the returned check is sync and works with either :func:`check` or
-    :func:`check_async`.
-
-    Args:
-        checks: Zero-argument callables to run, in order. The first to
-            fail aborts the rest.
-
-    Returns:
-        A single zero-argument callable that succeeds only if every one
-        of `checks` succeeds, and raises the first failure otherwise.
-        Async if any of `checks` is async, sync otherwise.
-
-    Example:
-        .. code-block:: python
-
-            check(is_super_admin, all_of(is_manager, manages_target_user), mode="any")
-
+    :param checks: Zero-argument callables to run in order.
+    :returns: A check raising the first failure.
     """
-    if any(iscoroutinefunction(fn) for fn in checks):
+    if any(is_async_callable(fn) for fn in checks):
 
         async def _all_of_async() -> None:
             await check_async(*checks, mode="all")
@@ -265,8 +161,8 @@ def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
 def _is_async_fn[**P, R](
     fn: Callable[P, R] | Callable[P, Awaitable[R]],
 ) -> TypeGuard[Callable[P, Awaitable[R]]]:
-    """Narrow a callable (zero-arg guard or arbitrary-signature fn) to its async form."""
-    return inspect.iscoroutinefunction(fn)
+    """Narrow a callable to its async form."""
+    return is_async_callable(fn)
 
 
 def _wrap_async[**P, R](
@@ -302,57 +198,18 @@ def require[**P, R](
     *checks: _Check, mode: CheckMode = "all"
 ) -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
-    Run zero-arg guard checks before the decorated function in order.
+    Run checks before the decorated function.
 
-    Each check's return value is discarded; only side effects and raises
-    matter. The first check to raise aborts the remaining checks and the
-    wrapped function. Each function must be zero-arg callable. Use dependency
-    injection, lambdas, or other tools to ensure any function that relies
-    on dynamic behavior can be called without passing in arguments.
+    A sync function accepts only sync checks. An async function accepts both. With no
+    checks, the function is returned unchanged.
 
-    Decorating an async function runs sync checks inline and awaits async
-    checks, in the order given. Decorating a sync function requires all
-    checks to be sync, validated eagerly at decoration time so a mismatch
-    fails at import rather than on first call. With no checks, the
-    function is returned unchanged.
-
-    Sync functions only accept sync checks (an async check cannot be
-    awaited from inside a sync call), validated eagerly at decoration
-    time so a sync/async mismatch fails at import rather than on first
-    request. Async functions accept a mix of sync and async checks. Sync
-    checks run inline and async checks are awaited in the order given.
-
-    Type Parameters:
-        P: Parameter specification of the decorated function.
-        R: Return type of the decorated function.
-
-    Args:
-        *checks: Zero-arg callables to run, in order, before each call to
-            the decorated function.
-
-    Returns:
-        A decorator that wraps its target function with the given checks,
-        preserving its signature.
-
-    Args:
-        checks: Zero-argument guard callables to run, in order, before ``fn``.
-        mode: How to handle a failing check. "raise" (default) stops at
-            the first failure and propagates its exception, so ``fn`` is
-            never called. "gather" runs every check regardless of earlier
-            failures and raises them together as an :class:`ExceptionGroup`,
-            still short-circuiting ``fn``.
-
-    Raises:
-        TypeError: At decoration time, if the decorated function is sync
-            but a check is async, since there is no safe way to await an
-            async check from inside a sync function.
-
-    Example:
-        .. code-block:: python
-
-            @require(is_admin)
-            def delete_user(user_id: int) -> None: ...
-
+    :param P: Parameter specification of the decorated function.
+    :param R: Return type of the decorated function.
+    :param checks: Zero-argument callables to run before the function.
+    :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs. The function is only
+        called if the checks pass.
+    :returns: A decorator preserving the function's signature.
+    :raises TypeError: At decoration, if a sync function is given an async check.
     """
 
     @overload

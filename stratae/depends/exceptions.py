@@ -1,21 +1,21 @@
-"""Exceptions for errors in dependency injection."""
+"""Exceptions for errors in dependency injection, subclassing {py:exc}`DependencyInjectionError`."""
 
 
 class DependencyInjectionError(Exception):
-    """Base class for all dependency injection related exceptions."""
+    """Base class for all dependency injection exceptions."""
 
 
 class ResolutionError(DependencyInjectionError):
-    """Exception raised when resolving a function's injected dependencies fails."""
+    """Base class for failures resolving a function's injected dependencies."""
 
 
 class CircularDependencyError(ResolutionError):
-    """Exception raised when a circular dependency is detected."""
+    """Raised when providers depend on each other in a cycle."""
 
 
 class InjectionSignatureError(ResolutionError, ValueError):
-    """Exception raised when an injected function's signature is invalid."""
+    """Raised when an injected function's signature can't be injected."""
 
 
 class DependencyNotFoundError(DependencyInjectionError, ValueError):
-    """Raised when attempting to reference a non-existent dependency."""
+    """Raised when a callable was never registered with `Depends`."""

@@ -5,7 +5,7 @@ This test suite verifies the following behaviors:
 
 Handler:
 - is_async is False for a synchronous callable.
-- is_async is True for an asynchronous callable.
+- is_async is True for an asynchronous callable, including an object with async __call__.
 - call stores the wrapped callable.
 - config stores the supplied value.
 - Calling a Handler invokes the wrapped sync callable.
@@ -31,12 +31,25 @@ async def _async_handler(payload: int) -> int:
     return 2
 
 
+class _SyncCallable:
+    def __call__(self, payload: int) -> int:
+        return 3
+
+
+class _AsyncCallable:
+    async def __call__(self, payload: int) -> int:
+        return 4
+
+
 @pytest.mark.parametrize(
     "call,expected",
     [
         (_sync_handler, False),
         (_async_handler, True),
+        (_SyncCallable(), False),
+        (_AsyncCallable(), True),
     ],
+    ids=["sync_function", "async_function", "sync_callable", "async_callable"],
 )
 def test_is_async_reflects_callable_type(call: Callable[[Any], Any], expected: bool):
     """

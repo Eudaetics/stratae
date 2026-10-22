@@ -1,21 +1,21 @@
-"""Exceptions related to lifecycle management."""
+"""Exceptions for errors in lifecycle management, all subclassing {py:exc}`LifecycleException`."""
 
 
 class LifecycleException(Exception):
-    """Base class for all lifecycle related exceptions."""
+    """Base class for all lifecycle exceptions."""
 
 
 class LifecycleConfigurationError(LifecycleException, ValueError):
-    """Exception raised for configuration errors in the lifecycle management."""
-
-
-class ScopeNotFoundError(LifecycleException, ValueError):
-    """Exception raised when a requested scope is not found in the lifecycle manager."""
+    """Raised for an invalid scope declaration."""
 
 
 class ScopeActivationError(LifecycleException, RuntimeError):
-    """Exception raised when there is an error activating or deactivating a scope."""
+    """Raised when a scope can't be activated or deactivated."""
 
 
 class ScopeInactiveError(LifecycleException, RuntimeError):
-    """Exception raised when attempting to access an inactive scope."""
+    """Raised when using a scope that isn't active in the calling context."""
+
+
+class CacheCycleError(LifecycleException, RuntimeError):
+    """Raised when a cached call would wait on its own unfinished computation."""

@@ -4,10 +4,8 @@ Unit tests for the AsyncDirectBus adapter.
 This test suite verifies the following behaviors:
 
 AsyncDirectBus:
-- bind with a factory returns an AsyncFactoryBoundEvent.
-- bind with no factory returns an AsyncBoundEvent.
-- Awaiting the AsyncFactoryBoundEvent dispatches the payload to a registered sync handler.
-- Awaiting the AsyncFactoryBoundEvent dispatches the payload to a registered async handler.
+- Awaiting a factory-bound callable dispatches the payload to a registered sync handler.
+- Awaiting a factory-bound callable dispatches the payload to a registered async handler.
 - Mixed sync and async handlers on the same channel both receive the payload.
 - All handlers on a channel receive the payload.
 - Handlers on different channels are isolated from each other.
@@ -18,15 +16,18 @@ AsyncDirectBus:
 - dispatch invokes all handlers registered on the channel.
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
+- A handler's CancelledError is re-raised in a BaseExceptionGroup, not swallowed.
+- A schema-less PubSub event's sync and async handlers are called with no arguments.
 
 AsyncDirectBus (request events):
 - emit awaits and returns an async responder's reply.
 - emit returns a sync responder's reply.
-- An AsyncFactoryBoundEvent for a request event resolves to the reply when awaited.
+- A factory-bound callable for a request event resolves to the reply when awaited.
 - emit raises NoResponderError when no responder is registered.
 - emit raises MultipleRespondersError when several responders are registered.
 - A responder's exception propagates directly, not as an ExceptionGroup.
 - An async responder may be registered via the decorator form of handle.
+- A schema-less Request event's sync and async responders are called with no arguments.
 
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -36,15 +37,14 @@ AsyncDirectBus (with envelope):
 - A request reply is returned when envelope tracking is enabled.
 """
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from stratae.events import (
-    AsyncBoundEvent,
     AsyncDirectBus,
-    AsyncFactoryBoundEvent,
     Consumer,
     EmitCallable,
     Envelope,
@@ -66,6 +66,9 @@ class _TaskCreated:
         return self.task_id == other.task_id
 
 
+_task_created = Event(PubSub, _TaskCreated)
+
+
 class _BookQuery:
     def __init__(self, query: str) -> None:
         self.query = query
@@ -76,7 +79,10 @@ class _BookResult:
         self.title = title
 
 
-_find_book = Event(_BookQuery, Request[_BookResult])
+_find_book = Event(Request[_BookResult], _BookQuery)
+
+_heartbeat = Event(PubSub, name="heartbeat")
+_ping = Event(Request[str], name="ping")
 
 
 @pytest.fixture
@@ -124,44 +130,18 @@ def test_bus_satisfies_consumer_protocol(bus: AsyncDirectBus):
     assert isinstance(bus, Consumer)
 
 
-def test_bind_with_factory_returns_async_factory_bound_event(bus: AsyncDirectBus):
-    """
-    ``bind`` with a factory should return an AsyncFactoryBoundEvent bound to bus.emit.
-
-    Given: An AsyncDirectBus
-    When: bind is called with an Event and a factory
-    Then: An AsyncFactoryBoundEvent should be returned
-    """
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-
-    assert isinstance(emit, AsyncFactoryBoundEvent)
-
-
-def test_bind_without_factory_returns_async_bound_event(bus: AsyncDirectBus):
-    """
-    ``bind`` with no factory should return an AsyncBoundEvent bound to bus.emit.
-
-    Given: An AsyncDirectBus
-    When: bind is called with an Event and no factory
-    Then: An AsyncBoundEvent should be returned
-    """
-    emit = bus.bind(Event(_TaskCreated, PubSub))
-
-    assert isinstance(emit, AsyncBoundEvent)
-
-
 async def test_awaiting_bound_event_forwards_payload_to_handler(bus: AsyncDirectBus):
     """
-    Awaiting a passthrough AsyncBoundEvent should dispatch an already-built payload.
+    Awaiting a passthrough callable should dispatch an already-built payload.
 
-    Given: A handler registered via bus.handle, and an AsyncBoundEvent with no factory
-    When: The AsyncBoundEvent is awaited with a ready-made payload
+    Given: A handler registered via bus.handle, and a callable bound with no factory
+    When: The callable is awaited with a ready-made payload
     Then: The handler should be called with that payload
     """
     # Arrange
     handler = Mock()
-    emit = bus.bind(Event(_TaskCreated, PubSub))
-    bus.handle(emit.event, handler)
+    emit = bus.bind(_task_created)
+    bus.handle(_task_created, handler)
 
     # Act
     await emit(_TaskCreated(1))
@@ -172,16 +152,16 @@ async def test_awaiting_bound_event_forwards_payload_to_handler(bus: AsyncDirect
 
 async def test_dispatches_to_sync_handler(bus: AsyncDirectBus):
     """
-    Awaiting an AsyncFactoryBoundEvent should dispatch the payload to a registered sync handler.
+    Awaiting a factory-bound callable should dispatch the payload to a registered sync handler.
 
     Given: A sync handler registered via bus.handle
-    When: The AsyncFactoryBoundEvent is awaited
+    When: The callable is awaited
     Then: The handler should be called with the constructed payload
     """
     # Arrange
     handler = Mock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, handler)
+    emit = bus.bind(_task_created, factory=_TaskCreated)
+    bus.handle(_task_created, handler)
 
     # Act
     await emit(task_id=1)
@@ -192,16 +172,16 @@ async def test_dispatches_to_sync_handler(bus: AsyncDirectBus):
 
 async def test_dispatches_to_async_handler(bus: AsyncDirectBus):
     """
-    Awaiting an AsyncFactoryBoundEvent should dispatch the payload to a registered async handler.
+    Awaiting a factory-bound callable should dispatch the payload to a registered async handler.
 
     Given: An async handler registered via bus.handle
-    When: The AsyncFactoryBoundEvent is awaited
+    When: The callable is awaited
     Then: The handler should be called with the constructed payload
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, handler)
+    emit = bus.bind(_task_created, factory=_TaskCreated)
+    bus.handle(_task_created, handler)
 
     # Act
     await emit(task_id=2)
@@ -221,9 +201,9 @@ async def test_dispatches_to_mixed_handlers(bus: AsyncDirectBus):
     # Arrange
     sync_handler = Mock()
     async_handler = AsyncMock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, sync_handler)
-    bus.handle(emit.event, async_handler)
+    emit = bus.bind(_task_created, factory=_TaskCreated)
+    bus.handle(_task_created, sync_handler)
+    bus.handle(_task_created, async_handler)
 
     # Act
     await emit(task_id=3)
@@ -244,9 +224,9 @@ async def test_dispatches_to_all_handlers_on_channel(bus: AsyncDirectBus):
     # Arrange
     handler_a = AsyncMock()
     handler_b = AsyncMock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, handler_a)
-    bus.handle(emit.event, handler_b)
+    emit = bus.bind(_task_created, factory=_TaskCreated)
+    bus.handle(_task_created, handler_a)
+    bus.handle(_task_created, handler_b)
 
     # Act
     await emit(task_id=4)
@@ -265,8 +245,8 @@ async def test_channel_isolation(bus: AsyncDirectBus):
     Then: Only the handler for that Event should be called
     """
     # Arrange
-    task_event = Event(_TaskCreated, PubSub)
-    order_event = Event(_TaskCreated, PubSub)
+    task_event = Event(PubSub, _TaskCreated)
+    order_event = Event(PubSub, _TaskCreated)
     emit_task = bus.bind(task_event, factory=_TaskCreated)
     task_handler = AsyncMock()
     order_handler = AsyncMock()
@@ -290,8 +270,7 @@ def test_handle_returns_handler(bus: AsyncDirectBus):
     Then: The returned Handler should wrap that callable
     """
     fn = Mock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    handler = bus.handle(emit.event, fn)
+    handler = bus.handle(_task_created, fn)
 
     assert handler.call is fn
 
@@ -306,8 +285,8 @@ async def test_remove_prevents_further_dispatch(bus: AsyncDirectBus):
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    handle = bus.handle(emit.event, handler)
+    emit = bus.bind(_task_created, factory=_TaskCreated)
+    handle = bus.handle(_task_created, handler)
     bus.remove(handle)
 
     # Act
@@ -327,9 +306,9 @@ async def test_same_callable_registered_twice_called_twice(bus: AsyncDirectBus):
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, handler)
-    bus.handle(emit.event, handler)
+    emit = bus.bind(_task_created, factory=_TaskCreated)
+    bus.handle(_task_created, handler)
+    bus.handle(_task_created, handler)
 
     # Act
     await emit(task_id=7)
@@ -348,12 +327,11 @@ async def test_emit_dispatches_directly(bus: AsyncDirectBus):
     """
     # Arrange
     handler = AsyncMock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, handler)
+    bus.handle(_task_created, handler)
     payload = _TaskCreated(8)
 
     # Act
-    await bus.emit(payload, emit.event)
+    await bus.emit(_task_created, None, payload)
 
     # Assert
     handler.assert_called_once_with(payload)
@@ -370,13 +348,12 @@ async def test_dispatch_invokes_all_handlers(bus: AsyncDirectBus):
     # Arrange
     handler_a = AsyncMock()
     handler_b = AsyncMock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, handler_a)
-    bus.handle(emit.event, handler_b)
+    bus.handle(_task_created, handler_a)
+    bus.handle(_task_created, handler_b)
     payload = _TaskCreated(9)
 
     # Act
-    await bus.dispatch(payload, config=emit.event)
+    await bus.dispatch(payload, config=_task_created)
 
     # Assert
     handler_a.assert_called_once_with(payload)
@@ -393,14 +370,13 @@ async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncDirectB
     """
     # Arrange
     second_handler = AsyncMock()
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, AsyncMock(side_effect=ValueError("boom")))
-    bus.handle(emit.event, second_handler)
+    bus.handle(_task_created, AsyncMock(side_effect=ValueError("boom")))
+    bus.handle(_task_created, second_handler)
     payload = _TaskCreated(10)
 
     # Act
     with pytest.raises(ExceptionGroup):
-        await bus.dispatch(payload, config=emit.event)
+        await bus.dispatch(payload, config=_task_created)
 
     # Assert
     second_handler.assert_called_once_with(payload)
@@ -417,16 +393,86 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncDirec
     # Arrange
     error_a = ValueError("first")
     error_b = RuntimeError("second")
-    emit = bus.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus.handle(emit.event, AsyncMock(side_effect=error_a))
-    bus.handle(emit.event, AsyncMock(side_effect=error_b))
+    bus.handle(_task_created, AsyncMock(side_effect=error_a))
+    bus.handle(_task_created, AsyncMock(side_effect=error_b))
     payload = _TaskCreated(11)
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exc_info:
-        await bus.dispatch(payload, config=emit.event)
+        await bus.dispatch(payload, config=_task_created)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
+
+
+async def test_handler_cancelled_error_is_not_swallowed(bus: AsyncDirectBus):
+    """
+    A handler's CancelledError is re-raised alongside other handler exceptions.
+
+    Given: Two handlers registered to an Event, one raising CancelledError and one ValueError
+    When: an event is dispatched
+    Then: A BaseExceptionGroup containing both is raised, rather than the CancelledError
+        being dropped
+    """
+    # Arrange
+    error = ValueError("failed")
+    bus.handle(_task_created, AsyncMock(side_effect=asyncio.CancelledError()))
+    bus.handle(_task_created, AsyncMock(side_effect=error))
+
+    # Act / Assert
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        await bus.dispatch(_TaskCreated(12), config=_task_created)
+
+    assert not isinstance(exc_info.value, ExceptionGroup)
+    assert {type(exc) for exc in exc_info.value.exceptions} == {asyncio.CancelledError, ValueError}
+    assert error in exc_info.value.exceptions
+
+
+async def test_signal_pubsub_calls_sync_handler_with_no_arguments(bus: AsyncDirectBus):
+    """
+    A schema-less PubSub event's sync handler should be called with no arguments.
+
+    Given: A sync handler that takes no parameters, registered to a PubSub Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The handler should run, receiving no arguments
+    """
+    # Arrange
+    calls: list[bool] = []
+
+    @bus.handle(_heartbeat)
+    def _() -> None:
+        calls.append(True)
+
+    signal = bus.bind(_heartbeat)
+
+    # Act
+    await signal()
+
+    # Assert
+    assert calls == [True]
+
+
+async def test_signal_pubsub_calls_async_handler_with_no_arguments(bus: AsyncDirectBus):
+    """
+    A schema-less PubSub event's async handler should be called with no arguments.
+
+    Given: An async handler that takes no parameters, registered to a PubSub Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The handler should run, receiving no arguments
+    """
+    # Arrange
+    calls: list[bool] = []
+
+    @bus.handle(_heartbeat)
+    async def _() -> None:
+        calls.append(True)
+
+    signal = bus.bind(_heartbeat)
+
+    # Act
+    await signal()
+
+    # Assert
+    assert calls == [True]
 
 
 async def test_request_emit_returns_async_responder_reply(bus: AsyncDirectBus):
@@ -442,7 +488,7 @@ async def test_request_emit_returns_async_responder_reply(bus: AsyncDirectBus):
     bus.handle(_find_book, AsyncMock(return_value=reply))
 
     # Act
-    result = await bus.emit(_BookQuery("dune"), _find_book)
+    result = await bus.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -461,7 +507,7 @@ async def test_request_emit_returns_sync_responder_reply(bus: AsyncDirectBus):
     bus.handle(_find_book, Mock(return_value=reply))
 
     # Act
-    result = await bus.emit(_BookQuery("dune"), _find_book)
+    result = await bus.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -469,16 +515,16 @@ async def test_request_emit_returns_sync_responder_reply(bus: AsyncDirectBus):
 
 async def test_bound_request_event_resolves_to_reply(bus: AsyncDirectBus):
     """
-    Awaiting an AsyncFactoryBoundEvent for a request event should resolve to the responder's reply.
+    Awaiting a factory-bound callable for a request event should resolve to the responder's reply.
 
     Given: An async responder registered to a request Event bound via bus.bind
-    When: The AsyncFactoryBoundEvent is awaited
+    When: The callable is awaited
     Then: The responder's resolved return value should be returned
     """
     # Arrange
     reply = _BookResult("Dune")
     find_book = bus.bind(_find_book, factory=_BookQuery)
-    bus.handle(find_book.event, AsyncMock(return_value=reply))
+    bus.handle(_find_book, AsyncMock(return_value=reply))
 
     # Act
     result = await find_book(query="dune")
@@ -496,7 +542,7 @@ async def test_request_emit_raises_without_responder(bus: AsyncDirectBus):
     Then: A NoResponderError should be raised
     """
     with pytest.raises(NoResponderError):
-        await bus.emit(_BookQuery("dune"), _find_book)
+        await bus.emit(_find_book, None, _BookQuery("dune"))
 
 
 async def test_request_emit_raises_with_multiple_responders(bus: AsyncDirectBus):
@@ -513,7 +559,7 @@ async def test_request_emit_raises_with_multiple_responders(bus: AsyncDirectBus)
 
     # Act / Assert
     with pytest.raises(MultipleRespondersError):
-        await bus.emit(_BookQuery("dune"), _find_book)
+        await bus.emit(_find_book, None, _BookQuery("dune"))
 
 
 async def test_request_responder_exception_propagates_directly(bus: AsyncDirectBus):
@@ -530,7 +576,7 @@ async def test_request_responder_exception_propagates_directly(bus: AsyncDirectB
 
     # Act / Assert
     with pytest.raises(ValueError) as exc_info:
-        await bus.emit(_BookQuery("dune"), _find_book)
+        await bus.emit(_find_book, None, _BookQuery("dune"))
 
     assert exc_info.value is error
 
@@ -551,10 +597,56 @@ async def test_request_responder_registered_via_decorator(bus: AsyncDirectBus):
         return reply
 
     # Act
-    result = await bus.emit(_BookQuery("dune"), _find_book)
+    result = await bus.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply
+
+
+async def test_signal_request_calls_sync_responder_with_no_arguments(bus: AsyncDirectBus):
+    """
+    A schema-less Request event's sync responder should be called with no arguments.
+
+    Given: A sync responder that takes no parameters, registered to a Request Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The responder's return value should be returned
+    """
+
+    # Arrange
+    @bus.handle(_ping)
+    def _() -> str:
+        return "pong"
+
+    ping = bus.bind(_ping)
+
+    # Act
+    result = await ping()
+
+    # Assert
+    assert result == "pong"
+
+
+async def test_signal_request_calls_async_responder_with_no_arguments(bus: AsyncDirectBus):
+    """
+    A schema-less Request event's async responder should be called with no arguments.
+
+    Given: An async responder that takes no parameters, registered to a Request Event with no schema
+    When: The event is emitted via its bound BoundSignal callable
+    Then: The responder's return value should be returned
+    """
+
+    # Arrange
+    @bus.handle(_ping)
+    async def _() -> str:
+        return "pong"
+
+    ping = bus.bind(_ping)
+
+    # Act
+    result = await ping()
+
+    # Assert
+    assert result == "pong"
 
 
 async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: AsyncDirectBus):
@@ -566,10 +658,10 @@ async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: As
     Then: The captured value should be an Envelope instance
     """
     # Arrange
-    emit = bus_with_envelope.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
+    emit = bus_with_envelope.bind(_task_created, factory=_TaskCreated)
     captured: list[Envelope] = []
 
-    @bus_with_envelope.handle(emit.event)
+    @bus_with_envelope.handle(_task_created)
     async def _(_) -> None:
         envelope = Envelope.current()
         assert envelope is not None
@@ -592,10 +684,10 @@ async def test_each_emission_creates_independent_envelope(bus_with_envelope: Asy
     Then: Each emission should have a distinct correlation id
     """
     # Arrange
-    emit = bus_with_envelope.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
+    emit = bus_with_envelope.bind(_task_created, factory=_TaskCreated)
     captured: list[Envelope] = []
 
-    @bus_with_envelope.handle(emit.event)
+    @bus_with_envelope.handle(_task_created)
     async def _(_) -> None:
         envelope = Envelope.current()
         assert envelope is not None
@@ -619,8 +711,8 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncD
           have the outer message id as its causation id
     """
     # Arrange
-    outer_event = Event(_TaskCreated, PubSub)
-    inner_event = Event(_TaskCreated, PubSub)
+    outer_event = Event(PubSub, _TaskCreated)
+    inner_event = Event(PubSub, _TaskCreated)
     emit_outer = bus_with_envelope.bind(outer_event, factory=_TaskCreated)
     emit_inner = bus_with_envelope.bind(inner_event, factory=_TaskCreated)
     outer_envelopes: list[Envelope] = []
@@ -657,8 +749,8 @@ async def test_envelope_cleaned_up_after_dispatch(bus_with_envelope: AsyncDirect
     Then: Accessing the current envelope should return None
     """
     # Arrange
-    emit = bus_with_envelope.bind(Event(_TaskCreated, PubSub), factory=_TaskCreated)
-    bus_with_envelope.handle(emit.event, AsyncMock())
+    emit = bus_with_envelope.bind(_task_created, factory=_TaskCreated)
+    bus_with_envelope.handle(_task_created, AsyncMock())
 
     # Act
     await emit(task_id=1)
@@ -680,7 +772,58 @@ async def test_request_reply_returned_with_envelope(bus_with_envelope: AsyncDire
     bus_with_envelope.handle(_find_book, AsyncMock(return_value=reply))
 
     # Act
-    result = await bus_with_envelope.emit(_BookQuery("dune"), _find_book)
+    result = await bus_with_envelope.emit(_find_book, None, _BookQuery("dune"))
+
+    # Assert
+    assert result is reply
+
+
+async def test_async_callable_object_handler_is_awaited(bus: AsyncDirectBus):
+    """
+    A pub/sub handler that's an object with async __call__ is awaited.
+
+    Given: An instance of a class whose __call__ is async, registered to a PubSub Event
+    When: an event is dispatched
+    Then: Its __call__ runs to completion
+    """
+
+    # Arrange
+    class Handler:
+        def __init__(self) -> None:
+            self.received: list[_TaskCreated] = []
+
+        async def __call__(self, payload: _TaskCreated) -> None:
+            self.received.append(payload)
+
+    handler = Handler()
+    bus.handle(_task_created, handler)
+
+    # Act
+    await bus.dispatch(_TaskCreated(13), config=_task_created)
+
+    # Assert
+    assert handler.received == [_TaskCreated(13)]
+
+
+async def test_async_callable_object_responder_reply_is_awaited(bus: AsyncDirectBus):
+    """
+    A request responder that's an object with async __call__ has its reply awaited.
+
+    Given: An instance of a class whose __call__ is async, registered to a request Event
+    When: emit is awaited with that Event
+    Then: The resolved reply is returned, not a coroutine
+    """
+    # Arrange
+    reply = _BookResult("Dune")
+
+    class Responder:
+        async def __call__(self, _: _BookQuery) -> _BookResult:
+            return reply
+
+    bus.handle(_find_book, Responder())
+
+    # Act
+    result = await bus.emit(_find_book, None, _BookQuery("dune"))
 
     # Assert
     assert result is reply

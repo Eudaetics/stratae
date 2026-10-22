@@ -1,38 +1,51 @@
 """
 Stratae: Composable tools for building applications in Python.
 
-Stratae provides lightweight, high-performance tools for dependency injection,
-lifecycle management, and context variables. Built on Python's native features,
-it works anywhere: APIs, CLIs, workers, and tests.
+Lightweight building blocks for dependency injection, scoped caching and cleanup, guard
+checks, typed events, context variables, and serialization.
 
-Quick example:
-    >>> from stratae.depends import Depends, Injected, inject
-    >>> from stratae.lifecycle import Lifecycle, Scope
-    >>>
-    >>> lifecycle = Lifecycle([Scope('application', 'shared'), Scope('request', 'shared')])
-    >>>
-    >>> @lifecycle.cache('application')
-    >>> def get_database():
-    ...     return Database(url="postgresql://...")
-    >>>
-    >>> @inject
-    >>> def create_user(name: str, db: Injected[Database, Depends(get_database)]):
-    ...     return db.users.create(name=name)
-    >>>
-    >>> with lifecycle.start('application'):
-    ...     with lifecycle.start('request'):
-    ...         user = create_user("Alice")
+```{code-block} python
+:caption: Cache a database connection
 
-Modules:
-    check: Guard checks for controlling behavior
-    depends: Dependency injection and resolution
-    lifecycle: Scope-based caching and resource management
-    context: Context variables with nested scopes
-    events: Typed events with pub/sub and request/reply dispatch
-    serde: Serialization and deserialization
-    integrations: Bridges between Stratae modules and third party tools
+import pytest
+from typing import Annotated
+from stratae.depends import Depends, inject
+from stratae.lifecycle import Scope
+
+class Database:
+    def __init__(self, url: str):
+        self.url = url
+        self.users: set[str] = set()
+
+    def create_user(self, name: str) -> str:
+        self.users.add(name)
+        return name
+
+application = Scope("application", isolation="shared")
+request = Scope("request", isolation="shared")
+
+@application.cache()
+def get_database() -> Database:
+    return Database(url="postgresql://localhost/app")
+
+@inject
+def create_user(name: str, db: Annotated[Database, Depends(get_database)]):
+    return db.create_user(name)
+
+@inject
+def get_user(name: str, db: Annotated[Database, Depends(get_database)]) -> str:
+    assert name in db.users, f"no such user: {name}"
+    return name
+
+with application:
+    with request:
+        user = create_user("Alice")
+    assert get_user("Alice") == "Alice"
+
+    with pytest.raises(AssertionError, match="no such user"):
+        get_user("Bob")
+
+with application, pytest.raises(AssertionError, match="no such user"):
+    get_user("Alice")
+```
 """
-
-from . import checks, context, depends, events, integrations, lifecycle, serde
-
-__all__ = ["depends", "lifecycle", "context", "events", "checks", "integrations", "serde"]

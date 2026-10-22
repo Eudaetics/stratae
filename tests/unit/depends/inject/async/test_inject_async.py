@@ -6,7 +6,7 @@ from typing import Annotated, Any, Callable
 
 import pytest
 
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 from stratae.depends.exceptions import InjectionSignatureError
 
 
@@ -41,7 +41,7 @@ async def test_inject_with_async():
         return SampleType(10)
 
     @inject
-    async def test_dep(val: Injected[SampleType, Depends(async_factory_function)]) -> SampleType:
+    async def test_dep(val: Annotated[SampleType, Depends(async_factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -77,7 +77,7 @@ async def test_inject_with_async_multiple_calls():
         return SampleType(counter := counter + 1)
 
     @inject
-    async def test_dep(val: Injected[SampleType, Depends(async_factory_function)]) -> SampleType:
+    async def test_dep(val: Annotated[SampleType, Depends(async_factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -119,8 +119,8 @@ async def test_inject_async_mixed():
 
     @inject
     async def test_dep(
-        val1: Injected[SampleType, Depends(async_factory_function)],
-        val2: Injected[SampleType, Depends(sync_factory_function)],
+        val1: Annotated[SampleType, Depends(async_factory_function)],
+        val2: Annotated[SampleType, Depends(sync_factory_function)],
     ) -> tuple[SampleType, SampleType]:
         return val1, val2
 
@@ -161,7 +161,7 @@ def test_inject_sync_async_nested_error():
 
     @inject
     async def async_factory_function(
-        val: Injected[SampleType, Depends(sync_after_async_factory_function)],
+        val: Annotated[SampleType, Depends(sync_after_async_factory_function)],
     ) -> SampleType:
         """Create async factory function that returns a SampleType instance."""
         return SampleType(20 + val.value)
@@ -172,7 +172,7 @@ def test_inject_sync_async_nested_error():
     ):
 
         @inject
-        def _(val: Injected[SampleType, Depends(async_factory_function)]) -> SampleType:
+        def _(val: Annotated[SampleType, Depends(async_factory_function)]) -> SampleType:
             """Create sync factory function that returns a SampleType instance."""
             return SampleType(5 + val.value)
 
@@ -200,7 +200,7 @@ async def test_inject_async_sync_nested():
     # Act
     @inject
     async def async_factory_function(
-        val: Injected[SampleType, Depends(sync_factory_function)],
+        val: Annotated[SampleType, Depends(sync_factory_function)],
     ) -> SampleType:
         """Create async factory function that returns a SampleType instance."""
         return SampleType(5 + val.value)
@@ -232,7 +232,7 @@ async def test_inject_with_parens_and_async():
         return SampleType(25)
 
     @inject()
-    async def test_dep(val: Injected[SampleType, Depends(async_factory_function)]) -> SampleType:
+    async def test_dep(val: Annotated[SampleType, Depends(async_factory_function)]) -> SampleType:
         return val
 
     # Act
@@ -337,7 +337,7 @@ async def test_nested_annotations_async():
 
 async def test_mixed_depends_types_async():
     """
-    Test the inject decorator with a mix of Annotated and traditional Depends.
+    Test the inject decorator with a mix of Annotated type and inline Annotations.
 
     Given: a function with mixed dependency methods,
     When: the function is decorated with @inject,
@@ -359,7 +359,7 @@ async def test_mixed_depends_types_async():
         no_default: int,
         type_dep: IntDependency,
         annotated_dep: Annotated[int, Depends(get_two)],
-        db: Injected[int, Depends(get_three)],
+        db: Annotated[int, Depends(get_three)],
         no_dep: int = -2,
     ) -> int:
         """Sum the various dependencies."""
@@ -374,7 +374,7 @@ async def test_mixed_depends_types_async():
 
 async def test_behavior_with_annotated_and_default_async():
     """
-    Injected params cannot use defaults.
+    Annotated params cannot use defaults.
 
     Given: a function with Annotated dependencies with defaults,
     When: the function is decorated with @inject,
@@ -425,3 +425,30 @@ async def test_inject_with_outer_wrapper_async():
 
     # Assert
     assert result == 43
+
+
+async def test_async_callable_object_dependency_is_awaited():
+    """
+    A provider that's an object with async __call__ has its result awaited.
+
+    Given: A provider instance whose __call__ is async
+    When: A function depending on it is injected and awaited
+    Then: The awaited value is injected, not a coroutine
+    """
+
+    # Arrange
+    class Provider:
+        async def __call__(self) -> int:
+            return 7
+
+    get_number = Provider()
+
+    @inject
+    async def handler(n: Annotated[int, Depends(get_number)]) -> int:
+        return n
+
+    # Act
+    result = await handler()
+
+    # Assert
+    assert result == 7

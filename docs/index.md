@@ -1,0 +1,99 @@
+# Stratae
+
+A developer toolkit for Python 3.12+, not a framework: dependency injection, lifecycle-scoped caching/cleanup, and event handling. Each piece is simple enough to use alone, or compose them together to build features like A/B testing, feature flags, or multi-tenancy.
+
+::::{container} hero-buttons
+
+:::{button-ref} tutorials/getting-started
+:color: primary
+:ref-type: doc
+
+Get Started
+:::
+
+:::{button-ref} api-reference
+:color: secondary
+:outline:
+:ref-type: doc
+
+API Reference
+:::
+
+:::{button-link} https://github.com/Eudaetics/stratae
+:color: secondary
+:outline:
+
+GitHub
+:::
+
+::::
+
+::::{grid} 1 2 3 3
+:gutter: 3 3 3 4
+
+:::{grid-item-card}
+:link: apidocs/stratae.depends/stratae.depends.html
+
+{octicon}`plug;1.2em` **Dependency Injection**
+^^^
+Works like a normal Python function. No container to configure, no extra registration steps. Swap a dependency out for tests without restructuring your code.
+:::
+
+:::{grid-item-card}
+:link: apidocs/stratae.lifecycle/stratae.lifecycle.html
+
+{octicon}`sync;1.2em` **Lifecycle**
+^^^
+Cache expensive calls and clean up resources automatically. You decide where a scope starts and ends. Nothing gets inferred from global state or a request object.
+:::
+
+:::{grid-item-card}
+:link: apidocs/stratae.events/stratae.events.html
+
+{octicon}`mail;1.2em` **Events**
+^^^
+Decouple your code with events, in-process by default. Both pub/sub and request/reply are built in. The same code can send distributed messages later, no rewrite needed.
+:::
+
+:::{grid-item-card}
+:link: tutorials/context.html
+
+{octicon}`package;1.2em` **Zero Dependencies**
+^^^
+Pure Python, no external packages. Nothing else gets added along with Stratae. Core modules work independently, with no overarching framework or bridging code.
+:::
+
+:::{grid-item-card}
+:link: tutorials/checks.html
+
+{octicon}`terminal;1.2em` **Use Anywhere**
+^^^
+No framework required. Every piece is a plain callable. It drops into a script, a CLI, a worker, or whatever framework you're already using with minimal integration.
+:::
+
+:::{grid-item-card}
+:link: tutorials/serde.html
+
+{octicon}`unlock;1.2em` **No Lock-In**
+^^^
+There is no container to stand up first. Add dependency injection, scoping, or events only where needed. Remove it the same way, piece by piece, without a larger rewrite.
+:::
+
+::::
+
+```{toctree}
+:maxdepth: 2
+:caption: Guides
+:hidden:
+
+introduction
+tutorials/index
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Reference
+:hidden:
+
+api-reference
+```

@@ -17,14 +17,14 @@ from stratae.events import Consumer, DispatchPattern, EmitCallable, Event, Produ
 
 
 class _SyncProducer:
-    def emit[E: object, T: DispatchPattern](
-        self, payload: E, event: Event[E, T], config: Any
+    def emit[T: DispatchPattern[Any, Any], E, Signal: bool](
+        self, event: Event[T, E, Signal], config: Any, payload: E
     ) -> None: ...
 
 
 class _AsyncProducer:
-    async def emit[E: object, T: DispatchPattern](
-        self, payload: E, event: Event[E, T], config: Any
+    async def emit[T: DispatchPattern[Any, Any], E, Signal: bool](
+        self, event: Event[T, E, Signal], config: Any, payload: E
     ) -> None: ...
 
 

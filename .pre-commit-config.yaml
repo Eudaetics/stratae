@@ -31,4 +31,4 @@ repos:
           - fastapi
           - msgspec
           - starlette
-        exclude: ^tests/
+        exclude: ^tests/|^docs|conftest.py

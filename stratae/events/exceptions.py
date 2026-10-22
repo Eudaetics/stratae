@@ -1,17 +1,21 @@
-"""Exceptions for errors in event dispatch."""
+"""Exceptions for errors in event dispatch, all subclassing {py:exc}`EventDispatchError`."""
 
 
 class EventDispatchError(Exception):
-    """Base class for all event dispatch related exceptions."""
+    """Base class for all event dispatch exceptions."""
 
 
 class NoResponderError(EventDispatchError, LookupError):
-    """Raised when a request event is emitted with no registered responder."""
+    """Raised when a request event has no responder."""
 
 
 class MultipleRespondersError(EventDispatchError, LookupError):
-    """Raised when a request event is emitted with more than one registered responder."""
+    """Raised when a request event has more than one responder."""
 
 
 class NotConnectedError(EventDispatchError):
-    """Raised when emitting through an adapter whose connection is not open."""
+    """Raised when using an adapter whose connection isn't open."""
+
+
+class AlreadyConnectedError(EventDispatchError):
+    """Raised when opening an adapter that's already connected."""

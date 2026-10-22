@@ -243,3 +243,41 @@ def test_require_with_no_checks_calls_function_directly():
 
     # Act / Assert
     assert fn() == "ok"
+
+
+def test_require_sync_function_rejects_async_callable_object_check():
+    """
+    A sync function rejects a check that's an object with async __call__.
+
+    Given: A check that's an instance whose __call__ is async.
+    When: require applies it to a sync function.
+    Then: A TypeError should be raised at decoration time.
+    """
+
+    # Arrange
+    class Check:
+        async def __call__(self) -> None: ...
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="async check"):
+
+        @require(Check())
+        def handler() -> None: ...
+
+
+def test_require_any_mode_without_checks_calls_function():
+    """
+    Verify require with mode="any" and no checks calls the function: none of them raised.
+
+    Given: A function decorated with require, mode="any", and no checks.
+    When: The function is called.
+    Then: It runs and returns its value.
+    """
+
+    # Arrange
+    @require(mode="any")
+    def handler() -> int:
+        return 1
+
+    # Act & Assert
+    assert handler() == 1

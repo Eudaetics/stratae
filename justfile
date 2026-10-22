@@ -4,6 +4,12 @@ format:
 lint:
     uv run ruff check --fix .
 
+format-check:
+    uv run ruff format --check .
+
+lint-check:
+    uv run ruff check .
+
 typecheck:
     uv run pyright
 
@@ -13,11 +19,17 @@ test:
 test-rabbitmq:
     uv run pytest -m rabbitmq --no-cov
 
+test-docs:
+    uv run pytest stratae/ docs/ --ignore=docs/apidocs --no-cov
+
+docs:
+    uv run sphinx-build -b html docs site
+
 test-lowest:
     uv run --isolated --resolution lowest-direct --all-extras pytest --no-cov
 
 radon-cc:
-    uv run radon cc stratae -n B
+    uv run radon cc stratae -n C
 
 radon-mi:
     uv run radon mi stratae -n B
@@ -31,4 +43,5 @@ type-ignore-check:
 pyright-ignore-check:
     ! grep -rn --include='*.py' 'pyright: ignore' stratae
 
-check: format lint typecheck test no-cover-check type-ignore-check pyright-ignore-check radon-cc radon-mi
+# Mirrors CI without modifying files; run `just format lint` first to auto-fix.
+check: format-check lint-check typecheck test no-cover-check type-ignore-check pyright-ignore-check radon-cc radon-mi

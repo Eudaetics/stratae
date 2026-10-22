@@ -1,21 +1,13 @@
 """End-to-end tests for events composed with dependency injection and lifecycle."""
 
-from typing import Any
+from typing import Annotated, Any
 
-import pytest
-
-from stratae.depends import Depends, Injected, inject
+from stratae.depends import Depends, inject
 from stratae.events import DirectBus, Event, PubSub, Request
-from stratae.lifecycle import Lifecycle, Scope
+from stratae.lifecycle import Scope
 
 
-@pytest.fixture
-def lifecycle():
-    """Provide a Lifecycle instance for testing."""
-    yield Lifecycle([Scope("application", "shared")])
-
-
-def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
+def test_order_flow_with_injected_handlers(application_scope: Scope):
     """
     End-to-end test simulating order processing over the direct bus.
 
@@ -39,12 +31,12 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
-    @lifecycle.cache("application")
+    @application_scope.cache()
     def order_store() -> dict[int, dict[str, Any]]:
         return {}
 
-    order_placed = Event(OrderPlaced, PubSub)
-    price_order = Event(PriceOrder, Request[Quote])
+    order_placed = Event(PubSub, OrderPlaced)
+    price_order = Event(Request[Quote], PriceOrder)
     place_order = bus.bind(order_placed, factory=OrderPlaced)
     request_quote = bus.bind(price_order, factory=PriceOrder)
 
@@ -52,7 +44,7 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
     @inject
     def _(
         order: OrderPlaced,
-        store: Injected[dict[int, dict[str, Any]], Depends(order_store)],
+        store: Annotated[dict[int, dict[str, Any]], Depends(order_store)],
     ) -> None:
         store[order.order_id] = {"status": "placed"}
 
@@ -60,13 +52,13 @@ def test_order_flow_with_injected_handlers(lifecycle: Lifecycle):
     @inject
     def _(
         request: PriceOrder,
-        store: Injected[dict[int, dict[str, Any]], Depends(order_store)],
+        store: Annotated[dict[int, dict[str, Any]], Depends(order_store)],
     ) -> Quote:
         assert request.order_id in store
         return Quote(order_id=request.order_id, total=100)
 
     # Act & Assert: place and price an order within the application scope
-    with lifecycle.start("application"):
+    with application_scope:
         place_order(order_id=42)
         quote = request_quote(order_id=42)
 

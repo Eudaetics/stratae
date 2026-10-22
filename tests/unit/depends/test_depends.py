@@ -1,7 +1,10 @@
 """Test suite for the Depends class in the dependency injection module."""
 
+import pytest
+
 from stratae.depends import Depends
 from stratae.depends._provide import Provider
+from stratae.depends.exceptions import InjectionSignatureError
 
 
 def test_depends_initialization():
@@ -46,3 +49,24 @@ def test_depends_with_lambda():
     # Assert
     assert isinstance(depends_instance, Provider)
     assert depends_instance.dependency == sample_lambda
+
+
+def test_depends_rejects_unhashable_callable():
+    """
+    Verify that Depends rejects a callable that can't be registered.
+
+    Given: a callable object that is unhashable,
+    When: Depends is initialized with it,
+    Then: it should raise InjectionSignatureError instead of a bare TypeError.
+    """
+
+    # Arrange
+    class Unhashable:
+        __hash__ = None  # type: ignore[assignment]
+
+        def __call__(self) -> str:
+            return "sample"
+
+    # Act & Assert
+    with pytest.raises(InjectionSignatureError, match="unhashable"):
+        Depends(Unhashable())

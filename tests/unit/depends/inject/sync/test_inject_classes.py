@@ -1,11 +1,22 @@
 """Test suite for verifying dependency injection in class methods and constructors."""
 
-from stratae.depends import Depends, Injected, inject
+from functools import partial
+from typing import Annotated, Any, Callable
+
+import pytest
+
+from stratae.depends import Depends, inject
+from stratae.depends.exceptions import InjectionSignatureError
 
 
 def get_dep():
     """Dependent function returning an integer."""
     return 42
+
+
+async def get_async_dep() -> int:
+    """Async dependent function returning an integer."""
+    return 43
 
 
 def test_class_init():
@@ -20,7 +31,7 @@ def test_class_init():
     # Arrange
     class SimpleObject:
         @inject
-        def __init__(self, value: Injected[int, Depends(get_dep)]):
+        def __init__(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
     # Act
@@ -43,7 +54,7 @@ def test_nested_class_injection():
 
     class DepClass:
         @inject
-        def __init__(self, value: Injected[int, Depends(get_dep)]):
+        def __init__(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
         def get_value(self):
@@ -51,7 +62,7 @@ def test_nested_class_injection():
 
     class SimpleObject:
         @inject
-        def __init__(self, dep: Injected[DepClass, Depends(DepClass)]):
+        def __init__(self, dep: Annotated[DepClass, Depends(DepClass)]):
             self.dep = dep
 
     # Act
@@ -76,7 +87,7 @@ def test_method_injection_in_class():
             self.value = 0
 
         @inject
-        def set_value(self, value: Injected[int, Depends(get_dep)]):
+        def set_value(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
     # Act
@@ -102,7 +113,7 @@ def test_static_method_injection_in_class():
 
         @staticmethod
         @inject
-        def set_value(value: Injected[int, Depends(get_dep)]):
+        def set_value(value: Annotated[int, Depends(get_dep)]):
             SimpleObject.value = value
 
     # Act
@@ -127,7 +138,7 @@ def test_class_method_injection_in_class():
 
         @classmethod
         @inject
-        def set_value(cls, value: Injected[int, Depends(get_dep)]):
+        def set_value(cls, value: Annotated[int, Depends(get_dep)]):
             return value
 
     # Act
@@ -149,7 +160,7 @@ def test_inherited_class_injection():
     # Arrange
     class BaseClass:
         @inject
-        def __init__(self, value: Injected[int, Depends(get_dep)]):
+        def __init__(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
     class ChildClass(BaseClass):
@@ -175,13 +186,13 @@ def test_inherited_class_method_injection():
     class BaseClass:
         @classmethod
         @inject
-        def get_value(cls, value: Injected[int, Depends(get_dep)]):
+        def get_value(cls, value: Annotated[int, Depends(get_dep)]):
             return value
 
     class ChildClass(BaseClass):
         @classmethod
         @inject
-        def get_value(cls, value: Injected[int, Depends(get_dep)]):
+        def get_value(cls, value: Annotated[int, Depends(get_dep)]):
             return value + 1
 
     # Act
@@ -205,7 +216,7 @@ def test_injection_with_other_params():
     # Arrange
     class SimpleObject:
         @inject
-        def __init__(self, value: Injected[int, Depends(get_dep)], other: str = "default"):
+        def __init__(self, value: Annotated[int, Depends(get_dep)], other: str = "default"):
             self.value = value
             self.other = other
 
@@ -234,8 +245,8 @@ def test_multiple_injections():
         @inject
         def __init__(
             self,
-            value: Injected[int, Depends(get_dep)],
-            text: Injected[str, Depends(get_another_dep)],
+            value: Annotated[int, Depends(get_dep)],
+            text: Annotated[str, Depends(get_another_dep)],
         ):
             self.value = value
             self.text = text
@@ -282,7 +293,7 @@ def test_injecting_classes():
     # Arrange
 
     class DepClass:
-        def __init__(self, value: Injected[int, Depends(get_dep)]):
+        def __init__(self, value: Annotated[int, Depends(get_dep)]):
             self.value = value
 
         def get_value(self):
@@ -290,7 +301,7 @@ def test_injecting_classes():
 
     class SimpleObject:
         @inject
-        def __init__(self, dep: Injected[DepClass, Depends(DepClass)]):
+        def __init__(self, dep: Annotated[DepClass, Depends(DepClass)]):
             self.dep = dep
 
     # Act
@@ -298,3 +309,101 @@ def test_injecting_classes():
 
     # Assert
     assert instance.dep.get_value() == 50
+
+
+class _SyncHandler:
+    def __call__(self, value: Annotated[int, Depends(get_dep)]) -> int:
+        return value
+
+
+class _AsyncHandler:
+    async def __call__(self, value: Annotated[int, Depends(get_async_dep)]) -> int:
+        return value
+
+
+def _add(value: Annotated[int, Depends(get_dep)], other: int) -> int:
+    return value + other
+
+
+@pytest.mark.parametrize(
+    "target",
+    [_SyncHandler(), _AsyncHandler(), partial(_add, other=1)],
+    ids=["sync_object", "async_object", "partial"],
+)
+def test_callable_object_with_injected_parameters_rejected(target: Callable[..., Any]):
+    """
+    Test that injecting into a callable object raises a clear error.
+
+    Given: A callable object - an instance with __call__, or a functools.partial - with
+        an injected parameter.
+    When: inject is applied to it.
+    Then: InjectionSignatureError is raised, pointing at decorating __call__ instead,
+        since inject would replace the object with a function.
+    """
+    with pytest.raises(InjectionSignatureError, match="Decorate its __call__ method"):
+        inject(target)
+
+
+def test_callable_object_provider_with_injected_parameters_rejected():
+    """
+    Test that a callable object provider with injected parameters raises a clear error.
+
+    Given: A callable object whose __call__ has an injected parameter, used as a provider.
+    When: A function depending on it is injected.
+    Then: InjectionSignatureError is raised for the provider.
+    """
+    handler = _SyncHandler()
+
+    def consumer(result: Annotated[int, Depends(handler)]) -> int:
+        return result
+
+    with pytest.raises(InjectionSignatureError, match="Cannot inject into"):
+        inject(consumer)
+
+
+def test_callable_object_provider_without_injected_parameters_allowed():
+    """
+    Test that a callable object with no injected parameters works as a provider.
+
+    Given: A callable object taking no injected parameters, used as a provider.
+    When: A function depending on it is injected and called.
+    Then: The object's return value is injected.
+    """
+
+    # Arrange
+    class Settings:
+        def __call__(self) -> int:
+            return 7
+
+    @inject
+    def consumer(value: Annotated[int, Depends(Settings())]) -> int:
+        return value
+
+    # Act & Assert
+    assert consumer() == 7
+
+
+def test_injected_call_method_on_callable_object():
+    """
+    Test that decorating __call__ with inject injects into a callable object.
+
+    Given: A class whose __call__ is decorated with inject.
+    When: An instance is called directly, and used as a provider.
+    Then: The dependency is injected both ways.
+    """
+
+    # Arrange
+    class Handler:
+        @inject
+        def __call__(self, value: Annotated[int, Depends(get_dep)]) -> int:
+            return value
+
+    handler = Handler()
+
+    @inject
+    def consumer(result: Annotated[int, Depends(handler)]) -> int:
+        return result
+
+    # Act & Assert
+    assert handler() == 42
+    assert consumer() == 42

@@ -1,16 +1,16 @@
 from contextvars import ContextVar
-from inspect import iscoroutinefunction
 from threading import Lock
 from typing import Any, Callable, Hashable, Self
 from weakref import WeakValueDictionary
 
-from stratae.depends.exceptions import DependencyNotFoundError
+from stratae._callables import is_async_callable
+from stratae.depends.exceptions import DependencyNotFoundError, InjectionSignatureError
 
 _UNSET = object()
 
 
 class Provider:
-    """Class used to wrap the dependency injection."""
+    """A registered dependency provider and its override state."""
 
     __slots__ = {
         "dependency",
@@ -33,14 +33,24 @@ class Provider:
     resolved: bool
 
     def __new__(cls, dependency: Callable[..., Any]) -> Self:
-        """Singleton factory for dependency wrappers."""
-        existing = cls._registry.get(dependency)
+        """
+        Return the single Provider for `dependency`.
+
+        :raises InjectionSignatureError: If `dependency` is unhashable.
+        """
+        try:
+            existing = cls._registry.get(dependency)
+        except TypeError:
+            raise InjectionSignatureError(
+                f"Cannot use {dependency!r} as a dependency: it's unhashable. "
+                "Wrap it in a function instead."
+            ) from None
         if existing is not None:
             return existing
         instance = super().__new__(cls)
         instance.dependency = dependency
         instance.provide = dependency
-        instance.is_async = iscoroutinefunction(dependency)
+        instance.is_async = is_async_callable(dependency)
         instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
         instance.override_count = 0
         instance.lock = Lock()
@@ -56,7 +66,7 @@ class Provider:
         return ctx
 
     def update(self, dependency: Callable[..., Any]):
-        """Update the dependency while also correcting the provide."""
+        """Replace the dependency and its provide function."""
         with self.lock:
             self.dependency = dependency
             if self.override_count == 0:
@@ -64,7 +74,7 @@ class Provider:
 
     @classmethod
     def find(cls, func: Callable[..., Any]):
-        """Find the associated Provider for the injected dependency."""
+        """Find the Provider registered for a dependency."""
         try:
             return cls._registry[func]
         except KeyError:
