@@ -133,7 +133,8 @@ class Event[T: DispatchPattern[Any, Any], S, Signal: bool]:
     Omitting `schema` leaves it `NoPayload`, defining an event that carries
     no payload at all. Its occurrence is the whole message: a heartbeat, a
     cache invalidation, a shutdown notice. Binding one produces a callable
-    taking no arguments, since there's nothing to pass.
+    taking no arguments, since there's nothing to pass. It must be given a
+    `name`, since there's no schema to name it after.
     """
 
     __slots__ = ("name", "_pattern", "schema")
@@ -143,7 +144,7 @@ class Event[T: DispatchPattern[Any, Any], S, Signal: bool]:
         self: Event[T2, NoPayload, Literal[True]],
         pattern: type[T2],
         *,
-        name: str | None = None,
+        name: str,
     ) -> None: ...
     @overload
     def __init__[T2: DispatchPattern[Any, Any], S2](
@@ -167,11 +168,17 @@ class Event[T: DispatchPattern[Any, Any], S, Signal: bool]:
         :param schema: The payload type this event carries. Omit it for a
             payload-less event, leaving the schema `NoPayload`.
         :param name: Human-readable identifier for this event. Defaults to
-            `schema.__name__`.
-        :raises TypeError: If `pattern` is an unsubscripted `Request`.
+            `schema.__name__`; required for a payload-less event, which has no
+            schema to name it after.
+        :raises TypeError: If `pattern` is an unsubscripted `Request`, or a
+            payload-less event is given no `name`.
 
         """
         _validate_pattern(pattern)
+        if name is None and schema is NoPayload:
+            raise TypeError(
+                "A payload-less Event needs a name, e.g. Event(PubSub, name='heartbeat')."
+            )
         self._pattern = pattern
         self.schema = schema
         self.name = name if name is not None else schema.__name__

@@ -88,6 +88,31 @@ def test_event_accepts_explicit_name() -> None:
     assert ev.name == "order_placed"
 
 
+def test_payloadless_event_requires_name() -> None:
+    """
+    Test that a payload-less event must be given a name.
+
+    Given: No schema to derive a name from
+    When: An Event is created without a name
+    Then: A TypeError should be raised, rather than every such event being named "NoPayload"
+    """
+    with pytest.raises(TypeError, match="needs a name"):
+        Event(PubSub)  # pyright: ignore[reportCallIssue]
+
+
+def test_payloadless_event_accepts_name() -> None:
+    """
+    Test that a payload-less event takes its given name.
+
+    Given: No schema, and an explicit name
+    When: An Event is created
+    Then: name should equal the supplied string
+    """
+    ev = Event(PubSub, name="heartbeat")
+
+    assert ev.name == "heartbeat"
+
+
 def test_pubsub_is_subclass_of_dispatch_pattern() -> None:
     """
     Test that PubSub is a subclass of DispatchPattern.

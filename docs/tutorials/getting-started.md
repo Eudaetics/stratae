@@ -131,7 +131,7 @@ class UserAdded:
         self.name = name
 
 user_added_event = Event(PubSub, UserAdded)
-users_requested = Event(Request[list[tuple[int, str]]])
+users_requested = Event(Request[list[tuple[int, str]]], name="users_requested")
 
 bus = DirectBus()
 notify_user_added = bus.bind(user_added_event, factory=UserAdded)
