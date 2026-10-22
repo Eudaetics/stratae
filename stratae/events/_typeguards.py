@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import inspect
 from typing import Awaitable, Callable, TypeGuard
+
+from stratae._callables import is_async_callable
 
 
 def is_async_factory[**P, R](
     factory: Callable[P, R] | Callable[P, Awaitable[R]],
 ) -> TypeGuard[Callable[P, Awaitable[R]]]:
-    return inspect.iscoroutinefunction(factory)
+    return is_async_callable(factory)
 
 
 def is_sync_factory[**P, R](
     factory: Callable[P, R] | Callable[P, Awaitable[R]],
 ) -> TypeGuard[Callable[P, R]]:
-    return not inspect.iscoroutinefunction(factory)
+    return not is_async_callable(factory)

@@ -556,3 +556,34 @@ def test_all_of_async_group_raises_type_error_in_sync_check():
     # Act / Assert
     with pytest.raises(TypeError, match="returned an awaitable"):
         check(combined)
+
+
+class _AsyncCallableCheck:
+    """A check that's an object with async __call__, recording each call."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self) -> None:
+        self.calls += 1
+
+
+async def test_all_of_and_any_of_treat_async_callable_object_as_async():
+    """
+    `all_of` and `any_of` treat an object with async __call__ as an async check.
+
+    Given: A check that's an instance whose __call__ is async.
+    When: `all_of` and `any_of` each combine it, and the results run via `check_async`.
+    Then: Both combined checks are coroutine functions, and the check is awaited by each.
+    """
+    # Arrange
+    async_check = _AsyncCallableCheck()
+
+    # Act
+    combined = [all_of(async_check), any_of(async_check)]
+    for group in combined:
+        await check_async(group)
+
+    # Assert
+    assert all(iscoroutinefunction(group) for group in combined)
+    assert async_check.calls == 2

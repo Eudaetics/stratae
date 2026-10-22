@@ -9,9 +9,10 @@ rejects elsewhere.
 """
 
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
-from inspect import iscoroutinefunction, unwrap
+from inspect import unwrap
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Hashable, TypeGuard, cast, overload
 
+from stratae._callables import is_async_callable
 from stratae.lifecycle._wrappers import (
     Cached,
     create_async_wrapper,
@@ -31,7 +32,7 @@ def _is_awaitable[**P, T](
     f: Callable[P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T],
 ) -> TypeGuard[Callable[P, Awaitable[T]]]:
     """Type guard to narrow func type when it is awaitable."""
-    return iscoroutinefunction(f)
+    return is_async_callable(f)
 
 
 def _is_auto_sync_cm[**P, T](

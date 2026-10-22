@@ -425,3 +425,30 @@ async def test_inject_with_outer_wrapper_async():
 
     # Assert
     assert result == 43
+
+
+async def test_async_callable_object_dependency_is_awaited():
+    """
+    A provider that's an object with async __call__ has its result awaited.
+
+    Given: A provider instance whose __call__ is async
+    When: A function depending on it is injected and awaited
+    Then: The awaited value is injected, not a coroutine
+    """
+
+    # Arrange
+    class Provider:
+        async def __call__(self) -> int:
+            return 7
+
+    get_number = Provider()
+
+    @inject
+    async def handler(n: Annotated[int, Depends(get_number)]) -> int:
+        return n
+
+    # Act
+    result = await handler()
+
+    # Assert
+    assert result == 7

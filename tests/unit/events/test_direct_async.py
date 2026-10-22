@@ -776,3 +776,54 @@ async def test_request_reply_returned_with_envelope(bus_with_envelope: AsyncDire
 
     # Assert
     assert result is reply
+
+
+async def test_async_callable_object_handler_is_awaited(bus: AsyncDirectBus):
+    """
+    A pub/sub handler that's an object with async __call__ is awaited.
+
+    Given: An instance of a class whose __call__ is async, registered to a PubSub Event
+    When: an event is dispatched
+    Then: Its __call__ runs to completion
+    """
+
+    # Arrange
+    class Handler:
+        def __init__(self) -> None:
+            self.received: list[_TaskCreated] = []
+
+        async def __call__(self, payload: _TaskCreated) -> None:
+            self.received.append(payload)
+
+    handler = Handler()
+    bus.handle(_task_created, handler)
+
+    # Act
+    await bus.dispatch(_TaskCreated(13), config=_task_created)
+
+    # Assert
+    assert handler.received == [_TaskCreated(13)]
+
+
+async def test_async_callable_object_responder_reply_is_awaited(bus: AsyncDirectBus):
+    """
+    A request responder that's an object with async __call__ has its reply awaited.
+
+    Given: An instance of a class whose __call__ is async, registered to a request Event
+    When: emit is awaited with that Event
+    Then: The resolved reply is returned, not a coroutine
+    """
+    # Arrange
+    reply = _BookResult("Dune")
+
+    class Responder:
+        async def __call__(self, _: _BookQuery) -> _BookResult:
+            return reply
+
+    bus.handle(_find_book, Responder())
+
+    # Act
+    result = await bus.emit(_find_book, None, _BookQuery("dune"))
+
+    # Assert
+    assert result is reply

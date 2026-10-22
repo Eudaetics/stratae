@@ -715,3 +715,21 @@ def test_request_reply_returned_with_envelope(bus_with_envelope: DirectBus):
 
     # Assert
     assert result is reply
+
+
+def test_async_callable_object_rejected_at_registration(bus: DirectBus):
+    """
+    Registering an object with async __call__ should raise TypeError, like an async function.
+
+    Given: An instance of a class whose __call__ is async
+    When: handle is called with it and an Event
+    Then: A TypeError should be raised
+    """
+
+    # Arrange
+    class Handler:
+        async def __call__(self, _: _TaskCreated) -> None: ...
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        bus.handle(_task_created, Handler())

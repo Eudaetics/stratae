@@ -211,3 +211,24 @@ def test_bind_without_factory_forwards_serializer_to_emitter() -> None:
 
 
 # endregion
+
+
+def test_bind_with_factory_raises_for_async_callable_factory() -> None:
+    """
+    Bind raises TypeError when the factory is an object with async __call__.
+
+    Given: An instance of a class whose __call__ is async
+    When: bind is called with it as the factory
+    Then: A TypeError should be raised
+    """
+    # Arrange
+    emitter = create_autospec(EmitCallable)
+    ev = Event(PubSub, _OrderCreated)
+
+    class Factory:
+        async def __call__(self, order_id: int, status: str) -> _OrderCreated:
+            return _OrderCreated(order_id, status)
+
+    # Act / Assert
+    with pytest.raises(TypeError):
+        bind(ev, emitter, factory=Factory(), config=None)  # pyright: ignore[reportCallIssue, reportArgumentType]

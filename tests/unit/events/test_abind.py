@@ -211,3 +211,28 @@ async def test_abind_without_factory_forwards_serializer_to_emitter() -> None:
 
 
 # endregion
+
+
+async def test_abind_awaits_async_callable_factory() -> None:
+    """
+    Abind awaits a factory that's an object with async __call__.
+
+    Given: An instance of a class whose __call__ is async, as the factory
+    When: The callable produced by abind is called
+    Then: The emitter receives the resolved payload, not a coroutine
+    """
+    # Arrange
+    emitter = create_autospec(_async_emit)
+    ev = Event(PubSub, _OrderCreated)
+
+    class Factory:
+        async def __call__(self, order_id: int, status: str) -> _OrderCreated:
+            return _OrderCreated(order_id, status)
+
+    bound = abind(ev, emitter, factory=Factory(), config=None)
+
+    # Act
+    await bound(1, "pending")
+
+    # Assert
+    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)

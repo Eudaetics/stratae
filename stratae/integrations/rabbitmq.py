@@ -93,7 +93,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from copy import copy
-from inspect import iscoroutinefunction
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -109,6 +108,7 @@ from typing import (
 from aiormq import connect
 from pamqp.commands import Basic
 
+from stratae._callables import is_async_callable
 from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
@@ -618,7 +618,7 @@ class RabbitMQConsumer:
 
         call: Callable[[Any], Any] = call_without_payload if event.schema is NoPayload else fn
         handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(
-            call, config, iscoroutinefunction(fn)
+            call, config, is_async_callable(fn)
         )
         registration = _Registration(event, handler, deserializer)
         self._registrations[handler] = registration

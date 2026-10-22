@@ -855,3 +855,35 @@ async def test_partial_envelope_headers_log_info(
     assert "partial envelope headers" in caplog.text
     assert seen[0] is not None
     assert seen[0].correlation_id == correlation_id
+
+
+async def test_async_callable_object_handler_awaited(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A handler that's an object with async __call__ should be awaited with the payload.
+
+    Given: A connected consumer with a handler whose __call__ is async
+    When: The registered callback receives a message
+    Then: The handler's __call__ runs to completion and the message is acked
+    """
+
+    # Arrange
+    class Handler:
+        def __init__(self) -> None:
+            self.received: list[_OrderPlaced] = []
+
+        async def __call__(self, payload: _OrderPlaced) -> None:
+            self.received.append(payload)
+
+    handler = Handler()
+    consumer.handle(_order_placed, handler, config=_config)
+    message = _message(b'{"order_id": 7}')
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert handler.received[0].order_id == 7
+    message.channel.basic_ack.assert_awaited_once_with(11)

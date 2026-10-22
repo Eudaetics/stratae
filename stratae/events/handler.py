@@ -45,8 +45,9 @@ log: first
 
 """
 
-from inspect import iscoroutinefunction
 from typing import Callable
+
+from stratae._callables import is_async_callable
 
 
 class Handler[**P, HandlerConfig, R]:
@@ -82,7 +83,7 @@ class Handler[**P, HandlerConfig, R]:
         """
         self.call = call
         self.config = config
-        self.is_async = iscoroutinefunction(call) if is_async is None else is_async
+        self.is_async = is_async_callable(call) if is_async is None else is_async
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """

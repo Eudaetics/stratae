@@ -116,3 +116,31 @@ async def test_decorator_on_async_generator(async_scope: AsyncScope):
 
     assert call_1 is call_2
     mock_cleanup.assert_called_once()
+
+
+async def test_decorator_on_async_callable_object(async_scope: AsyncScope):
+    """
+    Caching an object with async __call__ caches its awaited result.
+
+    Given: An AsyncScope and an instance whose __call__ is async,
+    When: The instance is cached in that scope and called twice,
+    Then: Its __call__ runs once and both calls return the awaited value.
+    """
+    # Arrange
+    mock = Mock()
+
+    class Factory:
+        async def __call__(self) -> int:
+            mock()
+            return 5
+
+    cached = async_scope.cache()(Factory())
+
+    # Act
+    async with async_scope.activate():
+        first = await cached()
+        second = await cached()
+
+    # Assert
+    assert (first, second) == (5, 5)
+    mock.assert_called_once()

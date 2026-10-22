@@ -1,9 +1,9 @@
 from contextvars import ContextVar
-from inspect import iscoroutinefunction
 from threading import Lock
 from typing import Any, Callable, Hashable, Self
 from weakref import WeakValueDictionary
 
+from stratae._callables import is_async_callable
 from stratae.depends.exceptions import DependencyNotFoundError
 
 _UNSET = object()
@@ -40,7 +40,7 @@ class Provider:
         instance = super().__new__(cls)
         instance.dependency = dependency
         instance.provide = dependency
-        instance.is_async = iscoroutinefunction(dependency)
+        instance.is_async = is_async_callable(dependency)
         instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
         instance.override_count = 0
         instance.lock = Lock()

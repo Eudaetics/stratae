@@ -101,9 +101,9 @@ scheduled shipment for order 1
 
 import asyncio
 from collections import defaultdict
-from inspect import iscoroutinefunction
 from typing import Any, Awaitable, Callable, Literal, Protocol, overload
 
+from stratae._callables import is_async_callable
 from stratae.events.binding import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
 from stratae.events.event import DispatchPattern, Event, NoPayload, is_request
@@ -163,7 +163,7 @@ class BaseDirectBus:
             return fn()
 
         call: Callable[..., Any] = call_without_payload if config.schema is NoPayload else fn
-        handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, iscoroutinefunction(fn))
+        handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, is_async_callable(fn))
         self._handlers[config].add(handler)
         return handler
 
@@ -315,7 +315,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
 
     def _register(self, config: _AnyEvent, fn: Callable[..., Any]) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn as a Handler, rejecting it with TypeError if it's async."""
-        if iscoroutinefunction(fn):
+        if is_async_callable(fn):
             raise TypeError(_ASYNC_HANDLER_REJECTED)
         return super()._register(config, fn)
 

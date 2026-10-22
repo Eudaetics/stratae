@@ -55,10 +55,11 @@ the rest of the module's API.
 
 """
 
-import inspect
 from functools import wraps
-from inspect import isawaitable, iscoroutinefunction
+from inspect import isawaitable
 from typing import Any, Awaitable, Callable, Literal, TypeGuard, cast, overload
+
+from stratae._callables import is_async_callable
 
 type CheckMode = Literal["all", "gather", "any"]
 
@@ -164,7 +165,7 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
         their failures if none do. Async if any of `checks` is async,
         sync otherwise.
     """
-    if any(iscoroutinefunction(fn) for fn in checks):
+    if any(is_async_callable(fn) for fn in checks):
 
         async def _any_of_async() -> None:
             await check_async(*checks, mode="any")
@@ -197,7 +198,7 @@ def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
         of `checks` succeeds, and raises the first failure otherwise.
         Async if any of `checks` is async, sync otherwise.
     """
-    if any(iscoroutinefunction(fn) for fn in checks):
+    if any(is_async_callable(fn) for fn in checks):
 
         async def _all_of_async() -> None:
             await check_async(*checks, mode="all")
@@ -214,7 +215,7 @@ def _is_async_fn[**P, R](
     fn: Callable[P, R] | Callable[P, Awaitable[R]],
 ) -> TypeGuard[Callable[P, Awaitable[R]]]:
     """Narrow a callable (zero-arg guard or arbitrary-signature fn) to its async form."""
-    return inspect.iscoroutinefunction(fn)
+    return is_async_callable(fn)
 
 
 def _wrap_async[**P, R](
