@@ -236,20 +236,20 @@ def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> 
     Which lookup is written depends on the scope's isolation (see _build_namespace for
     the matching namespace binding). A shared scope reads its SharedVar's storage attribute,
     unguarded - when the scope is inactive the attribute holds UNSET, whose subscript in the
-    read raises TypeError, so the active path pays no explicit check. The read can't raise
-    TypeError otherwise: it subscripts a list or SlotDict with an int constant. A
-    context-isolated scope's ContextVar is bound straight into the wrapper's namespace at
-    codegen time, and its get() shares one try with the read: an inactive scope raises
-    LookupError from get(), and an ended activation's emptied storage raises IndexError or
-    KeyError - both LookupErrors - from the read. Either miss falls back to get_slots(),
-    which raises the right error.
+    read raises TypeError, so the active path pays no explicit check. Storage read just
+    before another thread deactivates the scope is emptied under it, so the read raises
+    IndexError or KeyError instead. A context-isolated scope's ContextVar is bound straight
+    into the wrapper's namespace at codegen time, and its get() shares one try with the
+    read: an inactive scope raises LookupError from get(), and an ended activation's
+    emptied storage raises IndexError or KeyError - both LookupErrors - from the read. Any
+    miss falls back to get_slots(), which raises the right error.
     """
     if scope.is_shared():
         writer.write("__slots__ = __var__.storage")
         writer.write("try:")
         with writer.block():
             writer.write(read)
-        writer.write("except TypeError:")
+        writer.write("except (TypeError, LookupError):")
         with writer.block():
             writer.write("__slots__ = __scope__.get_slots()")
             writer.write(read)

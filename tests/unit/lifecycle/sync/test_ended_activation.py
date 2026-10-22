@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from stratae.lifecycle._slots import SharedVar
 from stratae.lifecycle.exceptions import ScopeActivationError, ScopeInactiveError
 from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope, StorageType
@@ -172,3 +173,36 @@ def test_shared_scope_waiter_raises_when_activation_ends_while_it_waits(scope: S
     # Assert
     assert outcomes["owner"] == "value"
     assert isinstance(outcomes["waiter"], ScopeInactiveError)
+
+
+@pytest.mark.parametrize("storage", ["dense", "sparse"])
+@pytest.mark.parametrize("keyed", [False, True], ids=["slot", "keyed"])
+def test_shared_call_reading_storage_emptied_by_deactivation_raises(
+    storage: StorageType, keyed: bool
+):
+    """
+    A shared-scope call holding storage that a concurrent deactivation emptied raises cleanly.
+
+    Given: A shared scope's storage, read just before another thread deactivated the scope
+        and emptied it - reproduced by pointing the SharedVar back at the emptied storage,
+    When: a cached function of that scope reads its slot from that storage,
+    Then: ScopeInactiveError should be raised, not the emptied storage's IndexError/KeyError.
+    """
+    # Arrange
+    scope = Scope("application", "shared", storage)
+
+    @scope.cache(ignore_params=not keyed)
+    def get_value(key: str) -> object:
+        return object()
+
+    var = scope.activation_var()
+    assert isinstance(var, SharedVar)
+    activation = scope.activate()
+    get_value("k")
+    emptied = var.storage
+    scope.deactivate(activation)
+    var.storage = emptied
+
+    # Act & Assert
+    with pytest.raises(ScopeInactiveError, match="activation ended"):
+        get_value("k")
