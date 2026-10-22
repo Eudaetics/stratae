@@ -60,7 +60,7 @@ def get_batch():
     finally:
         print(f"processed {len(items)} items: {items}")
 
-with batch.activate():
+with batch:
     get_batch().append("order-1")
     get_batch().append("order-2")
 ```

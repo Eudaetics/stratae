@@ -114,7 +114,7 @@ async def test_uncached_async_function_inside_scope(async_scope: AsyncScope):
         return SimpleObject(1)
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         cached1 = await get_object()
         cached2 = await get_object()
         uncached1 = await get_object.uncached()
@@ -184,7 +184,7 @@ async def test_uncached_async_resource_inside_scope(async_scope: AsyncScope):
             cleanup_counter()
 
     # Act & Assert
-    async with async_scope.activate():
+    async with async_scope:
         cached = await get_object()
         assert call_counter.call_count == 1
         cleanup_counter.assert_not_called()

@@ -12,8 +12,8 @@ class SlotDict(dict[int, Any]):
     """
     Dict-backed slot storage - missing slots read as UNSET without inserting them.
 
-    An ended activation's storage is emptied (see `Activation.__exit__`). Live storage always
-    holds the reserved slots 0 and 1, so an empty SlotDict is an ended one, and its reads
+    An ended activation's storage is emptied (see `Scope.__exit__`). Live storage always
+    holds the reserved slots 0-3, so an empty SlotDict is an ended one, and its reads
     raise KeyError like an emptied list's raise IndexError.
     """
 

@@ -36,7 +36,7 @@ def get_audit_log():
     finally:
         log.close()
 
-with request.activate():
+with request:
     get_audit_log().write("user logged in")
     get_audit_log().write("user viewed dashboard")
 ```

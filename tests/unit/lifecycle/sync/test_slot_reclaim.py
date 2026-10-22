@@ -34,7 +34,7 @@ def test_context_scope_template_growth_is_bounded(context_scope: Scope):
         del get_value
         gc.collect()
 
-    assert len(context_scope._template) == 3  # pyright: ignore[reportPrivateUsage]
+    assert len(context_scope._template) == 5  # pyright: ignore[reportPrivateUsage]
 
 
 def test_reclaimed_slot_does_not_leak_stale_value(scope: Scope):
@@ -64,7 +64,7 @@ def test_reclaimed_slot_does_not_leak_stale_value(scope: Scope):
 
         return get_b
 
-    with scope.activate():
+    with scope:
         # Act
         get_a = make_get_a()
         obj_a = get_a()
@@ -92,7 +92,7 @@ def test_hot_loop_template_growth_is_bounded(scope: Scope):
     Then: The scope's live slot list only ever grows on the first iteration - every later
           iteration reuses the freed slot instead of appending a new one.
     """
-    with scope.activate():
+    with scope:
         for _ in range(5):
 
             @scope.cache()
@@ -103,7 +103,7 @@ def test_hot_loop_template_growth_is_bounded(scope: Scope):
             del get_value
             gc.collect()
 
-    assert len(scope._template) == 3  # pyright: ignore[reportPrivateUsage]
+    assert len(scope._template) == 5  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize("storage", ["dense", "sparse"])
@@ -175,5 +175,5 @@ def test_reclaimed_slot_is_freed_when_released_inside_an_unextended_activation(
 
     # Assert
     assert result.value == 2
-    assert len(context_scope._template) == 3  # pyright: ignore[reportPrivateUsage]
+    assert len(context_scope._template) == 5  # pyright: ignore[reportPrivateUsage]
     other_context.run(context_scope.deactivate, activation)

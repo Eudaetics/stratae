@@ -70,7 +70,7 @@ def test_cache(scope: Scope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(1)
         obj2 = get_object(1)
@@ -103,7 +103,7 @@ def test_cache_kwargs(scope: Scope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(0, y=1)
         obj2 = get_object(0, y=1)
@@ -136,7 +136,7 @@ def test_cache_object(scope: Scope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
-    with scope.activate():
+    with scope:
         # Act
         input_obj1 = SimpleObject(1)
         input_obj2 = SimpleObject(1)
@@ -173,7 +173,7 @@ def test_cache_args_mixed(scope: Scope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(1, y=2, z=3)
         obj2 = get_object(1, 2, z=3)
@@ -201,7 +201,7 @@ def test_cache_no_args(scope: Scope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object()
         obj2 = get_object()
@@ -232,7 +232,7 @@ def test_cache_different_activations(scope: Scope, func_type: TestType):
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
     # Act & Assert
-    with scope.activate():
+    with scope:
         obj1 = get_object(1, y=2)
         obj2 = get_object(1, y=2)
         assert obj1 is obj2
@@ -241,7 +241,7 @@ def test_cache_different_activations(scope: Scope, func_type: TestType):
         if func_type == "cm_sync":
             assert cleanup_counter.call_count == 0
 
-    with scope.activate():
+    with scope:
         obj3 = get_object(1, y=2)
         assert obj3 is not obj1
         assert obj3.value == 3
@@ -262,7 +262,7 @@ def test_unhashable_arg(scope: Scope, func_type: TestType):
     # Arrange
     get_object = callable_factory(func_type, scope, Mock())
 
-    with scope.activate():
+    with scope:
         # Act
         list1 = [1, 2, 3]
 
@@ -282,7 +282,7 @@ def test_unhashable_kwarg(scope: Scope, func_type: TestType):
     # Arrange
     get_object = callable_factory(func_type, scope, Mock())
 
-    with scope.activate():
+    with scope:
         # Act
         dict1 = {"a": 1, "b": 2}
 
@@ -305,7 +305,7 @@ def test_cache_with_different_kwarg_order(scope: Scope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(x=1, y=2)
         obj2 = get_object(y=2, x=1)
@@ -336,7 +336,7 @@ def test_cache_ignore_params(scope: Scope, func_type: TestType):
     config = {"ignore_params": True}
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter, config=config)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(1)
         obj2 = get_object(2)
@@ -368,7 +368,7 @@ def test_cache_ignore_params_with_kwargs(scope: Scope, func_type: TestType):
     config = {"ignore_params": True}
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter, config=config)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(x=1, y=2)
         obj2 = get_object(x=3, y=4)
@@ -404,7 +404,7 @@ def test_cache_with_custom_cache_key(scope: Scope, func_type: TestType):
     config = {"cache_key": custom_cache_key}
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter, config=config)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(1, y=0)
         obj2 = get_object(1, y=0, z=1)
@@ -456,7 +456,7 @@ def test_cache_key_no_params(scope: Scope):
         return counter.call_count
 
     # Act / Assert
-    with scope.activate():
+    with scope:
         x = 1
         assert get_value() == 1
         assert get_value() == 1
@@ -485,7 +485,7 @@ def test_wrapper_parameter_types(scope: Scope):
     def foo(x: int, /, y: int, z: int = 0, *args: int, c: int = 1, **kwargs: int) -> Container:
         return Container(x + y + z + c + sum(args) + sum(kwargs.values()))
 
-    with scope.activate():
+    with scope:
         # Act
         simple = foo(1, 2)
         complex = foo(1, 1, 1, 1, 1, 1, c=1, f=1)
@@ -519,7 +519,7 @@ def test_wrapper_kwargs_only(scope: Scope):
     def foo(**kwargs: int):
         return Container(sum(kwargs.values()))
 
-    with scope.activate():
+    with scope:
         # Act
         result = foo(a=1, b=2, c=3)
 

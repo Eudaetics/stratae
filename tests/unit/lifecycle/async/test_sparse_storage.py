@@ -104,7 +104,7 @@ async def test_async_sparse_storage_cache_keyed(
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
-    async with scope.activate():
+    async with scope:
         # Act
         obj1 = await maybe_await(get_object(1))
         obj2 = await maybe_await(get_object(1))
@@ -141,7 +141,7 @@ async def test_async_sparse_storage_cache_slot_eligible(
         func_type, scope, call_counter, cleanup_counter, ignore_params=True
     )
 
-    async with scope.activate():
+    async with scope:
         # Act
         obj1 = await maybe_await(get_object(1))
         obj2 = await maybe_await(get_object(2))
@@ -173,9 +173,9 @@ async def test_async_sparse_storage_shared_reset_between_activations(app_sparse:
         return SimpleObject(x)
 
     # Act
-    async with app_sparse.activate():
+    async with app_sparse:
         obj1 = get_object(1)
-    async with app_sparse.activate():
+    async with app_sparse:
         obj2 = get_object(2)
 
     # Assert
@@ -201,9 +201,9 @@ async def test_async_sparse_storage_context_fresh_per_activation(req_sparse: Asy
         return SimpleObject(x)
 
     # Act
-    async with req_sparse.activate():
+    async with req_sparse:
         obj1 = get_object(1)
-    async with req_sparse.activate():
+    async with req_sparse:
         obj2 = get_object(2)
 
     # Assert
@@ -236,7 +236,7 @@ async def test_async_sparse_storage_exit_stack_cleaned_up(
             mock()
 
     # Act
-    async with scope.activate():
+    async with scope:
         await test_resource()
         await test_resource()
 

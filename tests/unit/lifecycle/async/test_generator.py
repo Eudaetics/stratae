@@ -34,7 +34,7 @@ async def test_generator_async(async_scope: AsyncScope):
             mock_cleanup()
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         result1 = await sample_generator()
         result2 = await sample_generator()
 
@@ -92,7 +92,7 @@ async def test_decorate_generator_async_exception_cleanup(async_scope: AsyncScop
 
     # Act & Assert
     with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
-        async with async_scope.activate():
+        async with async_scope:
             await sample_generator()
             mock_cleanup.assert_not_called()
 
@@ -127,7 +127,7 @@ async def test_decorator_generator_async_exception_handling(async_scope: AsyncSc
 
     # Act & Assert
     with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
-        async with async_scope.activate():
+        async with async_scope:
             await sample_generator()
             mock_cleanup.assert_not_called()
             mock_failure.assert_not_called()
@@ -181,7 +181,7 @@ async def test_multiple_generators_async(async_scope: AsyncScope):
             mock_cleanup_3()
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         await generator_one()
         await generator_two()
         await generator_three()
@@ -237,7 +237,7 @@ async def test_generator_async_exception_group(async_scope: AsyncScope):
 
     # Act & Assert
     with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
-        async with async_scope.activate():
+        async with async_scope:
             await generator_one()
             await generator_two()
             await generator_three()
@@ -290,7 +290,7 @@ async def test_generator_sees_exception_raised_in_caller_block_async(async_scope
 
     # Act & Assert
     with pytest.raises(ValueError, match="Caller Failure"):  # noqa: S5778
-        async with async_scope.activate():
+        async with async_scope:
             await sample_generator()
             raise ValueError("Caller Failure")
 
@@ -325,7 +325,7 @@ async def test_generator_can_suppress_exception_raised_in_caller_block_async(
             mock_suppressed()
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         await sample_generator()
         raise ValueError("Caller Failure")
 
@@ -371,7 +371,7 @@ async def test_multiple_generators_each_raise_from_callers_exception_async(
 
     # Act & Assert
     with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
-        async with async_scope.activate():
+        async with async_scope:
             await resource_a()
             await resource_b()
             raise ValueError("Caller Failure")
@@ -434,7 +434,7 @@ async def test_resource_swallowing_exception_hides_it_from_earlier_resources_asy
             mock_swallowed_b()
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         await resource_a()
         await resource_b()
         raise ValueError("Caller Failure")
@@ -479,7 +479,7 @@ async def test_cleanup_raising_non_exception_still_closes_earlier_resources(
 
     # Act
     with pytest.raises(_Interrupt):
-        async with async_scope.activate():
+        async with async_scope:
             await first()
             await second()
 
@@ -514,7 +514,7 @@ async def test_non_exception_cleanup_failures_are_grouped_with_exceptions(async_
 
     # Act
     with pytest.raises(BaseExceptionGroup) as group:
-        async with async_scope.activate():
+        async with async_scope:
             await first()
             await second()
 

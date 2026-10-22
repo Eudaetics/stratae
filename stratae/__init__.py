@@ -39,15 +39,15 @@ def get_user(name: str, db: Annotated[Database, Depends(get_database)]) -> str:
     assert name in db.users, f"no such user: {name}"
     return name
 
-with application.activate():
-    with request.activate():
+with application:
+    with request:
         user = create_user("Alice")
     assert get_user("Alice") == "Alice"
 
     with pytest.raises(AssertionError, match="no such user"):
         get_user("Bob")
 
-with application.activate(), pytest.raises(AssertionError, match="no such user"):
+with application, pytest.raises(AssertionError, match="no such user"):
     get_user("Alice")
 ```
 """

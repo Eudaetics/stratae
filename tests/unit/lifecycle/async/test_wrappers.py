@@ -97,7 +97,7 @@ async def test_cache(async_scope: AsyncScope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter)
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         obj1 = await maybe_await(get_object(1))
         obj2 = await maybe_await(get_object(1))
@@ -130,7 +130,7 @@ async def test_cache_kwargs(async_scope: AsyncScope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter)
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         obj1 = await maybe_await(get_object(0, y=1))
         obj2 = await maybe_await(get_object(0, y=1))
@@ -163,7 +163,7 @@ async def test_cache_object(async_scope: AsyncScope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter)
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         input_obj1 = SimpleObject(1)
         input_obj2 = SimpleObject(1)
@@ -202,7 +202,7 @@ async def test_cache_args_mixed(async_scope: AsyncScope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter)
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         obj1 = await maybe_await(get_object(1, y=2, z=3))
         obj2 = await maybe_await(get_object(1, 2, z=3))
@@ -230,7 +230,7 @@ async def test_cache_no_args(async_scope: AsyncScope, func_type: TestType):
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter)
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         obj1 = await maybe_await(get_object())
         obj2 = await maybe_await(get_object())
@@ -261,7 +261,7 @@ async def test_cache_different_activations(async_scope: AsyncScope, func_type: T
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter)
 
     # Act & Assert
-    async with async_scope.activate():
+    async with async_scope:
         obj1 = await maybe_await(get_object(1, y=2))
         obj2 = await maybe_await(get_object(1, y=2))
         assert obj1 is obj2
@@ -270,7 +270,7 @@ async def test_cache_different_activations(async_scope: AsyncScope, func_type: T
         if func_type in ["cm_sync", "cm_async"]:
             assert cleanup_counter.call_count == 0
 
-    async with async_scope.activate():
+    async with async_scope:
         obj3 = await maybe_await(get_object(1, y=2))
         assert obj3 is not obj1
         assert obj3.value == 3
@@ -292,7 +292,7 @@ async def test_unhashable_arg(async_scope: AsyncScope, func_type: TestType):
     # Arrange
     get_object = callable_factory(func_type, async_scope, Mock())
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         list1 = [1, 2, 3]
 
@@ -314,7 +314,7 @@ async def test_unhashable_kwarg(async_scope: AsyncScope, func_type: TestType):
     # Arrange
     get_object = callable_factory(func_type, async_scope, Mock())
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         dict1 = {"a": 1, "b": 2}
 
@@ -337,7 +337,7 @@ async def test_cache_with_different_kwarg_order(async_scope: AsyncScope, func_ty
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter)
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         obj1 = await maybe_await(get_object(x=1, y=2))
         obj2 = await maybe_await(get_object(y=2, x=1))
@@ -369,7 +369,7 @@ async def test_cache_ignore_params(async_scope: AsyncScope, func_type: TestType)
     config = {"ignore_params": True}
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter, config)
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         obj1 = await maybe_await(get_object(1))
         obj2 = await maybe_await(get_object(2))
@@ -404,7 +404,7 @@ async def test_cache_ignore_params_with_kwargs(async_scope: AsyncScope, func_typ
         func_type, async_scope, call_counter, cleanup_counter, config=config
     )
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         obj1 = await maybe_await(get_object(x=1, y=2))
         obj2 = await maybe_await(get_object(x=3, y=4))
@@ -440,7 +440,7 @@ async def test_cache_with_custom_cache_key(async_scope: AsyncScope, func_type: T
     config = {"cache_key": custom_cache_key}
     get_object = callable_factory(func_type, async_scope, call_counter, cleanup_counter, config)
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         obj1 = await maybe_await(get_object(1, y=1))
         obj2 = await maybe_await(get_object(1, y=1, z=1))
@@ -493,7 +493,7 @@ async def test_cache_key_no_params(async_scope: AsyncScope):
         return counter.call_count
 
     # Act / Assert
-    async with async_scope.activate():
+    async with async_scope:
         x = 1
         assert await get_value() == 1
         assert await get_value() == 1
@@ -520,7 +520,7 @@ async def test_cache_sync_in_async_scope(async_scope: AsyncScope):
         return 42
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         result = get_value()
 
     # Assert

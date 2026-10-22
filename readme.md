@@ -33,7 +33,7 @@ def create_user(name: str, db: Annotated[Database, Depends(get_database)]):
     return user
 
 
-with application.activate():
+with application:
     user = create_user("Alice")
     print(f"Created user: {user['name']}")
 ```
@@ -88,14 +88,14 @@ def get_session():
 
 
 # Set up your lifecycle boundaries
-with application.activate():
-    with request.activate():
+with application:
+    with request:
         # Session is created at first call and cached automatically
         # All get_session calls in this request will return the same session
         db = get_session()
         assert db is get_session()
         db.users.create_user("John")
-    with request.activate():
+    with request:
         # New request, new session
         db = get_session()
 ```
@@ -129,7 +129,7 @@ def create_post(
     return Post(author=user, content=content)
 
 
-with request.activate(), user_id.use(123):
+with request, user_id.use(123):
     post = create_post("Hello world!")
 ```
 
@@ -226,8 +226,8 @@ async def create_user(
     return await db.users.create(name=name)
 
 
-async with application.activate():
-    async with request.activate():
+async with application:
+    async with request:
         user = await create_user("Alice")
 ```
 

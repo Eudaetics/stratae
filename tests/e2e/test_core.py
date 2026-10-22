@@ -73,10 +73,10 @@ def test_api_request_processing_with_dependency_injection(
         return response
 
     # Act & Assert: Simulate multiple requests in an application lifecycle
-    with application_scope.activate():
+    with application_scope:
         user_id.set(42)
         pool = initialize_connection_pool()
-        with request_scope.activate():
+        with request_scope:
             print(inspect.signature(process_api_request))
             response1 = process_api_request()
             assert response1["status"] == "success"
@@ -87,7 +87,7 @@ def test_api_request_processing_with_dependency_injection(
             assert initialize_connection_pool() is pool
 
         user_id.set(99)
-        with request_scope.activate():
+        with request_scope:
             response2 = process_api_request()
             assert response2["status"] == "success"
             assert response2["user_id"] == 99

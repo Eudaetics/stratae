@@ -84,7 +84,7 @@ async def read_product(request: Request, cur: CursorDep) -> JSONResponse:
 
 @asynccontextmanager
 async def lifespan(app: Starlette):
-    async with application.activate():
+    async with application:
         yield
 
 ScopedRoute = scoped_route(request, handler=transaction)
@@ -130,7 +130,7 @@ async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
     activation: AsyncActivation | None = asgi_scope.pop(_ACTIVATION_KEY, None)
     if activation is None:
         return
-    await activation.__aexit__(type(exc), exc, exc.__traceback__)
+    await activation.scope.deactivate(activation, exc)
 
 
 def _endpoint_function(endpoint: Callable[..., Any]) -> Callable[..., Any]:
@@ -201,7 +201,7 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
             @wraps(endpoint)
             async def scoped_endpoint(request: Request) -> Response:
                 if handler_scope is not None:
-                    async with handler_scope.activate():
+                    async with handler_scope:
                         return await call(request)
                 try:
                     return await call(request)
@@ -222,6 +222,6 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
             # every request, and this saves a coroutine per request.
             activation: AsyncActivation | None = scope.pop(_ACTIVATION_KEY, None)
             if activation is not None:
-                await activation.__aexit__(None, None, None)
+                await lifecycle_scope.deactivate(activation)
 
     return ScopedRoute

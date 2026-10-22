@@ -34,7 +34,7 @@ async def test_shared_scope_slot_eligible_computed_once_under_task_contention(
         return object()
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         results = await asyncio.gather(*(get_thing() for _ in range(task_count)))
 
     # Assert
@@ -64,7 +64,7 @@ async def test_shared_scope_keyed_computed_once_per_key_under_task_contention(
         return object()
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         results = await asyncio.gather(*(get_thing(1) for _ in range(task_count)))
 
     # Assert
@@ -97,7 +97,7 @@ async def test_shared_scope_resource_entered_once_under_task_contention(
         yield object()
         cleanup_count += 1
 
-    async with async_scope.activate():
+    async with async_scope:
         results = await asyncio.gather(*(get_resource() for _ in range(task_count)))
 
         # Assert - not cleaned up until the scope deactivates.
@@ -131,7 +131,7 @@ async def test_shared_scope_reentrant_dependency_does_not_deadlock(
         return await inner() + 1
 
     # Act - a timeout turns a regression into a fast failure instead of hanging the suite.
-    async with async_scope.activate():
+    async with async_scope:
         result = await asyncio.wait_for(outer(), timeout=2)
 
     # Assert
@@ -155,7 +155,7 @@ async def test_shared_scope_keyed_recursion_does_not_deadlock(async_scope: Async
         return n if n < 2 else await fib(n - 1) + await fib(n - 2)
 
     # Act - a timeout turns a regression into a fast failure instead of hanging the suite.
-    async with async_scope.activate():
+    async with async_scope:
         result = await asyncio.wait_for(fib(10), timeout=2)
 
     # Assert
@@ -182,7 +182,7 @@ async def test_shared_scope_mutual_recursion_does_not_deadlock(async_scope: Asyn
         return await a(n)
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         result = await asyncio.wait_for(a(3), timeout=2)
 
     # Assert
@@ -205,7 +205,7 @@ async def test_shared_scope_self_dependent_slot_raises_cycle_error(async_scope: 
         return await countdown(n - 1) if recurse else n
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         with pytest.raises(CacheCycleError):
             await asyncio.wait_for(countdown(3), timeout=2)
         recurse = False
@@ -241,7 +241,7 @@ async def test_shared_scope_waiter_recomputes_after_owner_fails(async_scope: Asy
         return 42
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         owner = asyncio.ensure_future(get_thing())
         await owner_started.wait()
         waiter = asyncio.ensure_future(get_thing())
@@ -325,7 +325,7 @@ async def test_shared_scope_cancelled_waiter_is_skipped_on_release(async_scope: 
         await proceed.wait()
         return 5
 
-    async with async_scope.activate():
+    async with async_scope:
         owner = asyncio.ensure_future(get_value())
         await asyncio.sleep(0)
         waiter = asyncio.ensure_future(get_value())
@@ -368,7 +368,7 @@ async def test_shared_scope_waiter_cancelled_after_release_is_not_woken(async_sc
         return 5
 
     try:
-        async with async_scope.activate():
+        async with async_scope:
             owner = asyncio.ensure_future(get_value())
             await asyncio.sleep(0)
             waiter = asyncio.ensure_future(get_value())

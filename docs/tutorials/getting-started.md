@@ -53,7 +53,7 @@ def get_connection():
 ```
 ````
 
-`Scope("job")` declares a named unit of work. "job" is just a name picked for this example. You can choose anything appropriate to your requirements. Here, it's one activation of the whole script. The scope itself is what starts and stops it, later on, via `job.activate()`.
+`Scope("job")` declares a named unit of work. "job" is just a name picked for this example. You can choose anything appropriate to your requirements. Here, it's one activation of the whole script. The scope itself is what starts and stops it, later on, in a `with job:` block.
 
 `@job.cache()` ties `get_connection` to that scope. Call it once inside a `job` activation and it runs. Call it again inside the same activation and it returns the same connection instead of opening a new one.
 
@@ -62,7 +62,7 @@ def get_connection():
 ````{example} A failing job rolls back instead of committing
 ```{code-block} python
 try:
-    with job.activate():
+    with job:
         conn = get_connection()
         conn.execute("INSERT INTO users (name) VALUES (?)", ("Alice",))
         raise RuntimeError("something failed before the job finished")
@@ -101,7 +101,7 @@ def add_user(name: str, cursor: Cursor) -> None:
 def list_users(cursor: Cursor) -> list[tuple[int, str]]:
     return cursor.execute("SELECT id, name FROM users").fetchall()
 
-with job.activate():
+with job:
     add_user("Alice")
     add_user("Bob")
     print(list_users())
@@ -158,7 +158,7 @@ def record_audit(added: UserAdded, cursor: Cursor, admin: CurrentUser) -> None:
 def fetch_users(cursor: Cursor) -> list[tuple[int, str]]:
     return cursor.execute("SELECT id, name FROM users").fetchall()
 
-with job.activate(), current_user.use("Steve"):
+with job, current_user.use("Steve"):
     add_user(name="Alice")
     add_user(name="Bob")
     print(list_users())

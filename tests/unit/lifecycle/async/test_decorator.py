@@ -27,7 +27,7 @@ async def test_decorator_on_sync(async_scope: AsyncScope):
         mock()
         return Sample(2)
 
-    async with async_scope.activate():
+    async with async_scope:
         call_1 = sample()
         call_2 = sample()
 
@@ -54,7 +54,7 @@ async def test_decorator_on_sync_generator(async_scope: AsyncScope):
         finally:
             mock_cleanup()
 
-    async with async_scope.activate():
+    async with async_scope:
         call_1 = sample_generator()
         call_2 = sample_generator()
 
@@ -83,7 +83,7 @@ async def test_decorator_on_async(async_scope: AsyncScope):
         mock()
         return Sample(2)
 
-    async with async_scope.activate():
+    async with async_scope:
         call_1 = await sample()
         call_2 = await sample()
 
@@ -110,7 +110,7 @@ async def test_decorator_on_async_generator(async_scope: AsyncScope):
         finally:
             mock_cleanup()
 
-    async with async_scope.activate():
+    async with async_scope:
         call_1 = await sample_generator()
         call_2 = await sample_generator()
 
@@ -137,7 +137,7 @@ async def test_decorator_on_async_callable_object(async_scope: AsyncScope):
     cached = async_scope.cache()(Factory())
 
     # Act
-    async with async_scope.activate():
+    async with async_scope:
         first = await cached()
         second = await cached()
 

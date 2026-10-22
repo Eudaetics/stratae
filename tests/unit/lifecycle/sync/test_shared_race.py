@@ -40,7 +40,7 @@ def test_shared_scope_slot_eligible_computed_once_under_thread_contention(scope:
             results.append(value)
 
     # Act
-    with scope.activate():
+    with scope:
         threads = [threading.Thread(target=worker) for _ in range(thread_count)]
         for thread in threads:
             thread.start()
@@ -83,7 +83,7 @@ def test_shared_scope_keyed_computed_once_per_key_under_thread_contention(scope:
             results.append(value)
 
     # Act
-    with scope.activate():
+    with scope:
         threads = [threading.Thread(target=worker) for _ in range(thread_count)]
         for thread in threads:
             thread.start()
@@ -129,7 +129,7 @@ def test_shared_scope_resource_entered_once_under_thread_contention(scope: Scope
             results.append(value)
 
     # Act
-    with scope.activate():
+    with scope:
         threads = [threading.Thread(target=worker) for _ in range(thread_count)]
         for thread in threads:
             thread.start()
@@ -166,7 +166,7 @@ def test_shared_scope_reentrant_dependency_does_not_deadlock(scope: Scope):
     result: list[int] = []
 
     def call_outer():
-        with scope.activate():
+        with scope:
             result.append(outer())
 
     # Act
@@ -206,7 +206,7 @@ def test_shared_scope_keyed_recursion_does_not_deadlock(scope: Scope):
     result: list[int] = []
 
     def call_fib():
-        with scope.activate():
+        with scope:
             result.append(fib(10))
 
     # Act
@@ -239,7 +239,7 @@ def test_shared_scope_mutual_recursion_does_not_deadlock(scope: Scope):
     result: list[int] = []
 
     def call_a():
-        with scope.activate():
+        with scope:
             result.append(a(3))
 
     # Act
@@ -278,7 +278,7 @@ def test_shared_scope_cross_thread_dependencies_do_not_deadlock(scope: Scope):
     results: list[int] = []
 
     # Act
-    with scope.activate():
+    with scope:
         thread_a = threading.Thread(target=lambda: results.append(a(1)), daemon=True)
         thread_b = threading.Thread(target=lambda: results.append(b(1)), daemon=True)
         thread_a.start()
@@ -310,7 +310,7 @@ def test_shared_scope_self_dependent_slot_raises_cycle_error(scope: Scope):
 
     def call_countdown():
         nonlocal recurse
-        with scope.activate():
+        with scope:
             try:
                 countdown(3)
             except CacheCycleError as exc:
@@ -364,7 +364,7 @@ def test_shared_scope_waiter_recomputes_after_owner_fails(scope: Scope):
         outcomes["waiter"] = get_thing()
 
     # Act
-    with scope.activate():
+    with scope:
         owner_thread = threading.Thread(target=owner, daemon=True)
         owner_thread.start()
         owner_started.wait(timeout=2)

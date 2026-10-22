@@ -43,8 +43,8 @@ async def test_activate_with_active_parent_succeeds():
     child = AsyncScope("request", requires=parent)
 
     # Act & Assert
-    async with parent.activate():
-        async with child.activate():
+    async with parent:
+        async with child:
             assert child.is_active()
 
 
@@ -131,9 +131,9 @@ async def test_three_level_chain_activates_and_deactivates_in_order(
     application, session, request = async_scope_chain
 
     # Act & Assert
-    async with application.activate():
-        async with session.activate():
-            async with request.activate():
+    async with application:
+        async with session:
+            async with request:
                 assert application.is_active()
                 assert session.is_active()
                 assert request.is_active()
@@ -210,7 +210,7 @@ async def test_deactivate_child_with_resource_cleans_up_exit_stack(storage: str)
             mock()
 
     # Act
-    async with parent.activate():
+    async with parent:
         child_activation = child.activate()
         await get_resource()
         await child.deactivate(child_activation)
@@ -258,7 +258,7 @@ async def test_deactivate_child_without_resource_returns_none(storage: str):
     child = AsyncScope("request", storage=storage, requires=parent)  # pyright: ignore[reportArgumentType]
 
     # Act
-    async with parent.activate():
+    async with parent:
         child_activation = child.activate()
         await child.deactivate(child_activation)
 
@@ -319,7 +319,7 @@ async def test_parent_cannot_deactivate_while_child_is_mid_activation():
     child._var = InterruptedVar("worker")  # pyright: ignore[reportPrivateUsage]
 
     # Act
-    async with child.activate():
+    async with child:
         child_active, parent_active = child.is_active(), parent.is_active()
 
     # Assert

@@ -74,12 +74,12 @@ def get_transaction():
     finally:
         conn.close()
 
-with request.activate():
+with request:
     conn = get_transaction()
     # ... do work using conn ...
 
 try:
-    with request.activate():
+    with request:
         conn = get_transaction()
         raise ValueError("payment failed")
 except ValueError:

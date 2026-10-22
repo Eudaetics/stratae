@@ -33,7 +33,7 @@ def test_generator_sync(scope: Scope):
             mock_cleanup()
 
     # Act
-    with scope.activate():
+    with scope:
         call_1 = sample_generator()
         call_2 = sample_generator()
 
@@ -91,7 +91,7 @@ def test_decorate_generator_sync_exception_cleanup(scope: Scope):
 
     # Act & Assert
     with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
-        with scope.activate():
+        with scope:
             sample_generator()
             mock_cleanup.assert_not_called()
 
@@ -125,7 +125,7 @@ def test_decorator_generator_sync_exception_handling(scope: Scope):
 
     # Act & Assert
     with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
-        with scope.activate():
+        with scope:
             sample_generator()
             mock_cleanup.assert_not_called()
             mock_failure.assert_not_called()
@@ -176,7 +176,7 @@ def test_multiple_generators_sync(scope: Scope):
             mock_cleanup_3()
 
     # Act
-    with scope.activate():
+    with scope:
         generator_one()
         generator_two()
         generator_three()
@@ -229,7 +229,7 @@ def test_generator_sync_exception_group(scope: Scope):
 
     # Act & Assert
     with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
-        with scope.activate():
+        with scope:
             generator_one()
             generator_two()
             generator_three()
@@ -281,7 +281,7 @@ def test_generator_sees_exception_raised_in_caller_block(scope: Scope):
 
     # Act & Assert
     with pytest.raises(ValueError, match="Caller Failure"):  # noqa: S5778
-        with scope.activate():
+        with scope:
             sample_generator()
             raise ValueError("Caller Failure")
 
@@ -313,7 +313,7 @@ def test_generator_can_suppress_exception_raised_in_caller_block(scope: Scope):
             mock_suppressed()
 
     # Act
-    with scope.activate():
+    with scope:
         sample_generator()
         raise ValueError("Caller Failure")
 
@@ -355,7 +355,7 @@ def test_multiple_generators_each_raise_from_callers_exception(scope: Scope):
 
     # Act & Assert
     with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
-        with scope.activate():
+        with scope:
             resource_a()
             resource_b()
             raise ValueError("Caller Failure")
@@ -414,7 +414,7 @@ def test_resource_swallowing_exception_hides_it_from_earlier_resources(scope: Sc
             mock_swallowed_b()
 
     # Act
-    with scope.activate():
+    with scope:
         resource_a()
         resource_b()
         raise ValueError("Caller Failure")
@@ -457,7 +457,7 @@ def test_cleanup_raising_non_exception_still_closes_earlier_resources(scope: Sco
 
     # Act
     with pytest.raises(_Interrupt):
-        with scope.activate():
+        with scope:
             first()
             second()
 
@@ -492,7 +492,7 @@ def test_non_exception_cleanup_failures_are_grouped_with_exceptions(scope: Scope
 
     # Act
     with pytest.raises(BaseExceptionGroup) as group:
-        with scope.activate():
+        with scope:
             first()
             second()
 

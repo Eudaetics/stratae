@@ -19,7 +19,7 @@ async def _call_after_late_registration(
     started = asyncio.Event()
 
     async def handle_request() -> tuple[object, object]:
-        async with scope.activate():
+        async with scope:
             started.set()
             await registered.wait()
             return await call(), await call()

@@ -30,7 +30,7 @@ async def test_keyed_call_from_task_outliving_activation_raises(async_context_sc
         await activation_ended.wait()
         return await get_item("a")
 
-    async with async_context_scope.activate():
+    async with async_context_scope:
         await get_item("a")
         task = asyncio.create_task(outlive_activation())
 
@@ -69,7 +69,7 @@ async def test_resource_entered_after_activation_ends_is_exited_at_once(
         finally:
             events.append("close")
 
-    async with async_context_scope.activate():
+    async with async_context_scope:
         task = asyncio.ensure_future(get_connection())
         await entering.wait()
 
@@ -110,7 +110,7 @@ async def test_sync_resource_entered_after_activation_ends_is_exited_at_once(
         finally:
             events.append("close")
 
-    async with async_context_scope.activate():
+    async with async_context_scope:
         task = asyncio.ensure_future(asyncio.to_thread(get_connection))
         await asyncio.to_thread(entering.wait, 2)
 
@@ -140,7 +140,7 @@ async def test_context_scope_keyed_recursion_does_not_deadlock(async_context_sco
         return n if n < 2 else await fib(n - 1) + await fib(n - 2)
 
     # Act
-    async with async_context_scope.activate():
+    async with async_context_scope:
         result = await asyncio.wait_for(fib(10), timeout=2)
 
     # Assert
@@ -165,7 +165,7 @@ async def test_context_scope_self_dependent_slot_raises_cycle_error(
         return await countdown(n - 1)
 
     # Act & Assert
-    async with async_context_scope.activate():
+    async with async_context_scope:
         with pytest.raises(CacheCycleError):
             await asyncio.wait_for(countdown(3), timeout=2)
 
@@ -190,7 +190,7 @@ async def test_waiter_raises_when_activation_ends_while_it_waits(async_context_s
         await finish_computing.wait()
         return "value"
 
-    async with async_context_scope.activate():
+    async with async_context_scope:
         owner = asyncio.ensure_future(get_value())
         await computing.wait()
         waiter = asyncio.ensure_future(get_value())
@@ -228,7 +228,7 @@ async def test_owner_awaiting_its_own_watched_claim_raises_cycle_error(
         return await countdown(n - 1)
 
     # Act
-    async with async_context_scope.activate():
+    async with async_context_scope:
         owner = asyncio.ensure_future(countdown(3))
         await at_gate.wait()
         waiter = asyncio.ensure_future(countdown(3))

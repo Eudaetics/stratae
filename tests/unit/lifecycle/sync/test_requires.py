@@ -49,8 +49,8 @@ def test_activate_with_active_parent_succeeds():
     child = Scope("request", requires=parent)
 
     # Act & Assert
-    with parent.activate():
-        with child.activate():
+    with parent:
+        with child:
             assert child.is_active()
 
 
@@ -137,9 +137,9 @@ def test_three_level_chain_activates_and_deactivates_in_order(
     application, session, request = scope_chain
 
     # Act & Assert
-    with application.activate():
-        with session.activate():
-            with request.activate():
+    with application:
+        with session:
+            with request:
                 assert application.is_active()
                 assert session.is_active()
                 assert request.is_active()
@@ -217,7 +217,7 @@ def test_deactivate_child_with_resource_cleans_up_exit_stack(storage: str):
             mock()
 
     # Act
-    with parent.activate():
+    with parent:
         child_activation = child.activate()
         get_resource()
         child.deactivate(child_activation)
@@ -265,7 +265,7 @@ def test_deactivate_child_without_resource_returns_none(storage: str):
     child = Scope("request", storage=storage, requires=parent)  # pyright: ignore[reportArgumentType]
 
     # Act
-    with parent.activate():
+    with parent:
         child_activation = child.activate()
         child.deactivate(child_activation)
 
@@ -326,7 +326,7 @@ def test_parent_cannot_deactivate_while_child_is_mid_activation():
     child._var = InterruptedVar("worker")  # pyright: ignore[reportPrivateUsage]
 
     # Act
-    with child.activate():
+    with child:
         child_active, parent_active = child.is_active(), parent.is_active()
 
     # Assert

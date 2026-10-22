@@ -43,7 +43,7 @@ async def test_reclaimed_slot_does_not_leak_stale_value(async_scope: AsyncScope)
 
         return get_b
 
-    async with async_scope.activate():
+    async with async_scope:
         # Act
         get_a = make_get_a()
         obj_a = await get_a()
@@ -68,7 +68,7 @@ async def test_hot_loop_template_growth_is_bounded(async_scope: AsyncScope):
     When: A cache-decorated closure is defined, called, and dropped many times
     Then: The scope's live slot list only ever grows on the first iteration
     """
-    async with async_scope.activate():
+    async with async_scope:
         for _ in range(5):
 
             @async_scope.cache()
@@ -79,7 +79,7 @@ async def test_hot_loop_template_growth_is_bounded(async_scope: AsyncScope):
             del get_value
             gc.collect()
 
-    assert len(async_scope._template) == 3  # pyright: ignore[reportPrivateUsage]
+    assert len(async_scope._template) == 5  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_context_scope_template_growth_is_bounded(async_context_scope: AsyncScope):
@@ -99,7 +99,7 @@ async def test_context_scope_template_growth_is_bounded(async_context_scope: Asy
         del foo
         gc.collect()
 
-    assert len(async_context_scope._template) == 3  # pyright: ignore[reportPrivateUsage]
+    assert len(async_context_scope._template) == 5  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_reclaimed_slot_is_cleared_in_a_concurrent_request(async_context_scope: AsyncScope):
@@ -125,7 +125,7 @@ async def test_reclaimed_slot_is_cleared_in_a_concurrent_request(async_context_s
     replaced = asyncio.Event()
 
     async def request() -> tuple[int, int]:
-        async with async_context_scope.activate():
+        async with async_context_scope:
             first = await holder["get"]()
             await replaced.wait()
             second = await holder["get"]()

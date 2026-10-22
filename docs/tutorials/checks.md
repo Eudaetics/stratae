@@ -239,7 +239,7 @@ def not_suspended() -> None:
 def place_order(order_id: int) -> None:
     print(f"processing order {order_id}")
 
-with request.activate():
+with request:
     account = get_account()
     try:
         place_order(42)
@@ -341,15 +341,15 @@ def _(refund: RefundIssued) -> None:
     print(f"refunding order {refund.order_id}")
 
 current_user_id = "alice"
-with application.activate():
-    with request.activate():
+with application:
+    with request:
         try:
             issue_refund(order_id=42)
         except ExceptionGroup as exc:
             print("rejected:", exc.exceptions[0])
 
     current_user_id = "bob"
-    with request.activate():
+    with request:
         issue_refund(order_id=42)
 ```
 ```{output}

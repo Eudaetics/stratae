@@ -28,7 +28,7 @@ def test_call_from_copied_context_after_activation_ends_raises(storage: StorageT
     def get_value() -> object:
         return object()
 
-    with context_scope.activate():
+    with context_scope:
         get_value()
         copied = contextvars.copy_context()
 
@@ -52,7 +52,7 @@ def test_keyed_call_from_copied_context_after_activation_ends_raises(context_sco
     def get_item(key: str) -> object:
         return object()
 
-    with context_scope.activate():
+    with context_scope:
         get_item("a")
         copied = contextvars.copy_context()
 
@@ -72,7 +72,7 @@ def test_activate_requiring_ended_parent_from_copied_context_raises():
     # Arrange
     parent = Scope("session")
     child = Scope("request", requires=parent)
-    with parent.activate():
+    with parent:
         copied = contextvars.copy_context()
 
     # Act & Assert
@@ -114,7 +114,7 @@ def test_resource_entered_after_activation_ends_is_exited_at_once(context_scope:
             errors.append(exc)
 
     # Act
-    with context_scope.activate():
+    with context_scope:
         thread = threading.Thread(target=enter_in_thread, args=(contextvars.copy_context(),))
         thread.start()
         entering.wait(timeout=2)

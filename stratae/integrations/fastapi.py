@@ -63,7 +63,7 @@ type CursorDep = Annotated[sqlite3.Cursor, Depends(get_transaction)]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with application.activate():
+    async with application:
         yield
 
 app = FastAPI(lifespan=lifespan)
@@ -117,7 +117,7 @@ async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
     activation: AsyncActivation | None = asgi_scope.pop(_ACTIVATION_KEY, None)
     if activation is None:
         return
-    await activation.__aexit__(type(exc), exc, exc.__traceback__)
+    await activation.scope.deactivate(activation, exc)
 
 
 def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> type[APIRoute]:
@@ -149,7 +149,7 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
             # every request, and this saves a coroutine per request.
             activation: AsyncActivation | None = scope.pop(_ACTIVATION_KEY, None)
             if activation is not None:
-                await activation.__aexit__(None, None, None)
+                await lifecycle_scope.deactivate(activation)
 
         def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
             route_handler = super().get_route_handler()
@@ -158,7 +158,7 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
                 active_handler_scope = handler_scope
 
                 async def handler_scoped(request: Request) -> Response:
-                    async with active_handler_scope.activate():
+                    async with active_handler_scope:
                         return await route_handler(request)
 
                 return handler_scoped

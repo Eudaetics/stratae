@@ -26,7 +26,7 @@ def test_lifecycle_inject_sync(application_scope: Scope):
         return db
 
     # Act / Assert
-    with application_scope.activate():
+    with application_scope:
         assert get_db() is get_db()
 
 
@@ -52,15 +52,15 @@ def test_lifecycle_inject_nested_sync(application_scope: Scope, request_scope: S
         return db
 
     # Act / Assert
-    with application_scope.activate():
+    with application_scope:
         app_db_instance = get_app_db()
         assert isinstance(app_db_instance, object)
         assert get_app_db() is app_db_instance
-        with request_scope.activate():
+        with request_scope:
             request_db_instance_1 = get_request_db()
             assert get_app_db() is app_db_instance
             assert get_request_db() is request_db_instance_1
-        with request_scope.activate():
+        with request_scope:
             request_db_instance_2 = get_request_db()
             assert get_app_db() is app_db_instance
             assert get_request_db() is request_db_instance_2
@@ -93,7 +93,7 @@ def test_lifecycle_inject_sync_generator(application_scope: Scope):
             mock_cleanup()
 
     # Act / Assert
-    with application_scope.activate():
+    with application_scope:
         assert isinstance(get_resource(), SimpleObject)
         assert get_resource() is get_resource()
         mock_cleanup.assert_not_called()
@@ -136,16 +136,16 @@ def test_lifecycle_inject_nested_sync_generator(application_scope: Scope, reques
             mock_request_cleanup()
 
     # Act / Assert
-    with application_scope.activate():
+    with application_scope:
         app_resource_instance = get_app_resource()
         assert isinstance(app_resource_instance, SimpleObject)
 
-        with request_scope.activate():
+        with request_scope:
             request_resource_instance_1 = get_request_resource()
             assert isinstance(request_resource_instance_1, SimpleObject)
             assert get_app_resource() is app_resource_instance
             assert get_request_resource() is request_resource_instance_1
-        with request_scope.activate():
+        with request_scope:
             request_resource_instance_2 = get_request_resource()
             assert isinstance(request_resource_instance_2, SimpleObject)
             assert get_app_resource() is app_resource_instance
@@ -177,7 +177,7 @@ def test_lifecycle_inject_sync_with_exception(application_scope: Scope):
 
     # Act / Assert
     with pytest.raises(ValueError):
-        with application_scope.activate():
+        with application_scope:
             get_resource()
 
 
@@ -210,7 +210,7 @@ def test_lifecycle_inject_sync_gen_with_exception(application_scope: Scope):
 
     # Act / Assert
     with pytest.raises(ValueError, match="Simulated exception after yield"):
-        with application_scope.activate():
+        with application_scope:
             resource_instance = get_resource()
             assert isinstance(resource_instance, SimpleObject)
 
@@ -262,7 +262,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(application_scope: S
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exceptions:
-        with application_scope.activate():
+        with application_scope:
             resource_instance = get_one()
             resource_instance_2 = get_two()
             assert isinstance(resource_instance, SimpleObject)
@@ -305,7 +305,7 @@ def test_lifecycle_outer_cache_and_inject_change(application_scope: Scope):
         return x + 1
 
     # Act / Assert
-    with application_scope.activate():
+    with application_scope:
         assert get_value() == 1
         assert get_value() == 1
 
@@ -334,7 +334,7 @@ def test_lifecycle_outer_cache_inject_change_with_custom_key(application_scope: 
         return x + 1
 
     # Act / Assert
-    with application_scope.activate():
+    with application_scope:
         assert get_value() == 1
         assert get_value() == 2
 
@@ -363,7 +363,7 @@ def test_lifecycle_inner_cache_inject(application_scope: Scope):
         return x * 2
 
     # Act / Assert
-    with application_scope.activate():
+    with application_scope:
         with x.use(10):
             assert get_value() == 20
             assert get_value() == 20

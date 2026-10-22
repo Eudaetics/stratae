@@ -2,8 +2,10 @@
 Scope activation and per-scope function-result caching.
 
 {py:class}`Scope` (sync) and {py:class}`AsyncScope` (async) hold the isolation, storage,
-and cached results for one scope. {py:meth}`Scope.activate` returns a context manager
-(`async with` for {py:class}`AsyncScope`) that activates the scope for its duration.
+and cached results for one scope. A scope is itself a context manager: `with scope:`
+(`async with` for {py:class}`AsyncScope`) activates it for the block's duration. For
+split-callback lifecycles, where activation and deactivation happen in different functions,
+{py:meth}`Scope.activate` returns a token to pass to {py:meth}`Scope.deactivate` instead.
 `@scope.cache()` (via {py:meth}`Scope.cache`/{py:meth}`AsyncScope.cache`) decorates a
 function so its result is cached for the lifetime of that scope's active activation. A
 {py:func}`resource <stratae.lifecycle.resource.resource>`/
@@ -39,8 +41,8 @@ copied context that outlives the activation can't keep using it: its cached call
 {py:exc}`ScopeInactiveError <stratae.lifecycle.exceptions.ScopeInactiveError>`, and
 {py:meth}`BaseScope.is_active` reports `False` there.
 
-A scope can declare another scope as a parent with `requires`. {py:meth}`Scope.activate`
-raises immediately unless that scope is already active.
+A scope can declare another scope as a parent with `requires`. Activating it raises
+immediately unless that scope is already active.
 
 ````{example} Three scope tiers working together: application, request, and block
 ```{code-block} python
@@ -73,25 +75,25 @@ async def get_block_id() -> int:
     return next(_next_block_id)
 
 async def process_order(order_id: int) -> None:
-    async with block.activate():
+    async with block:
         await get_pool()
         req_id, block_id = await get_request_id(), await get_block_id()
         print(f"request {req_id} block {block_id}: processing {order_id}")
 
 async def log_audit(order_id: int) -> None:
-    async with block.activate():
+    async with block:
         await get_pool()
         req_id, block_id = await get_request_id(), await get_block_id()
         print(f"request {req_id} block {block_id}: logging {order_id}")
 
 async def handle_order(order_id: int) -> None:
-    async with request.activate():
+    async with request:
         req_id = await get_request_id()
         print(f"request {req_id}: handling {order_id}")
         await asyncio.gather(process_order(order_id), log_audit(order_id))
 
 async def main() -> None:
-    async with application.activate():
+    async with application:
         # Activating a scope doesn't eagerly cache anything. get_pool() runs
         # on its first real call, inside process_order below.
         await handle_order(101)
@@ -117,7 +119,7 @@ the module's API.
 import threading
 from contextvars import ContextVar
 from types import TracebackType
-from typing import Any, Callable, Hashable, Literal, cast, get_args
+from typing import Any, Callable, Hashable, Literal, NoReturn, cast, get_args
 
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._slots import UNSET, ScopeVar, SharedVar, SlotDict, SlotStorage
@@ -127,6 +129,9 @@ from stratae.lifecycle.exceptions import (
     ScopeActivationError,
     ScopeInactiveError,
 )
+
+_RESERVED_SLOTS = 4
+"""Slots 0-3 hold the exit stack, live-dependent count, reset token, and parent's storage."""
 
 IsolationType = Literal["shared", "context"]
 StorageType = Literal["dense", "sparse"]
@@ -168,7 +173,6 @@ class BaseScope:
     )
 
     _exit_stack_cls: type[ExitStack] | type[AsyncExitStack]
-    _activation_cls: Callable[..., Any]
     _isolation: IsolationType
     _storage: StorageType
     _requires: "BaseScope | None"
@@ -217,9 +221,11 @@ class BaseScope:
         self._isolation = isolation
         self._storage = storage
         self._requires = requires
-        self._template = [UNSET, 0] if storage == "dense" else SlotDict({1: 0})
+        self._template = (
+            [UNSET, 0, None, None] if storage == "dense" else SlotDict({1: 0, 2: None, 3: None})
+        )
         self._var = ContextVar(name) if isolation == "context" else SharedVar(name)
-        self._counter = 2
+        self._counter = _RESERVED_SLOTS
         self._free_slots = []
         self._slot_lock = threading.RLock()
         self._lock = self._var.lock if isinstance(self._var, SharedVar) else None
@@ -287,9 +293,12 @@ class BaseScope:
         if isinstance(template, list) and isinstance(slots, list) and len(slots) < len(template):
             slots.extend(template[len(slots) :])
 
-    def _activate(self) -> Any:
+    def _activate(self) -> SlotStorage:
         """
-        Activate this scope and return its activation token.
+        Activate this scope, returning the new activation's storage.
+
+        The activation's own state - its reset token and its parent's storage - is kept in
+        reserved slots of that storage, so ending it needs nothing but the storage itself.
 
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
@@ -312,9 +321,9 @@ class BaseScope:
             parent_slots = None
         slots = self._template.copy()
         slots[0] = self._exit_stack_cls()
-        var = self._var
+        slots[3] = parent_slots
         try:
-            token = var.set(slots)
+            slots[2] = self._var.set(slots)
         except BaseException:
             if parent_slots is not None:
                 # Only a shared scope's set raises, and a shared scope can only require
@@ -322,7 +331,43 @@ class BaseScope:
                 with cast(threading.Lock, parent_lock):
                     parent_slots[1] -= 1
             raise
-        return self._activation_cls(var, token, slots, self._lock, parent_slots, parent_lock)
+        return slots
+
+    def _end(self, expected: SlotStorage | None) -> SlotStorage:
+        """
+        Check the current activation can end, then reset the scope's activation holder.
+
+        :param expected: The storage of the activation a token is ending, which must be the
+            current one, or `None` to end whichever is current.
+        :returns: The ended activation's storage, still to be closed and released.
+        :raises ScopeActivationError: If the scope isn't active, the expected activation already
+            ended or isn't the current one, or a scope requiring it is still active, or it's
+            deactivated outside the context that activated it.
+        """
+        var = self._var
+        lock = self._lock
+        if lock is not None:
+            lock.acquire()
+        try:
+            slots = var.get(None)
+            if expected is not None and slots is not expected:
+                _raise_not_current(self.name, expected)
+            if not slots:
+                raise ScopeActivationError(f"Cannot deactivate {self.name!r}: not active.")
+            if slots[1] > 0:
+                raise ScopeActivationError(
+                    f"Cannot deactivate {self.name!r}: a scope requiring it is still active."
+                )
+            try:
+                var.reset(slots[2])
+            except ValueError:
+                raise ScopeActivationError(
+                    f"Cannot deactivate {self.name!r} outside the context that activated it."
+                ) from None
+            return slots
+        finally:
+            if lock is not None:
+                lock.release()
 
     def exit_stack_type(self) -> type[ExitStack] | type[AsyncExitStack]:
         """
@@ -336,9 +381,9 @@ class BaseScope:
         """
         Allocate a dedicated slot for a cached function - a value directly, or a dict entry.
 
-        Internal to the cache decorators; not meant to be called directly. Slots 0 and 1
-        are reserved (the exit stack and the live-dependent count), so the first allocated
-        slot is 2.
+        Internal to the cache decorators; not meant to be called directly. Slots 0 through 3
+        are reserved (the exit stack, the live-dependent count, the reset token, and the
+        parent's storage), so the first allocated slot is 4.
 
         :returns: The allocated slot's index/key, to be passed to
             {py:meth}`BaseScope.release_slot` once the owning wrapper is garbage collected,
@@ -375,46 +420,46 @@ class BaseScope:
             self._free_slots.append(slot)
 
 
-class _BaseActivation:
-    """
-    State shared by Activation and AsyncActivation.
+def _release(slots: SlotStorage, parent_lock: threading.Lock | None) -> None:
+    """Empty an ended activation's storage and stop counting it against its parent."""
+    parent_slots = slots[3]
+    slots.clear()
+    if parent_slots is not None:
+        if parent_lock is None:
+            parent_slots[1] -= 1
+        else:
+            # acquire/release rather than `with`: about half the cost on a hot path.
+            parent_lock.acquire()
+            try:
+                parent_slots[1] -= 1
+            finally:
+                parent_lock.release()
 
-    See {py:class}`Activation` and {py:class}`AsyncActivation` for the concrete tokens.
+
+def _raise_not_current(name: str, expected: SlotStorage) -> NoReturn:
+    """Raise for a token whose activation isn't the scope's current one."""
+    if not expected:
+        raise ScopeActivationError(f"Cannot deactivate {name!r}: already deactivated.")
+    raise ScopeActivationError(f"Cannot deactivate {name!r} outside the context that activated it.")
+
+
+class Activation:
+    """
+    The token `Scope.activate()` returns - pass to `deactivate()`, or use as `with`.
+
+    Returned by {py:meth}`Scope.activate`, not constructed directly. Only needed for
+    split-callback lifecycles; `with scope:` activates without one.
     """
 
-    __slots__ = ("var", "token", "slots", "lock", "parent_slots", "parent_lock")
+    __slots__ = ("scope", "slots")
 
     slots: Any
     """The activation's live slot storage, declared `Any` rather than `SlotStorage`."""
 
-    def __init__(
-        self,
-        var: ScopeVar,
-        token: Any,
-        slots: SlotStorage,
-        lock: threading.Lock | None,
-        parent_slots: SlotStorage | None,
-        parent_lock: threading.Lock | None,
-    ) -> None:
-        """Construct the activation state for a scope."""
-        self.var = var
-        self.token = token
+    def __init__(self, scope: "Scope", slots: SlotStorage) -> None:
+        """Construct the token for one activation of `scope`."""
+        self.scope = scope
         self.slots = slots
-        self.lock = lock
-        self.parent_slots = parent_slots
-        self.parent_lock = parent_lock
-
-
-class Activation(_BaseActivation):
-    """
-    The token `Scope.activate()` returns - use as `with`, or pass to `deactivate()`.
-
-    Returned by {py:meth}`Scope.activate`, not constructed directly. Used for both dense
-    and sparse storage - slot 1 (the live-dependent count) is always present in either
-    case, so no separate sparse-storage variant is needed.
-    """
-
-    __slots__ = ()
 
     def __enter__(self) -> "Activation":
         """Return self - the scope was already activated by `activate()`."""
@@ -432,60 +477,26 @@ class Activation(_BaseActivation):
         :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
             is still active, or it's deactivated outside the context that activated it.
         """
-        slots = self.slots
-        lock = self.lock
-        if lock is not None:
-            lock.acquire()
-        try:
-            if not slots:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r}: already deactivated."
-                )
-            if slots[1] > 0:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
-                )
-            try:
-                self.var.reset(self.token)
-            except ValueError:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r} outside the context that activated it."
-                ) from None
-        finally:
-            if lock is not None:
-                lock.release()
-        try:
-            stack = slots[0]
-            if stack.contexts:
-                return stack.close(exc)
-            # Nothing entered means nothing to close or suppress - what close would return.
-            stack.closed = True
-            return False
-        finally:
-            slots.clear()
-            parent_slots = self.parent_slots
-            if parent_slots is not None:
-                parent_lock = self.parent_lock
-                if parent_lock is None:
-                    parent_slots[1] -= 1
-                else:
-                    parent_lock.acquire()
-                    try:
-                        parent_slots[1] -= 1
-                    finally:
-                        parent_lock.release()
+        return self.scope.deactivate(self, exc)
 
 
-class AsyncActivation(_BaseActivation):
+class AsyncActivation:
     """
-    The token `AsyncScope.activate()` returns - `async with`, or to `deactivate()`.
+    The token `AsyncScope.activate()` returns - pass to `deactivate()`, or `async with`.
 
-    Returned by {py:meth}`AsyncScope.activate`, not constructed directly. Used for both
-    dense and sparse storage - slot 1 (the live-dependent count) is always present in
-    either case, so no separate sparse-storage variant is needed.
+    Returned by {py:meth}`AsyncScope.activate`, not constructed directly. Only needed for
+    split-callback lifecycles; `async with scope:` activates without one.
     """
 
-    __slots__ = ()
+    __slots__ = ("scope", "slots")
+
+    slots: Any
+    """The activation's live slot storage, declared `Any` rather than `SlotStorage`."""
+
+    def __init__(self, scope: "AsyncScope", slots: SlotStorage) -> None:
+        """Construct the token for one activation of `scope`."""
+        self.scope = scope
+        self.slots = slots
 
     async def __aenter__(self) -> "AsyncActivation":
         """Return self - the scope was already activated by `activate()`."""
@@ -503,49 +514,7 @@ class AsyncActivation(_BaseActivation):
         :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
             is still active, or it's deactivated outside the context that activated it.
         """
-        slots = self.slots
-        lock = self.lock
-        if lock is not None:
-            lock.acquire()
-        try:
-            if not slots:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r}: already deactivated."
-                )
-            if slots[1] > 0:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
-                )
-            try:
-                self.var.reset(self.token)
-            except ValueError:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.var.name!r} outside the context that activated it."
-                ) from None
-        finally:
-            if lock is not None:
-                lock.release()
-        try:
-            stack = slots[0]
-            if stack.contexts:
-                return await stack.aclose(exc)
-            # Nothing entered means nothing to close or suppress - what aclose would return,
-            # without the coroutine.
-            stack.closed = True
-            return False
-        finally:
-            slots.clear()
-            parent_slots = self.parent_slots
-            if parent_slots is not None:
-                parent_lock = self.parent_lock
-                if parent_lock is None:
-                    parent_slots[1] -= 1
-                else:
-                    parent_lock.acquire()
-                    try:
-                        parent_slots[1] -= 1
-                    finally:
-                        parent_lock.release()
+        return await self.scope.deactivate(self, exc)
 
 
 class Scope(BaseScope):
@@ -554,29 +523,75 @@ class Scope(BaseScope):
     __slots__ = ()
 
     _exit_stack_cls = ExitStack
-    _activation_cls = Activation
+
+    def __enter__(self) -> None:
+        """
+        Activate this scope for the duration of the `with` block.
+
+        :raises ScopeActivationError: If `requires` is set and not currently active.
+        """
+        self._activate()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None:
+        """
+        Deactivate this scope's current activation, closing its entered resources.
+
+        :raises ScopeActivationError: If the scope isn't active, a scope requiring it is still
+            active, or it's deactivated outside the context that activated it.
+        """
+        # The body of deactivate, written out: `with scope:` is the hot path.
+        slots = self._end(None)
+        try:
+            stack = slots[0]
+            if stack.contexts:
+                return stack.close(exc)
+            stack.closed = True
+            return False
+        finally:
+            _release(slots, self._parent_lock)
 
     def activate(self) -> Activation:
         """
-        Activate this scope, returning a token usable as `with` or passed to `deactivate()`.
+        Activate this scope, returning a token to pass to `deactivate()`.
 
-        :returns: An `Activation` - enter it directly (`with scope.activate():`) or hold
-            onto it and call {py:meth}`Scope.deactivate` manually, for split-callback
-            lifecycles where activation and deactivation happen in different functions.
+        For a plain block, use `with scope:` instead - it needs no token, and is faster.
+
+        :returns: An `Activation` to hold onto and pass to {py:meth}`Scope.deactivate`, for
+            split-callback lifecycles where activation and deactivation happen in different
+            functions. It can also be used as `with`.
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        return self._activate()
+        return Activation(self, self._activate())
 
-    def deactivate(self, activation: Activation) -> None:
+    def deactivate(
+        self, activation: Activation | None = None, exc: BaseException | None = None
+    ) -> bool:
         """
-        Deactivate the scope activation identified by the given token.
+        Deactivate an activation of this scope, closing the resources entered within it.
 
-        :param activation: The `Activation` returned by the matching
-            {py:meth}`Scope.activate` call.
-        :raises ScopeActivationError: If the scope is not currently active, or a scope
-            requiring this one is still active.
+        :param activation: The `Activation` returned by the matching {py:meth}`Scope.activate`
+            call, which must be the current one, or `None` to end the current activation.
+        :param exc: The exception ending the activation, if any, handed to each resource's
+            cleanup as `with` would.
+        :returns: Whether `exc` was suppressed by a resource's cleanup.
+        :raises ScopeActivationError: If the scope isn't active, `activation` already ended or
+            isn't the current one, or a scope requiring this one is still active.
         """
-        activation.__exit__(None, None, None)
+        slots = self._end(None if activation is None else activation.slots)
+        try:
+            stack = slots[0]
+            if stack.contexts:
+                return stack.close(exc)
+            # Nothing entered means nothing to close or suppress - what close would return.
+            stack.closed = True
+            return False
+        finally:
+            _release(slots, self._parent_lock)
 
     def cache(
         self,
@@ -627,30 +642,78 @@ class AsyncScope(BaseScope):
     __slots__ = ()
 
     _exit_stack_cls = AsyncExitStack
-    _activation_cls = AsyncActivation
+
+    async def __aenter__(self) -> None:
+        """
+        Activate this scope for the duration of the `async with` block.
+
+        :raises ScopeActivationError: If `requires` is set and not currently active.
+        """
+        self._activate()
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None:
+        """
+        Deactivate this scope's current activation, closing its entered resources.
+
+        :raises ScopeActivationError: If the scope isn't active, a scope requiring it is still
+            active, or it's deactivated outside the context that activated it.
+        """
+        # The body of deactivate, written out: `async with scope:` is the hot path, and
+        # awaiting deactivate would cost a coroutine.
+        slots = self._end(None)
+        try:
+            stack = slots[0]
+            if stack.contexts:
+                return await stack.aclose(exc)
+            stack.closed = True
+            return False
+        finally:
+            _release(slots, self._parent_lock)
 
     def activate(self) -> AsyncActivation:
         """
-        Activate this scope, returning a token usable as `async with` or passed to `deactivate()`.
+        Activate this scope, returning a token to pass to `deactivate()`.
 
-        :returns: An `AsyncActivation` - enter it directly (`async with scope.activate():`)
-            or hold onto it and call {py:meth}`AsyncScope.deactivate` manually, for
-            split-callback lifecycles where activation and deactivation happen in
-            different functions.
+        For a plain block, use `async with scope:` instead - it needs no token, and is faster.
+
+        :returns: An `AsyncActivation` to hold onto and pass to
+            {py:meth}`AsyncScope.deactivate`, for split-callback lifecycles where activation
+            and deactivation happen in different functions. It can also be used as `async with`.
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        return self._activate()
+        return AsyncActivation(self, self._activate())
 
-    async def deactivate(self, activation: AsyncActivation) -> None:
+    async def deactivate(
+        self, activation: AsyncActivation | None = None, exc: BaseException | None = None
+    ) -> bool:
         """
-        Deactivate the scope activation identified by the given token.
+        Deactivate an activation of this scope, closing the resources entered within it.
 
         :param activation: The `AsyncActivation` returned by the matching
-            {py:meth}`AsyncScope.activate` call.
-        :raises ScopeActivationError: If the scope is not currently active, or a scope
-            requiring this one is still active.
+            {py:meth}`AsyncScope.activate` call, which must be the current one, or `None` to
+            end the current activation.
+        :param exc: The exception ending the activation, if any, handed to each resource's
+            cleanup as `async with` would.
+        :returns: Whether `exc` was suppressed by a resource's cleanup.
+        :raises ScopeActivationError: If the scope isn't active, `activation` already ended or
+            isn't the current one, or a scope requiring this one is still active.
         """
-        await activation.__aexit__(None, None, None)
+        slots = self._end(None if activation is None else activation.slots)
+        try:
+            stack = slots[0]
+            if stack.contexts:
+                return await stack.aclose(exc)
+            # Nothing entered means nothing to close or suppress - what aclose would return,
+            # without the coroutine.
+            stack.closed = True
+            return False
+        finally:
+            _release(slots, self._parent_lock)
 
     def cache(
         self,

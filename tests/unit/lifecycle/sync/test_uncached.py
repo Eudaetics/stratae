@@ -109,7 +109,7 @@ def test_uncached_plain_function_inside_scope(scope: Scope):
         return SimpleObject(1)
 
     # Act
-    with scope.activate():
+    with scope:
         cached1 = get_object()
         cached2 = get_object()
         uncached1 = get_object.uncached()
@@ -179,7 +179,7 @@ def test_uncached_resource_inside_scope(scope: Scope):
             cleanup_counter()
 
     # Act & Assert
-    with scope.activate():
+    with scope:
         cached = get_object()
         assert call_counter.call_count == 1
         cleanup_counter.assert_not_called()

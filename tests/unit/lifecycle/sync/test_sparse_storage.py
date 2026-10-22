@@ -77,7 +77,7 @@ def test_sparse_storage_cache_keyed(
     cleanup_counter = Mock()
     get_object = callable_factory(func_type, scope, call_counter, cleanup_counter)
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(1)
         obj2 = get_object(1)
@@ -114,7 +114,7 @@ def test_sparse_storage_cache_slot_eligible(
         func_type, scope, call_counter, cleanup_counter, ignore_params=True
     )
 
-    with scope.activate():
+    with scope:
         # Act
         obj1 = get_object(1)
         obj2 = get_object(2)
@@ -146,9 +146,9 @@ def test_sparse_storage_shared_reset_between_activations(app_sparse: Scope):
         return SimpleObject(x)
 
     # Act
-    with app_sparse.activate():
+    with app_sparse:
         obj1 = get_object(1)
-    with app_sparse.activate():
+    with app_sparse:
         obj2 = get_object(2)
 
     # Assert
@@ -174,9 +174,9 @@ def test_sparse_storage_context_fresh_per_activation(req_sparse: Scope):
         return SimpleObject(x)
 
     # Act
-    with req_sparse.activate():
+    with req_sparse:
         obj1 = get_object(1)
-    with req_sparse.activate():
+    with req_sparse:
         obj2 = get_object(2)
 
     # Assert
@@ -207,7 +207,7 @@ def test_sparse_storage_exit_stack_cleaned_up(scope_fixture: str, request: pytes
             mock()
 
     # Act
-    with scope.activate():
+    with scope:
         test_resource()
         test_resource()
 

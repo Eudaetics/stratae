@@ -47,13 +47,13 @@ async def test_concurrent_cache_isolation(async_context_scope: AsyncScope):
     results_b: list[int] = []
 
     async def task_a():
-        async with async_context_scope.activate():
+        async with async_context_scope:
             for _ in range(iterations):
                 result = await get_user_id()
                 results_a.append(result)
 
     async def task_b():
-        async with async_context_scope.activate():
+        async with async_context_scope:
             for _ in range(iterations):
                 result = await get_user_id()
                 results_b.append(result)
@@ -109,13 +109,13 @@ async def test_concurrent_cache_isolation_multiple_requests(async_context_scope:
 
     async def task_a():
         for _ in range(iterations):
-            async with async_context_scope.activate():
+            async with async_context_scope:
                 result = await get_user_id()
                 results_a.append(result)
 
     async def task_b():
         for _ in range(iterations):
-            async with async_context_scope.activate():
+            async with async_context_scope:
                 result = await get_user_id()
                 results_b.append(result)
 
@@ -169,11 +169,11 @@ async def test_concurrent_resource_management(async_context_scope: AsyncScope):
     results_b: list[int] = []
 
     async def task_a():
-        async with async_context_scope.activate():
+        async with async_context_scope:
             results_a.append(await resource_generator())
 
     async def task_b():
-        async with async_context_scope.activate():
+        async with async_context_scope:
             results_b.append(await resource_generator())
 
     task_a_handle = asyncio.create_task(task_a())
@@ -259,22 +259,22 @@ async def test_concurrent_resource_management_nested_scopes(
     results_b: list[int] = []
 
     async def task_a():
-        async with session.activate():
+        async with session:
             first = await resource_generator()
-            async with request.activate():
+            async with request:
                 second = await resource_generator()
                 results_a.append(second)
                 assert first == second, "Session resource should be the same within the same task"
 
     async def task_b():
-        async with session.activate():
+        async with session:
             first = await resource_generator()
-            async with request.activate():
+            async with request:
                 second = await resource_generator()
                 results_b.append(second)
                 assert first == second, "Session resource should be the same within the same task"
 
-    async with application.activate():
+    async with application:
         task_a_handle = asyncio.create_task(task_a())
         task_b_handle = asyncio.create_task(task_b())
 
@@ -315,7 +315,7 @@ async def test_concurrent_first_calls_within_one_activation_enter_resource_once(
         yield object()
 
     # Act
-    async with async_context_scope.activate():
+    async with async_context_scope:
         first, second = await asyncio.gather(get_connection(), get_connection())
 
     # Assert
@@ -343,7 +343,7 @@ async def test_task_outliving_activation_cannot_use_its_cache(async_context_scop
         await activation_ended.wait()
         return await get_value()
 
-    async with async_context_scope.activate():
+    async with async_context_scope:
         await get_value()
         task = asyncio.create_task(outlive_activation())
 

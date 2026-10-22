@@ -34,7 +34,7 @@ def test_function_registered_outside_live_activation_is_cached(storage: StorageT
         registry["late"] = get_late
 
     # Act
-    with scope.activate():
+    with scope:
         contextvars.Context().run(register)
         first = registry["late"]()
         second = registry["late"]()
@@ -71,7 +71,7 @@ def test_resource_registered_outside_live_activation_is_entered_and_cleaned_up()
         registry["late"] = get_connection
 
     # Act
-    with scope.activate():
+    with scope:
         contextvars.Context().run(register)
         first = registry["late"]()
         second = registry["late"]()

@@ -38,7 +38,7 @@ async def test_lifecycle_inject_async_gen(async_application_scope: AsyncScope):
             mock_cleanup()
 
     # Act / Assert
-    async with async_application_scope.activate():
+    async with async_application_scope:
         resource_instance = await get_resource()
         assert isinstance(resource_instance, SimpleObject)
         assert resource_instance is await get_resource()
@@ -90,16 +90,16 @@ async def test_lifecycle_inject_nested_async_gen(
             mock_request_cleanup()
 
     # Act / Assert
-    async with async_application_scope.activate():
+    async with async_application_scope:
         app_resource_instance = await get_app_resource()
         assert isinstance(app_resource_instance, SimpleObject)
 
-        async with async_request_scope.activate():
+        async with async_request_scope:
             request_resource_instance_1 = await get_request_resource()
             assert isinstance(request_resource_instance_1, SimpleObject)
             assert await get_app_resource() is app_resource_instance
             assert await get_request_resource() is request_resource_instance_1
-        async with async_request_scope.activate():
+        async with async_request_scope:
             request_resource_instance_2 = await get_request_resource()
             assert isinstance(request_resource_instance_2, SimpleObject)
             assert await get_app_resource() is app_resource_instance
@@ -130,7 +130,7 @@ async def test_lifecycle_inject_async_with_exception(async_application_scope: As
         raise ValueError("Simulated exception")
 
     # Act / Assert
-    async with async_application_scope.activate():
+    async with async_application_scope:
         with pytest.raises(ValueError):
             await get_resource()
 
@@ -162,7 +162,7 @@ async def test_lifecycle_inject_async_gen_with_exception(async_application_scope
 
     # Act / Assert
     with pytest.raises(ValueError, match="Simulated exception after yield"):
-        async with async_application_scope.activate():
+        async with async_application_scope:
             resource_instance = await get_resource()
             assert isinstance(resource_instance, SimpleObject)
     assert mock_cleanup.call_count == 1
@@ -216,7 +216,7 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exceptions:
-        async with async_application_scope.activate():
+        async with async_application_scope:
             resource_instance = await get_one()
             resource_instance_2 = await get_two()
             assert isinstance(resource_instance, SimpleObject)
@@ -252,7 +252,7 @@ async def test_async_lifecycle_outer_cache_and_context_change(
         return x + 1
 
     # Act / Assert
-    async with async_application_scope.activate():
+    async with async_application_scope:
         assert await get_value() == 1
         assert await get_value() == 1
 
@@ -282,7 +282,7 @@ async def test_async_lifecycle_outer_cache_inject_change_with_custom_key(
         return x + 1
 
     # Act / Assert
-    async with async_application_scope.activate():
+    async with async_application_scope:
         assert await get_value() == 1
         assert await get_value() == 2
 
@@ -311,7 +311,7 @@ async def test_async_lifecycle_inner_cache_inject(async_application_scope: Async
         return x * 2
 
     # Act / Assert
-    async with async_application_scope.activate():
+    async with async_application_scope:
         with x.use(10):
             assert await get_value() == 20
             assert await get_value() == 20

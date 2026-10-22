@@ -58,7 +58,7 @@ def test_order_flow_with_injected_handlers(application_scope: Scope):
         return Quote(order_id=request.order_id, total=100)
 
     # Act & Assert: place and price an order within the application scope
-    with application_scope.activate():
+    with application_scope:
         place_order(order_id=42)
         quote = request_quote(order_id=42)
 

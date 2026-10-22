@@ -3,8 +3,8 @@ Hierarchical, scope-based caching and resource lifecycles for applications.
 
 Declare {py:class}`Scope <stratae.lifecycle.scope.Scope>` (sync) or
 {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` (async) objects directly -
-e.g. "application", "request" - and activate one as a context manager via
-{py:meth}`Scope.activate <stratae.lifecycle.scope.Scope.activate>` (`async with` for
+e.g. "application", "request" - and activate one by using it as a context manager:
+`with scope:` (`async with` for
 {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`). While active, functions
 decorated with {py:meth}`Scope.cache <stratae.lifecycle.scope.Scope.cache>` have their
 results cached for the lifetime of that activation, computed once per scope activation
@@ -66,12 +66,12 @@ def get_transaction():
     finally:
         txn.close()
 
-with application.activate():
-    with request.activate():
+with application:
+    with request:
         get_transaction()
         get_transaction()  # same transaction within this request
 
-    with request.activate():
+    with request:
         get_transaction()  # new request, new transaction, same connection
 
 ```
