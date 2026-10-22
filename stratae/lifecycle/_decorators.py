@@ -55,10 +55,11 @@ def _mark_as_scoped(func: Callable[..., Any], scope: "BaseScope") -> None:
 
     Marks the same target `resource`/`async_resource` tag - `unwrap(func)` - so caching a
     `resource`-wrapped generator is checked against its true identity, not the
-    `contextlib.contextmanager` wrapper `resource()` produces.
+    `contextlib.contextmanager` wrapper `resource()` produces. A target that can't hold
+    the mark is rejected rather than left unchecked.
 
     :raises LifecycleConfigurationError: If func is already cached in a different (or the
-        same) scope.
+        same) scope, or can't hold the mark - a builtin or a bound method, say.
     """
     target = unwrap(func)
     existing: "BaseScope | None" = getattr(target, "__cache_scope__", None)
@@ -67,7 +68,13 @@ def _mark_as_scoped(func: Callable[..., Any], scope: "BaseScope") -> None:
             f"{func!r} is already cached in scope {existing.name!r}; "
             f"cannot also cache it in {scope.name!r}."
         )
-    target.__cache_scope__ = scope
+    try:
+        target.__cache_scope__ = scope
+    except (AttributeError, TypeError):
+        raise LifecycleConfigurationError(
+            f"Cannot cache {func!r} in scope {scope.name!r}: builtins, bound methods, and other "
+            "objects that can't hold attributes can't be cached. Wrap it in a function instead."
+        ) from None
 
 
 class CacheDecorator:

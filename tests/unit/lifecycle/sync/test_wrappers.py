@@ -553,3 +553,31 @@ def test_cache_same_function_in_two_scopes_raises():
         match="already cached in scope 'a'; cannot also cache it in 'b'",
     ):
         scope_b.cache()(get_value)
+
+
+class _Repo:
+    def get(self) -> int:
+        return 1
+
+
+@pytest.mark.parametrize(
+    "target",
+    [sorted, object, [].copy, _Repo().get],
+    ids=["builtin_function", "builtin_type", "builtin_bound_method", "bound_method"],
+)
+def test_unmarkable_callables_cannot_be_cached(target: Callable[..., Any]):
+    """
+    A callable that can't hold the scope mark can't be cached, with a clear error.
+
+    Given: A builtin function, an immutable builtin type, a builtin's bound method, or a
+           Python bound method - none of which can hold the scope mark,
+    When: It's cached in a scope,
+    Then: A LifecycleConfigurationError is raised, suggesting wrapping it in a function,
+          rather than caching it without the check against caching it in two scopes.
+    """
+    # Arrange
+    scope = Scope("request", "shared")
+
+    # Act & Assert
+    with pytest.raises(LifecycleConfigurationError, match="Wrap it in a function"):
+        scope.cache()(target)
