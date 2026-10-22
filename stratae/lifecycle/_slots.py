@@ -40,12 +40,12 @@ SlotStorage = list[Any] | SlotDict
 class SharedVar:
     """A ContextVar stand-in holding one storage for every context, rejecting re-activation."""
 
-    __slots__ = ("name", "storage", "counter_lock")
+    __slots__ = ("name", "storage", "lock")
 
     def __init__(self, name: str) -> None:
         self.name = name
         self.storage: SlotStorage = UNSET
-        self.counter_lock = threading.Lock()
+        self.lock = threading.Lock()
 
     def get(self, default: Any = _MISSING) -> SlotStorage:
         """Return the live storage, or default when inactive, else raise LookupError."""
@@ -58,11 +58,12 @@ class SharedVar:
 
     def set(self, value: SlotStorage) -> None:
         """Activate the scope, raising if it's already active."""
-        if self.storage is not UNSET:
-            raise ScopeActivationError(
-                f"Cannot activate shared scope {self.name!r}: already active."
-            )
-        self.storage = value
+        with self.lock:
+            if self.storage is not UNSET:
+                raise ScopeActivationError(
+                    f"Cannot activate shared scope {self.name!r}: already active."
+                )
+            self.storage = value
 
     def reset(self, token: None) -> None:
         """Deactivate the scope; `token` is unused, kept to match `ContextVar.reset`."""

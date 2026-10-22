@@ -1,9 +1,11 @@
 """Unit tests for Scope.activate/deactivate, exercised via the sync Scope class."""
 
+import threading
 from contextvars import copy_context
 
 import pytest
 
+from stratae.lifecycle._slots import SharedVar
 from stratae.lifecycle.exceptions import ScopeActivationError
 from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
@@ -217,3 +219,36 @@ def test_exception_raised_while_handling_another_propagates_unchanged_through_re
     # Assert
     assert seen == [raised]
     assert exc_info.value is raised
+
+
+def test_shared_scope_activation_is_exclusive_across_threads():
+    """
+    Activating a shared scope checks and claims it atomically.
+
+    Given: A shared-isolation Scope whose lock another thread is holding,
+    When: activate() is called on a thread of its own,
+    Then: It waits for the lock rather than checking "already active" unguarded - and once
+        it has activated, a second activation raises.
+    """
+    # Arrange
+    scope = Scope("application", "shared")
+    var = scope.activation_var()
+    assert isinstance(var, SharedVar)
+    activated = threading.Event()
+
+    def activate() -> None:
+        scope.activate()
+        activated.set()
+
+    # Act
+    with var.lock:
+        thread = threading.Thread(target=activate)
+        thread.start()
+        waited = not activated.wait(timeout=0.1)
+    thread.join()
+
+    # Assert
+    assert waited
+    assert scope.is_active()
+    with pytest.raises(ScopeActivationError, match="already active"):
+        scope.activate()

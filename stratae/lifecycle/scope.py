@@ -129,7 +129,7 @@ from stratae.lifecycle.exceptions import (
 )
 
 _NO_LOCK: AbstractContextManager[Any] = nullcontext()
-"""Shared stand-in for a context-isolated parent's counter lock - nullcontext is reusable."""
+"""Shared stand-in for a context-isolated parent's lock - nullcontext is reusable."""
 
 IsolationType = Literal["shared", "context"]
 StorageType = Literal["dense", "sparse"]
@@ -222,7 +222,7 @@ class BaseScope:
         self._free_slots = []
         # Fixed with `requires`, so resolved once here rather than on every activation.
         self._parent_lock = (
-            requires._var.counter_lock
+            requires._var.lock
             if requires is not None and isinstance(requires._var, SharedVar)
             else _NO_LOCK
         )
