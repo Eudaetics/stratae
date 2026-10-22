@@ -34,37 +34,18 @@ class SlotDict(dict[int, Any]):
         return SlotDict(self)
 
 
-class SharedToken:
-    """Activation token for a shared scope, mirroring contextvars.Token's .var backref."""
-
-    __slots__ = ("var",)
-
-    var: "SharedVar"
-
-    def __init__(self, var: "SharedVar") -> None:
-        self.var = var
-
-
 SlotStorage = list[Any] | SlotDict
 
 
 class SharedVar:
-    """A SharedVar that rejects re-entrant activation and stale-token deactivation."""
+    """A ContextVar stand-in holding one storage for every context, rejecting re-activation."""
 
-    __slots__ = (
-        "name",
-        "storage",
-        "_token",
-        "counter_lock",
-        "_current_token",
-    )
+    __slots__ = ("name", "storage", "counter_lock")
 
     def __init__(self, name: str) -> None:
         self.name = name
         self.storage: SlotStorage = UNSET
-        self._token = SharedToken(self)
         self.counter_lock = threading.Lock()
-        self._current_token: SharedToken | None = None
 
     def get(self, default: Any = _MISSING) -> SlotStorage:
         """Return the live storage, or default when inactive, else raise LookupError."""
@@ -75,26 +56,17 @@ class SharedVar:
             raise LookupError(self.name)
         return default
 
-    def set(self, value: SlotStorage) -> SharedToken:
+    def set(self, value: SlotStorage) -> None:
         """Activate the scope, raising if it's already active."""
         if self.storage is not UNSET:
             raise ScopeActivationError(
                 f"Cannot activate shared scope {self.name!r}: already active."
             )
-        token = SharedToken(self)
         self.storage = value
-        self._current_token = token
-        return token
 
-    def reset(self, token: SharedToken) -> None:
-        """Deactivate the scope, raising if token isn't the current activation."""
-        if token is not self._current_token:
-            raise ScopeActivationError(
-                f"Cannot deactivate shared scope {self.name!r}: "
-                "token is not the current activation."
-            )
+    def reset(self, token: None) -> None:
+        """Deactivate the scope; `token` is unused, kept to match `ContextVar.reset`."""
         self.storage = UNSET
-        self._current_token = None
 
 
 ScopeVar = ContextVar[SlotStorage] | SharedVar

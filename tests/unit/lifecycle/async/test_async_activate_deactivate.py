@@ -115,7 +115,7 @@ async def test_shared_scope_double_deactivate_raises():
     await scope.deactivate(activation)
 
     # Act & Assert
-    with pytest.raises(ScopeActivationError, match="Cannot deactivate shared scope 'application'"):
+    with pytest.raises(ScopeActivationError, match="already deactivated"):
         await scope.deactivate(activation)
 
 

@@ -1,5 +1,7 @@
 """Unit tests for Scope.activate/deactivate, exercised via the sync Scope class."""
 
+from contextvars import copy_context
+
 import pytest
 
 from stratae.lifecycle.exceptions import ScopeActivationError
@@ -116,7 +118,7 @@ def test_shared_scope_double_deactivate_raises():
     scope.deactivate(activation)
 
     # Act & Assert
-    with pytest.raises(ScopeActivationError, match="Cannot deactivate shared scope 'application'"):
+    with pytest.raises(ScopeActivationError, match="already deactivated"):
         scope.deactivate(activation)
 
 
@@ -126,7 +128,7 @@ def test_context_scope_double_deactivate_raises():
 
     Given: A context-isolation Scope that was activated and already deactivated,
     When: deactivate() is called again with the same token,
-    Then: A RuntimeError is raised (the underlying contextvars.Token has already been used).
+    Then: A ScopeActivationError is raised.
     """
     # Arrange
     scope = Scope("request", "context")
@@ -134,7 +136,24 @@ def test_context_scope_double_deactivate_raises():
     scope.deactivate(activation)
 
     # Act & Assert
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ScopeActivationError, match="already deactivated"):
+        scope.deactivate(activation)
+
+
+def test_context_scope_deactivate_from_other_context_raises():
+    """
+    Deactivating a context scope outside the context that activated it raises.
+
+    Given: A context-isolation Scope activated inside a copied context,
+    When: deactivate() is called from the original context with its token,
+    Then: A ScopeActivationError is raised.
+    """
+    # Arrange
+    scope = Scope("request", "context")
+    activation = copy_context().run(scope.activate)
+
+    # Act & Assert
+    with pytest.raises(ScopeActivationError, match="outside the context that activated it"):
         scope.deactivate(activation)
 
 

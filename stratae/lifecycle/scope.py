@@ -380,14 +380,22 @@ class Activation:
         """
         Deactivate the scope this token belongs to.
 
-        :raises ScopeActivationError: If a scope requiring this one is still active.
+        :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
+            is still active, or it's deactivated outside the context that activated it.
         """
         slots = self.slots
-        if slots and slots[1] > 0:
+        if not slots:
+            raise ScopeActivationError(f"Cannot deactivate {self.var.name!r}: already deactivated.")
+        if slots[1] > 0:
             raise ScopeActivationError(
                 f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
             )
-        self.var.reset(self.token)
+        try:
+            self.var.reset(self.token)
+        except ValueError:
+            raise ScopeActivationError(
+                f"Cannot deactivate {self.var.name!r} outside the context that activated it."
+            ) from None
         parent_slots = self.parent_slots
         try:
             return slots[0].close(exc)
@@ -440,14 +448,22 @@ class AsyncActivation:
         """
         Deactivate the scope this token belongs to.
 
-        :raises ScopeActivationError: If a scope requiring this one is still active.
+        :raises ScopeActivationError: If it's already deactivated, a scope requiring this one
+            is still active, or it's deactivated outside the context that activated it.
         """
         slots = self.slots
-        if slots and slots[1] > 0:
+        if not slots:
+            raise ScopeActivationError(f"Cannot deactivate {self.var.name!r}: already deactivated.")
+        if slots[1] > 0:
             raise ScopeActivationError(
                 f"Cannot deactivate {self.var.name!r}: a scope requiring it is still active."
             )
-        self.var.reset(self.token)
+        try:
+            self.var.reset(self.token)
+        except ValueError:
+            raise ScopeActivationError(
+                f"Cannot deactivate {self.var.name!r} outside the context that activated it."
+            ) from None
         parent_slots = self.parent_slots
         try:
             return await slots[0].aclose(exc)
