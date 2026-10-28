@@ -6,7 +6,8 @@ In-process event buses that dispatch straight to registered handlers, with no br
 {py:class}`PubSub <stratae.events.event.PubSub>` handlers concurrently. Register handlers
 with `handle`, keyed by {py:class}`Event <stratae.events.event.Event>`, and create
 emitters with `bind`. A {py:class}`Request <stratae.events.event.Request>` event needs
-exactly one responder. With `use_envelope=True`, each emission opens an
+exactly one responder, which `handlers` can confirm before anything emits it. With
+`use_envelope=True`, each emission opens an
 {py:class}`Envelope <stratae.events.envelope.Envelope>`.
 
 ````{example} Sending events over a DirectBus
@@ -66,12 +67,15 @@ def handle_place_order(cmd: PlaceOrder) -> Order:
     order.placed(order_id=new_order.order_id, item=new_order.item)
     return new_order
 
+print(f"place order responders: {len(bus.handlers(place_order_event))}")
+
 customer_order = order.place(customer="ada", item="widget")
 print(f"order {customer_order.order_id} placed for {customer_order.customer}")
 print(reservations[0])
 print(shipments[0])
 ```
 ```{output}
+place order responders: 1
 order 1 placed for ada
 reserved 1 widget, 4 left
 scheduled shipment for order 1
@@ -143,6 +147,19 @@ class BaseDirectBus:
         :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
         """
         self._handlers[handler.config].discard(handler)
+
+    def handlers(self, event: _AnyEvent) -> tuple[Handler[Any, _AnyEvent, Any], ...]:
+        """
+        Return the handlers registered for an event, in no particular order.
+
+        Use it to check registrations up front, such as that a request event has exactly one
+        responder before anything emits it.
+
+        :param event: The {py:class}`Event <stratae.events.event.Event>` to look up.
+        :returns: A snapshot of the event's handlers, empty if it has none. Later calls to
+            `handle` or `remove` don't change it.
+        """
+        return tuple(self._handlers.get(event, ()))
 
     def _single_responder(self, event: _AnyEvent) -> Handler[Any, _AnyEvent, Any]:
         """Return event's sole responder, or raise if there isn't exactly one."""
