@@ -90,11 +90,110 @@ with TestClient(app) as client:
 {'name': 'Mechanical Keyboard'}
 ```
 ````
+
+{py:func}`scoped_websocket` builds a dependency that activates a scope for each WebSocket
+connection's lifetime. Add it to a WebSocket route's `dependencies`. The scope closes with
+the exception the connection ended with, so cleanup sees a client leaving
+(`WebSocketDisconnect`) or a deliberate close (`WebSocketException`) as it happened. Keep
+connection-lifetime resources in it, not transactions: give each message's work its own
+nested scope inside the receive loop, so a failed message rolls back without ending the
+connection.
+
+````{example} Committing a transaction per WebSocket message
+```{code-block} python
+import sqlite3
+from contextlib import asynccontextmanager
+from typing import Annotated
+from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.testclient import TestClient
+from stratae.depends import Depends, inject
+from stratae.integrations.fastapi import scoped_websocket
+from stratae.lifecycle import AsyncScope, async_resource
+
+application = AsyncScope("application", isolation="shared")
+connection = AsyncScope("connection", requires=application)
+message = AsyncScope("message", requires=connection)
+
+@application.cache()
+@async_resource
+async def get_database():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE notes (body TEXT)")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+@connection.cache()
+@async_resource
+async def get_cursor():
+    cur = (await get_database()).cursor()
+    try:
+        yield cur
+    finally:
+        cur.close()
+
+@message.cache()
+@async_resource
+async def get_transaction():
+    conn = await get_database()
+    try:
+        yield await get_cursor()
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+type CursorDep = Annotated[sqlite3.Cursor, Depends(get_cursor)]
+
+router = APIRouter()
+
+# inject hides cur from the endpoint's signature.
+@router.websocket("/notes", dependencies=[scoped_websocket(connection)])
+@inject
+async def notes(websocket: WebSocket, cur: CursorDep) -> None:
+    await websocket.accept()
+    while True:
+        try:
+            body = await websocket.receive_text()
+        except WebSocketDisconnect:
+            return
+        try:
+            async with message:
+                tx = await get_transaction()
+                tx.execute("INSERT INTO notes VALUES (?)", (body,))
+                if not body.strip():
+                    raise ValueError("empty note")
+        except ValueError as exc:
+            await websocket.send_json({"error": str(exc)})
+            continue
+        total = cur.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+        await websocket.send_json({"saved": body, "total": total})
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with application:
+        yield
+
+app = FastAPI(lifespan=lifespan)
+app.include_router(router)
+
+with TestClient(app) as client, client.websocket_connect("/notes") as websocket:
+    for body in ["milk", " ", "eggs"]:
+        websocket.send_text(body)
+        print(websocket.receive_json())
+```
+```{output}
+{'saved': 'milk', 'total': 1}
+{'error': 'empty note'}
+{'saved': 'eggs', 'total': 2}
+```
+````
 """
 
-from typing import Any, Callable, Coroutine
+from typing import Any, AsyncIterator, Callable, Coroutine
 
-from fastapi import Request, Response
+from fastapi import Depends, Request, Response, params
 from fastapi.routing import APIRoute
 from starlette.types import Receive, Send
 from starlette.types import Scope as ASGIScope
@@ -163,3 +262,32 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
             return scoped_handler
 
     return ScopedRoute
+
+
+class _ConnectionScope:
+    """A yield dependency activating a scope for one WebSocket connection."""
+
+    __slots__ = ("scope",)
+
+    def __init__(self, scope: AsyncScope) -> None:
+        self.scope = scope
+
+    async def __call__(self) -> AsyncIterator[None]:
+        async with self.scope:
+            yield
+
+
+def scoped_websocket(scope: AsyncScope) -> params.Depends:
+    """
+    Build a dependency that activates `scope` for every WebSocket connection.
+
+    Add it to a WebSocket route's or WebSocket-only router's `dependencies`. FastAPI rebuilds
+    WebSocket routes when routers are included, so a route class couldn't scope them, but
+    dependencies carry over. Build it once per scope and reuse it.
+
+    :param scope: Active for the connection's lifetime, including dependencies solved after
+        it. It closes with the exception the connection ended with, if any, including one
+        FastAPI handles, such as `WebSocketException`.
+    :returns: A FastAPI `Depends`.
+    """
+    return Depends(_ConnectionScope(scope))
