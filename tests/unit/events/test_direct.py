@@ -11,6 +11,11 @@ DirectBus:
 - Async handlers are rejected with TypeError at registration, in both the
   direct and decorator forms of handle.
 - remove removes a handler; subsequent emits do not invoke it.
+- handlers returns an empty tuple for an event with no handlers.
+- handlers returns every handler registered for an event.
+- handlers excludes a removed handler.
+- handlers returns a schema-less event's handlers.
+- handlers returns a snapshot that later registrations do not change.
 - The same callable may be registered multiple times independently.
 - emit dispatches the payload to all registered handlers.
 - A raising handler does not prevent other handlers from running.
@@ -284,6 +289,97 @@ def test_remove_prevents_further_dispatch(bus: DirectBus):
 
     # Assert
     handler.assert_not_called()
+
+
+def test_handlers_empty_for_event_without_handlers(bus: DirectBus):
+    """
+    ``handlers`` should return an empty tuple for an event nothing handles.
+
+    Given: A DirectBus with no handlers registered
+    When: handlers is called for an event
+    Then: An empty tuple should be returned
+    """
+    # Act
+    result = bus.handlers(_task_created)
+
+    # Assert
+    assert result == ()
+
+
+def test_handlers_returns_registered_handlers(bus: DirectBus):
+    """
+    ``handlers`` should return every handler registered for an event.
+
+    Given: Two handlers registered to the same Event
+    When: handlers is called for that Event
+    Then: Both Handlers should be returned
+    """
+    # Arrange
+    handle_a = bus.handle(_task_created, Mock())
+    handle_b = bus.handle(_task_created, Mock())
+
+    # Act
+    result = bus.handlers(_task_created)
+
+    # Assert
+    assert set(result) == {handle_a, handle_b}
+
+
+def test_handlers_excludes_removed_handler(bus: DirectBus):
+    """
+    ``handlers`` should not return a handler after it is removed.
+
+    Given: Two handlers registered to the same Event, one of them then removed
+    When: handlers is called for that Event
+    Then: Only the remaining Handler should be returned
+    """
+    # Arrange
+    kept = bus.handle(_task_created, Mock())
+    removed = bus.handle(_task_created, Mock())
+    bus.remove(removed)
+
+    # Act
+    result = bus.handlers(_task_created)
+
+    # Assert
+    assert result == (kept,)
+
+
+def test_handlers_returns_signal_event_handlers(bus: DirectBus):
+    """
+    ``handlers`` should return the handlers of a schema-less event.
+
+    Given: A responder registered to a schema-less Request event
+    When: handlers is called for that event
+    Then: The responder's Handler should be returned
+    """
+    # Arrange
+    responder = bus.handle(_ping, Mock(return_value="pong"))
+
+    # Act
+    result = bus.handlers(_ping)
+
+    # Assert
+    assert result == (responder,)
+
+
+def test_handlers_snapshot_unchanged_by_later_registration(bus: DirectBus):
+    """
+    ``handlers`` should return a snapshot that later registrations don't change.
+
+    Given: The handlers of an Event, looked up while it has one handler
+    When: Another handler is registered to that Event
+    Then: The earlier result should still hold only the first Handler
+    """
+    # Arrange
+    first = bus.handle(_task_created, Mock())
+    result = bus.handlers(_task_created)
+
+    # Act
+    bus.handle(_task_created, Mock())
+
+    # Assert
+    assert result == (first,)
 
 
 def test_same_callable_registered_twice_called_twice(bus: DirectBus):
