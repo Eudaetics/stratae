@@ -10,6 +10,7 @@ RabbitMQConfig:
 RabbitMQPublisher:
 - Entering the context opens the connection and allocates a channel.
 - Exiting the context closes the connection.
+- Exiting without a connection closes nothing.
 - Entering the context while already connected raises AlreadyConnectedError.
 - A failed close on exit still leaves the publisher disconnected.
 - emit raises NotConnectedError before the context is entered.
@@ -158,6 +159,24 @@ async def test_context_closes_connection_on_exit(
 
     # Assert
     connection.close.assert_awaited_once()
+
+
+async def test_exit_without_connection_is_noop(
+    publisher: RabbitMQPublisher, connect_mock: AsyncMock, connection: AsyncMock
+):
+    """
+    Exiting a publisher that never connected should close nothing.
+
+    Given: A publisher whose context was never entered
+    When: The context exits
+    Then: No connection should be opened or closed
+    """
+    # Act
+    await publisher.__aexit__(None, None, None)
+
+    # Assert
+    connect_mock.assert_not_awaited()
+    connection.close.assert_not_awaited()
 
 
 async def test_context_reentered_while_connected_raises(

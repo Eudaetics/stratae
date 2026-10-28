@@ -114,6 +114,7 @@ markers = [
 ]
 
 [tool.coverage.run]
+branch = true
 omit = [
     "*/venv/*",
     "*/.venv/*",
@@ -125,6 +126,7 @@ omit = [
 [tool.coverage.report]
 exclude_lines = [
     "@(abc\\.)?abstractmethod",
+    "^\\s*@(typing\\.)?overload\\s*$",
     "^\\s*\\.\\.\\.$",
     "if TYPE_CHECKING:"
 ]

@@ -375,6 +375,54 @@ def test_multiple_generators_each_raise_from_callers_exception(scope: Scope):
     )
 
 
+def test_resource_reraising_callers_exception_groups_it_once(scope: Scope):
+    """
+    Test that an exception re-raised during cleanup is grouped only once.
+
+    Given: A Scope and two cached generators, the later one raising its own new exception
+        and the earlier one re-raising the caller's exception in place of it,
+    When: Code inside the active scope's with block raises after both resources have
+        been entered,
+    Then: An ExceptionGroup containing the caller's exception and the later resource's
+        exception, each once, should be raised.
+    """
+    # Arrange
+    caller_failure = ValueError("Caller Failure")
+
+    class SimpleObject: ...
+
+    @scope.cache()
+    @resource
+    def resource_a():
+        try:
+            yield SimpleObject()
+        except Exception:
+            raise caller_failure from None
+
+    @scope.cache()
+    @resource
+    def resource_b():
+        try:
+            yield SimpleObject()
+        except Exception:
+            raise KeyError("B Failure") from None
+
+    # Act
+    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+        with scope:
+            resource_a()
+            resource_b()
+            raise caller_failure
+
+    # Assert
+    assert len(exceptions.value.exceptions) == 2
+    assert any(exc is caller_failure for exc in exceptions.value.exceptions)
+    assert any(
+        isinstance(exc, KeyError) and str(exc) == "'B Failure'"
+        for exc in exceptions.value.exceptions
+    )
+
+
 def test_resource_swallowing_exception_hides_it_from_earlier_resources(scope: Scope):
     """
     Test that a resource swallowing the caller's exception hides it from earlier resources.

@@ -6,6 +6,8 @@ This module contains asynchronous tests to ensure that:
 - Context-scoped cached functions behave correctly under concurrent access.
 - Multiple context-scoped calls within each context do not share cache across activations.
 - Scoped resources are managed independently and cleaned up correctly in concurrent contexts.
+- Concurrent first calls within one activation enter a cached resource once, however many
+  tasks wait on it.
 - A requires chain keeps a shared parent's cache visible to every concurrent child while
   each child's own cache stays isolated per task.
 """
@@ -321,6 +323,38 @@ async def test_concurrent_first_calls_within_one_activation_enter_resource_once(
     # Assert
     assert enter_count == 1
     assert first is second
+
+
+async def test_third_concurrent_first_call_waits_on_watched_claim(
+    async_context_scope: AsyncScope,
+):
+    """
+    A third concurrent first call waits on the claim another task is already watching.
+
+    Given: An active context scope and a cached resource that suspends while entering,
+    When: three child tasks of the activation (via gather) call it for the first time at once,
+    Then: the resource should be entered exactly once, and all three tasks should get its value.
+    """
+    # Arrange
+    enter_count = 0
+
+    @async_context_scope.cache()
+    @async_resource
+    async def get_connection():
+        nonlocal enter_count
+        enter_count += 1
+        await asyncio.sleep(0.01)
+        yield object()
+
+    # Act
+    async with async_context_scope:
+        first, second, third = await asyncio.gather(
+            get_connection(), get_connection(), get_connection()
+        )
+
+    # Assert
+    assert enter_count == 1
+    assert first is second is third
 
 
 async def test_task_outliving_activation_cannot_use_its_cache(async_context_scope: AsyncScope):
