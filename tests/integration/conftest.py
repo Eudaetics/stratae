@@ -37,13 +37,53 @@ def cancel_mid_request() -> Callable[[ASGIApp, str, Callable[[], bool]], Awaitab
         }
 
         async def receive() -> dict[str, Any]:
-            await asyncio.Event().wait()  # the client never sends anything further
+            await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
         async def send(message: dict[str, Any]) -> None:
             pass
 
         task = asyncio.ensure_future(app(scope, receive, send))
+        async with asyncio.timeout(2):
+            while not suspended():
+                await asyncio.sleep(0)
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    return drive
+
+
+@pytest.fixture
+def cancel_mid_websocket() -> Callable[[ASGIApp, str, Callable[[], bool]], Awaitable[None]]:
+    """
+    Provide a driver that cancels an open WebSocket connection, as a server shutdown would.
+
+    The driver connects over raw ASGI, waits until `suspended()` reports the endpoint is
+    parked mid-connection, then cancels the connection task and waits for it to unwind.
+    """
+
+    async def drive(app: ASGIApp, path: str, suspended: Callable[[], bool]) -> None:
+        scope: dict[str, Any] = {
+            "type": "websocket",
+            "asgi": {"version": "3.0"},
+            "scheme": "ws",
+            "path": path,
+            "raw_path": path.encode(),
+            "root_path": "",
+            "query_string": b"",
+            "headers": [],
+            "subprotocols": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+        }
+        incoming: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        incoming.put_nowait({"type": "websocket.connect"})
+
+        async def send(message: dict[str, Any]) -> None:
+            pass
+
+        task = asyncio.ensure_future(app(scope, incoming.get, send))
         async with asyncio.timeout(2):
             while not suspended():
                 await asyncio.sleep(0)
