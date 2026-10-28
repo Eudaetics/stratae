@@ -13,6 +13,7 @@ RabbitMQConsumer:
   registrations made beforehand.
 - Registrations made while connected start consuming immediately.
 - Exiting the context closes the connection.
+- Exiting without a connection closes nothing.
 - Entering the context while already connected raises AlreadyConnectedError.
 - A failed close on exit still leaves the consumer disconnected.
 - handle registers directly or as a decorator, returning the Handler.
@@ -23,6 +24,8 @@ RabbitMQConsumer:
 - A per-registration deserializer overrides the consumer's.
 - A failing handler nacks the message without requeue.
 - A failing deserialization nacks the message without requeue.
+- A message without a delivery tag is neither acked nor nacked, whether its
+  handler returns or raises.
 - remove cancels the live AMQP consumer.
 - Removing a handler twice cancels its consumer once.
 - A consumer started for a handler removed mid-start is cancelled.
@@ -230,6 +233,24 @@ async def test_context_closes_connection_on_exit(consumer: RabbitMQConsumer, con
 
     # Assert
     connection.close.assert_awaited_once()
+
+
+async def test_exit_without_connection_is_noop(
+    consumer: RabbitMQConsumer, connect_mock: AsyncMock, connection: AsyncMock
+):
+    """
+    Exiting a consumer that never connected should close nothing.
+
+    Given: A consumer whose context was never entered
+    When: The context exits
+    Then: No connection should be opened or closed
+    """
+    # Act
+    await consumer.__aexit__(None, None, None)
+
+    # Assert
+    connect_mock.assert_not_awaited()
+    connection.close.assert_not_awaited()
 
 
 async def test_context_reentered_while_connected_raises(
@@ -495,6 +516,61 @@ async def test_failing_deserialization_nacks_without_requeue(
     # Assert
     assert received == []
     message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
+    message.channel.basic_ack.assert_not_awaited()
+
+
+async def test_message_without_delivery_tag_not_acked(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A handled message without a delivery tag should not be acked.
+
+    Given: A connected consumer with a sync handler and a message without a delivery tag
+    When: The registered callback receives the message
+    Then: The handler should receive the payload and the message should be neither
+          acked nor nacked
+    """
+    # Arrange
+    received: list[_OrderPlaced] = []
+    consumer.handle(_order_placed, received.append, config=_config)
+    message = _message(b'{"order_id": 7}')
+    message.delivery_tag = None
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert received[0].order_id == 7
+    message.channel.basic_ack.assert_not_awaited()
+    message.channel.basic_nack.assert_not_awaited()
+
+
+async def test_failed_message_without_delivery_tag_not_nacked(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A failed message without a delivery tag should not be nacked.
+
+    Given: A connected consumer whose handler raises, and a message without a delivery tag
+    When: The registered callback receives the message
+    Then: The message should be neither acked nor nacked
+    """
+
+    # Arrange
+    def on_order(payload: _OrderPlaced) -> None:
+        raise RuntimeError("boom")
+
+    consumer.handle(_order_placed, on_order, config=_config)
+    message = _message(b'{"order_id": 7}')
+    message.delivery_tag = None
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    message.channel.basic_nack.assert_not_awaited()
     message.channel.basic_ack.assert_not_awaited()
 
 

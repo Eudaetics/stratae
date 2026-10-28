@@ -391,6 +391,56 @@ async def test_multiple_generators_each_raise_from_callers_exception_async(
     )
 
 
+async def test_resource_reraising_callers_exception_groups_it_once(async_scope: AsyncScope):
+    """
+    Test that an exception re-raised during cleanup is grouped only once.
+
+    Given: An AsyncScope and two cached async generators, the later one raising its own
+        new exception and the earlier one re-raising the caller's exception in place of it,
+    When: Code inside the active scope's async with block raises after both resources
+        have been entered,
+    Then: An ExceptionGroup containing the caller's exception and the later resource's
+        exception, each once, should be raised.
+    """
+    # Arrange
+    caller_failure = ValueError("Caller Failure")
+
+    class SimpleObject: ...
+
+    @async_scope.cache()
+    @async_resource
+    async def resource_a():
+        try:
+            await asyncio.sleep(0)
+            yield SimpleObject()
+        except Exception:
+            raise caller_failure from None
+
+    @async_scope.cache()
+    @async_resource
+    async def resource_b():
+        try:
+            await asyncio.sleep(0)
+            yield SimpleObject()
+        except Exception:
+            raise KeyError("B Failure") from None
+
+    # Act
+    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+        async with async_scope:
+            await resource_a()
+            await resource_b()
+            raise caller_failure
+
+    # Assert
+    assert len(exceptions.value.exceptions) == 2
+    assert any(exc is caller_failure for exc in exceptions.value.exceptions)
+    assert any(
+        isinstance(exc, KeyError) and str(exc) == "'B Failure'"
+        for exc in exceptions.value.exceptions
+    )
+
+
 async def test_resource_swallowing_exception_hides_it_from_earlier_resources_async(
     async_scope: AsyncScope,
 ):
