@@ -8,7 +8,7 @@ and {py:func}`Envelope.from_headers` carry it across a transport.
 
 ````{example} Tracing a chained event through envelopes
 ```{code-block} python
-from stratae.events import DirectBus, Event, PubSub
+from stratae.events import DirectBus, PubSub
 from stratae.events.envelope import Envelope
 
 class OrderPlaced:
@@ -19,8 +19,8 @@ class ShipmentScheduled:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_placed_event = Event(PubSub, OrderPlaced)
-shipment_scheduled_event = Event(PubSub, ShipmentScheduled)
+order_placed_event = PubSub(OrderPlaced)
+shipment_scheduled_event = PubSub(ShipmentScheduled)
 
 bus = DirectBus(use_envelope=True)
 place_order = bus.bind(order_placed_event, factory=OrderPlaced)

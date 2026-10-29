@@ -3,10 +3,17 @@ In-process event buses that dispatch straight to registered handlers, with no br
 
 {py:class}`DirectBus` dispatches synchronously and rejects async handlers.
 {py:class}`AsyncDirectBus` accepts both, running
-{py:class}`PubSub <stratae.events.event.PubSub>` handlers concurrently. Register handlers
-with `handle`, keyed by {py:class}`Event <stratae.events.event.Event>`, and create
-emitters with `bind`. A {py:class}`Request <stratae.events.event.Request>` event needs
-exactly one responder, which `handlers` can confirm before anything emits it. With
+{py:class}`PubSub <stratae.events.patterns.PubSub>` handlers concurrently. Register handlers
+with `handle`, keyed by event, and create emitters with `bind`. A
+{py:class}`Request <stratae.events.patterns.Request>` event needs exactly one responder, which
+`handlers` can confirm before anything emits it.
+
+Each bus delivers the patterns it has a dispatcher for, found by the event's class, so a
+subclass of a supported pattern is delivered as that pattern. Add or replace a pattern with
+`dispatchers=`, a list of {py:class}`Dispatch` pairs, fixed once the bus exists. A dispatcher
+is checked against its pattern: pairing it with the wrong pattern, or returning something other
+than what the pattern emits, is a type error. Registering or binding an event
+of an unsupported pattern raises `TypeError`. With
 `use_envelope=True`, each emission opens an
 {py:class}`Envelope <stratae.events.envelope.Envelope>`.
 
@@ -15,7 +22,7 @@ exactly one responder, which `handlers` can confirm before anything emits it. Wi
 from itertools import count
 from types import SimpleNamespace
 from stratae.events.direct import DirectBus
-from stratae.events.event import Event, PubSub, Request
+from stratae.events.patterns import PubSub, Request
 
 class PlaceOrder:
     def __init__(self, customer: str, item: str) -> None:
@@ -38,8 +45,8 @@ inventory = {"widget": 5}
 reservations: list[str] = []
 shipments: list[str] = []
 
-place_order_event = Event(Request[Order], PlaceOrder)
-order_placed_event = Event(PubSub, OrderPlaced)
+place_order_event = Request(PlaceOrder, reply=Order)
+order_placed_event = PubSub(OrderPlaced)
 
 order = SimpleNamespace(
     place=bus.bind(place_order_event, factory=PlaceOrder),
@@ -83,18 +90,29 @@ scheduled shipment for order 1
 ````
 """
 
-import asyncio
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Literal, Protocol, overload
+from typing import Any, Awaitable, Callable, Collection, Protocol, overload
 
 from stratae._callables import is_async_callable
+from stratae.events._dispatch import (
+    build_dispatcher,
+    dispatch_request,
+    dispatch_request_async,
+    fan_out,
+    fan_out_async,
+    no_dispatcher,
+)
 from stratae.events.binding import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
-from stratae.events.event import DispatchPattern, Event, NoPayload, is_request
-from stratae.events.exceptions import MultipleRespondersError, NoResponderError
-from stratae.events.handler import Handler
+from stratae.events.handler import Handler, WithoutPayload
+from stratae.events.patterns import PubSub, Request
+from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
 
-_AnyEvent = Event[Any, Any, Any]
+_AnyEvent = AnyEvent
+
+_UNSUPPORTED_PATTERN = (
+    "{bus} has no dispatcher for {pattern} events; register one with dispatchers="
+)
 
 _ASYNC_HANDLER_REJECTED = (
     "DirectBus dispatches synchronously and cannot await async handlers;"
@@ -122,20 +140,62 @@ class _AsyncSignalHandlerDecorator[R](Protocol):
     def __call__(self, fn: Callable[[], R]) -> Handler[[], _AnyEvent, R]: ...
 
 
-class BaseDirectBus:
-    """Handler registry and responder lookup shared by the direct buses."""
+class Dispatch:
+    """
+    Pair a pattern class with the dispatcher a direct bus delivers it with.
 
-    def __init__(self) -> None:
-        """Create an empty handler registry."""
+    The dispatcher is called with the event, its handlers and the payload, and returns what
+    emitting the event returns, or an awaitable resolving to it on an
+    {py:class}`AsyncDirectBus`. Write it generic in the pattern's type parameters, e.g.
+    `def gather[S, R](event: Gather[S, R], handlers: Collection[Handler[[S], Any, R]],
+    payload: S) -> list[R]`, so its body is checked. A dispatcher whose first parameter
+    doesn't accept `pattern` is a type error. That its declared return matches what the
+    pattern emits is the dispatcher author's to ensure.
+    """
+
+    __slots__ = ("dispatcher", "pattern")
+
+    def __init__[P: AnyEvent](
+        self,
+        pattern: type[P],
+        dispatcher: Callable[[P, Collection[Handler[Any, Any, Any]], Any], Any],
+    ) -> None:
+        """
+        Pair a pattern with its dispatcher.
+
+        :param pattern: The pattern class. Its subclasses are dispatched the same way.
+        :param dispatcher: Delivers an event of that pattern to its handlers.
+        """
+        self.pattern = pattern
+        self.dispatcher = dispatcher
+
+
+_SYNC_DEFAULTS = (Dispatch(Request, dispatch_request), Dispatch(PubSub, fan_out))
+"""The patterns a DirectBus supports by default."""
+
+_ASYNC_DEFAULTS = (Dispatch(Request, dispatch_request_async), Dispatch(PubSub, fan_out_async))
+"""The patterns an AsyncDirectBus supports by default."""
+
+
+class BaseDirectBus:
+    """Handler registry and pattern dispatch shared by the direct buses."""
+
+    def __init__(self, dispatches: Collection[Dispatch]) -> None:
+        """Create an empty handler registry, delivering the given patterns."""
         self._handlers: dict[_AnyEvent, set[Handler[Any, _AnyEvent, Any]]] = defaultdict(set)
+        self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in dispatches)
+
+    def _check_event(self, event: _AnyEvent) -> None:
+        """Raise TypeError if this bus has no dispatcher for the event's pattern."""
+        if self._dispatcher.dispatch(type(event)) is no_dispatcher:
+            raise TypeError(
+                _UNSUPPORTED_PATTERN.format(bus=type(self).__name__, pattern=type(event).__name__)
+            )
 
     def _register(self, config: _AnyEvent, fn: Callable[..., Any]) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn as a Handler and store it in the registry under config."""
-
-        def call_without_payload(_: Any) -> Any:
-            return fn()
-
-        call: Callable[..., Any] = call_without_payload if config.schema is NoPayload else fn
+        self._check_event(config)
+        call: Callable[..., Any] = WithoutPayload(fn) if config.is_signal else fn
         handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, is_async_callable(fn))
         self._handlers[config].add(handler)
         return handler
@@ -155,48 +215,42 @@ class BaseDirectBus:
         Use it to check registrations up front, such as that a request event has exactly one
         responder before anything emits it.
 
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to look up.
+        :param event: The event to look up.
         :returns: A snapshot of the event's handlers, empty if it has none. Later calls to
             `handle` or `remove` don't change it.
         """
         return tuple(self._handlers.get(event, ()))
-
-    def _single_responder(self, event: _AnyEvent) -> Handler[Any, _AnyEvent, Any]:
-        """Return event's sole responder, or raise if there isn't exactly one."""
-        responders = self._handlers.get(event)
-        if not responders:
-            raise NoResponderError(f"no responder registered for request event '{event.name}'")
-        if len(responders) > 1:
-            raise MultipleRespondersError(
-                f"request event '{event.name}' has {len(responders)} responders;"
-                " exactly one is required"
-            )
-        (responder,) = responders
-        return responder
 
 
 class DirectBus(BaseDirectBus, BindMixin[None]):
     """
     In-process, synchronous event bus.
 
-    {py:class}`PubSub <stratae.events.event.PubSub>` events fan out to every handler.
-    {py:class}`Request <stratae.events.event.Request>` events return their one responder's
+    {py:class}`PubSub <stratae.events.patterns.PubSub>` events fan out to every handler.
+    {py:class}`Request <stratae.events.patterns.Request>` events return their one responder's
     reply. Async handlers are rejected with `TypeError`.
 
     :param use_envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>`
         for each emission.
+    :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
+        defaults for `Request` and `PubSub`.
     """
 
-    def __init__(self, *, use_envelope: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        use_envelope: bool = False,
+        dispatchers: Collection[Dispatch] = (),
+    ) -> None:
         """Create a bus, optionally with envelope tracking."""
-        super().__init__()
+        super().__init__((*_SYNC_DEFAULTS, *dispatchers))
         self._dispatch: Callable[[Any, _AnyEvent], Any] = (
             self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
 
-    def emit[S, R, Signal: bool](
+    def emit[S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S, Signal],
+        event: EventType[S, R, Any, Any],
         config: None,  # noqa: S1172
         payload: S,
         *,
@@ -208,41 +262,42 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         Pub/sub handler failures are raised together as an {py:exc}`ExceptionGroup`. A
         responder's exception propagates directly.
 
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to dispatch.
+        :param event: The event to dispatch.
         :param config: Unused.
         :param payload: The payload to dispatch.
         :param serializer: Unused.
         :returns: The responder's reply for a request event, otherwise `None`.
         :raises NoResponderError: If a request event has no responder.
         :raises MultipleRespondersError: If a request event has more than one responder.
+        :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
         return self._dispatch(payload, event)
 
     @overload
     def handle[R](
         self,
-        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        config: SignalEvent[Any, R],
         fn: Callable[[], R],
     ) -> Handler[[], _AnyEvent, R]: ...
 
     @overload
     def handle[R](
         self,
-        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        config: SignalEvent[Any, R],
         fn: None = None,
     ) -> Callable[[Callable[[], R]], Handler[[], _AnyEvent, R]]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S, Literal[False]],
+        config: PayloadEvent[S, Any, R],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S, Literal[False]],
+        config: PayloadEvent[S, Any, R],
         fn: None = None,
     ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
 
@@ -256,7 +311,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
 
         A request event's handler returns the reply; a pub/sub handler's return is ignored.
 
-        :param config: The {py:class}`Event <stratae.events.event.Event>` to handle.
+        :param config: The event to handle.
         :param fn: The handler. If omitted, returns a decorator.
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
         """
@@ -276,26 +331,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
 
     def _dispatch_plain(self, payload: Any, event: _AnyEvent) -> Any:
         """Dispatch payload without an envelope."""
-        if is_request(event):
-            return self._dispatch_request(payload, event)
-        self._dispatch_fanout(payload, event)
-        return None
-
-    def _dispatch_fanout(self, payload: Any, event: _AnyEvent) -> None:
-        """Call every handler for event, gathering failures into one group."""
-        exceptions: list[Exception] = []
-        handlers = list(self._handlers.get(event, ()))
-        for handler in handlers:
-            try:
-                handler(payload)
-            except Exception as exc:
-                exceptions.append(exc)
-        if exceptions:
-            raise ExceptionGroup("Handler Errors", exceptions)
-
-    def _dispatch_request(self, payload: Any, event: _AnyEvent) -> Any:
-        """Call event's sole responder and return its reply."""
-        return self._single_responder(event)(payload)
+        return self._dispatcher(event, self._handlers.get(event, ()), payload)
 
     def _dispatch_in_envelope(self, payload: Any, event: _AnyEvent) -> Any:
         """Dispatch payload inside a new envelope."""
@@ -307,22 +343,29 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
     """
     In-process, asynchronous event bus.
 
-    Accepts sync and async handlers. {py:class}`PubSub <stratae.events.event.PubSub>`
-    events fan out concurrently. {py:class}`Request <stratae.events.event.Request>` events
+    Accepts sync and async handlers. {py:class}`PubSub <stratae.events.patterns.PubSub>`
+    events fan out concurrently. {py:class}`Request <stratae.events.patterns.Request>` events
     resolve to their one responder's reply.
 
     :param use_envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>`
         for each emission.
+    :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
+        defaults for `Request` and `PubSub`. Their dispatchers return awaitables.
     """
 
-    def __init__(self, *, use_envelope: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        use_envelope: bool = False,
+        dispatchers: Collection[Dispatch] = (),
+    ) -> None:
         """Create a bus, optionally with envelope tracking."""
-        super().__init__()
+        super().__init__((*_ASYNC_DEFAULTS, *dispatchers))
         self._use_envelope = use_envelope
 
-    async def emit[S, R, Signal: bool](
+    async def emit[S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S, Signal],
+        event: EventType[S, R, Any, Any],
         config: None,  # noqa: S1172
         payload: S,
         *,
@@ -334,58 +377,60 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         Pub/sub handler failures are raised together as an exception group. A responder's
         exception propagates directly.
 
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to dispatch.
+        :param event: The event to dispatch.
         :param config: Unused.
         :param payload: The payload to dispatch.
         :param serializer: Unused.
         :returns: The responder's reply for a request event, otherwise `None`.
         :raises NoResponderError: If a request event has no responder.
         :raises MultipleRespondersError: If a request event has more than one responder.
+        :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
+        handlers = self._handlers.get(event, ())
         if self._use_envelope:
             with Envelope.scope():
-                return await self._dispatch(payload, event)
-        return await self._dispatch(payload, event)
+                return await self._dispatcher(event, handlers, payload)
+        return await self._dispatcher(event, handlers, payload)
 
     @overload
     def handle[R](
         self,
-        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        config: SignalEvent[Any, R],
         fn: Callable[[], Awaitable[R]],
     ) -> Handler[[], _AnyEvent, Awaitable[R]]: ...
 
     @overload
     def handle[R](
         self,
-        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        config: SignalEvent[Any, R],
         fn: Callable[[], R],
     ) -> Handler[[], _AnyEvent, R]: ...
 
     @overload
     def handle[R](
         self,
-        config: Event[DispatchPattern[Any, R], NoPayload, Literal[True]],
+        config: SignalEvent[Any, R],
         fn: None = None,
     ) -> _AsyncSignalHandlerDecorator[R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S, Literal[False]],
+        config: PayloadEvent[S, Any, R],
         fn: Callable[[S], Awaitable[R]],
     ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S, Literal[False]],
+        config: PayloadEvent[S, Any, R],
         fn: Callable[[S], R],
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
         self,
-        config: Event[DispatchPattern[Any, R], S, Literal[False]],
+        config: PayloadEvent[S, Any, R],
         fn: None = None,
     ) -> _AsyncHandlerDecorator[S, R]: ...
 
@@ -399,7 +444,7 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
 
         A request event's handler returns the reply; a pub/sub handler's return is ignored.
 
-        :param config: The {py:class}`Event <stratae.events.event.Event>` to handle.
+        :param config: The event to handle.
         :param fn: The handler. If omitted, returns a decorator.
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
         """
@@ -410,41 +455,3 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
             return self._register(config, f)
 
         return decorator
-
-    async def _dispatch(self, payload: Any, event: _AnyEvent) -> Any:
-        """Dispatch payload as a request or pub/sub fan-out."""
-        if is_request(event):
-            return await self._dispatch_request(payload, event)
-        await self.dispatch(payload, config=event)
-        return None
-
-    async def _dispatch_request(self, payload: Any, event: _AnyEvent) -> Any:
-        """Call event's sole responder, awaiting it if async."""
-        responder = self._single_responder(event)
-        if responder.is_async:
-            return await responder(payload)
-        return responder(payload)
-
-    async def dispatch(self, payload: Any, *, config: _AnyEvent) -> None:
-        """
-        Run every handler for an event concurrently.
-
-        :param payload: The payload to dispatch.
-        :param config: The {py:class}`Event <stratae.events.event.Event>` to dispatch.
-        :raises BaseExceptionGroup: If any handler raises. An `ExceptionGroup` unless one
-            raised a `BaseException` such as `CancelledError`.
-        """
-
-        async def _call(handler: Handler[Any, _AnyEvent, Any]) -> None:
-            if handler.is_async:
-                await handler(payload)
-            else:
-                handler(payload)
-
-        results = await asyncio.gather(
-            *(_call(h) for h in self._handlers.get(config, [])),
-            return_exceptions=True,
-        )
-        exceptions = [r for r in results if isinstance(r, BaseException)]
-        if exceptions:
-            raise BaseExceptionGroup("handler errors", exceptions)

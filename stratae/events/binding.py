@@ -1,16 +1,15 @@
 """
 Callable facades that bind an event definition to a concrete emitter and routing config.
 
-{py:func}`bind` and {py:func}`abind` bind an {py:class}`Event <stratae.events.event.Event>`
-to a sync or async emitter and its routing config. With a `factory`, the result builds the
-payload from its arguments; without one, it takes a built payload, or nothing for a
-`NoPayload` event. {py:class}`BindMixin` and {py:class}`AsyncBindMixin` give an adapter its
-own typed `bind` method.
+{py:func}`bind` and {py:func}`abind` bind an event to a sync or async emitter and its
+routing config. With a `factory`, the result builds the payload from its arguments; without
+one, it takes a built payload, or nothing for a payload-less event. {py:class}`BindMixin`
+and {py:class}`AsyncBindMixin` give an adapter its own typed `bind` method.
 
 ````{example} Binding an event to a generic emitter
 ```{code-block} python
 from typing import Any, Callable
-from stratae.events import Event, Request, bind
+from stratae.events import EventType, Request, bind
 
 class CreateOrder:
     def __init__(self, order_id: int) -> None:
@@ -20,10 +19,10 @@ class Order:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_created = Event(Request[Order], CreateOrder)
+order_created = Request(CreateOrder, reply=Order)
 
 def emit(
-    event: Event[Request[Order], CreateOrder, Any],
+    event: EventType[CreateOrder, Any, Any, Any],
     config: str,
     payload: CreateOrder,
     *,
@@ -44,22 +43,26 @@ created order: 42
 ````
 """
 
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Literal, overload
 
 from stratae.events._typeguards import is_async_factory, is_sync_factory
-from stratae.events.event import DispatchPattern, Event, NoPayload
-from stratae.events.protocols import EmitCallable
+from stratae.events.patterns import NoPayload
+from stratae.events.protocols import (
+    AnyEvent,
+    EmitCallable,
+    EventType,
+    PayloadEvent,
+    SignalEvent,
+)
 
 _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
 
 @overload
-def bind[**P, T: DispatchPattern[Any, Any], S, C, R](
-    event: Event[T, S, Literal[False]],
-    emitter: EmitCallable[T, S, C, R, Literal[False]],
+def bind[**P, S, C, R](
+    event: PayloadEvent[S, Any, Any],
+    emitter: EmitCallable[S, C, R, Literal[False]],
     *,
     factory: Callable[P, S],
     config: C,
@@ -68,9 +71,9 @@ def bind[**P, T: DispatchPattern[Any, Any], S, C, R](
 
 
 @overload
-def bind[T: DispatchPattern[Any, Any], C, R](
-    event: Event[T, NoPayload, Literal[True]],
-    emitter: EmitCallable[T, NoPayload, C, R, Literal[True]],
+def bind[C, R](
+    event: SignalEvent[Any, Any],
+    emitter: EmitCallable[NoPayload, C, R, Literal[True]],
     *,
     factory: None = None,
     config: C,
@@ -79,9 +82,9 @@ def bind[T: DispatchPattern[Any, Any], C, R](
 
 
 @overload
-def bind[T: DispatchPattern[Any, Any], S, C, R](
-    event: Event[T, S, Literal[False]],
-    emitter: EmitCallable[T, S, C, R, Literal[False]],
+def bind[S, C, R](
+    event: PayloadEvent[S, Any, Any],
+    emitter: EmitCallable[S, C, R, Literal[False]],
     *,
     factory: None = None,
     config: C,
@@ -90,8 +93,8 @@ def bind[T: DispatchPattern[Any, Any], S, C, R](
 
 
 def bind(
-    event: Event[Any, Any, Any],
-    emitter: EmitCallable[Any, Any, Any, Any, Any],
+    event: AnyEvent,
+    emitter: EmitCallable[Any, Any, Any, Any],
     *,
     factory: Callable[..., Any] | None = None,
     config: Any,
@@ -100,7 +103,7 @@ def bind(
     """
     Bind an event to a sync emitter.
 
-    :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+    :param event: The event to bind.
     :param emitter: Called with the event, config, and payload.
     :param factory: A sync callable building the payload from the call's arguments. If
         omitted, the payload is passed directly.
@@ -126,9 +129,9 @@ def bind(
 
 
 @overload
-def abind[**P, T: DispatchPattern[Any, Any], S, C, R](
-    event: Event[T, S, Literal[False]],
-    emitter: EmitCallable[T, S, C, Awaitable[R], Literal[False]],
+def abind[**P, S, C, R](
+    event: PayloadEvent[S, Any, Any],
+    emitter: EmitCallable[S, C, Awaitable[R], Literal[False]],
     *,
     factory: Callable[P, S] | Callable[P, Awaitable[S]],
     config: C,
@@ -137,9 +140,9 @@ def abind[**P, T: DispatchPattern[Any, Any], S, C, R](
 
 
 @overload
-def abind[T: DispatchPattern[Any, Any], C, R](
-    event: Event[T, NoPayload, Literal[True]],
-    emitter: EmitCallable[T, NoPayload, C, Awaitable[R], Literal[True]],
+def abind[C, R](
+    event: SignalEvent[Any, Any],
+    emitter: EmitCallable[NoPayload, C, Awaitable[R], Literal[True]],
     *,
     factory: None = None,
     config: C,
@@ -148,9 +151,9 @@ def abind[T: DispatchPattern[Any, Any], C, R](
 
 
 @overload
-def abind[T: DispatchPattern[Any, Any], S, C, R](
-    event: Event[T, S, Literal[False]],
-    emitter: EmitCallable[T, S, C, Awaitable[R], Literal[False]],
+def abind[S, C, R](
+    event: PayloadEvent[S, Any, Any],
+    emitter: EmitCallable[S, C, Awaitable[R], Literal[False]],
     *,
     factory: None = None,
     config: C,
@@ -159,8 +162,8 @@ def abind[T: DispatchPattern[Any, Any], S, C, R](
 
 
 def abind(
-    event: Event[Any, Any, Any],
-    emitter: EmitCallable[Any, Any, Any, Awaitable[Any], Any],
+    event: AnyEvent,
+    emitter: EmitCallable[Any, Any, Awaitable[Any], Any],
     *,
     factory: Callable[..., Any] | Callable[..., Awaitable[Any]] | None = None,
     config: Any,
@@ -169,7 +172,7 @@ def abind(
     """
     Bind an event to an async emitter.
 
-    :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+    :param event: The event to bind.
     :param emitter: An async callable taking the event, config, and payload.
     :param factory: A sync or async callable building the payload from the call's
         arguments. If omitted, the payload is passed directly.
@@ -206,9 +209,9 @@ class BindMixin[C](ABC):
     __slots__ = ()
 
     @abstractmethod
-    def emit[S, R, Signal: bool](
+    def emit[S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S, Signal],
+        event: EventType[S, R, Any, Any],
         config: C,
         payload: S,
         *,
@@ -221,10 +224,19 @@ class BindMixin[C](ABC):
         """
         ...
 
+    @abstractmethod
+    def _check_event(self, event: AnyEvent) -> None:
+        """
+        Raise if this adapter can't emit the event's pattern.
+
+        Called by `bind`, so an unsupported event is refused before anything emits it.
+        """
+        ...
+
     @overload
     def bind[**P, S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S, Literal[False]],
+        event: PayloadEvent[S, R, Any],
         *,
         factory: Callable[P, S],
         config: C = ...,
@@ -233,7 +245,7 @@ class BindMixin[C](ABC):
     @overload
     def bind[R](
         self,
-        event: Event[DispatchPattern[R, Any], NoPayload, Literal[True]],
+        event: SignalEvent[R, Any],
         *,
         factory: None = None,
         config: C = ...,
@@ -242,7 +254,7 @@ class BindMixin[C](ABC):
     @overload
     def bind[S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S, Literal[False]],
+        event: PayloadEvent[S, R, Any],
         *,
         factory: None = None,
         config: C = ...,
@@ -251,7 +263,7 @@ class BindMixin[C](ABC):
 
     def bind(
         self,
-        event: Event[Any, Any, Any],
+        event: AnyEvent,
         *,
         factory: Callable[..., Any] | None = None,
         config: Any = None,
@@ -260,12 +272,13 @@ class BindMixin[C](ABC):
         """
         Bind an event to this adapter's `emit`. See {py:func}`bind`.
 
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+        :param event: The event to bind.
         :param factory: Builds the payload from the call's arguments.
         :param config: The adapter's routing config.
         :param serializer: Encodes the payload.
         :returns: A callable that dispatches through this adapter.
         """
+        self._check_event(event)
         return bind(event, self.emit, factory=factory, config=config, serializer=serializer)
 
 
@@ -279,9 +292,9 @@ class AsyncBindMixin[C](ABC):
     __slots__ = ()
 
     @abstractmethod
-    def emit[S, R, Signal: bool](
+    def emit[S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S, Signal],
+        event: EventType[S, R, Any, Any],
         config: C,
         payload: S,
         *,
@@ -294,10 +307,19 @@ class AsyncBindMixin[C](ABC):
         """
         ...
 
+    @abstractmethod
+    def _check_event(self, event: AnyEvent) -> None:
+        """
+        Raise if this adapter can't emit the event's pattern.
+
+        Called by `bind`, so an unsupported event is refused before anything emits it.
+        """
+        ...
+
     @overload
     def bind[**P, S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S, Literal[False]],
+        event: PayloadEvent[S, R, Any],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
         config: C = ...,
@@ -306,7 +328,7 @@ class AsyncBindMixin[C](ABC):
     @overload
     def bind[R](
         self,
-        event: Event[DispatchPattern[R, Any], NoPayload, Literal[True]],
+        event: SignalEvent[R, Any],
         *,
         factory: None = None,
         config: C = ...,
@@ -315,7 +337,7 @@ class AsyncBindMixin[C](ABC):
     @overload
     def bind[S, R](
         self,
-        event: Event[DispatchPattern[R, Any], S, Literal[False]],
+        event: PayloadEvent[S, R, Any],
         *,
         factory: None = None,
         config: C = ...,
@@ -324,7 +346,7 @@ class AsyncBindMixin[C](ABC):
 
     def bind(
         self,
-        event: Event[Any, Any, Any],
+        event: AnyEvent,
         *,
         factory: Callable[..., Any] | None = None,
         config: Any = None,
@@ -333,10 +355,11 @@ class AsyncBindMixin[C](ABC):
         """
         Bind an event to this adapter's `emit`. See {py:func}`abind`.
 
-        :param event: The {py:class}`Event <stratae.events.event.Event>` to bind.
+        :param event: The event to bind.
         :param factory: Builds the payload from the call's arguments, sync or async.
         :param config: The adapter's routing config.
         :param serializer: Encodes the payload.
         :returns: An async callable that dispatches through this adapter.
         """
+        self._check_event(event)
         return abind(event, self.emit, factory=factory, config=config, serializer=serializer)

@@ -17,6 +17,7 @@ RabbitMQConsumer:
 - Entering the context while already connected raises AlreadyConnectedError.
 - A failed close on exit still leaves the consumer disconnected.
 - handle registers directly or as a decorator, returning the Handler.
+- handle raises TypeError for an event that isn't PubSub.
 - Delivered messages are decoded with the default deserialize and the
   message is acked after the handler returns.
 - Async handlers are awaited.
@@ -53,7 +54,7 @@ RabbitMQConsumer:
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -64,9 +65,9 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     Envelope,
-    Event,
     Handler,
     PubSub,
+    Request,
 )
 from stratae.events.exceptions import AlreadyConnectedError
 from stratae.integrations.rabbitmq import RabbitMQConsumeConfig, RabbitMQConsumer
@@ -85,10 +86,10 @@ def _(value: dict[str, Any]) -> _OrderPlaced:
     return _OrderPlaced(**value)
 
 
-_order_placed = Event(PubSub, _OrderPlaced)
+_order_placed = PubSub(_OrderPlaced)
 _config = RabbitMQConsumeConfig("orders")
 
-_heartbeat = Event(PubSub, name="heartbeat")
+_heartbeat = PubSub(name="heartbeat")
 
 
 def _message(body: bytes, headers: dict[str, Any] | None = None) -> AsyncMock:
@@ -325,6 +326,22 @@ def test_handle_as_decorator_returns_handler(consumer: RabbitMQConsumer):
     assert isinstance(on_order, Handler)
 
 
+def test_handle_refuses_non_pubsub_event(consumer: RabbitMQConsumer):
+    """
+    ``handle`` should refuse an event that isn't PubSub, since a consumer can't reply.
+
+    Given: A consumer, and a request event passed where a PubSub event is expected
+    When: handle is called with the request event
+    Then: A TypeError should be raised, and nothing is registered
+    """
+    # Arrange
+    request_event = cast(Any, Request(_OrderPlaced, reply=_OrderPlaced))
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="PubSub events only"):
+        consumer.handle(request_event, lambda payload: None, config=_config)
+
+
 async def test_message_decoded_and_acked(consumer: RabbitMQConsumer, channel: AsyncMock):
     """
     A delivered message should be decoded with deserialize and acked.
@@ -381,7 +398,7 @@ async def test_signal_handler_called_with_no_arguments(
     """
     A schema-less event's handler should be called with no arguments.
 
-    Given: A connected consumer with a zero-parameter handler registered to a schema-less Event
+    Given: A connected consumer with a zero-parameter handler registered to a schema-less event
     When: The registered callback receives a message
     Then: The handler should run and the message should be acked
     """

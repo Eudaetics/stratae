@@ -19,11 +19,11 @@ import asyncio
 from typing import Any
 from unittest.mock import Mock, create_autospec
 
-from stratae.events import Event, PubSub, abind
+from stratae.events import EventType, PubSub, abind
 
 
 async def _async_emit(
-    event: Event[Any, Any, Any], config: Any, payload: Any, serializer: Any = None
+    event: EventType[Any, Any, Any, Any], config: Any, payload: Any, serializer: Any = None
 ): ...
 
 
@@ -47,11 +47,11 @@ async def test_abind_with_factory_calling_constructs_schema_and_awaits_emitter()
 
     Given: A factory-bound callable produced by abind
     When: The callable is called with arguments
-    Then: The emitter should receive the Event, the config, and the constructed payload
+    Then: The emitter should receive the event, the config, and the constructed payload
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     bound = abind(ev, emitter, factory=_OrderCreated, config=None)
 
     # Act
@@ -78,7 +78,7 @@ async def test_abind_with_factory_returns_emitter_result() -> None:
         return payload
 
     emitter.side_effect = _return
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     bound = abind(ev, emitter, factory=_OrderCreated, config=None)
 
     # Act
@@ -98,7 +98,7 @@ async def test_abind_with_factory_forwards_serializer_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     serializer = Mock()
     bound = abind(ev, emitter, factory=_OrderCreated, config=None, serializer=serializer)
 
@@ -119,7 +119,7 @@ async def test_abind_with_factory_awaits_async_factory_then_awaits_emitter() -> 
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
 
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
@@ -145,11 +145,11 @@ async def test_abind_without_factory_calling_forwards_payload_to_emitter() -> No
 
     Given: A passthrough callable produced by abind with no factory
     When: The callable is called with a ready-made payload
-    Then: The emitter should receive the Event, the config, and that exact payload
+    Then: The emitter should receive the event, the config, and that exact payload
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     bound = abind(ev, emitter, config=None)
     payload = _OrderCreated(1, "pending")
 
@@ -177,7 +177,7 @@ async def test_abind_without_factory_returns_emitter_result() -> None:
         return payload
 
     emitter.side_effect = _return
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     bound = abind(ev, emitter, config=None)
     payload = _OrderCreated(1, "pending")
 
@@ -198,7 +198,7 @@ async def test_abind_without_factory_forwards_serializer_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     serializer = Mock()
     bound = abind(ev, emitter, config=None, serializer=serializer)
     payload = _OrderCreated(1, "pending")
@@ -223,7 +223,7 @@ async def test_abind_awaits_async_callable_factory() -> None:
     """
     # Arrange
     emitter = create_autospec(_async_emit)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
 
     class Factory:
         async def __call__(self, order_id: int, status: str) -> _OrderCreated:

@@ -72,17 +72,17 @@ processed 2 items: ['order-1', 'order-2']
 
 ### Events
 
-[Events](../apidocs/stratae.events/stratae.events) decouples code that produces an event from whatever handles it. Pair a payload schema with a dispatch pattern using `Event(...)`: `PubSub` for fire-and-forget, `Request[Reply]` for exactly one responder. Bind the result to a bus, then register handlers separately from wherever the event gets triggered.
+[Events](../apidocs/stratae.events/stratae.events) decouples code that produces an event from whatever handles it. Each dispatch pattern is an event class taking a payload schema: `PubSub(Schema)` for fire-and-forget, `Request(Schema, reply=Reply)` for exactly one responder. Bind the result to a bus, then register handlers separately from wherever the event gets triggered.
 
 ````{example} Publishing and handling an order event
 ```{code-block} python
-from stratae.events import DirectBus, Event, PubSub
+from stratae.events import DirectBus, PubSub
 
 class OrderPlaced:
     def __init__(self, order_id: str) -> None:
         self.order_id = order_id
 
-order_placed = Event(PubSub, OrderPlaced)
+order_placed = PubSub(OrderPlaced)
 
 bus = DirectBus()
 notify_order_placed = bus.bind(order_placed, factory=OrderPlaced)

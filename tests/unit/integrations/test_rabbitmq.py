@@ -26,6 +26,7 @@ RabbitMQPublisher:
 - emit stamps envelope ids onto every message as x- headers and native
   fields, chaining a child of the active envelope scope.
 - emit raises NotImplementedError for a request/reply event.
+- bind raises NotImplementedError for a request/reply event.
 - emit publishes an empty body for a schema-less event.
 """
 
@@ -40,7 +41,7 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     Envelope,
-    Event,
+    NoPayload,
     PubSub,
     Request,
 )
@@ -62,7 +63,7 @@ def encode_order_placed(obj: _OrderPlaced) -> dict[str, int]:
     return {"order_id": obj.order_id}
 
 
-_order_placed = Event(PubSub, _OrderPlaced)
+_order_placed = PubSub(_OrderPlaced)
 _config = RabbitMQConfig("events", "order.placed")
 
 
@@ -236,14 +237,30 @@ async def test_emit_raises_not_implemented_for_request(publisher: RabbitMQPublis
     """
     ``emit`` should raise NotImplementedError for a request/reply event.
 
-    Given: A publisher and an Event using the Request dispatch pattern
+    Given: A publisher and an event using the Request dispatch pattern
     When: emit is awaited with that event
     Then: A NotImplementedError should be raised
     """
-    request_event = Event(Request[_OrderPlaced], _OrderPlaced)
+    request_event = Request(_OrderPlaced, reply=_OrderPlaced)
 
     with pytest.raises(NotImplementedError):
         await publisher.emit(request_event, _config, _OrderPlaced(1))
+
+
+def test_bind_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
+    """
+    ``bind`` should refuse a request/reply event before anything emits it.
+
+    Given: A publisher and a Request event
+    When: The event is bound
+    Then: A NotImplementedError should be raised
+    """
+    # Arrange
+    request_event = Request(_OrderPlaced, reply=_OrderPlaced)
+
+    # Act / Assert
+    with pytest.raises(NotImplementedError, match="PubSub events only"):
+        publisher.bind(request_event, factory=_OrderPlaced, config=_config)
 
 
 async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, channel: AsyncMock):
@@ -275,16 +292,16 @@ async def test_emit_publishes_empty_body_for_signal_event(
     """
     ``emit`` should publish an empty body for a schema-less event.
 
-    Given: A connected publisher and a schema-less Event
+    Given: A connected publisher and a schema-less event
     When: emit is awaited with that event
     Then: An empty body should be published, without invoking the serializer
     """
     # Arrange
-    heartbeat_event = Event(PubSub, name="heartbeat")
+    heartbeat_event = PubSub(name="heartbeat")
 
     # Act
     async with publisher:
-        await publisher.emit(heartbeat_event, _config, None)
+        await publisher.emit(heartbeat_event, _config, NoPayload())
 
     # Assert
     call = channel.basic_publish.await_args

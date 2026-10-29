@@ -17,8 +17,7 @@ AsyncDirectBus:
 - handlers returns a schema-less event's handlers.
 - handlers returns a snapshot that later registrations do not change.
 - The same callable may be registered multiple times independently.
-- emit directly dispatches to dispatch.
-- dispatch invokes all handlers registered on the channel.
+- emit called directly dispatches to the event's handlers.
 - A raising handler does not prevent other handlers from running.
 - All handler exceptions are collected and re-raised as an ExceptionGroup.
 - A handler's CancelledError is re-raised in a BaseExceptionGroup, not swallowed.
@@ -34,6 +33,10 @@ AsyncDirectBus (request events):
 - An async responder may be registered via the decorator form of handle.
 - A schema-less Request event's sync and async responders are called with no arguments.
 
+AsyncDirectBus (dispatchers):
+- A custom pattern is dispatched through an async dispatcher passed with dispatchers=.
+- An unsupported pattern raises TypeError at handle and at bind.
+
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
@@ -43,7 +46,7 @@ AsyncDirectBus (with envelope):
 """
 
 import asyncio
-from typing import Any
+from typing import Any, Awaitable, Collection, Literal, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -51,9 +54,11 @@ import pytest
 from stratae.events import (
     AsyncDirectBus,
     Consumer,
+    Dispatch,
     EmitCallable,
     Envelope,
-    Event,
+    Handler,
+    Immutable,
     Producer,
     PubSub,
     Request,
@@ -71,7 +76,7 @@ class _TaskCreated:
         return self.task_id == other.task_id
 
 
-_task_created = Event(PubSub, _TaskCreated)
+_task_created = PubSub(_TaskCreated)
 
 
 class _BookQuery:
@@ -84,10 +89,41 @@ class _BookResult:
         self.title = title
 
 
-_find_book = Event(Request[_BookResult], _BookQuery)
+_find_book = Request(_BookQuery, reply=_BookResult)
 
-_heartbeat = Event(PubSub, name="heartbeat")
-_ping = Event(Request[str], name="ping")
+_heartbeat = PubSub(name="heartbeat")
+_ping = Request(reply=str, name="ping")
+
+
+class _Gather[S, R](Immutable):
+    """A custom pattern: every handler replies, and the emitter gets every reply."""
+
+    __slots__ = ("emit_returns", "handler_returns", "is_signal", "name", "schema")
+
+    name: str
+    schema: type[S]
+    is_signal: Literal[False]
+    emit_returns: type[list[R]]
+    handler_returns: type[R]
+
+    def __init__(self, schema: type[S], *, reply: type[R]) -> None:
+        self._assign(
+            name=schema.__name__,
+            schema=schema,
+            is_signal=False,
+            emit_returns=cast(type[list[R]], list),
+            handler_returns=reply,
+        )
+
+
+async def _gather_replies[S, R](
+    event: _Gather[S, R], handlers: Collection[Handler[[S], Any, Awaitable[R]]], payload: S
+) -> list[R]:
+    """Dispatch a _Gather event of async handlers: await each and collect the replies."""
+    return [await handler(payload) for handler in handlers]
+
+
+_quotes = _Gather(_BookQuery, reply=int)
 
 
 @pytest.fixture
@@ -197,9 +233,9 @@ async def test_dispatches_to_async_handler(bus: AsyncDirectBus):
 
 async def test_dispatches_to_mixed_handlers(bus: AsyncDirectBus):
     """
-    Both sync and async handlers registered to the same Event should receive the payload.
+    Both sync and async handlers registered to the same event should receive the payload.
 
-    Given: A sync and an async handler registered to the same Event
+    Given: A sync and an async handler registered to the same event
     When: An event is emitted
     Then: Both handlers should be called with the payload
     """
@@ -220,9 +256,9 @@ async def test_dispatches_to_mixed_handlers(bus: AsyncDirectBus):
 
 async def test_dispatches_to_all_handlers_on_channel(bus: AsyncDirectBus):
     """
-    All handlers registered on the same Event should receive the payload.
+    All handlers registered on the same event should receive the payload.
 
-    Given: Two async handlers registered to the same Event
+    Given: Two async handlers registered to the same event
     When: An event is emitted
     Then: Both handlers should be called with the payload
     """
@@ -243,15 +279,15 @@ async def test_dispatches_to_all_handlers_on_channel(bus: AsyncDirectBus):
 
 async def test_channel_isolation(bus: AsyncDirectBus):
     """
-    Handlers registered to one Event should not receive events emitted on another.
+    Handlers registered to one event should not receive events emitted on another.
 
-    Given: Two handlers each registered to a different Event
-    When: An event is emitted on one Event
-    Then: Only the handler for that Event should be called
+    Given: Two handlers each registered to a different event
+    When: An event is emitted on one event
+    Then: Only the handler for that event should be called
     """
     # Arrange
-    task_event = Event(PubSub, _TaskCreated)
-    order_event = Event(PubSub, _TaskCreated)
+    task_event = PubSub(_TaskCreated)
+    order_event = PubSub(_TaskCreated)
     emit_task = bus.bind(task_event, factory=_TaskCreated)
     task_handler = AsyncMock()
     order_handler = AsyncMock()
@@ -320,8 +356,8 @@ def test_handlers_returns_registered_handlers(bus: AsyncDirectBus):
     """
     ``handlers`` should return every handler registered for an event, sync and async.
 
-    Given: A sync and an async handler registered to the same Event
-    When: handlers is called for that Event
+    Given: A sync and an async handler registered to the same event
+    When: handlers is called for that event
     Then: Both Handlers should be returned
     """
     # Arrange
@@ -339,8 +375,8 @@ def test_handlers_excludes_removed_handler(bus: AsyncDirectBus):
     """
     ``handlers`` should not return a handler after it is removed.
 
-    Given: Two handlers registered to the same Event, one of them then removed
-    When: handlers is called for that Event
+    Given: Two handlers registered to the same event, one of them then removed
+    When: handlers is called for that event
     Then: Only the remaining Handler should be returned
     """
     # Arrange
@@ -377,8 +413,8 @@ def test_handlers_snapshot_unchanged_by_later_registration(bus: AsyncDirectBus):
     """
     ``handlers`` should return a snapshot that later registrations don't change.
 
-    Given: The handlers of an Event, looked up while it has one handler
-    When: Another handler is registered to that Event
+    Given: The handlers of an event, looked up while it has one handler
+    When: Another handler is registered to that event
     Then: The earlier result should still hold only the first Handler
     """
     # Arrange
@@ -396,7 +432,7 @@ async def test_same_callable_registered_twice_called_twice(bus: AsyncDirectBus):
     """
     Registering the same callable twice should produce two independent registrations.
 
-    Given: The same callable registered to an Event twice
+    Given: The same callable registered to an event twice
     When: An event is emitted
     Then: The callable should be invoked twice
     """
@@ -417,8 +453,8 @@ async def test_emit_dispatches_directly(bus: AsyncDirectBus):
     """
     ``emit`` should dispatch the payload directly to all registered handlers.
 
-    Given: A handler registered to an Event
-    When: emit is called directly with that Event
+    Given: A handler registered to an event
+    When: emit is called directly with that event
     Then: The handler should receive the payload
     """
     # Arrange
@@ -433,34 +469,11 @@ async def test_emit_dispatches_directly(bus: AsyncDirectBus):
     handler.assert_called_once_with(payload)
 
 
-async def test_dispatch_invokes_all_handlers(bus: AsyncDirectBus):
-    """
-    ``dispatch`` should invoke every handler registered for the given Event.
-
-    Given: Two handlers registered to an Event
-    When: dispatch is called directly
-    Then: Both handlers should receive the payload
-    """
-    # Arrange
-    handler_a = AsyncMock()
-    handler_b = AsyncMock()
-    bus.handle(_task_created, handler_a)
-    bus.handle(_task_created, handler_b)
-    payload = _TaskCreated(9)
-
-    # Act
-    await bus.dispatch(payload, config=_task_created)
-
-    # Assert
-    handler_a.assert_called_once_with(payload)
-    handler_b.assert_called_once_with(payload)
-
-
 async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncDirectBus):
     """
     A handler that raises should not prevent subsequent handlers from running.
 
-    Given: Two handlers registered to an Event, the first of which raises
+    Given: Two handlers registered to an event, the first of which raises
     When: an event is emitted
     Then: The second handler should still be called
     """
@@ -472,7 +485,7 @@ async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncDirectB
 
     # Act
     with pytest.raises(ExceptionGroup):
-        await bus.dispatch(payload, config=_task_created)
+        await bus.emit(_task_created, None, payload)
 
     # Assert
     second_handler.assert_called_once_with(payload)
@@ -482,7 +495,7 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncDirec
     """
     All handler exceptions should be collected and raised together as an ExceptionGroup.
 
-    Given: Two handlers registered to an Event, both of which raise
+    Given: Two handlers registered to an event, both of which raise
     When: an event is emitted
     Then: An ExceptionGroup containing both exceptions should be raised
     """
@@ -495,7 +508,7 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncDirec
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exc_info:
-        await bus.dispatch(payload, config=_task_created)
+        await bus.emit(_task_created, None, payload)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
 
@@ -504,7 +517,7 @@ async def test_handler_cancelled_error_is_not_swallowed(bus: AsyncDirectBus):
     """
     A handler's CancelledError is re-raised alongside other handler exceptions.
 
-    Given: Two handlers registered to an Event, one raising CancelledError and one ValueError
+    Given: Two handlers registered to an event, one raising CancelledError and one ValueError
     When: an event is dispatched
     Then: A BaseExceptionGroup containing both is raised, rather than the CancelledError
         being dropped
@@ -516,7 +529,7 @@ async def test_handler_cancelled_error_is_not_swallowed(bus: AsyncDirectBus):
 
     # Act / Assert
     with pytest.raises(BaseExceptionGroup) as exc_info:
-        await bus.dispatch(_TaskCreated(12), config=_task_created)
+        await bus.emit(_task_created, None, _TaskCreated(12))
 
     assert not isinstance(exc_info.value, ExceptionGroup)
     assert {type(exc) for exc in exc_info.value.exceptions} == {asyncio.CancelledError, ValueError}
@@ -527,7 +540,7 @@ async def test_signal_pubsub_calls_sync_handler_with_no_arguments(bus: AsyncDire
     """
     A schema-less PubSub event's sync handler should be called with no arguments.
 
-    Given: A sync handler that takes no parameters, registered to a PubSub Event with no schema
+    Given: A sync handler that takes no parameters, registered to a PubSub event with no schema
     When: The event is emitted via its bound BoundSignal callable
     Then: The handler should run, receiving no arguments
     """
@@ -551,7 +564,7 @@ async def test_signal_pubsub_calls_async_handler_with_no_arguments(bus: AsyncDir
     """
     A schema-less PubSub event's async handler should be called with no arguments.
 
-    Given: An async handler that takes no parameters, registered to a PubSub Event with no schema
+    Given: An async handler that takes no parameters, registered to a PubSub event with no schema
     When: The event is emitted via its bound BoundSignal callable
     Then: The handler should run, receiving no arguments
     """
@@ -575,8 +588,8 @@ async def test_request_emit_returns_async_responder_reply(bus: AsyncDirectBus):
     """
     ``emit`` should await and return an async responder's reply for a request event.
 
-    Given: An async responder registered to a request Event
-    When: emit is awaited with that Event
+    Given: An async responder registered to a request event
+    When: emit is awaited with that event
     Then: The responder's resolved return value should be returned
     """
     # Arrange
@@ -594,8 +607,8 @@ async def test_request_emit_returns_sync_responder_reply(bus: AsyncDirectBus):
     """
     ``emit`` should return a sync responder's reply for a request event.
 
-    Given: A sync responder registered to a request Event
-    When: emit is awaited with that Event
+    Given: A sync responder registered to a request event
+    When: emit is awaited with that event
     Then: The responder's return value should be returned
     """
     # Arrange
@@ -613,7 +626,7 @@ async def test_bound_request_event_resolves_to_reply(bus: AsyncDirectBus):
     """
     Awaiting a factory-bound callable for a request event should resolve to the responder's reply.
 
-    Given: An async responder registered to a request Event bound via bus.bind
+    Given: An async responder registered to a request event bound via bus.bind
     When: The callable is awaited
     Then: The responder's resolved return value should be returned
     """
@@ -633,8 +646,8 @@ async def test_request_emit_raises_without_responder(bus: AsyncDirectBus):
     """
     ``emit`` should raise NoResponderError when a request event has no responder.
 
-    Given: A request Event with no registered responder
-    When: emit is awaited with that Event
+    Given: A request event with no registered responder
+    When: emit is awaited with that event
     Then: A NoResponderError should be raised
     """
     with pytest.raises(NoResponderError):
@@ -645,8 +658,8 @@ async def test_request_emit_raises_with_multiple_responders(bus: AsyncDirectBus)
     """
     ``emit`` should raise MultipleRespondersError when several responders are registered.
 
-    Given: Two responders registered to a request Event
-    When: emit is awaited with that Event
+    Given: Two responders registered to a request event
+    When: emit is awaited with that event
     Then: A MultipleRespondersError should be raised
     """
     # Arrange
@@ -662,8 +675,8 @@ async def test_request_responder_exception_propagates_directly(bus: AsyncDirectB
     """
     A responder's exception should propagate to the emitter unwrapped.
 
-    Given: An async responder that raises, registered to a request Event
-    When: emit is awaited with that Event
+    Given: An async responder that raises, registered to a request event
+    When: emit is awaited with that event
     Then: The responder's exception should be raised directly, not as an ExceptionGroup
     """
     # Arrange
@@ -681,8 +694,8 @@ async def test_request_responder_registered_via_decorator(bus: AsyncDirectBus):
     """
     An async responder registered via the decorator form of handle should serve requests.
 
-    Given: An async responder registered with @bus.handle on a request Event
-    When: emit is awaited with that Event
+    Given: An async responder registered with @bus.handle on a request event
+    When: emit is awaited with that event
     Then: The responder's resolved return value should be returned
     """
     # Arrange
@@ -703,7 +716,7 @@ async def test_signal_request_calls_sync_responder_with_no_arguments(bus: AsyncD
     """
     A schema-less Request event's sync responder should be called with no arguments.
 
-    Given: A sync responder that takes no parameters, registered to a Request Event with no schema
+    Given: A sync responder that takes no parameters, registered to a Request event with no schema
     When: The event is emitted via its bound BoundSignal callable
     Then: The responder's return value should be returned
     """
@@ -726,7 +739,7 @@ async def test_signal_request_calls_async_responder_with_no_arguments(bus: Async
     """
     A schema-less Request event's async responder should be called with no arguments.
 
-    Given: An async responder that takes no parameters, registered to a Request Event with no schema
+    Given: An async responder that takes no parameters, registered to a Request event with no schema
     When: The event is emitted via its bound BoundSignal callable
     Then: The responder's return value should be returned
     """
@@ -801,14 +814,14 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncD
     """
     A handler that emits an event should receive a child envelope linked to the outer one.
 
-    Given: An outer handler that emits on a second Event, and an inner handler on that event
+    Given: An outer handler that emits on a second event, and an inner handler on that event
     When: The outer event is emitted
     Then: The inner envelope should share the outer correlation id and
           have the outer message id as its causation id
     """
     # Arrange
-    outer_event = Event(PubSub, _TaskCreated)
-    inner_event = Event(PubSub, _TaskCreated)
+    outer_event = PubSub(_TaskCreated)
+    inner_event = PubSub(_TaskCreated)
     emit_outer = bus_with_envelope.bind(outer_event, factory=_TaskCreated)
     emit_inner = bus_with_envelope.bind(inner_event, factory=_TaskCreated)
     outer_envelopes: list[Envelope] = []
@@ -859,8 +872,8 @@ async def test_request_reply_returned_with_envelope(bus_with_envelope: AsyncDire
     """
     A request event should resolve to its reply when envelope tracking is enabled.
 
-    Given: An async responder registered to a request Event on an envelope-tracking bus
-    When: emit is awaited with that Event
+    Given: An async responder registered to a request event on an envelope-tracking bus
+    When: emit is awaited with that event
     Then: The responder's resolved return value should be returned
     """
     # Arrange
@@ -878,7 +891,7 @@ async def test_async_callable_object_handler_is_awaited(bus: AsyncDirectBus):
     """
     A pub/sub handler that's an object with async __call__ is awaited.
 
-    Given: An instance of a class whose __call__ is async, registered to a PubSub Event
+    Given: An instance of a class whose __call__ is async, registered to a PubSub event
     When: an event is dispatched
     Then: Its __call__ runs to completion
     """
@@ -895,7 +908,7 @@ async def test_async_callable_object_handler_is_awaited(bus: AsyncDirectBus):
     bus.handle(_task_created, handler)
 
     # Act
-    await bus.dispatch(_TaskCreated(13), config=_task_created)
+    await bus.emit(_task_created, None, _TaskCreated(13))
 
     # Assert
     assert handler.received == [_TaskCreated(13)]
@@ -905,8 +918,8 @@ async def test_async_callable_object_responder_reply_is_awaited(bus: AsyncDirect
     """
     A request responder that's an object with async __call__ has its reply awaited.
 
-    Given: An instance of a class whose __call__ is async, registered to a request Event
-    When: emit is awaited with that Event
+    Given: An instance of a class whose __call__ is async, registered to a request event
+    When: emit is awaited with that event
     Then: The resolved reply is returned, not a coroutine
     """
     # Arrange
@@ -923,3 +936,64 @@ async def test_async_callable_object_responder_reply_is_awaited(bus: AsyncDirect
 
     # Assert
     assert result is reply
+
+
+# region: Dispatchers
+
+
+async def test_custom_pattern_dispatched_via_async_dispatcher():
+    """
+    A custom pattern should be dispatched through an async dispatcher passed to the bus.
+
+    Given: A bus constructed with an async dispatcher for a custom pattern, and two
+        async handlers
+    When: An event of that pattern is emitted
+    Then: The emitter gets the dispatcher's result, every handler's reply
+    """
+
+    # Arrange
+    async def length(query: _BookQuery) -> int:
+        return len(query.query)
+
+    async def double_length(query: _BookQuery) -> int:
+        return 2 * len(query.query)
+
+    bus = AsyncDirectBus(dispatchers=[Dispatch(_Gather, _gather_replies)])
+    bus.handle(_quotes, length)
+    bus.handle(_quotes, double_length)
+
+    # Act
+    replies = await bus.emit(_quotes, None, _BookQuery("dune"))
+
+    # Assert
+    assert sorted(replies) == [4, 8]
+
+
+def test_unsupported_pattern_refused_at_handle(bus: AsyncDirectBus):
+    """
+    Registering a handler for an unsupported pattern should fail immediately.
+
+    Given: A bus with no dispatcher for a custom pattern
+    When: A handler is registered for an event of that pattern
+    Then: A TypeError names the bus and the pattern, and nothing is registered
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="AsyncDirectBus has no dispatcher for _Gather"):
+        bus.handle(_quotes, lambda query: 1)
+    assert bus.handlers(_quotes) == ()
+
+
+def test_unsupported_pattern_refused_at_bind(bus: AsyncDirectBus):
+    """
+    Binding an unsupported pattern should fail before anything emits it.
+
+    Given: A bus with no dispatcher for a custom pattern
+    When: An event of that pattern is bound
+    Then: A TypeError names the bus and the pattern
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="AsyncDirectBus has no dispatcher for _Gather"):
+        bus.bind(_quotes, factory=_BookQuery)
+
+
+# endregion
