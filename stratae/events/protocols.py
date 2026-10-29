@@ -9,6 +9,7 @@ adapter. {py:class}`EmitCallable` describes a single emitter with a concrete ret
 
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
+from stratae.events.hooks import Hooks
 from stratae.events.patterns import NoPayload
 
 
@@ -67,6 +68,7 @@ class EmitCallable[S, C, R, Signal: bool](Protocol):
         payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, Any] | None = None,
     ) -> R:
         """
         Dispatch a payload.
@@ -75,6 +77,9 @@ class EmitCallable[S, C, R, Signal: bool](Protocol):
         :param config: Adapter-specific routing config.
         :param payload: The payload to dispatch.
         :param serializer: Encodes the payload; defaults to the adapter's own.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
+            `bind` passes it only when hooks are given, so an untyped emitter without it still
+            works until someone binds with hooks, then fails loudly.
         :returns: Adapter-defined result, or a coroutine resolving to it.
         """
         ...
@@ -91,6 +96,7 @@ class Producer(Protocol):
         payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, Any] | None = None,
     ) -> Any:
         """
         Dispatch a payload.
@@ -99,6 +105,9 @@ class Producer(Protocol):
         :param config: Adapter-specific routing config.
         :param payload: The payload to dispatch.
         :param serializer: Encodes the payload; defaults to the adapter's own.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
+            `bind` passes it only when hooks are given, so an untyped emitter without it still
+            works until someone binds with hooks, then fails loudly.
         :returns: Adapter-defined result, or a coroutine resolving to it.
         """
         ...

@@ -20,13 +20,17 @@ AsyncDirectBus:
 - emit and bound callables resolve to a request's reply type, and None for pub/sub.
 - A payload-less event binds to a zero-argument coroutine function.
 
+Hooks:
+- Hooks passed to handle, bind and emit are typed by the event's payload and reply.
+- A hook typed loosely, for any event, fits every event.
+
 Built-in dispatchers:
 - Each fits its pattern for any payload and reply type, returning what the pattern emits.
 """
 
 from typing import Any, Awaitable, Callable, Collection, Literal, assert_type
 
-from stratae.events import AsyncDirectBus, DirectBus, Handler, NoPayload, PubSub, Request
+from stratae.events import AsyncDirectBus, DirectBus, Handler, Hooks, NoPayload, PubSub, Request
 from stratae.events._dispatch import (
     dispatch_request,
     dispatch_request_async,
@@ -223,3 +227,37 @@ def test_builtin_dispatchers_fit_their_patterns() -> None:
     # Assert
     assert (request, request_async) == (dispatch_request, dispatch_request_async)
     assert (pubsub, pubsub_async) == (fan_out, fan_out_async)
+
+
+def _audit_any(event: _AnyEvent, payload: object, reply: object) -> None:
+    """Audit a success, for any event."""
+
+
+def _audit_order(event: _AnyEvent, payload: _PlaceOrder, reply: _Order) -> None:
+    """Audit a placed order."""
+
+
+def test_hooks_typed_by_event() -> None:
+    """
+    Hooks passed to a bus should be typed by the event's payload and reply.
+
+    Given: Hooks typed for placing an order, and a hook typed for any event
+    When: They're passed to handle, bind and emit for matching events
+    Then: The calls type-check, so pyright accepts hooks that fit the event
+    """
+    # Arrange
+    bus = DirectBus()
+    order_hooks: Hooks[_PlaceOrder, _Order] = Hooks(success=(_audit_order, _audit_any))
+    any_hooks: Hooks[Any, Any] = Hooks(success=(_audit_any,))
+
+    # Act
+    bus.handle(_place_order, _make_order, hooks=order_hooks)
+    place = bus.bind(_place_order, factory=_PlaceOrder, hooks=order_hooks)
+    order = bus.emit(_place_order, None, _PlaceOrder("lamp"), hooks=order_hooks)
+    bus.handle(_order_placed, _on_placed, hooks=Hooks(success=(_audit_any,)))
+    bus.emit(_order_placed, None, _OrderPlaced("lamp"), hooks=any_hooks)
+    bus.handle(_ping, _pong, hooks=Hooks(success=(_audit_any,)))
+
+    # Assert
+    assert_type(place(item="desk"), _Order)
+    assert_type(order, _Order)

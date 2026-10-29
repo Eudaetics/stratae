@@ -9,7 +9,7 @@ and {py:class}`AsyncBindMixin` give an adapter its own typed `bind` method.
 ````{example} Binding an event to a generic emitter
 ```{code-block} python
 from typing import Any, Callable
-from stratae.events import EventType, Request, bind
+from stratae.events import EventType, Hooks, Request, bind
 
 class CreateOrder:
     def __init__(self, order_id: int) -> None:
@@ -27,6 +27,7 @@ def emit(
     payload: CreateOrder,
     *,
     serializer: Callable[[CreateOrder], Any] | None = None,
+    hooks: Hooks[CreateOrder, Order] | None = None,
 ) -> Order:
     print(f"[{config}] creating order {payload.order_id}")
     return Order(order_id=payload.order_id)
@@ -47,6 +48,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Literal, overload
 
 from stratae.events._typeguards import is_async_factory, is_sync_factory
+from stratae.events.hooks import Hooks
 from stratae.events.patterns import NoPayload
 from stratae.events.protocols import (
     AnyEvent,
@@ -58,37 +60,57 @@ from stratae.events.protocols import (
 
 _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
+_NO_PAYLOAD = NoPayload()
+"""What a payload-less event's bound callable passes as its payload."""
+
+
+def _emit_options(
+    serializer: Callable[[Any], Any] | None, hooks: Hooks[Any, Any] | None
+) -> dict[str, Any]:
+    """
+    Return the keyword arguments a bound callable passes to its emitter.
+
+    `hooks` is passed only when given, so an emitter that doesn't support hooks still works
+    until someone binds with them, then refuses loudly.
+    """
+    if hooks is None:
+        return {"serializer": serializer}
+    return {"serializer": serializer, "hooks": hooks}
+
 
 @overload
-def bind[**P, S, C, R](
-    event: PayloadEvent[S, Any, Any],
+def bind[**P, S, C, R, E](
+    event: PayloadEvent[S, E, Any],
     emitter: EmitCallable[S, C, R, Literal[False]],
     *,
     factory: Callable[P, S],
     config: C,
     serializer: Callable[[S], Any] | None = None,
+    hooks: Hooks[S, E] | None = None,
 ) -> Callable[P, R]: ...
 
 
 @overload
-def bind[C, R](
-    event: SignalEvent[Any, Any],
+def bind[C, R, E](
+    event: SignalEvent[E, Any],
     emitter: EmitCallable[NoPayload, C, R, Literal[True]],
     *,
     factory: None = None,
     config: C,
     serializer: None = None,
+    hooks: Hooks[NoPayload, E] | None = None,
 ) -> Callable[[], R]: ...
 
 
 @overload
-def bind[S, C, R](
-    event: PayloadEvent[S, Any, Any],
+def bind[S, C, R, E](
+    event: PayloadEvent[S, E, Any],
     emitter: EmitCallable[S, C, R, Literal[False]],
     *,
     factory: None = None,
     config: C,
     serializer: Callable[[S], Any] | None = None,
+    hooks: Hooks[S, E] | None = None,
 ) -> Callable[[S], R]: ...
 
 
@@ -99,6 +121,7 @@ def bind(
     factory: Callable[..., Any] | None = None,
     config: Any,
     serializer: Callable[[Any], Any] | None = None,
+    hooks: Hooks[Any, Any] | None = None,
 ) -> Callable[..., Any]:
     """
     Bind an event to a sync emitter.
@@ -109,13 +132,16 @@ def bind(
         omitted, the payload is passed directly.
     :param config: The adapter's routing config.
     :param serializer: Encodes the payload; defaults to the emitter's own.
+    :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit,
+        passed to `emitter` only when given.
     :returns: A callable that dispatches through `emitter`.
     :raises TypeError: If `factory` is async.
     """
+    options = _emit_options(serializer, hooks)
     if factory is None:
 
-        def passthrough(payload: Any = None) -> Any:
-            return emitter(event, config, payload, serializer=serializer)
+        def passthrough(payload: Any = _NO_PAYLOAD) -> Any:
+            return emitter(event, config, payload, **options)
 
         return passthrough
 
@@ -123,41 +149,44 @@ def bind(
         raise TypeError(_SYNC_FACTORY_REQUIRED)
 
     def construct(*args: Any, **kwargs: Any) -> Any:
-        return emitter(event, config, factory(*args, **kwargs), serializer=serializer)
+        return emitter(event, config, factory(*args, **kwargs), **options)
 
     return construct
 
 
 @overload
-def abind[**P, S, C, R](
-    event: PayloadEvent[S, Any, Any],
+def abind[**P, S, C, R, E](
+    event: PayloadEvent[S, E, Any],
     emitter: EmitCallable[S, C, Awaitable[R], Literal[False]],
     *,
     factory: Callable[P, S] | Callable[P, Awaitable[S]],
     config: C,
     serializer: Callable[[S], Any] | None = None,
+    hooks: Hooks[S, E] | None = None,
 ) -> Callable[P, Awaitable[R]]: ...
 
 
 @overload
-def abind[C, R](
-    event: SignalEvent[Any, Any],
+def abind[C, R, E](
+    event: SignalEvent[E, Any],
     emitter: EmitCallable[NoPayload, C, Awaitable[R], Literal[True]],
     *,
     factory: None = None,
     config: C,
     serializer: None = None,
+    hooks: Hooks[NoPayload, E] | None = None,
 ) -> Callable[[], Awaitable[R]]: ...
 
 
 @overload
-def abind[S, C, R](
-    event: PayloadEvent[S, Any, Any],
+def abind[S, C, R, E](
+    event: PayloadEvent[S, E, Any],
     emitter: EmitCallable[S, C, Awaitable[R], Literal[False]],
     *,
     factory: None = None,
     config: C,
     serializer: Callable[[S], Any] | None = None,
+    hooks: Hooks[S, E] | None = None,
 ) -> Callable[[S], Awaitable[R]]: ...
 
 
@@ -168,6 +197,7 @@ def abind(
     factory: Callable[..., Any] | Callable[..., Awaitable[Any]] | None = None,
     config: Any,
     serializer: Callable[[Any], Any] | None = None,
+    hooks: Hooks[Any, Any] | None = None,
 ) -> Callable[..., Awaitable[Any]]:
     """
     Bind an event to an async emitter.
@@ -178,12 +208,14 @@ def abind(
         arguments. If omitted, the payload is passed directly.
     :param config: The adapter's routing config.
     :param serializer: Encodes the payload; defaults to the emitter's own.
+    :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
     :returns: An async callable that dispatches through `emitter`.
     """
+    options = _emit_options(serializer, hooks)
     if factory is None:
 
-        async def passthrough(payload: Any = None) -> Any:
-            return await emitter(event, config, payload, serializer=serializer)
+        async def passthrough(payload: Any = _NO_PAYLOAD) -> Any:
+            return await emitter(event, config, payload, **options)
 
         return passthrough
 
@@ -194,7 +226,7 @@ def abind(
             payload = await async_factory(*args, **kwargs)
         else:
             payload = factory(*args, **kwargs)
-        return await emitter(event, config, payload, serializer=serializer)
+        return await emitter(event, config, payload, **options)
 
     return construct
 
@@ -216,6 +248,7 @@ class BindMixin[C](ABC):
         payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, R] | None = None,
     ) -> R:
         """
         Dispatch a payload.
@@ -225,9 +258,9 @@ class BindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _check_event(self, event: AnyEvent) -> None:
+    def _check_event(self, event: AnyEvent, hooks: Hooks[Any, Any] | None = None) -> None:
         """
-        Raise if this adapter can't emit the event's pattern.
+        Raise if this adapter can't emit the event's pattern, or run the given hooks.
 
         Called by `bind`, so an unsupported event is refused before anything emits it.
         """
@@ -241,6 +274,7 @@ class BindMixin[C](ABC):
         factory: Callable[P, S],
         config: C = ...,
         serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, R] | None = None,
     ) -> Callable[P, R]: ...
     @overload
     def bind[R](
@@ -250,6 +284,7 @@ class BindMixin[C](ABC):
         factory: None = None,
         config: C = ...,
         serializer: None = None,
+        hooks: Hooks[NoPayload, R] | None = None,
     ) -> Callable[[], R]: ...
     @overload
     def bind[S, R](
@@ -259,6 +294,7 @@ class BindMixin[C](ABC):
         factory: None = None,
         config: C = ...,
         serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, R] | None = None,
     ) -> Callable[[S], R]: ...
 
     def bind(
@@ -268,6 +304,7 @@ class BindMixin[C](ABC):
         factory: Callable[..., Any] | None = None,
         config: Any = None,
         serializer: Callable[[Any], Any] | None = None,
+        hooks: Hooks[Any, Any] | None = None,
     ) -> Callable[..., Any]:
         """
         Bind an event to this adapter's `emit`. See {py:func}`bind`.
@@ -276,10 +313,13 @@ class BindMixin[C](ABC):
         :param factory: Builds the payload from the call's arguments.
         :param config: The adapter's routing config.
         :param serializer: Encodes the payload.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: A callable that dispatches through this adapter.
         """
-        self._check_event(event)
-        return bind(event, self.emit, factory=factory, config=config, serializer=serializer)
+        self._check_event(event, hooks)
+        return bind(
+            event, self.emit, factory=factory, config=config, serializer=serializer, hooks=hooks
+        )
 
 
 class AsyncBindMixin[C](ABC):
@@ -299,6 +339,7 @@ class AsyncBindMixin[C](ABC):
         payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, R] | None = None,
     ) -> Awaitable[R]:
         """
         Dispatch a payload.
@@ -308,9 +349,9 @@ class AsyncBindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _check_event(self, event: AnyEvent) -> None:
+    def _check_event(self, event: AnyEvent, hooks: Hooks[Any, Any] | None = None) -> None:
         """
-        Raise if this adapter can't emit the event's pattern.
+        Raise if this adapter can't emit the event's pattern, or run the given hooks.
 
         Called by `bind`, so an unsupported event is refused before anything emits it.
         """
@@ -324,6 +365,7 @@ class AsyncBindMixin[C](ABC):
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
         config: C = ...,
         serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, R] | None = None,
     ) -> Callable[P, Awaitable[R]]: ...
     @overload
     def bind[R](
@@ -333,6 +375,7 @@ class AsyncBindMixin[C](ABC):
         factory: None = None,
         config: C = ...,
         serializer: None = None,
+        hooks: Hooks[NoPayload, R] | None = None,
     ) -> Callable[[], Awaitable[R]]: ...
     @overload
     def bind[S, R](
@@ -342,6 +385,7 @@ class AsyncBindMixin[C](ABC):
         factory: None = None,
         config: C = ...,
         serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, R] | None = None,
     ) -> Callable[[S], Awaitable[R]]: ...
 
     def bind(
@@ -351,6 +395,7 @@ class AsyncBindMixin[C](ABC):
         factory: Callable[..., Any] | None = None,
         config: Any = None,
         serializer: Callable[[Any], Any] | None = None,
+        hooks: Hooks[Any, Any] | None = None,
     ) -> Callable[..., Awaitable[Any]]:
         """
         Bind an event to this adapter's `emit`. See {py:func}`abind`.
@@ -359,7 +404,10 @@ class AsyncBindMixin[C](ABC):
         :param factory: Builds the payload from the call's arguments, sync or async.
         :param config: The adapter's routing config.
         :param serializer: Encodes the payload.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: An async callable that dispatches through this adapter.
         """
-        self._check_event(event)
-        return abind(event, self.emit, factory=factory, config=config, serializer=serializer)
+        self._check_event(event, hooks)
+        return abind(
+            event, self.emit, factory=factory, config=config, serializer=serializer, hooks=hooks
+        )

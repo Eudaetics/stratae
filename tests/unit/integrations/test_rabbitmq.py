@@ -28,8 +28,12 @@ RabbitMQPublisher:
 - emit raises NotImplementedError for a request/reply event.
 - bind raises NotImplementedError for a request/reply event.
 - emit publishes an empty body for a schema-less event.
+- emit runs the hooks passed to it around the publish, with a reply of None.
+- A failed publish reaches the failure hook, and still propagates.
+- Publish hooks run inside the message's envelope, seeing the ids it's sent with.
 """
 
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -41,6 +45,7 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     Envelope,
+    Hooks,
     NoPayload,
     PubSub,
     Request,
@@ -466,3 +471,94 @@ async def test_failed_channel_allocation_closes_connection(
     connection.close.assert_awaited_once()
     with pytest.raises(NotConnectedError):
         await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+
+
+def _logging_hooks(log: list[str]) -> Hooks[Any, Any]:
+    """Return publish hooks logging what they see."""
+
+    def before(event: Any, payload: Any) -> None:
+        log.append(f"before {type(payload).__name__}")
+
+    def success(event: Any, payload: Any, reply: Any) -> None:
+        log.append(f"success {reply!r}")
+
+    def failure(event: Any, payload: Any, error: Exception) -> None:
+        log.append(f"failure {type(error).__name__}")
+
+    return Hooks(before=(before,), success=(success,), failure=(failure,))
+
+
+async def test_emit_runs_publish_hooks_around_publish(
+    publisher: RabbitMQPublisher, channel: AsyncMock
+):
+    """
+    ``emit`` should run the hooks passed to it around the publish.
+
+    Given: A connected publisher and a pub/sub event
+    When: emit is awaited with hooks
+    Then: before runs, then the publish, then success with a reply of None
+    """
+    # Arrange
+    log: list[str] = []
+
+    def record_publish(*_: object, **__: object) -> None:
+        log.append("publish")
+
+    channel.basic_publish.side_effect = record_publish
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1), hooks=_logging_hooks(log))
+
+    # Assert
+    assert log == ["before _OrderPlaced", "publish", "success None"]
+
+
+async def test_failed_publish_reaches_failure_hook(publisher: RabbitMQPublisher):
+    """
+    A publish that fails should reach the failure hook, and still raise.
+
+    Given: A disconnected publisher and a pub/sub event
+    When: emit is awaited with hooks
+    Then: The failure hook sees NotConnectedError, which propagates
+    """
+    # Arrange
+    log: list[str] = []
+
+    # Act
+    with pytest.raises(NotConnectedError):
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1), hooks=_logging_hooks(log))
+
+    # Assert
+    assert log == ["before _OrderPlaced", "failure NotConnectedError"]
+
+
+async def test_publish_hooks_see_sent_envelope(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    Publish hooks should run inside the message's envelope, so they see the ids it carries.
+
+    Given: A connected publisher, inside a caller's envelope scope
+    When: An event is emitted with a before hook recording the current envelope
+    Then: The hook's envelope is the message's: a child of the caller's, whose message id
+        and correlation id are the ones stamped on the message
+    """
+    # Arrange
+    seen: list[Envelope | None] = []
+
+    def record(event: Any, payload: Any) -> None:
+        seen.append(Envelope.current())
+
+    # Act
+    async with publisher:
+        with Envelope.scope() as caller:
+            await publisher.emit(
+                _order_placed, _config, _OrderPlaced(1), hooks=Hooks(before=(record,))
+            )
+
+    # Assert
+    (envelope,) = seen
+    assert envelope is not None
+    assert envelope.causation_id == caller.message_id
+    properties = channel.basic_publish.await_args.kwargs["properties"]
+    assert properties.message_id == str(envelope.message_id)
+    assert properties.correlation_id == str(envelope.correlation_id)

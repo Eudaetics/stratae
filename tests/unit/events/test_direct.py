@@ -39,6 +39,16 @@ DirectBus (dispatchers):
 - A subclass of a supported pattern is dispatched as that pattern.
 - An unsupported pattern raises TypeError at handle, at bind, and at emit.
 
+DirectBus (hooks):
+- Hooks passed to bind run around each emit and see a request's reply.
+- Hooks passed to emit run once around a pub/sub emit; hooks passed to handle run around
+  their own handler only.
+- Hooks passed to handle see a responder's failure.
+- A payload-less event's hooks receive a NoPayload instance.
+- Hooks run inside the emission's envelope.
+- Async hooks raise TypeError at handle, at bind, and at emit.
+- An observing hook returning an awaitable is logged; the reply returns and complete runs.
+
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
@@ -59,7 +69,9 @@ from stratae.events import (
     EmitCallable,
     Envelope,
     Handler,
+    Hooks,
     Immutable,
+    NoPayload,
     Producer,
     PubSub,
     Request,
@@ -985,6 +997,229 @@ def test_unsupported_pattern_refused_at_emit(bus: DirectBus):
     # Act / Assert
     with pytest.raises(TypeError, match="no dispatcher for _Gather"):
         bus.emit(_quotes, None, _BookQuery("dune"))
+
+
+# endregion
+
+
+# region: Hooks
+
+
+def _log_hooks(log: list[str], label: str) -> Hooks[Any, Any]:
+    """Return hooks logging, under a label, the payload they see and the reply or error."""
+
+    def before(event: Any, payload: Any) -> None:
+        log.append(f"{label} before {type(payload).__name__}")
+
+    def success(event: Any, payload: Any, reply: Any) -> None:
+        log.append(f"{label} success {reply!r}")
+
+    def failure(event: Any, payload: Any, error: Exception) -> None:
+        log.append(f"{label} failure {error}")
+
+    return Hooks(before=(before,), success=(success,), failure=(failure,))
+
+
+def test_publish_hooks_see_request_reply(bus: DirectBus):
+    """
+    Hooks passed to bind should run around each emit and see the responder's reply.
+
+    Given: A request event bound with hooks, and a responder
+    When: The bound callable is called
+    Then: The hooks run before and after, and success sees the reply
+    """
+    # Arrange
+    log: list[str] = []
+    find_book = Request(_BookQuery, reply=str)
+    bus.handle(find_book, lambda query: query.query.title())
+    find = bus.bind(find_book, factory=_BookQuery, hooks=_log_hooks(log, "publish"))
+
+    # Act
+    reply = find(query="dune")
+
+    # Assert
+    assert reply == "Dune"
+    assert log == ["publish before _BookQuery", "publish success 'Dune'"]
+
+
+def test_emit_and_handle_hooks_on_pubsub(bus: DirectBus):
+    """
+    Emit hooks should run once around a pub/sub emit, and handle hooks around their handler.
+
+    Given: A pub/sub event with two handlers, only one registered with hooks
+    When: The event is emitted with hooks
+    Then: The emit hooks run around the whole emit; the handler's hooks run around that
+        handler only, seeing its return
+    """
+    # Arrange
+    log: list[str] = []
+    bus.handle(_task_created, lambda task: task.task_id, hooks=_log_hooks(log, "handle"))
+    bus.handle(_task_created, lambda task: task.task_id * 10)
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(4), hooks=_log_hooks(log, "publish"))
+
+    # Assert
+    assert log == [
+        "publish before _TaskCreated",
+        "handle before _TaskCreated",
+        "handle success 4",
+        "publish success None",
+    ]
+
+
+def test_handle_hooks_see_responder_failure(bus: DirectBus):
+    """
+    Hooks passed to handle should see a responder's failure, which still propagates.
+
+    Given: A request event whose responder raises, registered with hooks
+    When: The event is emitted
+    Then: The failure hook sees the error, and the error propagates
+    """
+    # Arrange
+    log: list[str] = []
+
+    def missing(_: _BookQuery) -> _BookResult:
+        raise LookupError("no such book")
+
+    bus.handle(_find_book, missing, hooks=_log_hooks(log, "handle"))
+
+    # Act
+    with pytest.raises(LookupError, match="no such book"):
+        bus.emit(_find_book, None, _BookQuery("dune"))
+
+    # Assert
+    assert log == ["handle before _BookQuery", "handle failure no such book"]
+
+
+def test_signal_event_hooks_receive_no_payload(bus: DirectBus):
+    """
+    A payload-less event's hooks should receive a NoPayload instance, matching its type.
+
+    Given: A payload-less request bound with hooks, and a responder registered with hooks
+    When: The bound callable is called
+    Then: Both hooks see a NoPayload payload, and the responder is called with no arguments
+    """
+    # Arrange
+    payloads: list[object] = []
+
+    def record(event: Any, payload: NoPayload) -> None:
+        payloads.append(payload)
+
+    bus.handle(_ping, lambda: "pong", hooks=Hooks(before=(record,)))
+
+    # Act
+    reply = bus.bind(_ping, hooks=Hooks(before=(record,)))()
+
+    # Assert
+    assert reply == "pong"
+    assert len(payloads) == 2
+    assert all(isinstance(payload, NoPayload) for payload in payloads)
+
+
+def test_hooks_run_inside_envelope(bus_with_envelope: DirectBus):
+    """
+    Emit and handle hooks should run inside the emission's envelope.
+
+    Given: A bus with envelopes, and a handler registered with hooks
+    When: An event is emitted with hooks
+    Then: Both hooks see the same envelope as the handler
+    """
+    # Arrange
+    seen: list[Envelope | None] = []
+
+    def record(event: Any, payload: Any) -> None:
+        seen.append(Envelope.current())
+
+    bus_with_envelope.handle(
+        _task_created, lambda task: seen.append(Envelope.current()), hooks=Hooks(before=(record,))
+    )
+
+    # Act
+    bus_with_envelope.emit(_task_created, None, _TaskCreated(1), hooks=Hooks(before=(record,)))
+
+    # Assert
+    assert len(seen) == 3
+    assert seen[0] is not None
+    assert seen[0] is seen[1] is seen[2]
+
+
+async def _async_before(event: Any, payload: Any) -> None:
+    """Do nothing, asynchronously: a hook DirectBus can't run."""
+
+
+def test_async_handle_hooks_refused_at_handle(bus: DirectBus):
+    """
+    Registering a handler with async hooks should fail immediately.
+
+    Given: Hooks including an async hook
+    When: A handler is registered with them
+    Then: A TypeError names the event, and nothing is registered
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
+        bus.handle(_task_created, lambda task: None, hooks=Hooks(before=(_async_before,)))
+    assert bus.handlers(_task_created) == ()
+
+
+def test_async_publish_hooks_refused_at_bind(bus: DirectBus):
+    """
+    Binding with async hooks should fail before anything emits.
+
+    Given: Hooks including an async hook
+    When: An event is bound with them
+    Then: A TypeError names the event
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
+        bus.bind(_task_created, factory=_TaskCreated, hooks=Hooks(before=(_async_before,)))
+
+
+def test_async_publish_hooks_refused_at_emit(bus: DirectBus):
+    """
+    Emitting with async hooks should fail.
+
+    Given: Hooks including an async hook
+    When: An event is emitted with them
+    Then: A TypeError names the event, before any hook or handler runs
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
+        bus.emit(_task_created, None, _TaskCreated(1), hooks=Hooks(before=(_async_before,)))
+
+
+def test_observing_hook_returning_awaitable_is_logged(
+    bus: DirectBus, caplog: pytest.LogCaptureFixture
+):
+    """
+    A success hook returning an awaitable should be logged, not break the call.
+
+    Given: A success hook that returns a coroutine without being detected as async, and a
+        complete hook recording that it ran
+    When: An event is emitted with them
+    Then: The reply is returned, the complete hook runs, and the hook's error is logged
+    """
+    # Arrange
+    completed: list[BaseException | None] = []
+
+    async def work() -> None: ...
+
+    def returns_coroutine(event: Any, payload: Any, reply: Any) -> object:
+        return work()
+
+    def record(event: Any, payload: Any, error: BaseException | None) -> None:
+        completed.append(error)
+
+    bus.handle(_find_book, lambda query: _BookResult(query.query))
+    hooks: Hooks[_BookQuery, _BookResult] = Hooks(success=(returns_coroutine,), complete=(record,))
+
+    # Act
+    reply = bus.emit(_find_book, None, _BookQuery("dune"), hooks=hooks)
+
+    # Assert
+    assert reply.title == "dune"
+    assert completed == [None]
+    assert "returned an awaitable" in caplog.text
 
 
 # endregion

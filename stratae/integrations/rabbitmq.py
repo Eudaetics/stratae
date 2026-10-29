@@ -10,6 +10,8 @@ with {py:func}`RabbitMQPublisher.bind` and a {py:class}`RabbitMQConfig`; consume
 
 Each message carries its {py:class}`Envelope <stratae.events.envelope.Envelope>` in its
 headers, so correlation ids propagate across publishes and handlers.
+{py:class}`Hooks <stratae.events.hooks.Hooks>` passed to `bind` or `emit` run around each
+publish, and those passed to `handle` around each delivery's handler, before its ack or nack.
 
 ````{example} Publishing an event to RabbitMQ, then consuming it back
 <!--- skip: next -->
@@ -109,6 +111,7 @@ from stratae.events import (
 )
 from stratae.events.binding import AsyncBindMixin
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError
+from stratae.events.hooks import Hooks, run_hooks_async, with_handle_hooks
 from stratae.serde import Deserializer, Serializer, deserialize, serialize
 
 if TYPE_CHECKING:
@@ -129,10 +132,8 @@ _PUBSUB_ONLY = "RabbitMQConsumer handles PubSub events only, got {!r}"
 _NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
 
 
-def _stamp(properties: Basic.Properties | None) -> Basic.Properties:
-    """Copy properties, stamped with the current envelope's headers, ids, and timestamp."""
-    current = Envelope.current()
-    envelope = current.child() if current is not None else Envelope()
+def _stamp(properties: Basic.Properties | None, envelope: Envelope) -> Basic.Properties:
+    """Copy properties, stamped with the message's envelope headers, ids, and timestamp."""
     stamped = copy(properties) if properties is not None else Basic.Properties()
     stamped.headers = (stamped.headers or {}) | envelope.to_headers()
     stamped.message_id = str(envelope.message_id)
@@ -248,6 +249,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         payload: S,
         *,
         serializer: Serializer[S] | None = None,
+        hooks: Hooks[S, R] | None = None,
     ) -> R:
         """
         Serialize a payload and publish it.
@@ -256,11 +258,40 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         :param config: The exchange and routing key.
         :param payload: The payload to publish.
         :param serializer: Overrides the publisher's serializer for this call.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around the publish,
+            inside the message's envelope, so they see the ids it's sent with.
         :raises NotConnectedError: If the publisher isn't connected.
         :raises NotImplementedError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         """
         self._check_event(event)
+        # The message's own envelope, current while its hooks run, so they see what's sent.
+        with Envelope.scope() as envelope:
+            if hooks is None:
+                await self._publish(event, config, payload, serializer, envelope)
+            else:
+                await run_hooks_async(
+                    hooks,
+                    event,
+                    payload,
+                    self._publish,
+                    event,
+                    config,
+                    payload,
+                    serializer,
+                    envelope,
+                )
+        return cast(R, None)
+
+    async def _publish(
+        self,
+        event: AnyEvent,
+        config: RabbitMQConfig,
+        payload: Any,
+        serializer: Serializer[Any] | None,
+        envelope: Envelope,
+    ) -> None:
+        """Serialize a payload and publish it to config's exchange, stamped with `envelope`."""
         if self._channel is None:
             raise NotConnectedError(_NOT_CONNECTED)
         await self._declare_exchange(self._channel, config)
@@ -269,12 +300,15 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
             body,
             exchange=config.exchange,
             routing_key=config.routing_key,
-            properties=_stamp(config.properties),
+            properties=_stamp(config.properties, envelope),
         )
-        return cast(R, None)
 
-    def _check_event(self, event: AnyEvent) -> None:
-        """Raise NotImplementedError for an event that isn't PubSub."""
+    def _check_event(
+        self,
+        event: AnyEvent,
+        hooks: Hooks[Any, Any] | None = None,  # noqa: S1172
+    ) -> None:
+        """Raise NotImplementedError for an event that isn't PubSub; any hooks can run."""
         if not isinstance(event, PubSub):
             raise NotImplementedError(_REQUEST_REPLY_NOT_IMPLEMENTED)
 
@@ -394,9 +428,11 @@ class RabbitMQConsumer:
     `exchange` config to fan out. Bodies are decoded with `deserializer(body, type=schema)`,
     defaulting to {py:obj}`stratae.serde.deserialize`.
 
-    A message is acked once its handler returns. If decoding or handling raises, it's logged
-    and nacked without requeue. Sync handlers run on the event loop and block other
-    deliveries.
+    A message is acked once its handler, and its hooks, return. If decoding, the handler or a
+    `before` hook raises, it's logged and nacked without requeue. Observing hooks in a slot run
+    concurrently, so the ack waits for the slowest of them, not their sum; one that raises is
+    logged and the message is still acked. Sync handlers run on
+    the event loop and block other deliveries.
 
     Exiting the context shuts down gracefully: it cancels every AMQP consumer so no new
     messages arrive, waits up to `drain_timeout` for running handlers to finish and ack, then
@@ -503,6 +539,7 @@ class RabbitMQConsumer:
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
+        hooks: Hooks[NoPayload, object] | None = None,
     ) -> Handler[[], RabbitMQConsumeConfig, R]: ...
 
     @overload
@@ -513,6 +550,7 @@ class RabbitMQConsumer:
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
+        hooks: Hooks[NoPayload, object] | None = None,
     ) -> _SignalConsumeDecorator: ...
 
     @overload
@@ -523,6 +561,7 @@ class RabbitMQConsumer:
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
+        hooks: Hooks[S, object] | None = None,
     ) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
 
     @overload
@@ -533,6 +572,7 @@ class RabbitMQConsumer:
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
+        hooks: Hooks[S, object] | None = None,
     ) -> _ConsumeDecorator[S]: ...
 
     def handle(
@@ -542,6 +582,7 @@ class RabbitMQConsumer:
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
+        hooks: Hooks[Any, Any] | None = None,
     ) -> (
         Handler[Any, RabbitMQConsumeConfig, Any] | _ConsumeDecorator[Any] | _SignalConsumeDecorator
     ):
@@ -554,16 +595,19 @@ class RabbitMQConsumer:
         :param fn: The handler. If omitted, returns a decorator.
         :param config: The queue or exchange to consume from.
         :param deserializer: Overrides the consumer's deserializer for this registration.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this handler on
+            each delivery. A message that fails to decode never reaches the handler, so its
+            hooks don't see it.
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         """
         if not isinstance(event, PubSub):
             raise TypeError(_PUBSUB_ONLY.format(event))
         if fn is not None:
-            return self._register(event, fn, config, deserializer)
+            return self._register(event, fn, config, deserializer, hooks)
 
         def decorator(fn: Callable[..., Any]) -> Handler[Any, RabbitMQConsumeConfig, Any]:
-            return self._register(event, fn, config, deserializer)
+            return self._register(event, fn, config, deserializer, hooks)
 
         return decorator
 
@@ -586,12 +630,12 @@ class RabbitMQConsumer:
         fn: Callable[..., Any],
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None,
+        hooks: Hooks[Any, Any] | None,
     ) -> Handler[[Any], RabbitMQConsumeConfig, Any]:
-        """Wrap fn as a Handler, consuming immediately if connected."""
+        """Wrap fn and its hooks as a Handler, consuming immediately if connected."""
         call: Callable[[Any], Any] = WithoutPayload(fn) if event.is_signal else fn
-        handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(
-            call, config, is_async_callable(fn)
-        )
+        call, is_async = with_handle_hooks(event, hooks, call, is_async_callable(fn))
+        handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(call, config, is_async)
         registration = _Registration(event, handler, deserializer)
         self._registrations[handler] = registration
         channel = self._channel
@@ -648,7 +692,7 @@ class RabbitMQConsumer:
     def _deserialize(self, registration: _Registration, body: bytes) -> Any:
         """Decode a body with the registration's deserializer or the default."""
         if registration.event.is_signal:
-            return None
+            return NoPayload()
         deserializer = registration.deserializer or self._deserializer
         return deserializer(body, type=registration.event.schema)
 

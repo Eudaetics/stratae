@@ -91,6 +91,7 @@ scheduled shipment for order 1
 """
 
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import Any, Awaitable, Callable, Collection, Protocol, overload
 
 from stratae._callables import is_async_callable
@@ -105,7 +106,8 @@ from stratae.events._dispatch import (
 from stratae.events.binding import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
 from stratae.events.handler import Handler, WithoutPayload
-from stratae.events.patterns import PubSub, Request
+from stratae.events.hooks import Hooks, run_hooks, run_hooks_async, with_handle_hooks
+from stratae.events.patterns import NoPayload, PubSub, Request
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
 
 _AnyEvent = AnyEvent
@@ -117,6 +119,11 @@ _UNSUPPORTED_PATTERN = (
 _ASYNC_HANDLER_REJECTED = (
     "DirectBus dispatches synchronously and cannot await async handlers;"
     " register them on AsyncDirectBus instead"
+)
+
+_ASYNC_HOOKS_REJECTED = (
+    "DirectBus runs hooks synchronously and cannot await async hooks for '{}';"
+    " use AsyncDirectBus instead"
 )
 
 
@@ -185,18 +192,25 @@ class BaseDirectBus:
         self._handlers: dict[_AnyEvent, set[Handler[Any, _AnyEvent, Any]]] = defaultdict(set)
         self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in dispatches)
 
-    def _check_event(self, event: _AnyEvent) -> None:
+    def _check_event(
+        self,
+        event: _AnyEvent,
+        hooks: Hooks[Any, Any] | None = None,  # noqa: S1172
+    ) -> None:
         """Raise TypeError if this bus has no dispatcher for the event's pattern."""
         if self._dispatcher.dispatch(type(event)) is no_dispatcher:
             raise TypeError(
                 _UNSUPPORTED_PATTERN.format(bus=type(self).__name__, pattern=type(event).__name__)
             )
 
-    def _register(self, config: _AnyEvent, fn: Callable[..., Any]) -> Handler[Any, _AnyEvent, Any]:
-        """Wrap fn as a Handler and store it in the registry under config."""
-        self._check_event(config)
+    def _register(
+        self, config: _AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
+    ) -> Handler[Any, _AnyEvent, Any]:
+        """Wrap fn and its hooks as a Handler, and store it in the registry under config."""
+        self._check_event(config, hooks)
         call: Callable[..., Any] = WithoutPayload(fn) if config.is_signal else fn
-        handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, is_async_callable(fn))
+        call, is_async = with_handle_hooks(config, hooks, call, is_async_callable(fn))
+        handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, is_async)
         self._handlers[config].add(handler)
         return handler
 
@@ -244,7 +258,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
     ) -> None:
         """Create a bus, optionally with envelope tracking."""
         super().__init__((*_SYNC_DEFAULTS, *dispatchers))
-        self._dispatch: Callable[[Any, _AnyEvent], Any] = (
+        self._dispatch: Callable[[Any, _AnyEvent, Hooks[Any, Any] | None], Any] = (
             self._dispatch_in_envelope if use_envelope else self._dispatch_plain
         )
 
@@ -255,6 +269,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,  # noqa: S1172
+        hooks: Hooks[S, R] | None = None,
     ) -> R:
         """
         Dispatch a payload to the event's handlers.
@@ -266,18 +281,22 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         :param config: Unused.
         :param payload: The payload to dispatch.
         :param serializer: Unused.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
         :returns: The responder's reply for a request event, otherwise `None`.
         :raises NoResponderError: If a request event has no responder.
         :raises MultipleRespondersError: If a request event has more than one responder.
-        :raises TypeError: If the bus has no dispatcher for the event's pattern.
+        :raises TypeError: If the bus has no dispatcher for the event's pattern, or `hooks`
+            includes an async hook.
         """
-        return self._dispatch(payload, event)
+        return self._dispatch(payload, event, hooks)
 
     @overload
     def handle[R](
         self,
         config: SignalEvent[Any, R],
         fn: Callable[[], R],
+        *,
+        hooks: Hooks[NoPayload, R] | None = None,
     ) -> Handler[[], _AnyEvent, R]: ...
 
     @overload
@@ -285,6 +304,8 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         self,
         config: SignalEvent[Any, R],
         fn: None = None,
+        *,
+        hooks: Hooks[NoPayload, R] | None = None,
     ) -> Callable[[Callable[[], R]], Handler[[], _AnyEvent, R]]: ...
 
     @overload
@@ -292,6 +313,8 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         self,
         config: PayloadEvent[S, Any, R],
         fn: Callable[[S], R],
+        *,
+        hooks: Hooks[S, R] | None = None,
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
@@ -299,12 +322,16 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         self,
         config: PayloadEvent[S, Any, R],
         fn: None = None,
+        *,
+        hooks: Hooks[S, R] | None = None,
     ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
 
     def handle(
         self,
         config: _AnyEvent,
         fn: Callable[..., Any] | None = None,
+        *,
+        hooks: Hooks[Any, Any] | None = None,
     ) -> Any:
         """
         Register a sync handler for an event, as a decorator or direct call.
@@ -313,30 +340,46 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
 
         :param config: The event to handle.
         :param fn: The handler. If omitted, returns a decorator.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this handler.
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
         """
         if fn is not None:
-            return self._register(config, fn)
+            return self._register(config, fn, hooks)
 
         def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEvent, Any]:
-            return self._register(config, f)
+            return self._register(config, f, hooks)
 
         return decorator
 
-    def _register(self, config: _AnyEvent, fn: Callable[..., Any]) -> Handler[Any, _AnyEvent, Any]:
+    def _register(
+        self, config: _AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
+    ) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn as a Handler, raising TypeError if it's async."""
         if is_async_callable(fn):
             raise TypeError(_ASYNC_HANDLER_REJECTED)
-        return super()._register(config, fn)
+        return super()._register(config, fn, hooks)
 
-    def _dispatch_plain(self, payload: Any, event: _AnyEvent) -> Any:
-        """Dispatch payload without an envelope."""
-        return self._dispatcher(event, self._handlers.get(event, ()), payload)
+    def _check_event(self, event: _AnyEvent, hooks: Hooks[Any, Any] | None = None) -> None:
+        """Raise TypeError for an unsupported pattern, or async hooks."""
+        super()._check_event(event, hooks)
+        if hooks is not None and hooks.has_async:
+            raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
 
-    def _dispatch_in_envelope(self, payload: Any, event: _AnyEvent) -> Any:
+    def _dispatch_plain(self, payload: Any, event: _AnyEvent, hooks: Hooks[Any, Any] | None) -> Any:
+        """Dispatch payload without an envelope, inside the hooks if any."""
+        handlers = self._handlers.get(event, ())
+        if hooks is None:
+            return self._dispatcher(event, handlers, payload)
+        if hooks.has_async:
+            raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
+        return run_hooks(hooks, event, payload, self._dispatcher, event, handlers, payload)
+
+    def _dispatch_in_envelope(
+        self, payload: Any, event: _AnyEvent, hooks: Hooks[Any, Any] | None
+    ) -> Any:
         """Dispatch payload inside a new envelope."""
         with Envelope.scope():
-            return self._dispatch_plain(payload, event)
+            return self._dispatch_plain(payload, event, hooks)
 
 
 class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
@@ -370,6 +413,7 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,  # noqa: S1172
+        hooks: Hooks[S, R] | None = None,
     ) -> R:
         """
         Dispatch a payload to the event's handlers.
@@ -381,22 +425,27 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         :param config: Unused.
         :param payload: The payload to dispatch.
         :param serializer: Unused.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
         :returns: The responder's reply for a request event, otherwise `None`.
         :raises NoResponderError: If a request event has no responder.
         :raises MultipleRespondersError: If a request event has more than one responder.
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
         handlers = self._handlers.get(event, ())
-        if self._use_envelope:
-            with Envelope.scope():
+        with Envelope.scope() if self._use_envelope else nullcontext():
+            if hooks is None:
                 return await self._dispatcher(event, handlers, payload)
-        return await self._dispatcher(event, handlers, payload)
+            return await run_hooks_async(
+                hooks, event, payload, self._dispatcher, event, handlers, payload
+            )
 
     @overload
     def handle[R](
         self,
         config: SignalEvent[Any, R],
         fn: Callable[[], Awaitable[R]],
+        *,
+        hooks: Hooks[NoPayload, R] | None = None,
     ) -> Handler[[], _AnyEvent, Awaitable[R]]: ...
 
     @overload
@@ -404,6 +453,8 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         self,
         config: SignalEvent[Any, R],
         fn: Callable[[], R],
+        *,
+        hooks: Hooks[NoPayload, R] | None = None,
     ) -> Handler[[], _AnyEvent, R]: ...
 
     @overload
@@ -411,6 +462,8 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         self,
         config: SignalEvent[Any, R],
         fn: None = None,
+        *,
+        hooks: Hooks[NoPayload, R] | None = None,
     ) -> _AsyncSignalHandlerDecorator[R]: ...
 
     @overload
@@ -418,6 +471,8 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         self,
         config: PayloadEvent[S, Any, R],
         fn: Callable[[S], Awaitable[R]],
+        *,
+        hooks: Hooks[S, R] | None = None,
     ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
 
     @overload
@@ -425,6 +480,8 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         self,
         config: PayloadEvent[S, Any, R],
         fn: Callable[[S], R],
+        *,
+        hooks: Hooks[S, R] | None = None,
     ) -> Handler[[S], _AnyEvent, R]: ...
 
     @overload
@@ -432,12 +489,16 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         self,
         config: PayloadEvent[S, Any, R],
         fn: None = None,
+        *,
+        hooks: Hooks[S, R] | None = None,
     ) -> _AsyncHandlerDecorator[S, R]: ...
 
     def handle(
         self,
         config: _AnyEvent,
         fn: Callable[..., Any] | None = None,
+        *,
+        hooks: Hooks[Any, Any] | None = None,
     ) -> Any:
         """
         Register a sync or async handler for an event, as a decorator or direct call.
@@ -446,12 +507,13 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
 
         :param config: The event to handle.
         :param fn: The handler. If omitted, returns a decorator.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this handler.
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
         """
         if fn is not None:
-            return self._register(config, fn)
+            return self._register(config, fn, hooks)
 
         def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEvent, Any]:
-            return self._register(config, f)
+            return self._register(config, f, hooks)
 
         return decorator
