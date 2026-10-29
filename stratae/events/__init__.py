@@ -73,6 +73,7 @@ from .envelope import (
     Envelope,
 )
 from .handler import Handler, WithoutPayload
+from .hooks import Hooks
 from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
     AnyEvent,
@@ -96,6 +97,7 @@ __all__ = [
     "Envelope",
     "EventType",
     "Handler",
+    "Hooks",
     "Immutable",
     "MESSAGE_ID_HEADER",
     "NoPayload",

@@ -55,7 +55,8 @@ class Handler[**P, HandlerConfig, R]:
         """
         Wrap a handler.
 
-        :param call: Sync or async callable taking the payload.
+        :param call: Sync or async callable taking the payload: what the bus invokes, which may
+            wrap the registered function, e.g. in hooks.
         :param config: The handler's routing config.
         :param is_async: Whether `call` is async. Detected if omitted.
         """

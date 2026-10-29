@@ -37,6 +37,12 @@ AsyncDirectBus (dispatchers):
 - A custom pattern is dispatched through an async dispatcher passed with dispatchers=.
 - An unsupported pattern raises TypeError at handle and at bind.
 
+AsyncDirectBus (hooks):
+- Sync and async hooks passed to bind run around each emit and see a request's reply.
+- A sync handler registered with async hooks is awaited, with the hooks around it.
+- Hooks passed to emit run inside the emission's envelope when envelopes are tracked.
+- A payload-less event's hooks receive a NoPayload instance.
+
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
@@ -58,6 +64,7 @@ from stratae.events import (
     EmitCallable,
     Envelope,
     Handler,
+    Hooks,
     Immutable,
     Producer,
     PubSub,
@@ -994,6 +1001,128 @@ def test_unsupported_pattern_refused_at_bind(bus: AsyncDirectBus):
     # Act / Assert
     with pytest.raises(TypeError, match="AsyncDirectBus has no dispatcher for _Gather"):
         bus.bind(_quotes, factory=_BookQuery)
+
+
+# endregion
+
+
+# region: Hooks
+
+
+def _log(log: list[str], label: str) -> Any:
+    """Return a sync hook logging its label and the reply or payload type it sees."""
+
+    def hook(event: Any, payload: Any, *rest: Any) -> None:
+        log.append(f"{label} {rest[0]!r}" if rest else f"{label} {type(payload).__name__}")
+
+    return hook
+
+
+def _alog(log: list[str], label: str) -> Any:
+    """Return an async hook logging its label and the reply or payload type it sees."""
+
+    async def hook(event: Any, payload: Any, *rest: Any) -> None:
+        log.append(f"{label} {rest[0]!r}" if rest else f"{label} {type(payload).__name__}")
+
+    return hook
+
+
+async def test_publish_hooks_see_request_reply(bus: AsyncDirectBus):
+    """
+    Sync and async publish hooks should run around an emit and see the reply.
+
+    Given: A request event bound with an async before hook and a sync success hook, and an
+        async responder
+    When: The event is emitted through a bound callable
+    Then: Both hooks run in order, and success sees the reply
+    """
+    # Arrange
+    log: list[str] = []
+    find_book = Request(_BookQuery, reply=str)
+    hooks: Hooks[_BookQuery, str] = Hooks(
+        before=(_alog(log, "before"),), success=(_log(log, "success"),)
+    )
+
+    async def respond(query: _BookQuery) -> str:
+        return query.query.title()
+
+    bus.handle(find_book, respond)
+    find = bus.bind(find_book, factory=_BookQuery, hooks=hooks)
+
+    # Act
+    reply = await find(query="dune")
+
+    # Assert
+    assert reply == "Dune"
+    assert log == ["before _BookQuery", "success 'Dune'"]
+
+
+async def test_sync_handler_with_async_handle_hooks_awaited(bus: AsyncDirectBus):
+    """
+    A sync handler whose event has async handle hooks should still run, with the hooks.
+
+    Given: A sync handler registered with async hooks
+    When: The event is emitted
+    Then: The hooks run around the handler and see its return
+    """
+    # Arrange
+    log: list[str] = []
+    hooks: Hooks[_TaskCreated, object] = Hooks(
+        before=(_alog(log, "before"),), success=(_alog(log, "success"),)
+    )
+    bus.handle(_task_created, lambda task: task.task_id, hooks=hooks)
+
+    # Act
+    await bus.emit(_task_created, None, _TaskCreated(7))
+
+    # Assert
+    assert log == ["before _TaskCreated", "success 7"]
+
+
+async def test_publish_hooks_run_inside_envelope(bus_with_envelope: AsyncDirectBus):
+    """
+    Publish hooks should run inside the emission's envelope when envelopes are tracked.
+
+    Given: A bus with envelopes, and a pub/sub handler
+    When: The event is emitted with an async hook
+    Then: The hook and the handler see the same envelope
+    """
+    # Arrange
+    seen: list[Envelope | None] = []
+
+    async def record(event: Any, payload: Any) -> None:
+        seen.append(Envelope.current())
+
+    bus_with_envelope.handle(_task_created, lambda task: seen.append(Envelope.current()))
+
+    # Act
+    await bus_with_envelope.emit(
+        _task_created, None, _TaskCreated(1), hooks=Hooks(before=(record,))
+    )
+
+    # Assert
+    assert len(seen) == 2
+    assert seen[0] is not None
+    assert seen[0] is seen[1]
+
+
+async def test_signal_event_hooks_receive_no_payload(bus: AsyncDirectBus):
+    """
+    A payload-less event's hooks should receive a NoPayload instance, matching its type.
+
+    Given: A payload-less pub/sub event's handler registered with an async hook
+    When: The event is emitted through a callable bound with an async hook
+    Then: Both hooks see a NoPayload payload
+    """
+    # Arrange
+    log: list[str] = []
+    bus.handle(_heartbeat, lambda: None, hooks=Hooks(before=(_alog(log, "handle"),)))
+
+    # Act
+    await bus.bind(_heartbeat, hooks=Hooks(before=(_alog(log, "publish"),)))()
+
+    # Assert
+    assert log == ["publish NoPayload", "handle NoPayload"]
 
 
 # endregion

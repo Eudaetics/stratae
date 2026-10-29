@@ -13,15 +13,20 @@ bind without a factory:
 - Calling the returned callable forwards an already-built payload to the emitter.
 - Calling the returned callable returns the emitter's result.
 - The serializer is forwarded to the emitter.
+
+bind with hooks:
+- The hooks are forwarded to the emitter.
+- An emitter without a hooks parameter works without hooks, and refuses them loudly.
 """
 
 import asyncio
+from typing import Any, cast
 from unittest.mock import Mock, create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events import EmitCallable, PubSub, bind
+from stratae.events import EmitCallable, Hooks, PubSub, bind
 
 
 class _OrderCreated:
@@ -75,7 +80,11 @@ def test_bind_with_factory_returns_emitter_result() -> None:
     emitter = create_autospec(EmitCallable)
 
     def _return(
-        event: object, config: object, payload: object, serializer: object = None
+        event: object,
+        config: object,
+        payload: object,
+        serializer: object = None,
+        hooks: object = None,
     ) -> object:
         return payload
 
@@ -171,7 +180,11 @@ def test_bind_without_factory_returns_emitter_result() -> None:
     emitter = create_autospec(EmitCallable)
 
     def _return(
-        event: object, config: object, payload: object, serializer: object = None
+        event: object,
+        config: object,
+        payload: object,
+        serializer: object = None,
+        hooks: object = None,
     ) -> object:
         return payload
 
@@ -232,3 +245,53 @@ def test_bind_with_factory_raises_for_async_callable_factory() -> None:
     # Act / Assert
     with pytest.raises(TypeError):
         bind(ev, emitter, factory=Factory(), config=None)  # pyright: ignore[reportCallIssue, reportArgumentType]
+
+
+def test_bind_forwards_hooks_to_emitter() -> None:
+    """
+    Hooks given to bind should be forwarded to the emitter with every call.
+
+    Given: A callable produced by bind with hooks
+    When: The callable is called with a payload
+    Then: The emitter should receive the same hooks
+    """
+    # Arrange
+    emitter = create_autospec(EmitCallable)
+    hooks: Hooks[Any, Any] = Hooks()
+    ev = PubSub(_OrderCreated)
+    bound = bind(ev, emitter, config=None, hooks=hooks)
+    payload = _OrderCreated(1, "pending")
+
+    # Act
+    bound(payload)
+
+    # Assert
+    emitter.assert_called_once_with(ev, None, payload, serializer=None, hooks=hooks)
+
+
+def test_emitter_without_hooks_parameter() -> None:
+    """
+    An emitter that doesn't take hooks should work until hooks are bound with it.
+
+    Given: An emitter with no hooks parameter
+    When: It's bound without hooks and called, then bound with hooks and called
+    Then: The first call reaches the emitter; the second raises TypeError
+    """
+    # Arrange
+    received: list[object] = []
+
+    def emitter(event: object, config: object, payload: object, serializer: object = None) -> None:
+        received.append(payload)
+
+    # An untyped adapter: typed ones accept hooks, as EmitCallable declares.
+    untyped_emitter = cast(Any, emitter)
+    ev = PubSub(_OrderCreated)
+    payload = _OrderCreated(1, "pending")
+    plain = bind(ev, untyped_emitter, config=None)
+    hooked = bind(ev, untyped_emitter, config=None, hooks=Hooks())
+
+    # Act / Assert
+    plain(payload)
+    assert received == [payload]
+    with pytest.raises(TypeError, match="hooks"):
+        hooked(payload)

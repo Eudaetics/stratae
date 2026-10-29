@@ -58,6 +58,10 @@ RabbitMQConsumer:
   running.
 - A failed consumer cancel on exit is logged and the connection still closes.
 - A handler exiting its own consumer doesn't wait on itself.
+- Hooks passed to handle run around each delivery's handler, before the ack.
+- A before hook that raises nacks the message without requeue.
+- A success hook that raises is logged, and the handled message is still acked.
+- A schema-less event's hooks receive a NoPayload instance.
 """
 
 import asyncio
@@ -74,6 +78,8 @@ from stratae.events import (
     MESSAGE_ID_HEADER,
     Envelope,
     Handler,
+    Hooks,
+    NoPayload,
     PubSub,
     Request,
 )
@@ -1212,3 +1218,133 @@ async def test_handler_exiting_its_own_consumer_does_not_wait_on_itself(
 
     # Assert
     connection.close.assert_awaited_once()
+
+
+async def test_handle_hooks_run_before_ack(consumer: RabbitMQConsumer, channel: AsyncMock):
+    """
+    Hooks passed to handle should run around the handler, before the message is acked.
+
+    Given: A connected consumer with a sync handler registered with hooks
+    When: The registered callback receives a message
+    Then: before, the handler, success and complete run in order, then the ack
+    """
+    # Arrange
+    log: list[str] = []
+
+    def before(event: Any, payload: _OrderPlaced) -> None:
+        log.append(f"before {payload.order_id}")
+
+    def success(event: Any, payload: _OrderPlaced, reply: object) -> None:
+        log.append(f"success {reply!r}")
+
+    def complete(event: Any, payload: _OrderPlaced, error: BaseException | None) -> None:
+        log.append(f"complete {error!r}")
+
+    def on_order(order: _OrderPlaced) -> str:
+        log.append("handler")
+        return "done"
+
+    hooks = Hooks(before=(before,), success=(success,), complete=(complete,))
+    consumer.handle(_order_placed, on_order, config=_config, hooks=hooks)
+    message = _message(b'{"order_id": 7}')
+
+    def record_ack(*_: object) -> None:
+        log.append("ack")
+
+    message.channel.basic_ack.side_effect = record_ack
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert log == ["before 7", "handler", "success 'done'", "complete None", "ack"]
+
+
+async def test_raising_handle_hook_nacks(consumer: RabbitMQConsumer, channel: AsyncMock):
+    """
+    A before hook that raises should nack the message, as a failing handler does.
+
+    Given: A connected consumer with a handler registered with a before hook that raises
+    When: The registered callback receives a message
+    Then: The handler doesn't run, and the message is nacked without requeue
+    """
+    # Arrange
+    received: list[_OrderPlaced] = []
+
+    def refuse(event: Any, payload: _OrderPlaced) -> None:
+        raise PermissionError("not today")
+
+    consumer.handle(_order_placed, received.append, config=_config, hooks=Hooks(before=(refuse,)))
+    message = _message(b'{"order_id": 7}')
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert received == []
+    message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
+    message.channel.basic_ack.assert_not_awaited()
+
+
+async def test_signal_handle_hooks_receive_no_payload(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A schema-less event's hooks should receive a NoPayload instance.
+
+    Given: A connected consumer with a schema-less event's handler registered with an async
+        before hook
+    When: The registered callback receives a message with an empty body
+    Then: The hook sees a NoPayload payload, and the handler runs with no arguments
+    """
+    # Arrange
+    payloads: list[object] = []
+    calls: list[str] = []
+
+    async def record(event: Any, payload: NoPayload) -> None:
+        payloads.append(payload)
+
+    consumer.handle(
+        _heartbeat, lambda: calls.append("beat"), config=_config, hooks=Hooks(before=(record,))
+    )
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(_message(b""))
+
+    # Assert
+    assert calls == ["beat"]
+    assert len(payloads) == 1
+    assert isinstance(payloads[0], NoPayload)
+
+
+async def test_raising_success_hook_still_acks(
+    consumer: RabbitMQConsumer, channel: AsyncMock, caplog: pytest.LogCaptureFixture
+):
+    """
+    A success hook that raises shouldn't nack a message its handler already handled.
+
+    Given: A connected consumer with a handler registered with a success hook that raises
+    When: The registered callback receives a message
+    Then: The handler runs, the message is acked, and the hook's error is logged
+    """
+    # Arrange
+    received: list[_OrderPlaced] = []
+
+    def audit(event: Any, payload: _OrderPlaced, reply: object) -> None:
+        raise RuntimeError("audit down")
+
+    consumer.handle(_order_placed, received.append, config=_config, hooks=Hooks(success=(audit,)))
+    message = _message(b'{"order_id": 7}')
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert [order.order_id for order in received] == [7]
+    message.channel.basic_ack.assert_awaited_once_with(11)
+    message.channel.basic_nack.assert_not_awaited()
+    assert "audit down" in caplog.text

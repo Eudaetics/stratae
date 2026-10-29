@@ -19,11 +19,13 @@ This test suite verifies the following behaviors:
 - A poison message is dropped without redelivery and without reaching
   the handler.
 - A schema-less event round-trips publisher -> broker -> zero-arg handler.
+- Hooks passed to bind run around the publish, and hooks passed to handle around the
+  consumer's handler, across the broker.
 """
 
 import asyncio
 import os
-from typing import AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable
 from uuid import uuid4
 
 import msgspec
@@ -31,7 +33,7 @@ import pytest
 from aiormq import connect
 from aiormq.abc import AbstractChannel
 
-from stratae.events import Envelope, PubSub
+from stratae.events import Envelope, Hooks, PubSub
 from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
@@ -158,6 +160,66 @@ async def test_signal_event_round_trip(broker: _Broker):
 
     # Assert
     assert calls == [True]
+
+
+async def test_hooks_run_on_both_sides_of_the_broker(broker: _Broker):
+    """
+    Hooks should run on the publishing and the consuming side.
+
+    Given: A publisher bound with hooks, and a consumer's handler registered with hooks
+    When: A payload is published and consumed through the broker
+    Then: The publish hooks run around the publish, seeing no reply, and the handle hooks
+        run around the handler, seeing its return
+    """
+    # Arrange
+    exchange = _unique("stratae-it")
+    broker.exchanges.append(exchange)
+    log: list[str] = []
+
+    def hooks(side: str) -> Hooks[Any, Any]:
+        def before(event: Any, payload: Message) -> None:
+            log.append(f"{side} before {payload.text}")
+
+        def success(event: Any, payload: Message, reply: object) -> None:
+            log.append(f"{side} success {reply!r}")
+
+        return Hooks(before=(before,), success=(success,))
+
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+
+    def on_message(message: Message) -> str:
+        log.append(f"handler {message.text}")
+        return message.text.upper()
+
+    consumer.handle(
+        message_event,
+        on_message,
+        config=RabbitMQConsumeConfig(exchange=exchange),
+        hooks=hooks("handle"),
+    )
+
+    # Act
+    async with consumer:
+        async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+            send = publisher.bind(
+                message_event,
+                factory=Message,
+                config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
+                hooks=hooks("publish"),
+            )
+            await send(text="hello")
+        await _eventually(lambda: len(log) == 5)
+
+    # Assert: each side in order; the two sides may interleave.
+    assert [entry for entry in log if entry.startswith("publish")] == [
+        "publish before hello",
+        "publish success None",
+    ]
+    assert [entry for entry in log if not entry.startswith("publish")] == [
+        "handle before hello",
+        "handler hello",
+        "handle success 'HELLO'",
+    ]
 
 
 async def test_envelope_survives_the_wire(broker: _Broker):

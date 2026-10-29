@@ -13,17 +13,24 @@ abind without a factory:
 - Calling the returned callable forwards an already-built payload to the emitter.
 - Calling the returned callable returns the emitter's result.
 - The serializer is forwarded to the emitter.
+
+abind with hooks:
+- The hooks are forwarded to the emitter.
 """
 
 import asyncio
 from typing import Any
 from unittest.mock import Mock, create_autospec
 
-from stratae.events import EventType, PubSub, abind
+from stratae.events import EventType, Hooks, PubSub, abind
 
 
 async def _async_emit(
-    event: EventType[Any, Any, Any, Any], config: Any, payload: Any, serializer: Any = None
+    event: EventType[Any, Any, Any, Any],
+    config: Any,
+    payload: Any,
+    serializer: Any = None,
+    hooks: Any = None,
 ): ...
 
 
@@ -73,7 +80,11 @@ async def test_abind_with_factory_returns_emitter_result() -> None:
     emitter = create_autospec(_async_emit)
 
     def _return(
-        event: object, config: object, payload: object, serializer: object = None
+        event: object,
+        config: object,
+        payload: object,
+        serializer: object = None,
+        hooks: object = None,
     ) -> object:
         return payload
 
@@ -172,7 +183,11 @@ async def test_abind_without_factory_returns_emitter_result() -> None:
     emitter = create_autospec(_async_emit)
 
     def _return(
-        event: object, config: object, payload: object, serializer: object = None
+        event: object,
+        config: object,
+        payload: object,
+        serializer: object = None,
+        hooks: object = None,
     ) -> object:
         return payload
 
@@ -236,3 +251,25 @@ async def test_abind_awaits_async_callable_factory() -> None:
 
     # Assert
     emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)
+
+
+async def test_abind_forwards_hooks_to_emitter() -> None:
+    """
+    Hooks given to abind should be forwarded to the emitter with every call.
+
+    Given: A callable produced by abind with hooks
+    When: The callable is awaited with a payload
+    Then: The emitter should receive the same hooks
+    """
+    # Arrange
+    emitter = create_autospec(_async_emit)
+    hooks: Hooks[Any, Any] = Hooks()
+    ev = PubSub(_OrderCreated)
+    bound = abind(ev, emitter, config=None, hooks=hooks)
+    payload = _OrderCreated(1, "pending")
+
+    # Act
+    await bound(payload)
+
+    # Assert
+    emitter.assert_awaited_once_with(ev, None, payload, serializer=None, hooks=hooks)
