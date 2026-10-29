@@ -91,6 +91,12 @@ with TestClient(app) as client:
 ```
 ````
 
+```{note}
+Cached functions and resources aren't compatible with `fastapi.Depends`, because FastAPI
+mistakes a cached resource for the generator it wraps. Use Stratae's `Depends`, as above, or
+call them from a helper function.
+```
+
 {py:func}`scoped_websocket` builds a dependency that activates a scope for each WebSocket
 connection's lifetime. Add it to a WebSocket route's `dependencies`. The scope closes with
 the exception the connection ended with, so cleanup sees a client leaving
