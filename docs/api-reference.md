@@ -101,13 +101,13 @@ Event definitions, bound-event facades, and dispatch protocols for pub/sub and r
 
 ````{example} Dispatching a pub/sub event through an in-process bus
 ```{code-block} python
-from stratae.events import DirectBus, Event, PubSub
+from stratae.events import DirectBus, PubSub
 
 class OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
 
-order_placed_event = Event(PubSub, OrderPlaced)
+order_placed_event = PubSub(OrderPlaced)
 
 bus = DirectBus()
 place_order = bus.bind(order_placed_event, factory=OrderPlaced)
@@ -238,7 +238,7 @@ Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecyc
 import asyncio
 import msgspec
 import stratae.integrations.msgspec  # noqa: F401
-from stratae.events import Event, PubSub
+from stratae.events import PubSub
 from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
@@ -249,7 +249,7 @@ from stratae.integrations.rabbitmq import (
 class OrderPlaced(msgspec.Struct):
     order_id: int
 
-order_placed_event = Event(PubSub, OrderPlaced)
+order_placed_event = PubSub(OrderPlaced)
 
 consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
 

@@ -3,16 +3,18 @@ Wrap event handler callables with async detection and identity semantics.
 
 {py:class}`Handler` pairs a callable with its routing config and records whether it's async.
 Each registration returns a distinct `Handler`, which is the token `remove` takes back.
+{py:class}`WithoutPayload` adapts a payload-less event's handler, so an adapter can call every
+handler with one argument.
 
 ````{example} Using a returned Handler to unregister it later
 ```{code-block} python
-from stratae.events import DirectBus, Event, PubSub
+from stratae.events import DirectBus, PubSub
 
 class LogMessage:
     def __init__(self, text: str) -> None:
         self.text = text
 
-log_message_event = Event(PubSub, LogMessage)
+log_message_event = PubSub(LogMessage)
 bus = DirectBus()
 log = bus.bind(log_message_event, factory=LogMessage)
 
@@ -33,7 +35,7 @@ log: first
 
 """
 
-from typing import Callable
+from typing import Any, Callable
 
 from stratae._callables import is_async_callable
 
@@ -64,3 +66,25 @@ class Handler[**P, HandlerConfig, R]:
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call the handler. An async handler returns an unawaited coroutine."""
         return self.call(*args, **kwargs)
+
+
+class WithoutPayload:
+    """
+    Adapt a payload-less event's handler to take, and ignore, one argument.
+
+    Lets an adapter call every handler with one argument, whatever the event.
+    """
+
+    __slots__ = ("fn",)
+
+    def __init__(self, fn: Callable[[], Any]) -> None:
+        """
+        Wrap a handler.
+
+        :param fn: The handler, taking no arguments.
+        """
+        self.fn = fn
+
+    def __call__(self, _: object, /) -> Any:
+        """Call the handler without the argument."""
+        return self.fn()

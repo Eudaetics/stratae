@@ -3,7 +3,7 @@
 from typing import Annotated, Any
 
 from stratae.depends import Depends, inject
-from stratae.events import DirectBus, Event, PubSub, Request
+from stratae.events import DirectBus, PubSub, Request
 from stratae.lifecycle import Scope
 
 
@@ -35,8 +35,8 @@ def test_order_flow_with_injected_handlers(application_scope: Scope):
     def order_store() -> dict[int, dict[str, Any]]:
         return {}
 
-    order_placed = Event(PubSub, OrderPlaced)
-    price_order = Event(Request[Quote], PriceOrder)
+    order_placed = PubSub(OrderPlaced)
+    price_order = Request(PriceOrder, reply=Quote)
     place_order = bus.bind(order_placed, factory=OrderPlaced)
     request_quote = bus.bind(price_order, factory=PriceOrder)
 

@@ -261,7 +261,7 @@ processing order 42
 ```{code-block} python
 from types import SimpleNamespace
 from stratae.checks import require
-from stratae.events import DirectBus, Event, PubSub
+from stratae.events import DirectBus, PubSub
 
 class OrderPlaced:
     def __init__(self, order_id: int) -> None:
@@ -269,7 +269,7 @@ class OrderPlaced:
 
 store = SimpleNamespace(accepting_orders=False)
 bus = DirectBus()
-order_placed = Event(PubSub, OrderPlaced)
+order_placed = PubSub(OrderPlaced)
 place_order = bus.bind(order_placed, factory=OrderPlaced)
 
 def accepting_orders() -> None:
@@ -302,7 +302,7 @@ from types import SimpleNamespace
 from typing import Annotated
 from stratae.checks import require
 from stratae.depends import Depends, inject
-from stratae.events import DirectBus, Event, PubSub
+from stratae.events import DirectBus, PubSub
 from stratae.lifecycle import Scope
 
 class RefundIssued:
@@ -312,7 +312,7 @@ class RefundIssued:
 application = Scope("application", isolation="shared")
 request = Scope("request", requires=application)
 bus = DirectBus()
-refund_issued = Event(PubSub, RefundIssued)
+refund_issued = PubSub(RefundIssued)
 issue_refund = bus.bind(refund_issued, factory=RefundIssued)
 
 @application.cache()

@@ -31,7 +31,7 @@ import pytest
 from aiormq import connect
 from aiormq.abc import AbstractChannel
 
-from stratae.events import Envelope, Event, PubSub
+from stratae.events import Envelope, PubSub
 from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
@@ -50,8 +50,8 @@ class Message(msgspec.Struct):
     text: str
 
 
-message_event = Event(PubSub, Message)
-heartbeat_event = Event(PubSub, name="heartbeat")
+message_event = PubSub(Message)
+heartbeat_event = PubSub(name="heartbeat")
 
 
 class _Broker:
@@ -132,7 +132,7 @@ async def test_signal_event_round_trip(broker: _Broker):
     """
     A schema-less event should round-trip publisher -> broker -> zero-arg handler.
 
-    Given: A publisher and consumer bound to a schema-less Event
+    Given: A publisher and consumer bound to a schema-less event
     When: The event is sent with no payload
     Then: The zero-parameter handler should run
     """

@@ -21,7 +21,7 @@ from unittest.mock import Mock, create_autospec
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events import EmitCallable, Event, PubSub, bind
+from stratae.events import EmitCallable, PubSub, bind
 
 
 class _OrderCreated:
@@ -47,12 +47,12 @@ def test_bind_with_factory_calling_constructs_schema_and_invokes_emitter(
     Given: A factory-bound callable produced by bind
     When: The callable is called with arguments
     Then: The schema constructor should be called with those arguments and the emitter
-          should receive the Event, the config, and the constructed payload
+          should receive the event, the config, and the constructed payload
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     bound = bind(ev, emitter, factory=_OrderCreated, config=None)
 
     # Act
@@ -81,7 +81,7 @@ def test_bind_with_factory_returns_emitter_result() -> None:
 
     emitter.side_effect = _return
 
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     bound = bind(ev, emitter, factory=_OrderCreated, config=None)
 
     # Act
@@ -101,7 +101,7 @@ def test_bind_with_factory_forwards_serializer_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     serializer = Mock()
     bound = bind(ev, emitter, factory=_OrderCreated, config=None, serializer=serializer)
 
@@ -122,7 +122,7 @@ def test_bind_with_factory_raises_for_async_factory() -> None:
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
 
     async def _async_factory(order_id: int, status: str) -> _OrderCreated:
         await asyncio.sleep(0)
@@ -144,11 +144,11 @@ def test_bind_without_factory_calling_forwards_payload_to_emitter() -> None:
 
     Given: A passthrough callable produced by bind with no factory
     When: The callable is called with a ready-made payload
-    Then: The emitter should receive the Event, the config, and that exact payload
+    Then: The emitter should receive the event, the config, and that exact payload
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     bound = bind(ev, emitter, config=None)
     payload = _OrderCreated(1, "pending")
 
@@ -177,7 +177,7 @@ def test_bind_without_factory_returns_emitter_result() -> None:
 
     emitter.side_effect = _return
 
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     bound = bind(ev, emitter, config=None)
     payload = _OrderCreated(1, "pending")
 
@@ -198,7 +198,7 @@ def test_bind_without_factory_forwards_serializer_to_emitter() -> None:
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
     serializer = Mock()
     bound = bind(ev, emitter, config=None, serializer=serializer)
     payload = _OrderCreated(1, "pending")
@@ -223,7 +223,7 @@ def test_bind_with_factory_raises_for_async_callable_factory() -> None:
     """
     # Arrange
     emitter = create_autospec(EmitCallable)
-    ev = Event(PubSub, _OrderCreated)
+    ev = PubSub(_OrderCreated)
 
     class Factory:
         async def __call__(self, order_id: int, status: str) -> _OrderCreated:

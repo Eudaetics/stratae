@@ -124,14 +124,14 @@ So far `add_user` and `list_users` talk straight to the database: each grabs a `
 ````{example} Notifying that a user was added
 ```{code-block} python
 from stratae.context import Context
-from stratae.events import DirectBus, Event, PubSub, Request
+from stratae.events import DirectBus, PubSub, Request
 
 class UserAdded:
     def __init__(self, name: str) -> None:
         self.name = name
 
-user_added_event = Event(PubSub, UserAdded)
-users_requested = Event(Request[list[tuple[int, str]]], name="users_requested")
+user_added_event = PubSub(UserAdded)
+users_requested = Request(reply=list[tuple[int, str]], name="users_requested")
 
 bus = DirectBus()
 notify_user_added = bus.bind(user_added_event, factory=UserAdded)
@@ -168,7 +168,7 @@ with job, current_user.use("Steve"):
 ```
 ````
 
-`Event(pattern, schema)` defines the shape of an event independent of any bus: the dispatch pattern, `PubSub` for fire-and-forget or `Request[Reply]` for request/reply, and the payload schema it carries. `bus.bind(event, factory=...)` is a shortcut for `bus.emit`. It wraps the event and the bus's routing config around `emit`, returning a callable that dispatches through it. `factory` is optional. Given one, as shown in `notify_user_added`, the callable builds the payload from its arguments; without one, it takes an already-built instance of the event's schema directly. Adding additional behavior, such as sending a welcom email, means registering a new handler instead of editing `add_user`. `list_users` shows the same shape on the read side. Calling it dispatches a `Request`, and `fetch_users` is the handler that answers it and returns the rows.
+An event defines its shape independent of any bus. Its class is the dispatch pattern, `PubSub` for fire-and-forget or `Request` for request/reply, and it takes the payload schema it carries: `PubSub(Schema)`, or `Request(Schema, reply=Reply)`. `bus.bind(event, factory=...)` is a shortcut for `bus.emit`. It wraps the event and the bus's routing config around `emit`, returning a callable that dispatches through it. `factory` is optional. Given one, as shown in `notify_user_added`, the callable builds the payload from its arguments; without one, it takes an already-built instance of the event's schema directly. Adding additional behavior, such as sending a welcome email, means registering a new handler instead of editing `add_user`. `list_users` shows the same shape on the read side. Calling it dispatches a `Request`, and `fetch_users` is the handler that answers it and returns the rows.
 
 ## Conclusion
 
