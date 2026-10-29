@@ -50,6 +50,14 @@ RabbitMQConsumer:
   without blocking the handler.
 - A partial identifying pair is logged before the missing id is minted.
 - A schema-less event's handler is called with no arguments.
+- Exiting the context cancels each live consumer before closing the
+  connection.
+- Exiting the context waits for running handlers to finish and ack before
+  closing.
+- Exiting stops waiting at the drain timeout, logging the handlers still
+  running.
+- A failed consumer cancel on exit is logged and the connection still closes.
+- A handler exiting its own consumer doesn't wait on itself.
 """
 
 import asyncio
@@ -1046,6 +1054,161 @@ async def test_failed_start_on_enter_closes_connection(
     with pytest.raises(RuntimeError, match="declare failed"):
         async with consumer:
             pass
+
+    # Assert
+    connection.close.assert_awaited_once()
+
+
+async def test_exit_cancels_consumers_before_closing(
+    consumer: RabbitMQConsumer, channel: AsyncMock, connection: AsyncMock
+):
+    """
+    Exiting the context should cancel each live AMQP consumer before closing the connection.
+
+    Given: A consumer with a started registration
+    When: The context exits
+    Then: The registration's consumer is cancelled, then the connection is closed
+    """
+    # Arrange
+    calls: list[str] = []
+
+    def record_cancel(tag: str) -> None:
+        calls.append("cancel")
+
+    def record_close() -> None:
+        calls.append("close")
+
+    channel.basic_cancel.side_effect = record_cancel
+    connection.close.side_effect = record_close
+    consumer.handle(_order_placed, lambda payload: None, config=_config)
+
+    # Act
+    async with consumer:
+        pass
+
+    # Assert
+    channel.basic_cancel.assert_awaited_once_with(channel.basic_consume.return_value.consumer_tag)
+    assert calls == ["cancel", "close"]
+
+
+async def test_exit_waits_for_running_handler_to_ack(
+    consumer: RabbitMQConsumer, channel: AsyncMock, connection: AsyncMock
+):
+    """
+    Exiting the context should wait for a running handler to finish and ack before closing.
+
+    Given: A connected consumer whose handler is mid-delivery
+    When: The context exits
+    Then: The connection stays open until the handler returns and its message is acked
+    """
+    # Arrange
+    release = asyncio.Event()
+
+    async def handler(payload: _OrderPlaced) -> None:
+        await release.wait()
+
+    consumer.handle(_order_placed, handler, config=_config)
+    await consumer.__aenter__()
+    message = _message(b'{"order_id": 1}')
+    delivery = asyncio.create_task(_delivery_callback(channel)(message))
+    await asyncio.sleep(0)
+
+    # Act
+    exiting = asyncio.create_task(consumer.__aexit__(None, None, None))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    closed_while_running = connection.close.await_count
+    release.set()
+    await exiting
+
+    # Assert
+    assert closed_while_running == 0
+    assert delivery.done()
+    message.channel.basic_ack.assert_awaited_once_with(11)
+    connection.close.assert_awaited_once()
+
+
+async def test_exit_stops_waiting_at_drain_timeout(
+    connect_mock: AsyncMock,
+    channel: AsyncMock,
+    connection: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+):
+    """
+    Exiting the context should close the connection once the drain timeout passes.
+
+    Given: A consumer with a short drain timeout and a handler that never returns
+    When: The context exits
+    Then: The connection closes without the ack, and the stuck handler is logged
+    """
+    # Arrange
+    consumer = RabbitMQConsumer(_URL, drain_timeout=0.01)
+
+    async def handler(payload: _OrderPlaced) -> None:
+        await asyncio.Event().wait()
+
+    consumer.handle(_order_placed, handler, config=_config)
+    await consumer.__aenter__()
+    message = _message(b'{"order_id": 1}')
+    delivery = asyncio.create_task(_delivery_callback(channel)(message))
+    await asyncio.sleep(0)
+
+    # Act
+    await consumer.__aexit__(None, None, None)
+
+    # Assert
+    connection.close.assert_awaited_once()
+    message.channel.basic_ack.assert_not_awaited()
+    assert "1 handler(s) still running after the drain timeout" in caplog.text
+    delivery.cancel()
+
+
+async def test_failed_cancel_on_exit_logs_and_closes(
+    consumer: RabbitMQConsumer,
+    channel: AsyncMock,
+    connection: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+):
+    """
+    A consumer cancel that raises on exit should be logged without blocking the close.
+
+    Given: A started registration whose basic_cancel raises
+    When: The context exits
+    Then: The failure is logged and the connection is still closed
+    """
+    # Arrange
+    channel.basic_cancel.side_effect = ConnectionError("broker gone")
+    consumer.handle(_order_placed, lambda payload: None, config=_config)
+
+    # Act
+    async with consumer:
+        pass
+
+    # Assert
+    assert "failed to cancel AMQP consumers on exit" in caplog.text
+    connection.close.assert_awaited_once()
+
+
+async def test_handler_exiting_its_own_consumer_does_not_wait_on_itself(
+    consumer: RabbitMQConsumer, channel: AsyncMock, connection: AsyncMock
+):
+    """
+    A handler that exits its own consumer should close it without waiting on itself.
+
+    Given: A connected consumer whose handler exits the consumer
+    When: A message is delivered
+    Then: The connection closes without waiting for the drain timeout
+    """
+
+    # Arrange
+    async def handler(payload: _OrderPlaced) -> None:
+        await consumer.__aexit__(None, None, None)
+
+    consumer.handle(_order_placed, handler, config=_config)
+    await consumer.__aenter__()
+
+    # Act
+    await asyncio.wait_for(_delivery_callback(channel)(_message(b'{"order_id": 1}')), timeout=1)
 
     # Assert
     connection.close.assert_awaited_once()

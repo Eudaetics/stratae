@@ -235,7 +235,6 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     async def __aexit__(self, *_: object) -> None:
         """Close the AMQP connection, if one was opened."""
         connection = self._connection
-        # Cleared before closing, so a failed close leaves no stale state.
         self._connection = None
         self._channel = None
         self._declared.clear()
@@ -398,6 +397,11 @@ class RabbitMQConsumer:
     A message is acked once its handler returns. If decoding or handling raises, it's logged
     and nacked without requeue. Sync handlers run on the event loop and block other
     deliveries.
+
+    Exiting the context shuts down gracefully: it cancels every AMQP consumer so no new
+    messages arrive, waits up to `drain_timeout` for running handlers to finish and ack, then
+    closes the connection. A handler still running at the timeout is cancelled by the close,
+    and the broker redelivers its unacked message.
     """
 
     def __init__(
@@ -405,6 +409,7 @@ class RabbitMQConsumer:
         url: str,
         deserializer: Deserializer = deserialize,
         prefetch_count: int | None = None,
+        drain_timeout: float | None = 30.0,
     ) -> None:
         """
         Create a consumer.
@@ -413,14 +418,18 @@ class RabbitMQConsumer:
         :param deserializer: Default body decoder. Defaults to
             {py:obj}`stratae.serde.deserialize`.
         :param prefetch_count: Unacked messages delivered ahead; `None` for no limit.
+        :param drain_timeout: Seconds exiting waits for running handlers before closing;
+            `None` to wait for them indefinitely.
         """
         self._url = url
         self._deserializer = deserializer
         self._prefetch_count = prefetch_count
+        self._drain_timeout = drain_timeout
         self._connection: AbstractConnection | None = None
         self._channel: AbstractChannel | None = None
         self._registrations: dict[Handler[[Any], RabbitMQConsumeConfig, Any], _Registration] = {}
         self._starting: set[asyncio.Task[None]] = set()
+        self._in_flight: set[asyncio.Task[Any]] = set()
 
     async def __aenter__(self) -> RabbitMQConsumer:
         """
@@ -445,9 +454,38 @@ class RabbitMQConsumer:
         return self
 
     async def __aexit__(self, *_: object) -> None:
-        """Close the AMQP connection, if one was opened."""
+        """Stop consuming, wait for running handlers, and close the connection, if opened."""
         for task in tuple(self._starting):
             task.cancel()
+        channel = self._channel
+        try:
+            if channel is not None:
+                await self._drain(channel)
+        finally:
+            await self._close()
+
+    async def _drain(self, channel: AbstractChannel) -> None:
+        """Cancel every AMQP consumer, then wait up to the drain timeout for running handlers."""
+        try:
+            for registration in self._registrations.values():
+                if registration.consumer_tag is not None:
+                    await channel.basic_cancel(registration.consumer_tag)
+        except Exception:
+            _log.warning("failed to cancel AMQP consumers on exit", exc_info=True)
+        # A handler exiting its own consumer would otherwise wait on itself.
+        running = self._in_flight - {asyncio.current_task()}
+        if not running:
+            return
+        _, pending = await asyncio.wait(running, timeout=self._drain_timeout)
+        if pending:
+            _log.warning(
+                "%d handler(s) still running after the drain timeout; their messages will be"
+                " redelivered",
+                len(pending),
+            )
+
+    async def _close(self) -> None:
+        """Clear the connection state and close the connection, if one was opened."""
         connection = self._connection
         # Cleared before closing, so a failed close leaves no stale state.
         self._connection = None
@@ -617,25 +655,34 @@ class RabbitMQConsumer:
     def _on_message(
         self, registration: _Registration
     ) -> Callable[[DeliveredMessage], Coroutine[Any, Any, None]]:
-        """Return the delivery callback that decodes, dispatches, and acks or nacks."""
+        """Return the delivery callback, tracked as in flight until it acks or nacks."""
 
         async def on_message(message: DeliveredMessage) -> None:
+            task = cast(asyncio.Task[Any], asyncio.current_task())
+            self._in_flight.add(task)
             try:
-                payload = self._deserialize(registration, message.body)
-                with Envelope.scope(_envelope_from(message)):
-                    if registration.handler.is_async:
-                        await registration.handler(payload)
-                    else:
-                        registration.handler(payload)
-            except Exception:
-                _log.exception(
-                    "handler for event '%s' failed; message nacked without requeue",
-                    registration.event.name,
-                )
-                if message.delivery_tag is not None:
-                    await message.channel.basic_nack(message.delivery_tag, requeue=False)
-                return
-            if message.delivery_tag is not None:
-                await message.channel.basic_ack(message.delivery_tag)
+                await self._deliver(registration, message)
+            finally:
+                self._in_flight.discard(task)
 
         return on_message
+
+    async def _deliver(self, registration: _Registration, message: DeliveredMessage) -> None:
+        """Decode and dispatch a message, then ack it, or nack it if either step raises."""
+        try:
+            payload = self._deserialize(registration, message.body)
+            with Envelope.scope(_envelope_from(message)):
+                if registration.handler.is_async:
+                    await registration.handler(payload)
+                else:
+                    registration.handler(payload)
+        except Exception:
+            _log.exception(
+                "handler for event '%s' failed; message nacked without requeue",
+                registration.event.name,
+            )
+            if message.delivery_tag is not None:
+                await message.channel.basic_nack(message.delivery_tag, requeue=False)
+            return
+        if message.delivery_tag is not None:
+            await message.channel.basic_ack(message.delivery_tag)
