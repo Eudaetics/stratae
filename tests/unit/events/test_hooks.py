@@ -6,6 +6,7 @@ This test suite verifies the following behaviors:
 Hooks:
 - Every slot defaults to empty, and slots given as lists are frozen as tuples.
 - has_async reports whether any hook is async, including an object with async __call__.
+- A lone hook in place of a tuple raises a clear TypeError.
 
 run_hooks:
 - On success, runs before, the call, success with the reply, then complete with None.
@@ -26,11 +27,6 @@ run_hooks_async:
 - An async failure hook that raises is logged, and the call's error still propagates.
 - A cancelled call skips failure; complete sees the CancelledError.
 - Observing hooks in a slot run concurrently, so a slow one doesn't hold up the rest.
-
-with_handle_hooks:
-- Leaves a handler unwrapped without hooks.
-- Wraps a sync handler with sync hooks in a sync call.
-- Wraps a handler in an async call when the handler or any hook is async.
 """
 
 import asyncio
@@ -38,8 +34,8 @@ from typing import Any, Generator, cast
 
 import pytest
 
-from stratae.events import Hooks, PubSub, Request
-from stratae.events.hooks import run_hooks, run_hooks_async, with_handle_hooks
+from stratae.events import Hooks, PubSub
+from stratae.events.hooks import run_hooks, run_hooks_async
 
 
 class _Order:
@@ -99,6 +95,23 @@ def test_hooks_default_to_empty_and_freeze_lists() -> None:
     # Assert
     assert (empty.before, empty.success, empty.failure, empty.complete) == ((), (), (), ())
     assert listed.before == (hook,)
+
+
+def test_lone_hook_raises_clear_error() -> None:
+    """
+    A single hook given where a tuple belongs should raise a clear TypeError.
+
+    Given: One hook function passed as before= instead of a tuple of them
+    When: Hooks are built
+    Then: A TypeError says before= takes a tuple of hooks
+    """
+
+    # Arrange
+    def hook(event: Any, payload: Any) -> None: ...
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="before= takes a tuple of hooks"):
+        Hooks(before=cast(Any, hook))
 
 
 def test_hooks_report_whether_any_hook_is_async() -> None:
@@ -496,86 +509,6 @@ async def test_run_hooks_async_observing_hooks_run_concurrently() -> None:
     # Assert
     assert reply == "reply"
     assert log == ["second", "first"]
-
-
-# endregion
-# region: with_handle_hooks
-
-
-def test_with_handle_hooks_leaves_unhooked_handler() -> None:
-    """
-    A handler without hooks should be registered as it is.
-
-    Given: A sync handler and no hooks
-    When: with_handle_hooks wraps the handler
-    Then: The handler itself is returned, still sync
-    """
-    # Act
-    call, is_async = with_handle_hooks(_order_placed, None, str, False)
-
-    # Assert
-    assert call is str
-    assert is_async is False
-
-
-def test_with_handle_hooks_sync_wrapper_runs_hooks() -> None:
-    """
-    A sync handler with sync handle hooks should become a sync call running the hooks.
-
-    Given: Sync hooks, and a sync handler
-    When: The wrapped call is called with a payload
-    Then: It's sync, and the hooks run around the handler, seeing its return
-    """
-    # Arrange
-    log: list[str] = []
-    event = Request(_Order, reply=str)
-
-    # Act
-    call, is_async = with_handle_hooks(
-        event, _recording_hooks(log), lambda order: f"placed {order.item}", False
-    )
-    reply = call(_Order("lamp"))
-
-    # Assert
-    assert is_async is False
-    assert reply == "placed lamp"
-    assert log == ["before lamp", "success placed lamp", "complete NoneType"]
-
-
-@pytest.mark.parametrize("handler_is_async", [True, False], ids=["async handler", "sync handler"])
-async def test_with_handle_hooks_async_wrapper(handler_is_async: bool) -> None:
-    """
-    A handler should become an async call when it or any of its hooks is async.
-
-    Given: An async before hook, and a sync or async handler
-    When: The wrapped call is awaited with a payload
-    Then: It's async, and the hooks run around the handler, seeing its return
-    """
-    # Arrange
-    log: list[str] = []
-
-    async def before(event: Any, payload: Any) -> None:
-        log.append(f"before {payload.item}")
-
-    async def async_handler(order: _Order) -> str:
-        return f"placed {order.item}"
-
-    def sync_handler(order: _Order) -> str:
-        return f"placed {order.item}"
-
-    recording = _recording_hooks(log)
-    event = Request(_Order, reply=str)
-    hooks: Hooks[Any, Any] = Hooks(before=(before,), success=recording.success)
-    handler = async_handler if handler_is_async else sync_handler
-
-    # Act
-    call, is_async = with_handle_hooks(event, hooks, handler, handler_is_async)
-    reply = await call(_Order("lamp"))
-
-    # Assert
-    assert is_async is True
-    assert reply == "placed lamp"
-    assert log == ["before lamp", "success placed lamp"]
 
 
 # endregion

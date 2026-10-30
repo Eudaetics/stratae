@@ -4,7 +4,7 @@ Wrap event handler callables with async detection and identity semantics.
 {py:class}`Handler` pairs a callable with its routing config and records whether it's async.
 Each registration returns a distinct `Handler`, which is the token `remove` takes back.
 {py:class}`WithoutPayload` adapts a payload-less event's handler, so an adapter can call every
-handler with one argument.
+handler with one argument, and {py:func}`invoke` calls one, sync or async, from async code.
 
 ````{example} Using a returned Handler to unregister it later
 ```{code-block} python
@@ -89,3 +89,17 @@ class WithoutPayload:
     def __call__(self, _: object, /) -> Any:
         """Call the handler without the argument."""
         return self.fn()
+
+
+async def invoke(handler: Handler[..., Any, Any], *args: Any) -> Any:
+    """
+    Call `handler(*args)`, awaiting it if it's async.
+
+    How an async adapter calls a registered handler, sync or async, such as on each delivery.
+
+    :param handler: The registered handler.
+    :returns: What the handler returns, or resolves to.
+    """
+    if handler.is_async:
+        return await handler(*args)
+    return handler(*args)

@@ -96,7 +96,6 @@ from typing import (
 from aiormq import connect
 from pamqp.commands import Basic
 
-from stratae._callables import is_async_callable
 from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
@@ -107,11 +106,13 @@ from stratae.events import (
     Handler,
     NoPayload,
     PubSub,
-    WithoutPayload,
 )
 from stratae.events.binding import AsyncBindMixin
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError
-from stratae.events.hooks import Hooks, run_hooks_async, with_handle_hooks
+from stratae.events.handler import invoke
+from stratae.events.hooks import Hooks
+from stratae.events.middleware import Middleware
+from stratae.events.pipeline import run_emit_async, wrap_handler
 from stratae.serde import Deserializer, Serializer, deserialize, serialize
 
 if TYPE_CHECKING:
@@ -202,14 +203,27 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     emitting any other event raises `NotImplementedError`.
     """
 
-    def __init__(self, url: str, serializer: Serializer[object] = serialize) -> None:
+    def __init__(
+        self,
+        url: str,
+        serializer: Serializer[object] = serialize,
+        *,
+        middleware: Middleware = Middleware(),
+    ) -> None:
         """
         Create a publisher.
 
         :param url: AMQP connection URL, e.g. `"amqp://guest:guest@localhost/"`.
         :param serializer: Default payload serializer. Defaults to
             {py:func}`stratae.serde.serialize`.
+        :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
+            or async. Its `publish` half runs around every publish, inside the message's
+            envelope; its `handle` half is a consumer's, so one `Middleware` can be shared with
+            a consumer.
+        :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
         """
+        middleware.require(type(self).__name__, asynchronous=True, handle=False)
+        self._publish_middleware = middleware.publish
         self._url = url
         self._serializer = serializer
         self._connection: AbstractConnection | None = None
@@ -265,14 +279,16 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         """
         self._check_event(event)
-        # The message's own envelope, current while its hooks run, so they see what's sent.
+        # The message's own envelope, current while middleware and hooks run, so they see it.
         with Envelope.scope() as envelope:
-            if hooks is None:
+            if hooks is None and not self._publish_middleware:
                 await self._publish(event, config, payload, serializer, envelope)
             else:
-                await run_hooks_async(
+                await run_emit_async(
                     hooks,
+                    self._publish_middleware,
                     event,
+                    config,
                     payload,
                     self._publish,
                     event,
@@ -428,10 +444,10 @@ class RabbitMQConsumer:
     `exchange` config to fan out. Bodies are decoded with `deserializer(body, type=schema)`,
     defaulting to {py:obj}`stratae.serde.deserialize`.
 
-    A message is acked once its handler, and its hooks, return. If decoding, the handler or a
-    `before` hook raises, it's logged and nacked without requeue. Observing hooks in a slot run
-    concurrently, so the ack waits for the slowest of them, not their sum; one that raises is
-    logged and the message is still acked. Sync handlers run on
+    A message is acked once its handler, its hooks and its middleware return. If decoding, the
+    handler, a `before` hook or a middleware raises, it's logged and nacked without requeue.
+    Observing hooks in a slot run concurrently, so the ack waits for the slowest of them, not
+    their sum; one that raises is logged and the message is still acked. Sync handlers run on
     the event loop and block other deliveries.
 
     Exiting the context shuts down gracefully: it cancels every AMQP consumer so no new
@@ -446,6 +462,8 @@ class RabbitMQConsumer:
         deserializer: Deserializer = deserialize,
         prefetch_count: int | None = None,
         drain_timeout: float | None = 30.0,
+        *,
+        middleware: Middleware = Middleware(),
     ) -> None:
         """
         Create a consumer.
@@ -456,7 +474,14 @@ class RabbitMQConsumer:
         :param prefetch_count: Unacked messages delivered ahead; `None` for no limit.
         :param drain_timeout: Seconds exiting waits for running handlers before closing;
             `None` to wait for them indefinitely.
+        :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
+            or async. Its `handle` half runs around every handler call, inside the message's
+            envelope; a message that fails to decode never reaches it. Its `publish` half is a
+            publisher's, so one `Middleware` can be shared with a publisher.
+        :raises TypeError: If any `handle` middleware is a class that isn't a context manager.
         """
+        middleware.require(type(self).__name__, asynchronous=True, publish=False)
+        self._handle_middleware = middleware.handle
         self._url = url
         self._deserializer = deserializer
         self._prefetch_count = prefetch_count
@@ -633,8 +658,9 @@ class RabbitMQConsumer:
         hooks: Hooks[Any, Any] | None,
     ) -> Handler[[Any], RabbitMQConsumeConfig, Any]:
         """Wrap fn and its hooks as a Handler, consuming immediately if connected."""
-        call: Callable[[Any], Any] = WithoutPayload(fn) if event.is_signal else fn
-        call, is_async = with_handle_hooks(event, hooks, call, is_async_callable(fn))
+        call, is_async = wrap_handler(
+            event, config, fn, hooks, self._handle_middleware, asynchronous=True
+        )
         handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(call, config, is_async)
         registration = _Registration(event, handler, deserializer)
         self._registrations[handler] = registration
@@ -716,10 +742,7 @@ class RabbitMQConsumer:
         try:
             payload = self._deserialize(registration, message.body)
             with Envelope.scope(_envelope_from(message)):
-                if registration.handler.is_async:
-                    await registration.handler(payload)
-                else:
-                    registration.handler(payload)
+                await invoke(registration.handler, payload)
         except Exception:
             _log.exception(
                 "handler for event '%s' failed; message nacked without requeue",

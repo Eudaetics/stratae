@@ -31,9 +31,14 @@ RabbitMQPublisher:
 - emit runs the hooks passed to it around the publish, with a reply of None.
 - A failed publish reaches the failure hook, and still propagates.
 - Publish hooks run inside the message's envelope, seeing the ids it's sent with.
+- Publish middleware runs around the publish and its hooks, inside the message's envelope.
+- Publish middleware sees the emit's RabbitMQConfig as call.config.
+- A publish middleware class that isn't a context manager is refused when the publisher is
+  built; handle middleware isn't checked, so one Middleware can be shared with a consumer.
 """
 
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -46,7 +51,9 @@ from stratae.events import (
     MESSAGE_ID_HEADER,
     Envelope,
     Hooks,
+    Middleware,
     NoPayload,
+    PublishCall,
     PubSub,
     Request,
 )
@@ -562,3 +569,142 @@ async def test_publish_hooks_see_sent_envelope(publisher: RabbitMQPublisher, cha
     properties = channel.basic_publish.await_args.kwargs["properties"]
     assert properties.message_id == str(envelope.message_id)
     assert properties.correlation_id == str(envelope.correlation_id)
+
+
+async def test_publish_middleware_wraps_hooks_inside_envelope(
+    connect_mock: AsyncMock, channel: AsyncMock
+):
+    """
+    Publish middleware should wrap the publish and its hooks, inside the message's envelope.
+
+    Given: A publisher with async publish middleware recording the current envelope
+    When: An event is emitted with a before hook
+    Then: The middleware runs outside the hook, and sees the envelope stamped on the message
+    """
+    # Arrange
+    log: list[str] = []
+    seen: list[Envelope | None] = []
+
+    @asynccontextmanager
+    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+        log.append("mw in")
+        seen.append(Envelope.current())
+        yield
+        log.append("mw out")
+
+    def before(event: Any, payload: Any) -> None:
+        log.append("hook")
+
+    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record,)))
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1), hooks=Hooks(before=(before,)))
+
+    # Assert
+    assert log == ["mw in", "hook", "mw out"]
+    (envelope,) = seen
+    assert envelope is not None
+    properties = channel.basic_publish.await_args.kwargs["properties"]
+    assert properties.message_id == str(envelope.message_id)
+
+
+async def test_publish_middleware_without_hooks(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Publish middleware should wrap a publish that has no hooks.
+
+    Given: A publisher with async publish middleware
+    When: An event is emitted without hooks
+    Then: The middleware runs around the publish
+    """
+    # Arrange
+    log: list[str] = []
+
+    @asynccontextmanager
+    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+        log.append("mw in")
+        yield
+        log.append("mw out")
+
+    def record_publish(*_: object, **__: object) -> None:
+        log.append("publish")
+
+    channel.basic_publish.side_effect = record_publish
+    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record,)))
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+
+    # Assert
+    assert log == ["mw in", "publish", "mw out"]
+
+
+@asynccontextmanager
+async def _trace(call: PublishCall) -> AsyncGenerator[None, None]:
+    yield
+
+
+class _NotAManager:
+    """A middleware class whose instances aren't context managers."""
+
+    def __init__(self, call: Any) -> None: ...
+
+
+def test_publisher_refuses_non_manager_middleware():
+    """
+    The publisher should refuse a middleware class that isn't a context manager when built.
+
+    Given: Publish middleware that's a plain class
+    When: A RabbitMQPublisher is built with it
+    Then: A TypeError says the publisher can't enter it
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="RabbitMQPublisher can't enter"):
+        RabbitMQPublisher(_URL, middleware=Middleware(publish=(cast(Any, _NotAManager),)))
+
+
+def test_publisher_accepts_shared_middleware():
+    """
+    The publisher should accept a Middleware shared with a consumer, checking only its half.
+
+    Given: Middleware with a valid publish middleware, and a handle middleware class that
+        isn't a context manager
+    When: A RabbitMQPublisher is built with it
+    Then: It's accepted, since the publisher never runs the handle half
+    """
+    # Arrange
+    middleware = Middleware(publish=(_trace,), handle=(cast(Any, _NotAManager),))
+
+    # Act
+    publisher = RabbitMQPublisher(_URL, middleware=middleware)
+
+    # Assert
+    assert isinstance(publisher, RabbitMQPublisher)
+
+
+async def test_publish_middleware_sees_config(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Publish middleware should see the emit's routing config.
+
+    Given: A publisher with publish middleware recording call.config
+    When: An event is emitted with a RabbitMQConfig
+    Then: The middleware sees that config, exchange and routing key included
+    """
+    # Arrange
+    seen: list[RabbitMQConfig] = []
+
+    @asynccontextmanager
+    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+        seen.append(call.config)
+        yield
+
+    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record,)))
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+
+    # Assert
+    assert seen == [_config]
+    assert (seen[0].exchange, seen[0].routing_key) == ("events", "order.placed")

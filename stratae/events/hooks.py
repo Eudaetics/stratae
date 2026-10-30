@@ -22,8 +22,8 @@ On an async bus, the observing hooks in a slot run concurrently, so a slow one d
 up the others; `complete` still runs after `success` or `failure`. `before` hooks, and every
 hook on a sync bus, run one after another, in order.
 
-An adapter runs hooks with {py:func}`run_hooks` or {py:func}`run_hooks_async`, and wraps a
-handler with {py:func}`with_handle_hooks`.
+Stratae's adapters run hooks inside their middleware, so both apply wherever hooks are passed.
+{py:func}`run_hooks` and {py:func}`run_hooks_async` run hooks alone, around any call.
 
 ````{example} Auditing requests as they're published and handled
 ```{code-block} python
@@ -80,6 +80,8 @@ from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from stratae._callables import is_async_callable
+from stratae.events._awaitables import reject_awaitable
+from stratae.events._frozen import freeze_tuples
 
 if TYPE_CHECKING:
     from stratae.events.protocols import AnyEvent
@@ -114,28 +116,17 @@ class Hooks[S, R]:
     """Whether any hook is async, so a sync bus can refuse them."""
 
     def __post_init__(self) -> None:
-        """Freeze each slot as a tuple, and note whether any hook is async."""
-        for slot in _SLOTS:
-            object.__setattr__(self, slot, tuple(getattr(self, slot)))
+        """Freeze each slot as a tuple, refusing a lone hook, and note whether any is async."""
+        freeze_tuples(self, _SLOTS, "hooks", "audit")
         is_async = any(is_async_callable(hook) for slot in _SLOTS for hook in getattr(self, slot))
         object.__setattr__(self, "has_async", is_async)
-
-
-def _reject_awaitable(hook: Callable[..., object], result: object) -> None:
-    """Raise TypeError if a hook on the sync path returned an awaitable, closing it."""
-    if not isawaitable(result):
-        return
-    close = getattr(result, "close", None)
-    if close is not None:
-        close()
-    raise TypeError(_ASYNC_HOOK_ON_SYNC_PATH.format(hook))
 
 
 def _observe(hooks: tuple[Callable[..., object], ...], event: Any, *args: Any) -> None:
     """Run every observing hook, logging any that raises instead of propagating it."""
     for hook in hooks:
         try:
-            _reject_awaitable(hook, hook(event, *args))
+            reject_awaitable(hook(event, *args), _ASYNC_HOOK_ON_SYNC_PATH, hook)
         except Exception:
             _log.exception("hook %r for event '%s' failed", hook, event.name)
 
@@ -159,7 +150,7 @@ def run_hooks[**P, T](
     :raises TypeError: If a hook returns an awaitable.
     """
     for hook in hooks.before:
-        _reject_awaitable(hook, hook(event, payload))
+        reject_awaitable(hook(event, payload), _ASYNC_HOOK_ON_SYNC_PATH, hook)
     try:
         reply = call(*args, **kwargs)
     except Exception as exc:
@@ -225,63 +216,3 @@ async def run_hooks_async[**P, T](
     await _observe_async(hooks.success, event, payload, reply)
     await _observe_async(hooks.complete, event, payload, None)
     return reply
-
-
-class _HookedCall:
-    """A sync handler call wrapped in hooks."""
-
-    __slots__ = ("call", "event", "hooks")
-
-    def __init__(self, call: Callable[[Any], Any], event: Any, hooks: Hooks[Any, Any]) -> None:
-        self.call = call
-        self.event = event
-        self.hooks = hooks
-
-    def __call__(self, payload: Any, /) -> Any:
-        return run_hooks(self.hooks, self.event, payload, self.call, payload)
-
-
-class _AsyncHookedCall:
-    """A handler call, sync or async, wrapped in hooks."""
-
-    __slots__ = ("call", "event", "hooks", "is_async")
-
-    def __init__(
-        self, call: Callable[[Any], Any], event: Any, hooks: Hooks[Any, Any], is_async: bool
-    ) -> None:
-        self.call = call
-        self.event = event
-        self.hooks = hooks
-        self.is_async = is_async
-
-    async def __call__(self, payload: Any, /) -> Any:
-        return await run_hooks_async(self.hooks, self.event, payload, self._invoke, payload)
-
-    async def _invoke(self, payload: Any) -> Any:
-        """Call the handler, awaiting it if it's async."""
-        if self.is_async:
-            return await self.call(payload)
-        return self.call(payload)
-
-
-def with_handle_hooks(
-    event: "AnyEvent",
-    hooks: Hooks[Any, Any] | None,
-    call: Callable[[Any], Any],
-    is_async: bool,
-) -> tuple[Callable[[Any], Any], bool]:
-    """
-    Wrap a handler call in hooks, if there are any.
-
-    :param event: The event the handler is registered for, passed to every hook.
-    :param hooks: The handler's hooks, or `None`.
-    :param call: The handler call, taking the payload.
-    :param is_async: Whether `call` is async.
-    :returns: The call to register, and whether it's async: the call itself without hooks;
-        an async wrapper if the call or any hook is async; a sync wrapper otherwise.
-    """
-    if hooks is None:
-        return call, is_async
-    if is_async or hooks.has_async:
-        return _AsyncHookedCall(call, event, hooks, is_async), True
-    return _HookedCall(call, event, hooks), False

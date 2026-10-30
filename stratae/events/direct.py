@@ -90,9 +90,10 @@ scheduled shipment for order 1
 ````
 """
 
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import nullcontext
-from typing import Any, Awaitable, Callable, Collection, Protocol, overload
+from typing import Any, Awaitable, Callable, ClassVar, Collection, Protocol, overload
 
 from stratae._callables import is_async_callable
 from stratae.events._dispatch import (
@@ -105,9 +106,11 @@ from stratae.events._dispatch import (
 )
 from stratae.events.binding import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
-from stratae.events.handler import Handler, WithoutPayload
-from stratae.events.hooks import Hooks, run_hooks, run_hooks_async, with_handle_hooks
+from stratae.events.handler import Handler
+from stratae.events.hooks import Hooks
+from stratae.events.middleware import Middleware
 from stratae.events.patterns import NoPayload, PubSub, Request
+from stratae.events.pipeline import run_emit, run_emit_async, wrap_handler
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
 
 _AnyEvent = AnyEvent
@@ -184,35 +187,102 @@ _ASYNC_DEFAULTS = (Dispatch(Request, dispatch_request_async), Dispatch(PubSub, f
 """The patterns an AsyncDirectBus supports by default."""
 
 
-class BaseDirectBus:
-    """Handler registry and pattern dispatch shared by the direct buses."""
+class BaseDirectBus(ABC):
+    """
+    Handler registry and pattern dispatch shared by the direct buses.
 
-    def __init__(self, dispatches: Collection[Dispatch]) -> None:
-        """Create an empty handler registry, delivering the given patterns."""
-        self._handlers: dict[_AnyEvent, set[Handler[Any, _AnyEvent, Any]]] = defaultdict(set)
-        self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in dispatches)
+    Every emit goes through `_emit`, which refuses an event the bus can't dispatch. A plain
+    emit, with no hooks, no publish middleware and no envelope, is then delivered to its
+    handlers directly; any other goes to the subclass's `_run`. A direct bus supplies only how
+    it runs a checked emit, so it can't dispatch an event its dispatcher doesn't know.
+    """
 
-    def _check_event(
+    _asynchronous: ClassVar[bool]
+    """Whether the bus runs handlers and middleware asynchronously."""
+
+    _defaults: ClassVar[tuple[Dispatch, ...]]
+    """The patterns the bus supports before any `dispatchers=`."""
+
+    def __init__(
         self,
-        event: _AnyEvent,
-        hooks: Hooks[Any, Any] | None = None,  # noqa: S1172
+        *,
+        use_envelope: bool = False,
+        dispatchers: Collection[Dispatch] = (),
+        middleware: Middleware = Middleware(),
     ) -> None:
-        """Raise TypeError if this bus has no dispatcher for the event's pattern."""
-        if self._dispatcher.dispatch(type(event)) is no_dispatcher:
+        """
+        Create a bus, optionally with envelope tracking, more patterns and middleware.
+
+        :raises TypeError: If any middleware is the wrong kind for the bus.
+        """
+        middleware.require(type(self).__name__, asynchronous=self._asynchronous)
+        self._handlers: dict[_AnyEvent, set[Handler[Any, _AnyEvent, Any]]] = defaultdict(set)
+        pairs = (*self._defaults, *dispatchers)
+        self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
+        self._middleware = middleware
+        self._use_envelope = use_envelope
+        # Chosen once: with no publish middleware and no envelope, an emit without hooks can
+        # call its dispatcher directly.
+        self._plain = not middleware.publish and not use_envelope
+
+    def _check_event(self, event: _AnyEvent, hooks: Hooks[Any, Any] | None = None) -> None:
+        """Raise TypeError for an event with no dispatcher, or hooks this bus can't run."""
+        self._resolve(event)
+        if hooks is not None:
+            self._check_hooks(event, hooks)
+
+    def _resolve(self, event: _AnyEvent) -> Callable[..., Any]:
+        """Return the dispatcher for the event's pattern, or raise TypeError if there's none."""
+        dispatcher = self._dispatcher.dispatch(type(event))
+        if dispatcher is no_dispatcher:
             raise TypeError(
                 _UNSUPPORTED_PATTERN.format(bus=type(self).__name__, pattern=type(event).__name__)
             )
+        return dispatcher
+
+    def _check_hooks(self, event: _AnyEvent, hooks: Hooks[Any, Any]) -> None:
+        """Raise TypeError for async hooks on a sync bus, which can't await them."""
+        if hooks.has_async and not self._asynchronous:
+            raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
 
     def _register(
         self, config: _AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
     ) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn and its hooks as a Handler, and store it in the registry under config."""
         self._check_event(config, hooks)
-        call: Callable[..., Any] = WithoutPayload(fn) if config.is_signal else fn
-        call, is_async = with_handle_hooks(config, hooks, call, is_async_callable(fn))
+        call, is_async = wrap_handler(
+            config, None, fn, hooks, self._middleware.handle, self._asynchronous
+        )
         handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, is_async)
         self._handlers[config].add(handler)
         return handler
+
+    def _emit(self, event: _AnyEvent, payload: Any, hooks: Hooks[Any, Any] | None) -> Any:
+        """
+        Refuse an event this bus can't emit, then run it: the one emit entry point.
+
+        The dispatcher is resolved once here and passed on, so an emit looks it up once.
+        """
+        dispatcher = self._resolve(event)
+        if hooks is not None:
+            self._check_hooks(event, hooks)
+        elif self._plain:
+            return self._deliver(dispatcher, event, payload)
+        return self._run(dispatcher, event, payload, hooks)
+
+    @abstractmethod
+    def _run(
+        self,
+        dispatcher: Callable[..., Any],
+        event: _AnyEvent,
+        payload: Any,
+        hooks: Hooks[Any, Any] | None,
+    ) -> Any:
+        """Run a checked emit inside the middleware and hooks: its result, or an awaitable."""
+
+    def _deliver(self, dispatcher: Callable[..., Any], event: _AnyEvent, payload: Any) -> Any:
+        """Dispatch payload to the event's handlers, looked up now."""
+        return dispatcher(event, self._handlers.get(event, ()), payload)
 
     def remove(self, handler: Handler[Any, _AnyEvent, Any]) -> None:
         """
@@ -248,19 +318,13 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         for each emission.
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
         defaults for `Request` and `PubSub`.
+    :param middleware: Sync {py:class}`Middleware <stratae.events.middleware.Middleware>` run
+        around every emit and handler call.
+    :raises TypeError: If any middleware is a class that isn't a sync context manager.
     """
 
-    def __init__(
-        self,
-        *,
-        use_envelope: bool = False,
-        dispatchers: Collection[Dispatch] = (),
-    ) -> None:
-        """Create a bus, optionally with envelope tracking."""
-        super().__init__((*_SYNC_DEFAULTS, *dispatchers))
-        self._dispatch: Callable[[Any, _AnyEvent, Hooks[Any, Any] | None], Any] = (
-            self._dispatch_in_envelope if use_envelope else self._dispatch_plain
-        )
+    _asynchronous = False
+    _defaults = _SYNC_DEFAULTS
 
     def emit[S, R](
         self,
@@ -288,7 +352,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         :raises TypeError: If the bus has no dispatcher for the event's pattern, or `hooks`
             includes an async hook.
         """
-        return self._dispatch(payload, event, hooks)
+        return self._emit(event, payload, hooks)
 
     @overload
     def handle[R](
@@ -359,27 +423,19 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
             raise TypeError(_ASYNC_HANDLER_REJECTED)
         return super()._register(config, fn, hooks)
 
-    def _check_event(self, event: _AnyEvent, hooks: Hooks[Any, Any] | None = None) -> None:
-        """Raise TypeError for an unsupported pattern, or async hooks."""
-        super()._check_event(event, hooks)
-        if hooks is not None and hooks.has_async:
-            raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
-
-    def _dispatch_plain(self, payload: Any, event: _AnyEvent, hooks: Hooks[Any, Any] | None) -> Any:
-        """Dispatch payload without an envelope, inside the hooks if any."""
-        handlers = self._handlers.get(event, ())
-        if hooks is None:
-            return self._dispatcher(event, handlers, payload)
-        if hooks.has_async:
-            raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
-        return run_hooks(hooks, event, payload, self._dispatcher, event, handlers, payload)
-
-    def _dispatch_in_envelope(
-        self, payload: Any, event: _AnyEvent, hooks: Hooks[Any, Any] | None
+    def _run(
+        self,
+        dispatcher: Callable[..., Any],
+        event: _AnyEvent,
+        payload: Any,
+        hooks: Hooks[Any, Any] | None,
     ) -> Any:
-        """Dispatch payload inside a new envelope."""
-        with Envelope.scope():
-            return self._dispatch_plain(payload, event, hooks)
+        """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
+        publish = self._middleware.publish
+        with Envelope.scope() if self._use_envelope else nullcontext():
+            return run_emit(
+                hooks, publish, event, None, payload, self._deliver, dispatcher, event, payload
+            )
 
 
 class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
@@ -394,17 +450,13 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         for each emission.
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
         defaults for `Request` and `PubSub`. Their dispatchers return awaitables.
+    :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>` run
+        around every emit and handler call, sync or async.
+    :raises TypeError: If any middleware is a class that isn't a context manager.
     """
 
-    def __init__(
-        self,
-        *,
-        use_envelope: bool = False,
-        dispatchers: Collection[Dispatch] = (),
-    ) -> None:
-        """Create a bus, optionally with envelope tracking."""
-        super().__init__((*_ASYNC_DEFAULTS, *dispatchers))
-        self._use_envelope = use_envelope
+    _asynchronous = True
+    _defaults = _ASYNC_DEFAULTS
 
     async def emit[S, R](
         self,
@@ -431,13 +483,7 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         :raises MultipleRespondersError: If a request event has more than one responder.
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
-        handlers = self._handlers.get(event, ())
-        with Envelope.scope() if self._use_envelope else nullcontext():
-            if hooks is None:
-                return await self._dispatcher(event, handlers, payload)
-            return await run_hooks_async(
-                hooks, event, payload, self._dispatcher, event, handlers, payload
-            )
+        return await self._emit(event, payload, hooks)
 
     @overload
     def handle[R](
@@ -517,3 +563,17 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
             return self._register(config, f, hooks)
 
         return decorator
+
+    async def _run(
+        self,
+        dispatcher: Callable[..., Any],
+        event: _AnyEvent,
+        payload: Any,
+        hooks: Hooks[Any, Any] | None,
+    ) -> Any:
+        """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
+        publish = self._middleware.publish
+        with Envelope.scope() if self._use_envelope else nullcontext():
+            return await run_emit_async(
+                hooks, publish, event, None, payload, self._deliver, dispatcher, event, payload
+            )

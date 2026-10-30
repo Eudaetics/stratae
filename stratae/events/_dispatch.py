@@ -10,19 +10,23 @@ dispatcher for, and their subclasses.
 
 import asyncio
 from functools import singledispatch
-from typing import Any, Awaitable, Callable, Collection, Iterable, cast
+from typing import Any, Awaitable, Callable, Collection, Iterable
 
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
-from stratae.events.handler import Handler
+from stratae.events.handler import Handler, invoke
 from stratae.events.patterns import PubSub, Request
 from stratae.events.protocols import AnyEvent
 
-_NO_DISPATCHER = "no dispatcher for {} events; register one with dispatchers="
-
 
 def no_dispatcher(event: AnyEvent, handlers: Collection[Any], payload: Any) -> Any:
-    """Refuse an event whose pattern the bus has no dispatcher for."""
-    raise TypeError(_NO_DISPATCHER.format(type(event).__name__))
+    """
+    Mark a pattern the bus has no dispatcher for; never called.
+
+    A bus compares its dispatch function's choice against this, and refuses the event with
+    `TypeError` in `handle`, `bind` and `emit`. `BaseDirectBus` routes every emit through
+    that check, so nothing dispatches to this.
+    """
+    ...
 
 
 def build_dispatcher(pairs: Iterable[tuple[type, Callable[..., Any]]]):
@@ -45,14 +49,6 @@ def only_responder[H: Handler[Any, Any, Any]](event: AnyEvent, handlers: Collect
     return responder
 
 
-async def call_async[S, R](handler: Handler[[S], Any, R | Awaitable[R]], payload: S) -> R:
-    """Call a handler, awaiting it if it's async."""
-    result = handler(payload)
-    if handler.is_async:
-        return await cast(Awaitable[R], result)
-    return cast(R, result)
-
-
 def dispatch_request[S, R](
     event: Request[S, R, Any], handlers: Collection[Handler[[S], Any, R]], payload: S
 ) -> R:
@@ -66,7 +62,8 @@ def dispatch_request_async[S, R](
     payload: S,
 ) -> Awaitable[R]:
     """Call a request event's sole responder, awaiting it if async."""
-    return call_async(only_responder(event, handlers), payload)
+    responder = only_responder(event, handlers)
+    return invoke(responder, payload)
 
 
 def fan_out[S](
@@ -93,7 +90,7 @@ async def fan_out_async[S](
         `BaseException` such as `CancelledError`.
     """
     results = await asyncio.gather(
-        *(call_async(handler, payload) for handler in handlers),
+        *(invoke(handler, payload) for handler in handlers),
         return_exceptions=True,
     )
     exceptions = [result for result in results if isinstance(result, BaseException)]
