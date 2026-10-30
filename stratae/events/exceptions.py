@@ -13,6 +13,14 @@ class MultipleRespondersError(EventDispatchError, LookupError):
     """Raised when a request event has more than one responder."""
 
 
+class MiddlewareError(EventDispatchError):
+    """
+    Raised when a bus middleware tries to swallow the call's error.
+
+    Raised from that error, which middleware can observe on exit, but not suppress.
+    """
+
+
 class NotConnectedError(EventDispatchError):
     """Raised when using an adapter whose connection isn't open."""
 

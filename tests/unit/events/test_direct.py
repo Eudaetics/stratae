@@ -49,6 +49,16 @@ DirectBus (hooks):
 - Async hooks raise TypeError at handle, at bind, and at emit.
 - An observing hook returning an awaitable is logged; the reply returns and complete runs.
 
+DirectBus (middleware):
+- Publish middleware runs once around each emit, outside its hooks.
+- Handle middleware runs around each handler, outside its hooks, and sees the reply.
+- Publish middleware runs inside the emission's envelope.
+- Handle middleware raising on entry refuses the handler call.
+- A KeyboardInterrupt a handle middleware tries to swallow stops fan-out.
+- An async context manager class is refused as middleware when the bus is built.
+- An unsupported pattern emitted directly fails before any middleware runs.
+- A call object a middleware keeps doesn't keep the bus alive.
+
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
@@ -57,7 +67,10 @@ DirectBus (with envelope):
 - A request reply is returned when envelope tracking is enabled.
 """
 
-from typing import Any, Collection, Literal, cast
+import gc
+import weakref
+from contextlib import contextmanager
+from typing import Any, Collection, Generator, Literal, cast
 from unittest.mock import Mock
 
 import pytest
@@ -68,15 +81,21 @@ from stratae.events import (
     Dispatch,
     EmitCallable,
     Envelope,
+    HandleCall,
     Handler,
     Hooks,
     Immutable,
+    Middleware,
     NoPayload,
     Producer,
+    PublishCall,
     PubSub,
     Request,
 )
-from stratae.events.exceptions import MultipleRespondersError, NoResponderError
+from stratae.events.exceptions import (
+    MultipleRespondersError,
+    NoResponderError,
+)
 
 
 class _TaskCreated:
@@ -1220,6 +1239,261 @@ def test_observing_hook_returning_awaitable_is_logged(
     assert reply.title == "dune"
     assert completed == [None]
     assert "returned an awaitable" in caplog.text
+
+
+# endregion
+
+
+# region: Middleware
+
+
+def _labelled(log: list[str], label: str) -> Any:
+    """Return a sync context manager class logging under a label as it's entered and exited."""
+
+    class Labelled:
+        def __init__(self, call: PublishCall | HandleCall) -> None: ...
+
+        def __enter__(self) -> None:
+            log.append(f"{label} in")
+
+        def __exit__(self, *exc: object) -> None:
+            log.append(f"{label} out")
+
+    return Labelled
+
+
+def _labelled_hooks(log: list[str], label: str) -> Hooks[Any, Any]:
+    """Return hooks logging under a label before and after the call."""
+
+    def before(event: Any, payload: Any) -> None:
+        log.append(f"{label} before")
+
+    def complete(event: Any, payload: Any, error: BaseException | None) -> None:
+        log.append(f"{label} complete")
+
+    return Hooks(before=(before,), complete=(complete,))
+
+
+def test_middleware_wraps_hooks_and_handlers():
+    """
+    Publish middleware should wrap each emit, and handle middleware each handler, outside hooks.
+
+    Given: A bus with publish and handle middleware, and two handlers, one with hooks
+    When: A pub/sub event is emitted with hooks
+    Then: Publish middleware wraps the emit's hooks once; handle middleware wraps each
+        handler, outside that handler's hooks
+    """
+    # Arrange
+    log: list[str] = []
+    bus = DirectBus(
+        middleware=Middleware(
+            publish=(_labelled(log, "publish mw"),), handle=(_labelled(log, "handle mw"),)
+        )
+    )
+    bus.handle(_task_created, lambda task: log.append("handler"), hooks=_labelled_hooks(log, "h"))
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1), hooks=_labelled_hooks(log, "p"))
+
+    # Assert
+    assert log == [
+        "publish mw in",
+        "p before",
+        "handle mw in",
+        "h before",
+        "handler",
+        "h complete",
+        "handle mw out",
+        "p complete",
+        "publish mw out",
+    ]
+
+
+def test_handle_middleware_sees_event_and_reply():
+    """
+    Handle middleware should see the event, the payload and the responder's reply.
+
+    Given: A bus with handle middleware recording what it sees, and a responder
+    When: A request is emitted
+    Then: The middleware sees the event, payload and reply, and the reply is returned
+    """
+    # Arrange
+    seen: list[object] = []
+
+    @contextmanager
+    def record(call: HandleCall) -> Generator[None, None, None]:
+        yield
+        seen.extend((call.event, call.payload.query, call.reply))
+
+    bus = DirectBus(middleware=Middleware(handle=(record,)))
+    bus.handle(_find_book, lambda query: _BookResult(query.query))
+
+    # Act
+    reply = bus.emit(_find_book, None, _BookQuery("dune"))
+
+    # Assert
+    assert reply.title == "dune"
+    assert seen == [_find_book, "dune", reply]
+
+
+def test_publish_middleware_inside_envelope():
+    """
+    Publish middleware should run inside the emission's envelope.
+
+    Given: A bus with envelopes and publish middleware recording the current envelope
+    When: An event is emitted
+    Then: The middleware sees the same envelope as the handler
+    """
+    # Arrange
+    seen: list[Envelope | None] = []
+
+    @contextmanager
+    def record(call: PublishCall) -> Generator[None, None, None]:
+        seen.append(Envelope.current())
+        yield
+
+    bus = DirectBus(use_envelope=True, middleware=Middleware(publish=(record,)))
+    bus.handle(_task_created, lambda task: seen.append(Envelope.current()))
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert seen[0] is not None
+    assert seen == [seen[0], seen[0]]
+
+
+def test_handle_middleware_raising_on_entry_refuses_handler():
+    """
+    Handle middleware raising on entry should refuse the handler call.
+
+    Given: A bus whose handle middleware raises on entry, and a responder
+    When: A request is emitted
+    Then: The middleware's error is raised, and the responder doesn't run
+    """
+    # Arrange
+    calls: list[str] = []
+
+    @contextmanager
+    def refuse(call: HandleCall) -> Generator[None, None, None]:
+        raise PermissionError("rate limited")
+        yield
+
+    def respond(query: _BookQuery) -> _BookResult:
+        calls.append("responder")
+        return _BookResult(query.query)
+
+    bus = DirectBus(middleware=Middleware(handle=(refuse,)))
+    bus.handle(_find_book, respond)
+
+    # Act / Assert
+    with pytest.raises(PermissionError, match="rate limited"):
+        bus.emit(_find_book, None, _BookQuery("dune"))
+    assert calls == []
+
+
+def test_swallowed_interrupt_stops_fan_out():
+    """
+    A KeyboardInterrupt that handle middleware tries to swallow should still stop the emit.
+
+    Given: A bus whose handle middleware's exit returns True, and two handlers that each
+        record they ran, then raise KeyboardInterrupt
+    When: A pub/sub event is emitted
+    Then: KeyboardInterrupt propagates, and only the first handler ran
+    """
+    # Arrange
+    ran: list[str] = []
+
+    class Suppressing:
+        def __init__(self, call: HandleCall) -> None: ...
+
+        def __enter__(self) -> None: ...
+
+        def __exit__(self, *exc: object) -> bool:
+            return True
+
+    def interrupt(task: _TaskCreated) -> None:
+        ran.append("handler")
+        raise KeyboardInterrupt
+
+    bus = DirectBus(middleware=Middleware(handle=(Suppressing,)))
+    bus.handle(_task_created, interrupt)
+    bus.handle(_task_created, interrupt)
+
+    # Act / Assert
+    with pytest.raises(KeyboardInterrupt):
+        bus.emit(_task_created, None, _TaskCreated(1))
+    assert ran == ["handler"]
+
+
+def test_async_middleware_refused():
+    """
+    DirectBus should refuse an async context manager class as middleware when it's built.
+
+    Given: Publish middleware that's an async context manager class
+    When: A DirectBus is built with it
+    Then: A TypeError says DirectBus enters middleware synchronously
+    """
+
+    # Arrange
+    class Trace:
+        def __init__(self, call: PublishCall) -> None: ...
+
+        async def __aenter__(self) -> None: ...
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="DirectBus enters middleware synchronously"):
+        DirectBus(middleware=Middleware(publish=(Trace,)))
+
+
+def test_unsupported_pattern_fails_before_middleware():
+    """
+    Emitting an unsupported pattern directly should fail before any middleware runs.
+
+    Given: A bus with publish middleware recording each emit, and no dispatcher for a pattern
+    When: An event of that pattern is emitted directly
+    Then: TypeError is raised, and the middleware never ran
+    """
+    # Arrange
+    log: list[str] = []
+    bus = DirectBus(middleware=Middleware(publish=(_labelled(log, "mw"),)))
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="no dispatcher for _Gather"):
+        bus.emit(_quotes, None, _BookQuery("dune"))
+    assert log == []
+
+
+def test_kept_call_does_not_keep_bus_alive():
+    """
+    A call object a middleware keeps shouldn't keep the bus alive.
+
+    Given: A bus whose publish middleware keeps every call object, and a responder
+    When: A request is emitted, and the bus is dropped
+    Then: The bus is collected, though the call object is still kept
+    """
+    # Arrange
+    kept: list[PublishCall] = []
+
+    @contextmanager
+    def keep(call: PublishCall) -> Generator[None, None, None]:
+        kept.append(call)
+        yield
+
+    bus = DirectBus(middleware=Middleware(publish=(keep,)))
+    bus.handle(_find_book, lambda query: _BookResult(query.query))
+    bus.emit(_find_book, None, _BookQuery("dune"))
+    collected = weakref.ref(bus)
+
+    # Act
+    del bus
+    gc.collect()
+
+    # Assert
+    assert len(kept) == 1
+    assert collected() is None
 
 
 # endregion

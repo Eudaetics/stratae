@@ -21,11 +21,14 @@ This test suite verifies the following behaviors:
 - A schema-less event round-trips publisher -> broker -> zero-arg handler.
 - Hooks passed to bind run around the publish, and hooks passed to handle around the
   consumer's handler, across the broker.
+- Publish middleware runs around the publish, and handle middleware around the consumer's
+  handler, across the broker.
 """
 
 import asyncio
 import os
-from typing import Any, AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from typing import Any, AsyncGenerator, AsyncIterator, Callable
 from uuid import uuid4
 
 import msgspec
@@ -33,7 +36,7 @@ import pytest
 from aiormq import connect
 from aiormq.abc import AbstractChannel
 
-from stratae.events import Envelope, Hooks, PubSub
+from stratae.events import Envelope, HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
@@ -220,6 +223,55 @@ async def test_hooks_run_on_both_sides_of_the_broker(broker: _Broker):
         "handler hello",
         "handle success 'HELLO'",
     ]
+
+
+async def test_middleware_runs_on_both_sides_of_the_broker(broker: _Broker):
+    """
+    Middleware should run on the publishing and the consuming side.
+
+    Given: A publisher with publish middleware and a consumer with handle middleware
+    When: A payload is published and consumed through the broker
+    Then: Each side's middleware runs around its call, seeing the payload
+    """
+    # Arrange
+    exchange = _unique("stratae-it")
+    broker.exchanges.append(exchange)
+    log: list[str] = []
+
+    @asynccontextmanager
+    async def on_publish(call: PublishCall) -> AsyncGenerator[None, None]:
+        log.append(f"publish mw {call.payload.text}")
+        yield
+
+    @asynccontextmanager
+    async def on_handle(call: HandleCall) -> AsyncGenerator[None, None]:
+        yield
+        log.append(f"handle mw {call.payload.text}")
+
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=msgspec.json.decode, middleware=Middleware(handle=(on_handle,))
+    )
+    consumer.handle(
+        message_event,
+        lambda message: log.append(f"handler {message.text}"),
+        config=RabbitMQConsumeConfig(exchange=exchange),
+    )
+
+    # Act
+    async with consumer:
+        async with RabbitMQPublisher(
+            _URL, serializer=msgspec.json.encode, middleware=Middleware(publish=(on_publish,))
+        ) as publisher:
+            send = publisher.bind(
+                message_event,
+                factory=Message,
+                config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
+            )
+            await send(text="hello")
+        await _eventually(lambda: len(log) == 3)
+
+    # Assert: the publish side runs first; the handler runs inside the handle middleware.
+    assert log == ["publish mw hello", "handler hello", "handle mw hello"]
 
 
 async def test_envelope_survives_the_wire(broker: _Broker):

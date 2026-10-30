@@ -43,6 +43,12 @@ AsyncDirectBus (hooks):
 - Hooks passed to emit run inside the emission's envelope when envelopes are tracked.
 - A payload-less event's hooks receive a NoPayload instance.
 
+AsyncDirectBus (middleware):
+- Async publish and handle middleware run outside hooks, inside the emission's envelope.
+- Publish middleware wraps an emit without hooks.
+- Sync middleware is entered alongside async middleware.
+- A class that isn't a context manager is refused as middleware when the bus is built.
+
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
@@ -52,7 +58,8 @@ AsyncDirectBus (with envelope):
 """
 
 import asyncio
-from typing import Any, Awaitable, Collection, Literal, cast
+from contextlib import contextmanager
+from typing import Any, Awaitable, Collection, Generator, Literal, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -63,10 +70,13 @@ from stratae.events import (
     Dispatch,
     EmitCallable,
     Envelope,
+    HandleCall,
     Handler,
     Hooks,
     Immutable,
+    Middleware,
     Producer,
+    PublishCall,
     PubSub,
     Request,
 )
@@ -1123,6 +1133,139 @@ async def test_signal_event_hooks_receive_no_payload(bus: AsyncDirectBus):
 
     # Assert
     assert log == ["publish NoPayload", "handle NoPayload"]
+
+
+# endregion
+
+
+# region: Middleware
+
+
+def _alabelled(log: list[str], label: str) -> Any:
+    """Return an async context manager class logging under a label, and the envelope."""
+
+    class Labelled:
+        def __init__(self, call: PublishCall | HandleCall) -> None: ...
+
+        async def __aenter__(self) -> None:
+            log.append(f"{label} in {Envelope.current() is not None}")
+
+        async def __aexit__(self, *exc: object) -> None:
+            log.append(f"{label} out")
+
+    return Labelled
+
+
+async def test_middleware_wraps_hooks_inside_envelope():
+    """
+    Async middleware should wrap hooks, inside the emission's envelope.
+
+    Given: A bus with envelopes and async publish and handle middleware, and a sync handler
+        with an async hook
+    When: An event is emitted with an async hook
+    Then: Publish middleware wraps the emit's hook, handle middleware wraps the handler's
+        hook, and both run inside an envelope
+    """
+    # Arrange
+    log: list[str] = []
+    bus = AsyncDirectBus(
+        use_envelope=True,
+        middleware=Middleware(
+            publish=(_alabelled(log, "publish mw"),), handle=(_alabelled(log, "handle mw"),)
+        ),
+    )
+    bus.handle(
+        _task_created,
+        lambda task: log.append("handler"),
+        hooks=Hooks(before=(_alog(log, "h before"),)),
+    )
+
+    # Act
+    await bus.emit(
+        _task_created, None, _TaskCreated(1), hooks=Hooks(before=(_alog(log, "p before"),))
+    )
+
+    # Assert
+    assert log == [
+        "publish mw in True",
+        "p before _TaskCreated",
+        "handle mw in True",
+        "h before _TaskCreated",
+        "handler",
+        "handle mw out",
+        "publish mw out",
+    ]
+
+
+async def test_publish_middleware_without_hooks():
+    """
+    Publish middleware should wrap an emit that has no hooks.
+
+    Given: A bus with async publish middleware, and an async responder
+    When: A request is emitted without hooks
+    Then: The middleware runs around it, and the reply is returned
+    """
+    # Arrange
+    log: list[str] = []
+    bus = AsyncDirectBus(middleware=Middleware(publish=(_alabelled(log, "mw"),)))
+
+    async def respond(query: _BookQuery) -> str:
+        return query.query.title()
+
+    find_book = Request(_BookQuery, reply=str)
+    bus.handle(find_book, respond)
+
+    # Act
+    reply = await bus.emit(find_book, None, _BookQuery("dune"))
+
+    # Assert
+    assert reply == "Dune"
+    assert log == ["mw in False", "mw out"]
+
+
+async def test_sync_middleware_entered_alongside_async():
+    """
+    AsyncDirectBus should enter sync middleware as well as async middleware.
+
+    Given: A bus with sync contextmanager handle middleware outside async handle middleware
+    When: An event is emitted
+    Then: Both wrap the handler, the sync one outermost
+    """
+    # Arrange
+    log: list[str] = []
+
+    @contextmanager
+    def sync(call: HandleCall) -> Generator[None, None, None]:
+        log.append("sync in")
+        yield
+        log.append("sync out")
+
+    bus = AsyncDirectBus(middleware=Middleware(handle=(sync, _alabelled(log, "async"))))
+    bus.handle(_task_created, lambda task: log.append("handler"))
+
+    # Act
+    await bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert log == ["sync in", "async in False", "handler", "async out", "sync out"]
+
+
+def test_non_manager_middleware_refused():
+    """
+    AsyncDirectBus should refuse a class that isn't a context manager when it's built.
+
+    Given: Handle middleware that's a plain class
+    When: An AsyncDirectBus is built with it
+    Then: A TypeError says AsyncDirectBus can't enter it
+    """
+
+    # Arrange
+    class Plain:
+        def __init__(self, call: HandleCall) -> None: ...
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="AsyncDirectBus can't enter"):
+        AsyncDirectBus(middleware=Middleware(handle=(cast(Any, Plain),)))
 
 
 # endregion

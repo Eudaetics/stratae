@@ -13,7 +13,9 @@ which patterns it delivers.
 other adapters implement the {py:class}`Producer <stratae.events.protocols.Producer>` and
 {py:class}`Consumer <stratae.events.protocols.Consumer>` protocols.
 {py:class}`Envelope <stratae.events.envelope.Envelope>` carries correlation ids across a
-chain of emissions.
+chain of emissions. {py:class}`Hooks <stratae.events.hooks.Hooks>` observe one event where it
+meets a bus, typed by that event; {py:class}`Middleware <stratae.events.middleware.Middleware>`
+wraps every emit and handler call on a bus.
 
 ````{example} Create event triggering a logging event
 ```{code-block} python
@@ -74,6 +76,7 @@ from .envelope import (
 )
 from .handler import Handler, WithoutPayload
 from .hooks import Hooks
+from .middleware import HandleCall, Middleware, PublishCall
 from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
     AnyEvent,
@@ -96,14 +99,17 @@ __all__ = [
     "EmitCallable",
     "Envelope",
     "EventType",
+    "HandleCall",
     "Handler",
     "Hooks",
     "Immutable",
     "MESSAGE_ID_HEADER",
+    "Middleware",
     "NoPayload",
     "PayloadEvent",
     "Producer",
     "PubSub",
+    "PublishCall",
     "Request",
     "SignalEvent",
     "TIMESTAMP_HEADER",
