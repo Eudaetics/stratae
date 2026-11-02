@@ -23,6 +23,8 @@ This test suite verifies the following behaviors:
   consumer's handler, across the broker.
 - Publish middleware runs around the publish, and handle middleware around the consumer's
   handler, across the broker.
+- A delivery cancelled at the drain timeout closes its message scope with the cancellation,
+  and the broker redelivers it to the next consumer, whose scope closes cleanly.
 """
 
 import asyncio
@@ -43,6 +45,7 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConsumer,
     RabbitMQPublisher,
 )
+from stratae.lifecycle import AsyncScope, async_resource
 
 pytestmark = pytest.mark.rabbitmq
 
@@ -451,3 +454,59 @@ async def test_poison_message_dropped_without_redelivery(broker: _Broker):
     declared = await broker.channel.queue_declare(queue, passive=True)
     assert received == []
     assert declared.message_count == 0
+
+
+async def test_cancelled_scoped_delivery_is_redelivered(broker: _Broker):
+    """
+    A delivery cancelled at shutdown should close its scope and be redelivered.
+
+    Given: A consumer with a message scope and a short drain timeout, whose handler never
+           returns on its first delivery
+    When: The consumer exits mid-delivery, and a second consumer starts on the same queue
+    Then: The first delivery's scope closes with the cancellation, and the message is
+          redelivered and handled, its scope closing cleanly
+    """
+    # Arrange
+    queue = _unique("stratae-it-scoped")
+    broker.queues.append(queue)
+    scope = AsyncScope("message")
+    events: list[str] = []
+
+    @scope.cache()
+    @async_resource
+    async def get_transaction() -> AsyncGenerator[None, None]:
+        try:
+            yield
+        except BaseException as exc:
+            events.append(f"rolled back on {type(exc).__name__}")
+            raise
+        events.append("committed")
+
+    started = asyncio.Event()
+
+    async def stuck(message: Message) -> None:
+        await get_transaction()
+        started.set()
+        await asyncio.Event().wait()
+
+    async def handled(message: Message) -> None:
+        await get_transaction()
+        events.append(f"handled {message.text}")
+
+    first = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode, drain_timeout=0.1, scope=scope)
+    first.handle(message_event, stuck, config=RabbitMQConsumeConfig(queue))
+    second = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode, scope=scope)
+    second.handle(message_event, handled, config=RabbitMQConsumeConfig(queue))
+
+    # Act
+    async with first:
+        async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+            send = publisher.bind(message_event, factory=Message, config=RabbitMQConfig("", queue))
+            await send(text="retry me")
+        await asyncio.wait_for(started.wait(), timeout=5)
+    await _eventually(lambda: "rolled back on CancelledError" in events)
+    async with second:
+        await _eventually(lambda: "committed" in events)
+
+    # Assert
+    assert events == ["rolled back on CancelledError", "handled retry me", "committed"]
