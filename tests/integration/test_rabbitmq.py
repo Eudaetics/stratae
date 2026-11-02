@@ -25,13 +25,15 @@ This test suite verifies the following behaviors:
   handler, across the broker.
 - A delivery cancelled at the drain timeout closes its message scope with the cancellation,
   and the broker redelivers it to the next consumer, whose scope closes cleanly.
+- Re-publishing with a held envelope delivers both copies with its message id.
+- A redelivered message keeps the message id it was first published with.
 """
 
 import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, AsyncIterator, Callable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import msgspec
 import pytest
@@ -510,3 +512,79 @@ async def test_cancelled_scoped_delivery_is_redelivered(broker: _Broker):
 
     # Assert
     assert events == ["rolled back on CancelledError", "handled retry me", "committed"]
+
+
+async def test_republished_envelope_keeps_message_id(broker: _Broker):
+    """
+    Re-publishing with a held envelope should deliver each copy with its message id.
+
+    Given: A consumer recording each delivery's envelope, and a held envelope
+    When: The same message is published twice with the held envelope
+    Then: Both deliveries carry the held envelope's message and correlation ids
+    """
+    # Arrange
+    queue = _unique("stratae-it-republish")
+    broker.queues.append(queue)
+    seen: list[Envelope | None] = []
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(
+        message_event,
+        lambda payload: seen.append(Envelope.current()),
+        config=RabbitMQConsumeConfig(queue),
+    )
+    held = Envelope()
+
+    # Act
+    async with consumer:
+        async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+            for _ in range(2):
+                await publisher.emit(
+                    message_event, RabbitMQConfig("", queue), Message("again"), envelope=held
+                )
+        await _eventually(lambda: len(seen) == 2)
+
+    # Assert
+    assert [(e.message_id, e.correlation_id) for e in seen if e is not None] == [
+        (held.message_id, held.correlation_id),
+        (held.message_id, held.correlation_id),
+    ]
+
+
+async def test_redelivered_message_keeps_message_id(broker: _Broker):
+    """
+    A redelivered message should keep the message id it was first published with.
+
+    Given: A consumer with a short drain timeout whose handler records the message id and
+           never returns
+    When: The consumer exits mid-delivery, and a second consumer starts on the same queue
+    Then: The redelivered message carries the first delivery's message id
+    """
+    # Arrange
+    queue = _unique("stratae-it-redeliver")
+    broker.queues.append(queue)
+    seen: list[UUID] = []
+
+    def record() -> None:
+        envelope = Envelope.current()
+        assert envelope is not None
+        seen.append(envelope.message_id)
+
+    async def stuck(message: Message) -> None:
+        record()
+        await asyncio.Event().wait()
+
+    first = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode, drain_timeout=0.1)
+    first.handle(message_event, stuck, config=RabbitMQConsumeConfig(queue))
+    second = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    second.handle(message_event, lambda message: record(), config=RabbitMQConsumeConfig(queue))
+
+    # Act
+    async with first:
+        async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+            await publisher.emit(message_event, RabbitMQConfig("", queue), Message("once"))
+        await _eventually(lambda: len(seen) == 1)
+    async with second:
+        await _eventually(lambda: len(seen) == 2)
+
+    # Assert
+    assert seen[0] == seen[1]

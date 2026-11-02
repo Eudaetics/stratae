@@ -35,6 +35,10 @@ RabbitMQPublisher:
 - Publish middleware sees the emit's RabbitMQConfig as call.config.
 - A publish middleware class that isn't a context manager is refused when the publisher is
   built; handle middleware isn't checked, so one Middleware can be shared with a consumer.
+- emit given an envelope sends its ids and timestamp unchanged, as x- headers and native
+  fields, instead of a child of the active envelope.
+- Emitting twice with one envelope sends the same message id both times.
+- Publish middleware and hooks see the given envelope.
 """
 
 from contextlib import asynccontextmanager
@@ -708,3 +712,89 @@ async def test_publish_middleware_sees_config(connect_mock: AsyncMock, channel: 
     # Assert
     assert seen == [_config]
     assert (seen[0].exchange, seen[0].routing_key) == ("events", "order.placed")
+
+
+async def test_emit_sends_given_envelope(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    ``emit`` given an envelope should send its ids and timestamp unchanged.
+
+    Given: A connected publisher inside an envelope scope, and a held envelope from an earlier
+           message
+    When: emit is awaited with the held envelope
+    Then: The message carries the held envelope's ids and timestamp as x- headers and native
+          fields, not a child of the active envelope
+    """
+    # Arrange
+    held = Envelope().child()
+
+    # Act
+    with Envelope.scope():
+        async with publisher:
+            await publisher.emit(_order_placed, _config, _OrderPlaced(7), envelope=held)
+
+    # Assert
+    sent = channel.basic_publish.await_args.kwargs["properties"]
+    assert sent.headers[MESSAGE_ID_HEADER] == str(held.message_id)
+    assert sent.headers[CORRELATION_ID_HEADER] == str(held.correlation_id)
+    assert sent.headers[CAUSATION_ID_HEADER] == str(held.causation_id)
+    assert sent.message_id == str(held.message_id)
+    assert sent.correlation_id == str(held.correlation_id)
+    assert sent.timestamp == held.timestamp
+
+
+async def test_republishing_keeps_message_id(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    Emitting twice with one envelope should send the same message id both times.
+
+    Given: A connected publisher and a held envelope
+    When: The same event is emitted twice with that envelope
+    Then: Both messages carry the held envelope's message id
+    """
+    # Arrange
+    held = Envelope()
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, _config, _OrderPlaced(7), envelope=held)
+        await publisher.emit(_order_placed, _config, _OrderPlaced(7), envelope=held)
+
+    # Assert
+    sent = [call.kwargs["properties"].message_id for call in channel.basic_publish.await_args_list]
+    assert sent == [str(held.message_id), str(held.message_id)]
+
+
+async def test_middleware_and_hooks_see_given_envelope(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Publish middleware and hooks should see the envelope given to emit.
+
+    Given: A publisher with publish middleware, and a before hook, each recording the current
+           envelope
+    When: An event is emitted with a held envelope
+    Then: Both see the held envelope
+    """
+    # Arrange
+    held = Envelope()
+    seen: list[Envelope | None] = []
+
+    @asynccontextmanager
+    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+        seen.append(Envelope.current())
+        yield
+
+    def before(event: Any, payload: Any) -> None:
+        seen.append(Envelope.current())
+
+    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record,)))
+
+    # Act
+    async with publisher:
+        await publisher.emit(
+            _order_placed,
+            _config,
+            _OrderPlaced(1),
+            hooks=Hooks(before=(before,)),
+            envelope=held,
+        )
+
+    # Assert
+    assert seen == [held, held]
