@@ -49,6 +49,18 @@ RabbitMQPublisher:
 - emit publishes with the config's mandatory flag.
 - A returned mandatory message raises UnroutableError naming its exchange and routing key.
 - emit doesn't return until the broker's confirm arrives.
+
+Connection health and reconnecting:
+- RabbitMQReconnect refuses inconsistent delays, and its waits grow by backoff up to the cap.
+- The publisher reports closed before entering and after exiting, and connected inside.
+- When the channel closes unexpectedly, the publisher reports reconnecting, emit raises
+  NotConnectedError at once, and after reconnecting it's connected, has declared its topology
+  again, and publishes on the new channel.
+- A failed reconnect attempt is logged and retried.
+- Exiting while reconnecting stops trying and leaves the publisher closed.
+- With reconnecting turned off, a lost channel leaves the publisher closed, and emit raises
+  NotConnectedError.
+- Closing the publisher on purpose doesn't start reconnecting.
 """
 
 import asyncio
@@ -75,10 +87,12 @@ from stratae.events import (
 )
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
 from stratae.integrations.rabbitmq import (
+    ConnectionState,
     RabbitMQConfig,
     RabbitMQConsumeConfig,
     RabbitMQFailurePolicy,
     RabbitMQPublisher,
+    RabbitMQReconnect,
 )
 from stratae.serde import encode, serialize
 
@@ -101,9 +115,11 @@ _config = RabbitMQConfig("events", "order.placed")
 
 
 @pytest.fixture
-def channel() -> AsyncMock:
-    """Return a mock AMQP channel."""
-    return AsyncMock()
+async def channel() -> AsyncMock:
+    """Return a mock AMQP channel, whose closing future fails when the broker drops it."""
+    channel = AsyncMock()
+    channel.closing = asyncio.get_running_loop().create_future()
+    return channel
 
 
 @pytest.fixture
@@ -1013,3 +1029,208 @@ async def test_emit_waits_for_confirm(publisher: RabbitMQPublisher, channel: Asy
     # Assert
     assert waiting
     assert emitting.done()
+
+
+_FAST = RabbitMQReconnect(initial_delay=0.001, max_delay=0.001)
+
+
+def _new_channels(connection: AsyncMock) -> list[AsyncMock]:
+    """Make the connection open a fresh mock channel each time, returning those opened."""
+    opened: list[AsyncMock] = []
+
+    async def open_channel(**_: Any) -> AsyncMock:
+        channel = AsyncMock()
+        channel.closing = asyncio.get_running_loop().create_future()
+        opened.append(channel)
+        return channel
+
+    connection.channel.side_effect = open_channel
+    return opened
+
+
+async def _until(condition: Any) -> None:
+    """Yield to the loop until the condition holds, failing after a second."""
+    async with asyncio.timeout(1):
+        while not condition():
+            await asyncio.sleep(0.001)
+
+
+def test_reconnect_refuses_inconsistent_delays():
+    """
+    RabbitMQReconnect should refuse delays that can't make a backoff.
+
+    Given: A zero initial delay, a cap below the initial delay, and a shrinking backoff
+    When: Each policy is created
+    Then: A ValueError should be raised
+    """
+    for kwargs in ({"initial_delay": 0}, {"initial_delay": 2, "max_delay": 1}, {"backoff": 0.5}):
+        with pytest.raises(ValueError, match="initial_delay"):
+            RabbitMQReconnect(**kwargs)
+
+
+def test_reconnect_delays_grow_to_cap():
+    """
+    RabbitMQReconnect's waits should grow by its backoff, up to its cap.
+
+    Given: A policy starting at 1 second, doubling, capped at 5
+    When: Its first five delays are taken
+    Then: They're 1, 2, 4, 5, 5
+    """
+    delays = RabbitMQReconnect(initial_delay=1, max_delay=5).delays()
+
+    assert [next(delays) for _ in range(5)] == [1, 2, 4, 5, 5]
+
+
+async def test_publisher_reports_state(publisher: RabbitMQPublisher):
+    """
+    The publisher should report its connection state.
+
+    Given: A publisher
+    When: It's created, entered and exited
+    Then: It's closed, connected, then closed
+    """
+    # Act / Assert
+    assert publisher.state is ConnectionState.CLOSED
+    async with publisher:
+        assert publisher.state is ConnectionState.CONNECTED
+    assert publisher.state is ConnectionState.CLOSED
+
+
+async def test_publisher_reconnects_after_channel_loss(
+    connect_mock: AsyncMock, connection: AsyncMock
+):
+    """
+    A publisher whose channel closes unexpectedly should reconnect and publish again.
+
+    Given: A connected publisher with topology
+    When: Its channel closes with an error
+    Then: It reports reconnecting and emit raises NotConnectedError at once; then it's
+          connected again, has declared its topology on the new channel, and publishes there
+    """
+    # Arrange
+    channels = _new_channels(connection)
+    publisher = RabbitMQPublisher(
+        _URL, topology=[RabbitMQConsumeConfig("jobs")], reconnect=RabbitMQReconnect(0.05, 0.05)
+    )
+
+    async with publisher:
+        # Act
+        channels[0].closing.set_exception(ConnectionError("broker gone"))
+        await asyncio.sleep(0)
+
+        # Assert
+        assert publisher.state is ConnectionState.RECONNECTING
+        with pytest.raises(NotConnectedError, match="reconnecting"):
+            await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        await _until(lambda: publisher.state is ConnectionState.CONNECTED)
+        await publisher.emit(_order_placed, _config, _OrderPlaced(2))
+
+    assert connect_mock.await_count == 2
+    channels[1].queue_declare.assert_awaited()
+    channels[0].basic_publish.assert_not_awaited()
+    channels[1].basic_publish.assert_awaited_once()
+    assert connection.close.await_count == 2  # the stale connection, then on exit
+
+
+async def test_failed_reconnect_attempt_retried(
+    connect_mock: AsyncMock, connection: AsyncMock, caplog: pytest.LogCaptureFixture
+):
+    """
+    A failed reconnect attempt should be logged and retried.
+
+    Given: A connected publisher, and a broker refusing the first reconnect attempt
+    When: Its channel closes unexpectedly
+    Then: The failed attempt is logged, and the next one reconnects
+    """
+    # Arrange
+    channels = _new_channels(connection)
+    publisher = RabbitMQPublisher(_URL, reconnect=_FAST)
+
+    async with publisher:
+        connect_mock.side_effect = [OSError("refused"), connection]
+
+        # Act
+        channels[0].closing.set_exception(ConnectionError("gone"))
+        await _until(lambda: len(channels) == 2)
+
+        # Assert
+        assert publisher.state is ConnectionState.CONNECTED
+
+    assert "publisher failed to reconnect" in caplog.text
+    assert connect_mock.await_count == 3
+
+
+async def test_exit_while_reconnecting_stops(connect_mock: AsyncMock, connection: AsyncMock):
+    """
+    Exiting while reconnecting should stop trying and leave the publisher closed.
+
+    Given: A connected publisher, and a broker that never answers a reconnect
+    When: Its channel closes, then its context exits
+    Then: The exit returns promptly, and the publisher is closed
+    """
+    # Arrange
+    channels = _new_channels(connection)
+    publisher = RabbitMQPublisher(_URL, reconnect=_FAST)
+
+    async def never(*_: Any) -> None:
+        await asyncio.Event().wait()
+
+    await publisher.__aenter__()
+    connect_mock.side_effect = never
+    channels[0].closing.set_exception(ConnectionError("gone"))
+    await _until(lambda: connect_mock.await_count == 2)
+
+    # Act
+    async with asyncio.timeout(1):
+        await publisher.__aexit__(None, None, None)
+
+    # Assert
+    assert publisher.state is ConnectionState.CLOSED
+
+
+async def test_lost_channel_without_reconnect_closes(
+    connect_mock: AsyncMock, channel: AsyncMock, connection: AsyncMock
+):
+    """
+    With reconnecting turned off, a lost channel should leave the publisher closed.
+
+    Given: A connected publisher with reconnect=None
+    When: Its channel closes unexpectedly
+    Then: It's closed, emit raises NotConnectedError, the old connection is closed, and it
+          never reconnects
+    """
+    # Arrange
+    publisher = RabbitMQPublisher(_URL, reconnect=None)
+
+    async with publisher:
+        # Act
+        channel.closing.set_exception(ConnectionError("gone"))
+        await _until(lambda: connection.close.await_count == 1)
+
+        # Assert
+        assert publisher.state is ConnectionState.CLOSED
+        with pytest.raises(NotConnectedError, match="not connected"):
+            await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+
+    connect_mock.assert_awaited_once()
+
+
+async def test_closing_on_purpose_does_not_reconnect(
+    publisher: RabbitMQPublisher, connect_mock: AsyncMock, channel: AsyncMock
+):
+    """
+    Closing the publisher on purpose shouldn't start reconnecting.
+
+    Given: A connected publisher
+    When: Its context exits
+    Then: It stops watching the channel, stays closed, and never reconnects
+    """
+    # Act
+    async with publisher:
+        pass
+    await asyncio.sleep(0.01)
+
+    # Assert
+    assert channel.closing.cancelled()
+    assert publisher.state is ConnectionState.CLOSED
+    connect_mock.assert_awaited_once()

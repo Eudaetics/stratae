@@ -10,6 +10,13 @@ with {py:func}`RabbitMQPublisher.bind` and a {py:class}`RabbitMQConfig`; consume
 consume configs as `topology` to declare them when it connects instead, so messages published
 before any consumer has run aren't dropped.
 
+Both report their {py:class}`ConnectionState` as `state`, e.g. for a health check. If the
+connection or channel drops, they reconnect with the backoff of a {py:class}`RabbitMQReconnect`,
+then declare their topology again, or resume every registration. While reconnecting, `emit`
+raises {py:exc}`NotConnectedError <stratae.events.exceptions.NotConnectedError>` at once, so
+the caller decides whether to retry; nothing is buffered in memory. A message whose handler
+was running when the connection dropped is cancelled unacked, and the broker redelivers it.
+
 Each message carries its {py:class}`Envelope <stratae.events.envelope.Envelope>` in its
 headers, so correlation ids propagate across publishes and handlers. Each publish gets a
 new envelope, a child of the active one, unless `emit` is given one: re-publishing a message
@@ -115,13 +122,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from copy import copy
+from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Coroutine,
     Iterable,
+    Iterator,
     Literal,
     Protocol,
     cast,
@@ -158,6 +169,10 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 _NOT_CONNECTED = "publisher is not connected; open it with 'async with' before emitting"
+
+_RECONNECTING = "publisher lost its broker connection and is reconnecting; retry the publish"
+
+_BAD_RECONNECT = "reconnect needs 0 < initial_delay <= max_delay and backoff >= 1"
 
 _ALREADY_CONNECTED = "{} is already connected; exit it before entering it again"
 
@@ -281,6 +296,151 @@ class RabbitMQConfig:
         self.mandatory = mandatory
 
 
+class ConnectionState(StrEnum):
+    """Where a {py:class}`RabbitMQPublisher`'s or {py:class}`RabbitMQConsumer`'s connection is."""
+
+    CONNECTED = "connected"
+    """Connected, with an open channel."""
+
+    RECONNECTING = "reconnecting"
+    """The connection dropped unexpectedly, and is being reopened."""
+
+    CLOSED = "closed"
+    """Not connected: never entered, exited, or dropped with reconnecting turned off."""
+
+
+class RabbitMQReconnect:
+    """
+    How a {py:class}`RabbitMQPublisher` or {py:class}`RabbitMQConsumer` reconnects.
+
+    After its connection or channel closes unexpectedly, it waits `initial_delay` seconds and
+    tries again, multiplying the wait by `backoff` after each failed attempt, up to
+    `max_delay`, until it reconnects or its context exits.
+    """
+
+    __slots__ = ("backoff", "initial_delay", "max_delay")
+
+    def __init__(
+        self, initial_delay: float = 0.5, max_delay: float = 30.0, backoff: float = 2.0
+    ) -> None:
+        """
+        Create a reconnect policy.
+
+        :param initial_delay: Seconds before the first attempt.
+        :param max_delay: The longest wait between attempts.
+        :param backoff: What each failed attempt multiplies the wait by.
+        :raises ValueError: Unless `0 < initial_delay <= max_delay` and `backoff >= 1`.
+        """
+        if not 0 < initial_delay <= max_delay or backoff < 1:
+            raise ValueError(_BAD_RECONNECT)
+        self.initial_delay = initial_delay
+        self.max_delay = max_delay
+        self.backoff = backoff
+
+    def delays(self) -> Iterator[float]:
+        """Yield the wait before each reconnect attempt, without end."""
+        delay = self.initial_delay
+        while True:
+            yield delay
+            delay = min(delay * self.backoff, self.max_delay)
+
+
+def _closing(channel: Any) -> asyncio.Future[Any]:
+    """Return a channel's closing future, typed: aiormq leaves its result unknown."""
+    return channel.closing
+
+
+class _Link:
+    """A connection and its channel, reopened with backoff after an unexpected close."""
+
+    def __init__(
+        self,
+        name: str,
+        url: str,
+        reconnect: RabbitMQReconnect | None,
+        on_open: Callable[[AbstractChannel], Awaitable[None]],
+        on_lost: Callable[[], None],
+    ) -> None:
+        self._name = name
+        self._url = url
+        self._reconnect = reconnect
+        self._on_open = on_open
+        self._on_lost = on_lost
+        self._connection: AbstractConnection | None = None
+        self._watch: asyncio.Future[Any] | None = None
+        self._reconnecting: asyncio.Task[None] | None = None
+        self.channel: AbstractChannel | None = None
+        self.state = ConnectionState.CLOSED
+
+    async def open(self) -> None:
+        """Connect and run `on_open`, raising if already open or if either step fails."""
+        if self.state is not ConnectionState.CLOSED:
+            raise AlreadyConnectedError(_ALREADY_CONNECTED.format(self._name))
+        await self._open()
+
+    async def _open(self) -> None:
+        """Connect, open a channel and run `on_open`, closing the connection if any step fails."""
+        connection = await connect(self._url)
+        try:
+            channel = await connection.channel(**_CHANNEL_OPTIONS)
+            await self._on_open(channel)
+        except BaseException:
+            await connection.close()
+            raise
+        self._connection, self.channel = connection, channel
+        self.state = ConnectionState.CONNECTED
+        self._watch = _closing(channel)
+        self._watch.add_done_callback(self._on_closed)
+
+    def _on_closed(self, closing: asyncio.Future[Any]) -> None:
+        """Start reconnecting when the channel closes, unless it was closed on purpose."""
+        if closing.cancelled() or self.state is not ConnectionState.CONNECTED:
+            return
+        stale, reason = cast("AbstractConnection", self._connection), closing.exception()
+        self._connection, self.channel, self._watch = None, None, None
+        self._on_lost()
+        if self._reconnect is None:
+            _log.error("%s lost its broker connection: %s", self._name, reason)
+            self.state = ConnectionState.CLOSED
+        else:
+            _log.warning("%s lost its broker connection (%s); reconnecting", self._name, reason)
+            self.state = ConnectionState.RECONNECTING
+        self._reconnecting = asyncio.get_running_loop().create_task(self._recover(stale))
+
+    async def _recover(self, stale: AbstractConnection) -> None:
+        """Close what's left of the old connection, then reconnect with backoff if enabled."""
+        with suppress(Exception):
+            await stale.close()
+        if self._reconnect is None:
+            return
+        delays = self._reconnect.delays()
+        while True:
+            await asyncio.sleep(next(delays))
+            try:
+                await self._open()
+            except Exception:
+                _log.warning("%s failed to reconnect", self._name, exc_info=True)
+                continue
+            _log.info("%s reconnected to the broker", self._name)
+            return
+
+    async def close(self) -> None:
+        """Stop any reconnecting and close the connection, if open."""
+        self.state = ConnectionState.CLOSED
+        recovering, self._reconnecting = self._reconnecting, None
+        if recovering is not None:
+            recovering.cancel()
+            with suppress(asyncio.CancelledError):
+                await recovering
+        if self._watch is not None:
+            self._watch.cancel()
+        connection = self._connection
+        # Cleared before closing, so a failed close leaves no stale state.
+        self._connection, self.channel, self._watch = None, None, None
+        if connection is not None:
+            await connection.close()
+
+
 class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     """
     Async RabbitMQ publisher for pub/sub events.
@@ -309,6 +469,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         serializer: Serializer[object] = serialize,
         *,
         topology: Iterable[RabbitMQConsumeConfig] = (),
+        reconnect: RabbitMQReconnect | None = RabbitMQReconnect(),
         middleware: Middleware = Middleware(),
     ) -> None:
         """
@@ -319,7 +480,9 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
             {py:func}`stratae.serde.serialize`.
         :param topology: Consume configs whose queues, exchanges, bindings and failure queues
             are declared on entering the context, before anything is published. Each needs a
-            named `queue`.
+            named `queue`. They're declared again after each reconnect.
+        :param reconnect: How to reconnect after the connection or channel closes unexpectedly;
+            `None` to stay closed instead.
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `publish` half runs around every publish, inside the message's
             envelope; its `handle` half is a consumer's, so one `Middleware` can be shared with
@@ -333,11 +496,16 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
             if config.queue is None:
                 raise ValueError(_TOPOLOGY_NEEDS_QUEUE)
         self._publish_middleware = middleware.publish
-        self._url = url
         self._serializer = serializer
-        self._connection: AbstractConnection | None = None
-        self._channel: AbstractChannel | None = None
         self._declared: set[str] = set()
+        self._link = _Link(
+            "publisher", url, reconnect, self._declare_topology, self._declared.clear
+        )
+
+    @property
+    def state(self) -> ConnectionState:
+        """The publisher's {py:class}`ConnectionState`, e.g. for a health check."""
+        return self._link.state
 
     async def __aenter__(self) -> RabbitMQPublisher:
         """
@@ -348,27 +516,18 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         :raises aiormq.exceptions.ChannelPreconditionFailed: If a topology declaration
             conflicts with one the broker already holds. The publisher is left disconnected.
         """
-        if self._connection is not None:
-            raise AlreadyConnectedError(_ALREADY_CONNECTED.format("publisher"))
-        self._connection = await connect(self._url)
-        try:
-            channel = await self._connection.channel(**_CHANNEL_OPTIONS)
-            for config in self._topology:
-                await _declare(channel, config)
-            self._channel = channel
-        except BaseException:
-            await self.__aexit__(None, None, None)
-            raise
+        await self._link.open()
         return self
 
     async def __aexit__(self, *_: object) -> None:
-        """Close the AMQP connection, if one was opened."""
-        connection = self._connection
-        self._connection = None
-        self._channel = None
+        """Stop reconnecting and close the AMQP connection, if one was opened."""
         self._declared.clear()
-        if connection is not None:
-            await connection.close()
+        await self._link.close()
+
+    async def _declare_topology(self, channel: AbstractChannel) -> None:
+        """Declare every topology config on a newly opened channel."""
+        for config in self._topology:
+            await _declare(channel, config)
 
     async def emit[S, R](
         self,
@@ -430,12 +589,14 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         envelope: Envelope,
     ) -> None:
         """Serialize a payload and publish it to config's exchange, stamped with `envelope`."""
-        if self._channel is None:
-            raise NotConnectedError(_NOT_CONNECTED)
-        await self._declare_exchange(self._channel, config)
+        channel = self._link.channel
+        if channel is None:
+            reconnecting = self._link.state is ConnectionState.RECONNECTING
+            raise NotConnectedError(_RECONNECTING if reconnecting else _NOT_CONNECTED)
+        await self._declare_exchange(channel, config)
         body = self._encode(event, payload, serializer)
         try:
-            await self._channel.basic_publish(
+            await channel.basic_publish(
                 body,
                 exchange=config.exchange,
                 routing_key=config.routing_key,
@@ -723,6 +884,8 @@ class RabbitMQConsumer:
     messages arrive, waits up to `drain_timeout` for running handlers to finish and ack, then
     closes the connection. A handler still running at the timeout is cancelled by the close,
     its scope closes with the cancellation, and the broker redelivers its unacked message.
+    Handlers running when the connection drops are cancelled the same way, and their messages
+    redelivered once the consumer reconnects.
     """
 
     def __init__(
@@ -733,6 +896,7 @@ class RabbitMQConsumer:
         drain_timeout: float | None = 30.0,
         *,
         scope: AsyncScope | None = None,
+        reconnect: RabbitMQReconnect | None = RabbitMQReconnect(),
         middleware: Middleware = Middleware(),
     ) -> None:
         """
@@ -747,6 +911,8 @@ class RabbitMQConsumer:
         :param scope: Activated for each message, around its middleware, hooks and handler,
             and closed before the ack or nack. A message that fails to decode never activates
             it.
+        :param reconnect: How to reconnect after the connection or channel closes unexpectedly,
+            resuming every registration; `None` to stay closed instead.
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `handle` half runs around every handler call, inside the message's
             envelope; a message that fails to decode never reaches it. Its `publish` half is a
@@ -756,15 +922,18 @@ class RabbitMQConsumer:
         middleware.require(type(self).__name__, asynchronous=True, publish=False)
         self._handle_middleware = middleware.handle
         self._scope = scope
-        self._url = url
         self._deserializer = deserializer
         self._prefetch_count = prefetch_count
         self._drain_timeout = drain_timeout
-        self._connection: AbstractConnection | None = None
-        self._channel: AbstractChannel | None = None
+        self._link = _Link("consumer", url, reconnect, self._resume, self._forget_consumers)
         self._registrations: dict[Handler[[Any], RabbitMQConsumeConfig, Any], _Registration] = {}
         self._starting: set[asyncio.Task[None]] = set()
         self._in_flight: set[asyncio.Task[Any]] = set()
+
+    @property
+    def state(self) -> ConnectionState:
+        """The consumer's {py:class}`ConnectionState`, e.g. for a health check."""
+        return self._link.state
 
     async def __aenter__(self) -> RabbitMQConsumer:
         """
@@ -773,31 +942,38 @@ class RabbitMQConsumer:
         :returns: `self`.
         :raises AlreadyConnectedError: If already connected.
         """
-        if self._connection is not None:
-            raise AlreadyConnectedError(_ALREADY_CONNECTED.format("consumer"))
-        self._connection = await connect(self._url)
         try:
-            channel = await self._connection.channel(**_CHANNEL_OPTIONS)
-            if self._prefetch_count is not None:
-                await channel.basic_qos(prefetch_count=self._prefetch_count)
-            self._channel = channel
-            for registration in self._registrations.values():
-                await self._start(channel, registration)
+            await self._link.open()
+        except AlreadyConnectedError:
+            raise
         except BaseException:
-            await self.__aexit__(None, None, None)
+            self._forget_consumers()
             raise
         return self
 
     async def __aexit__(self, *_: object) -> None:
         """Stop consuming, wait for running handlers, and close the connection, if opened."""
-        for task in tuple(self._starting):
-            task.cancel()
-        channel = self._channel
+        channel = self._link.channel
         try:
             if channel is not None:
                 await self._drain(channel)
         finally:
-            await self._close()
+            self._forget_consumers()
+            await self._link.close()
+
+    async def _resume(self, channel: AbstractChannel) -> None:
+        """Set QoS on a newly opened channel and start consuming for every registration."""
+        if self._prefetch_count is not None:
+            await channel.basic_qos(prefetch_count=self._prefetch_count)
+        for registration in tuple(self._registrations.values()):
+            await self._start(channel, registration)
+
+    def _forget_consumers(self) -> None:
+        """Cancel pending starts and clear consumer tags, whose channel is gone or going."""
+        for task in tuple(self._starting):
+            task.cancel()
+        for registration in self._registrations.values():
+            registration.consumer_tag = None
 
     async def _drain(self, channel: AbstractChannel) -> None:
         """Cancel every AMQP consumer, then wait up to the drain timeout for running handlers."""
@@ -818,17 +994,6 @@ class RabbitMQConsumer:
                 " redelivered",
                 len(pending),
             )
-
-    async def _close(self) -> None:
-        """Clear the connection state and close the connection, if one was opened."""
-        connection = self._connection
-        # Cleared before closing, so a failed close leaves no stale state.
-        self._connection = None
-        self._channel = None
-        for registration in self._registrations.values():
-            registration.consumer_tag = None
-        if connection is not None:
-            await connection.close()
 
     @overload
     def handle[R](
@@ -919,8 +1084,9 @@ class RabbitMQConsumer:
         registration = self._registrations.pop(handler, None)
         if registration is None:
             return
-        if registration.consumer_tag is not None and self._channel is not None:
-            await self._channel.basic_cancel(registration.consumer_tag)
+        channel = self._link.channel
+        if registration.consumer_tag is not None and channel is not None:
+            await channel.basic_cancel(registration.consumer_tag)
             registration.consumer_tag = None
 
     def _register(
@@ -938,7 +1104,7 @@ class RabbitMQConsumer:
         handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(call, config, is_async)
         registration = _Registration(event, handler, deserializer)
         self._registrations[handler] = registration
-        channel = self._channel
+        channel = self._link.channel
         if channel is not None:
             task = asyncio.get_running_loop().create_task(self._start(channel, registration))
             self._starting.add(task)
