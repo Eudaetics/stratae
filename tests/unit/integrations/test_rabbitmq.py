@@ -39,11 +39,16 @@ RabbitMQPublisher:
   fields, instead of a child of the active envelope.
 - Emitting twice with one envelope sends the same message id both times.
 - Publish middleware and hooks see the given envelope.
+- A topology config without a named queue is refused when the publisher is built.
+- Entering the context declares each topology config's queue, failure queues, exchange and
+  bindings, as a consumer would.
+- A failed topology declaration closes the connection and leaves the publisher disconnected.
+- A publisher without topology declares no queues on entering.
 """
 
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 from pamqp.commands import Basic
@@ -62,7 +67,12 @@ from stratae.events import (
     Request,
 )
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError
-from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQPublisher
+from stratae.integrations.rabbitmq import (
+    RabbitMQConfig,
+    RabbitMQConsumeConfig,
+    RabbitMQFailurePolicy,
+    RabbitMQPublisher,
+)
 from stratae.serde import encode, serialize
 
 _URL = "amqp://guest:guest@localhost/"
@@ -798,3 +808,102 @@ async def test_middleware_and_hooks_see_given_envelope(connect_mock: AsyncMock, 
 
     # Assert
     assert seen == [held, held]
+
+
+def test_topology_needs_named_queue(connect_mock: AsyncMock):
+    """
+    A publisher should refuse a topology config without a named queue.
+
+    Given: A consume config binding a private queue to an exchange
+    When: A publisher is built with it as topology
+    Then: A ValueError should be raised
+    """
+    with pytest.raises(ValueError, match="named queue"):
+        RabbitMQPublisher(_URL, topology=[RabbitMQConsumeConfig(exchange="events")])
+
+
+async def test_entering_declares_topology(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Entering the context should declare the topology as a consumer would.
+
+    Given: A publisher whose topology is a queue with a failure policy bound to a topic
+           exchange, and a plain queue
+    When: The context is entered
+    Then: Each queue, its retry and dead-letter queues, the exchange and its binding are
+          declared before the context body runs
+    """
+    # Arrange
+    jobs = RabbitMQConsumeConfig(
+        "jobs",
+        exchange="work",
+        binding_key="job.*",
+        exchange_type="topic",
+        exchange_durable=True,
+        on_failure=RabbitMQFailurePolicy(retry_delays=(5,)),
+    )
+    publisher = RabbitMQPublisher(_URL, topology=[jobs, RabbitMQConsumeConfig("audit")])
+
+    # Act
+    async with publisher:
+        # Assert
+        assert channel.queue_declare.await_args_list == [
+            call("jobs", durable=True, exclusive=False, auto_delete=False, arguments=None),
+            call(
+                "jobs.retry.5000",
+                durable=True,
+                arguments={
+                    "x-message-ttl": 5000,
+                    "x-dead-letter-exchange": "",
+                    "x-dead-letter-routing-key": "jobs",
+                },
+            ),
+            call("jobs.dead-letter", durable=True),
+            call("audit", durable=True, exclusive=False, auto_delete=False, arguments=None),
+        ]
+        channel.exchange_declare.assert_awaited_once_with(
+            "work", exchange_type="topic", durable=True
+        )
+        channel.queue_bind.assert_awaited_once_with("jobs", "work", routing_key="job.*")
+
+
+async def test_failed_topology_declaration_disconnects(
+    connect_mock: AsyncMock, channel: AsyncMock, connection: AsyncMock
+):
+    """
+    A topology declaration the broker refuses should leave the publisher disconnected.
+
+    Given: A publisher with topology, whose queue declaration fails
+    When: The context is entered
+    Then: The error propagates, the connection is closed, and emit reports not connected
+    """
+    # Arrange
+    channel.queue_declare.side_effect = RuntimeError("inequivalent arg 'durable'")
+    publisher = RabbitMQPublisher(_URL, topology=[RabbitMQConsumeConfig("jobs")])
+
+    # Act
+    with pytest.raises(RuntimeError, match="inequivalent"):
+        async with publisher:
+            pass
+
+    # Assert
+    connection.close.assert_awaited_once()
+    with pytest.raises(NotConnectedError):
+        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+
+
+async def test_no_topology_declares_nothing(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    A publisher without topology should declare no queues on entering.
+
+    Given: A publisher built without topology
+    When: The context is entered
+    Then: No queue, exchange or binding is declared
+    """
+    # Act
+    async with publisher:
+        pass
+
+    # Assert
+    channel.queue_declare.assert_not_awaited()
+    channel.exchange_declare.assert_not_awaited()
+    channel.queue_bind.assert_not_awaited()

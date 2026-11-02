@@ -35,6 +35,12 @@ This test suite verifies the following behaviors:
 - A dropping policy leaves nothing behind for a failed message.
 - A delivery cancelled at the drain timeout is neither retried nor dead-lettered, and is
   redelivered.
+- A publisher's topology keeps messages published to a queue, or to an exchange bound to
+  one, before any consumer exists, and delivers them once one starts.
+- A publisher and a consumer declaring the same queue with a failure policy don't conflict,
+  in either start order.
+- A topology declaration that conflicts with the broker's raises on entering the publisher,
+  leaving it disconnected.
 """
 
 import asyncio
@@ -47,8 +53,10 @@ import msgspec
 import pytest
 from aiormq import connect
 from aiormq.abc import AbstractChannel
+from aiormq.exceptions import ChannelPreconditionFailed
 
 from stratae.events import Envelope, HandleCall, Hooks, Middleware, PublishCall, PubSub
+from stratae.events.exceptions import NotConnectedError
 from stratae.integrations.rabbitmq import (
     ATTEMPTS_HEADER,
     FAILURE_HEADER,
@@ -807,3 +815,92 @@ async def test_cancelled_delivery_under_policy_is_redelivered(broker: _Broker):
     # Assert
     assert await _count(broker, cast(str, policy.retry_queue(queue, 1))) == 0
     assert await _count(broker, cast(str, policy.dead_letter_target(queue))) == 0
+
+
+async def test_topology_keeps_messages_published_before_consumers(broker: _Broker):
+    """
+    A publisher's topology should keep messages sent before any consumer has run.
+
+    Given: A publisher whose topology is a queue, and one bound to a topic exchange
+    When: A message is published to each, then consumers start
+    Then: Both consumers receive their message
+    """
+    # Arrange
+    direct = _unique("stratae-it-topology")
+    bound = _unique("stratae-it-topology-bound")
+    exchange = _unique("stratae-it-topology-x")
+    broker.queues += [direct, bound]
+    broker.exchanges.append(exchange)
+    direct_config = RabbitMQConsumeConfig(direct)
+    bound_config = RabbitMQConsumeConfig(
+        bound, exchange=exchange, binding_key="job.*", exchange_type="topic"
+    )
+    received: list[Message] = []
+
+    # Act
+    async with RabbitMQPublisher(
+        _URL, serializer=msgspec.json.encode, topology=[direct_config, bound_config]
+    ) as publisher:
+        await publisher.emit(message_event, RabbitMQConfig("", direct), Message("direct"))
+        await publisher.emit(message_event, RabbitMQConfig(exchange, "job.run"), Message("bound"))
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(message_event, received.append, config=direct_config)
+    consumer.handle(message_event, received.append, config=bound_config)
+    async with consumer:
+        await _eventually(lambda: len(received) == 2)
+
+    # Assert
+    assert sorted(message.text for message in received) == ["bound", "direct"]
+
+
+@pytest.mark.parametrize("publisher_first", [True, False])
+async def test_publisher_and_consumer_declare_alike(broker: _Broker, publisher_first: bool):
+    """
+    A publisher and a consumer declaring one queue with a failure policy shouldn't conflict.
+
+    Given: One consume config with a failure policy, shared by a publisher and a consumer
+    When: They start in either order, and a message is published
+    Then: Neither declaration is refused, and the consumer receives the message
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(retry_delays=(0.1,))
+    queue = _failure_queues(broker, "stratae-it-alike", policy)
+    config = RabbitMQConsumeConfig(queue, on_failure=policy)
+    received: list[Message] = []
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(message_event, received.append, config=config)
+    publisher = RabbitMQPublisher(_URL, serializer=msgspec.json.encode, topology=[config])
+    first, second = (publisher, consumer) if publisher_first else (consumer, publisher)
+
+    # Act
+    async with first, second:
+        await publisher.emit(message_event, RabbitMQConfig("", queue), Message("alike"))
+        await _eventually(lambda: len(received) == 1)
+
+    # Assert
+    assert received == [Message("alike")]
+
+
+async def test_conflicting_topology_raises_on_enter(broker: _Broker):
+    """
+    A topology declaration the broker refuses should raise when the publisher connects.
+
+    Given: A queue the broker already holds with a length limit, and a publisher declaring
+           it without one
+    When: The publisher's context is entered
+    Then: ChannelPreconditionFailed is raised, and the publisher is left disconnected
+    """
+    # Arrange
+    queue = _unique("stratae-it-conflict")
+    broker.queues.append(queue)
+    await broker.channel.queue_declare(queue, durable=True, arguments={"x-max-length": 10})
+    publisher = RabbitMQPublisher(_URL, topology=[RabbitMQConsumeConfig(queue)])
+
+    # Act
+    with pytest.raises(ChannelPreconditionFailed, match="x-max-length"):
+        async with publisher:
+            pass
+
+    # Assert
+    with pytest.raises(NotConnectedError):
+        await publisher.emit(message_event, RabbitMQConfig("", queue), Message("lost"))
