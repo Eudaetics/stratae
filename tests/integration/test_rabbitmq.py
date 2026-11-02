@@ -27,12 +27,20 @@ This test suite verifies the following behaviors:
   and the broker redelivers it to the next consumer, whose scope closes cleanly.
 - Re-publishing with a held envelope delivers both copies with its message id.
 - A redelivered message keeps the message id it was first published with.
+- Under a failure policy, a handler that fails twice is retried after each delay, then acked,
+  every attempt carrying the original message id.
+- A handler that keeps failing is retried up to the limit, then dead-lettered with its
+  attempt count, failure and original message id.
+- A message that fails to decode is dead-lettered without being retried.
+- A dropping policy leaves nothing behind for a failed message.
+- A delivery cancelled at the drain timeout is neither retried nor dead-lettered, and is
+  redelivered.
 """
 
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, AsyncIterator, Callable
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, cast
 from uuid import UUID, uuid4
 
 import msgspec
@@ -42,9 +50,12 @@ from aiormq.abc import AbstractChannel
 
 from stratae.events import Envelope, HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.integrations.rabbitmq import (
+    ATTEMPTS_HEADER,
+    FAILURE_HEADER,
     RabbitMQConfig,
     RabbitMQConsumeConfig,
     RabbitMQConsumer,
+    RabbitMQFailurePolicy,
     RabbitMQPublisher,
 )
 from stratae.lifecycle import AsyncScope, async_resource
@@ -588,3 +599,211 @@ async def test_redelivered_message_keeps_message_id(broker: _Broker):
 
     # Assert
     assert seen[0] == seen[1]
+
+
+def _failure_queues(broker: _Broker, prefix: str, policy: RabbitMQFailurePolicy) -> str:
+    """Return a unique queue name, registering it and its policy's queues for cleanup."""
+    queue = _unique(prefix)
+    broker.queues.append(queue)
+    broker.queues.extend(
+        name
+        for name in (
+            *(policy.retry_queue(queue, n + 1) for n in range(len(policy.retry_delays))),
+            policy.dead_letter_target(queue),
+        )
+        if name is not None
+    )
+    return queue
+
+
+async def _publish(queue: str, body: bytes = b'{"text": "work"}') -> Envelope:
+    """Publish a raw body straight to a queue, returning the envelope it was sent with."""
+    envelope = Envelope()
+    async with RabbitMQPublisher(_URL, serializer=lambda payload: body) as publisher:
+        await publisher.emit(
+            message_event, RabbitMQConfig("", queue), Message("work"), envelope=envelope
+        )
+    return envelope
+
+
+async def _count(broker: _Broker, queue: str) -> int:
+    """Return how many messages are ready on a queue."""
+    declared = await broker.channel.queue_declare(queue, passive=True)
+    return declared.message_count or 0
+
+
+async def test_failing_handler_retried_with_backoff_then_acked(broker: _Broker):
+    """
+    A handler that fails twice should be retried after each delay, then acked.
+
+    Given: A registration retrying after 0.2 and 0.4 seconds, and a handler failing twice
+    When: A message is published
+    Then: It's handled three times, each retry no sooner than its delay, every attempt with
+          the original message id, and the queue ends empty
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(retry_delays=(0.2, 0.4))
+    queue = _failure_queues(broker, "stratae-it-retry", policy)
+    loop = asyncio.get_running_loop()
+    attempts: list[tuple[float, UUID]] = []
+
+    def flaky(message: Message) -> None:
+        envelope = Envelope.current()
+        assert envelope is not None
+        attempts.append((loop.time(), envelope.message_id))
+        if len(attempts) < 3:
+            raise RuntimeError("try again")
+
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(message_event, flaky, config=RabbitMQConsumeConfig(queue, on_failure=policy))
+
+    # Act
+    async with consumer:
+        sent = await _publish(queue)
+        await _eventually(lambda: len(attempts) == 3)
+        await asyncio.sleep(0.1)
+
+    # Assert
+    (first, _), (second, _), (third, _) = attempts
+    assert second - first >= 0.2
+    assert third - second >= 0.4
+    assert {message_id for _, message_id in attempts} == {sent.message_id}
+    assert await _count(broker, queue) == 0
+    assert await _count(broker, cast(str, policy.dead_letter_target(queue))) == 0
+
+
+async def test_failing_handler_dead_lettered_after_retries(broker: _Broker):
+    """
+    A handler that keeps failing should be retried up to the limit, then dead-lettered.
+
+    Given: A registration retrying twice, and a handler that always fails
+    When: A message is published
+    Then: It's handled three times, then lands on the dead-letter queue with three attempts,
+          the failure and the original message id
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(retry_delays=(0.1, 0.1))
+    queue = _failure_queues(broker, "stratae-it-dlq", policy)
+    dead_letter = cast(str, policy.dead_letter_target(queue))
+    calls: list[Message] = []
+
+    def failing(message: Message) -> None:
+        calls.append(message)
+        raise RuntimeError("still broken")
+
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(message_event, failing, config=RabbitMQConsumeConfig(queue, on_failure=policy))
+
+    # Act
+    async with consumer:
+        sent = await _publish(queue)
+        await _eventually(lambda: len(calls) == 3)
+        await asyncio.sleep(0.2)
+        parked = await broker.channel.basic_get(dead_letter, no_ack=True)
+
+    # Assert
+    properties = parked.header.properties
+    headers = properties.headers or {}
+    assert parked.body == b'{"text": "work"}'
+    assert headers[ATTEMPTS_HEADER] == 3
+    assert headers[FAILURE_HEADER] == "RuntimeError: still broken"
+    assert properties.message_id == str(sent.message_id)
+    assert len(calls) == 3
+
+
+async def test_undecodable_message_dead_lettered_without_retry(broker: _Broker):
+    """
+    A message that fails to decode should be dead-lettered on its first attempt.
+
+    Given: A registration with retries, and a body that isn't valid JSON
+    When: The message is published
+    Then: The handler never runs, and it lands on the dead-letter queue with one attempt
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(retry_delays=(0.1, 0.1))
+    queue = _failure_queues(broker, "stratae-it-poison-dlq", policy)
+    dead_letter = cast(str, policy.dead_letter_target(queue))
+    received: list[Message] = []
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(
+        message_event, received.append, config=RabbitMQConsumeConfig(queue, on_failure=policy)
+    )
+
+    # Act
+    async with consumer:
+        await _publish(queue, b"not json")
+        await asyncio.sleep(0.3)
+        parked = await broker.channel.basic_get(dead_letter, no_ack=True)
+
+    # Assert
+    assert received == []
+    assert parked.body == b"not json"
+    assert (parked.header.properties.headers or {})[ATTEMPTS_HEADER] == 1
+
+
+async def test_dropping_policy_leaves_nothing(broker: _Broker):
+    """
+    A dropping policy should leave nothing behind for a failed message.
+
+    Given: A registration that drops failures without retrying, and a failing handler
+    When: A message is published
+    Then: The handler runs once, and the queue ends empty
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(dead_letter=False)
+    queue = _failure_queues(broker, "stratae-it-drop", policy)
+    calls: list[Message] = []
+
+    def failing(message: Message) -> None:
+        calls.append(message)
+        raise RuntimeError("drop me")
+
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(message_event, failing, config=RabbitMQConsumeConfig(queue, on_failure=policy))
+
+    # Act
+    async with consumer:
+        await _publish(queue)
+        await _eventually(lambda: len(calls) == 1)
+        await asyncio.sleep(0.3)
+
+    # Assert
+    assert len(calls) == 1
+    assert await _count(broker, queue) == 0
+
+
+async def test_cancelled_delivery_under_policy_is_redelivered(broker: _Broker):
+    """
+    A delivery cancelled at the drain timeout should be redelivered, not retried.
+
+    Given: A registration with retries, and a first consumer whose handler never returns
+    When: It exits mid-delivery, and a second consumer starts on the same queue
+    Then: The second consumer receives the message, and the retry and dead-letter queues
+          stay empty
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(retry_delays=(0.1,))
+    queue = _failure_queues(broker, "stratae-it-cancel", policy)
+    config = RabbitMQConsumeConfig(queue, on_failure=policy)
+    started = asyncio.Event()
+    received: list[Message] = []
+
+    async def stuck(message: Message) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    first = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode, drain_timeout=0.1)
+    first.handle(message_event, stuck, config=config)
+    second = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    second.handle(message_event, received.append, config=config)
+
+    # Act
+    async with first:
+        await _publish(queue)
+        await asyncio.wait_for(started.wait(), timeout=5)
+    async with second:
+        await _eventually(lambda: len(received) == 1)
+
+    # Assert
+    assert await _count(broker, cast(str, policy.retry_queue(queue, 1))) == 0
+    assert await _count(broker, cast(str, policy.dead_letter_target(queue))) == 0

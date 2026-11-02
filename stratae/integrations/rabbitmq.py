@@ -22,6 +22,30 @@ Give the consumer a `scope` to run each message's work in its own
 activated inside the message's envelope, around its middleware, hooks and handler, and the
 message is acked only once it has closed, so a commit in its cleanup lands before the ack.
 
+Give a registration a {py:class}`RabbitMQFailurePolicy` to retry a failed message after
+growing delays, then move it to a dead-letter queue, or drop it. Retries wait in TTL retry
+queues, so they need no broker plugin, and every attempt keeps the message's envelope.
+
+````{example} Retrying a failed message three times, then dead-lettering it
+```{code-block} python
+from stratae.integrations.rabbitmq import RabbitMQConsumeConfig, RabbitMQFailurePolicy
+
+policy = RabbitMQFailurePolicy(retry_delays=(1, 10, 60))
+config = RabbitMQConsumeConfig("orders", on_failure=policy)
+
+for attempt in range(1, 5):
+    print(attempt, policy.retry_queue("orders", attempt))
+print("then", policy.dead_letter_target("orders"))
+```
+```{output}
+1 orders.retry.1000
+2 orders.retry.10000
+3 orders.retry.60000
+4 None
+then orders.dead-letter
+```
+````
+
 ````{example} Publishing an event to RabbitMQ, then consuming it back
 <!--- skip: next -->
 ```{code-block} python
@@ -142,6 +166,20 @@ _PUBSUB_ONLY = "RabbitMQConsumer handles PubSub events only, got {!r}"
 
 _NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
 
+_FAILURE_POLICY_NEEDS_QUEUE = (
+    "a failure policy needs a named queue to route retries and dead letters back to"
+)
+
+_NON_POSITIVE_DELAY = "retry delays must be positive, got {!r}"
+
+_DROP_WITH_QUEUE = "dead_letter_queue is set, but dead_letter=False drops failed messages"
+
+ATTEMPTS_HEADER = "x-attempts"
+"""Header counting how many times a retried or dead-lettered message has failed."""
+
+FAILURE_HEADER = "x-failure"
+"""Header naming the exception a retried or dead-lettered message last failed with."""
+
 
 def _stamp(properties: Basic.Properties | None, envelope: Envelope) -> Basic.Properties:
     """Copy properties, stamped with the message's envelope headers, ids, and timestamp."""
@@ -169,6 +207,22 @@ def _envelope_from(message: DeliveredMessage) -> Envelope | None:
     except ValueError:
         _log.warning("unparseable envelope headers; scoping a fresh envelope: %r", headers)
         return None
+
+
+def _attempts(message: DeliveredMessage) -> int:
+    """Return how many times a delivered message has already failed."""
+    attempts = (message.header.properties.headers or {}).get(ATTEMPTS_HEADER)
+    return attempts if isinstance(attempts, int) and attempts > 0 else 0
+
+
+def _failed(message: DeliveredMessage, attempts: int, exc: Exception) -> Basic.Properties:
+    """Copy a failed message's properties, stamped with its attempts and failure."""
+    properties = copy(message.header.properties)
+    properties.headers = dict(properties.headers or {}) | {
+        ATTEMPTS_HEADER: attempts,
+        FAILURE_HEADER: f"{type(exc).__name__}: {exc}",
+    }
+    return properties
 
 
 class RabbitMQConfig:
@@ -358,6 +412,87 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         return serializer(payload) if serializer is not None else self._serializer(payload)
 
 
+class RabbitMQFailurePolicy:
+    """
+    What a {py:class}`RabbitMQConsumer` does with a message whose handling fails.
+
+    A failed message is retried once per entry in `retry_delays`, each attempt waiting that
+    many seconds, then dead-lettered or dropped. With no delays, it's dead-lettered or dropped
+    on its first failure. A message that fails to decode would fail every attempt, so it skips
+    the retries.
+
+    Each delay gets a retry queue, `<queue>.retry.<milliseconds>`, whose message TTL routes
+    the message back to the consumed queue once it expires. A dead-lettered message goes to
+    `dead_letter_queue`, `<queue>.dead-letter` by default. Retries and dead letters keep the
+    message's body, properties and envelope, and add {py:data}`ATTEMPTS_HEADER` and
+    {py:data}`FAILURE_HEADER`. The consumer declares these queues when it starts consuming.
+
+    Each failed message is published to its next queue before it's acked, so a crash between
+    the two delivers it twice, never zero times.
+    """
+
+    __slots__ = ("dead_letter", "dead_letter_queue", "retry_delays")
+
+    def __init__(
+        self,
+        retry_delays: Iterable[float] = (),
+        *,
+        dead_letter: bool = True,
+        dead_letter_queue: str | None = None,
+    ) -> None:
+        """
+        Create a failure policy.
+
+        :param retry_delays: Seconds to wait before each retry, in order, e.g. `(1, 10, 60)`
+            for three retries with a growing backoff.
+        :param dead_letter: Whether a message is dead-lettered once its retries run out, or
+            acked and dropped.
+        :param dead_letter_queue: The dead-letter queue's name; defaults to
+            `<queue>.dead-letter`.
+        :raises ValueError: If a delay isn't positive, or `dead_letter_queue` is given with
+            `dead_letter=False`.
+        """
+        self.retry_delays = tuple(retry_delays)
+        for delay in self.retry_delays:
+            if delay <= 0:
+                raise ValueError(_NON_POSITIVE_DELAY.format(delay))
+        if not dead_letter and dead_letter_queue is not None:
+            raise ValueError(_DROP_WITH_QUEUE)
+        self.dead_letter = dead_letter
+        self.dead_letter_queue = dead_letter_queue
+
+    def retry_queue(self, queue: str, attempt: int) -> str | None:
+        """
+        Return the retry queue for a message's `attempt`-th failure, or `None` past the last.
+
+        :param queue: The consumed queue.
+        :param attempt: How many times the message has failed, counting this failure.
+        """
+        if attempt > len(self.retry_delays):
+            return None
+        return _retry_queue(queue, self.retry_delays[attempt - 1])
+
+    def dead_letter_target(self, queue: str) -> str | None:
+        """
+        Return the dead-letter queue for messages consumed from `queue`, or `None` to drop.
+
+        :param queue: The consumed queue.
+        """
+        if not self.dead_letter:
+            return None
+        return self.dead_letter_queue or f"{queue}.dead-letter"
+
+
+def _milliseconds(seconds: float) -> int:
+    """Return a delay in whole milliseconds, as a queue's message TTL takes it."""
+    return max(1, round(seconds * 1000))
+
+
+def _retry_queue(queue: str, delay: float) -> str:
+    """Return the name of `queue`'s retry queue for `delay` seconds."""
+    return f"{queue}.retry.{_milliseconds(delay)}"
+
+
 class RabbitMQConsumeConfig:
     """
     Queue or exchange for a {py:class}`RabbitMQConsumer` registration.
@@ -375,6 +510,7 @@ class RabbitMQConsumeConfig:
         "exchange_durable",
         "exchange_type",
         "exclusive",
+        "on_failure",
         "queue",
     )
 
@@ -390,6 +526,7 @@ class RabbitMQConsumeConfig:
         exclusive: bool | None = None,
         auto_delete: bool | None = None,
         arguments: dict[str, Any] | None = None,
+        on_failure: RabbitMQFailurePolicy | None = None,
     ) -> None:
         """
         Create a consume source.
@@ -404,10 +541,16 @@ class RabbitMQConsumeConfig:
         :param exclusive: Overrides the inferred queue exclusivity.
         :param auto_delete: Overrides the inferred queue auto-delete flag.
         :param arguments: Queue declaration arguments, e.g. a message TTL.
-        :raises ValueError: If neither `queue` nor `exchange` is given.
+        :param on_failure: A {py:class}`RabbitMQFailurePolicy` retrying, dead-lettering or
+            dropping messages whose handling fails. Without one, a failed message is nacked
+            without requeue.
+        :raises ValueError: If neither `queue` nor `exchange` is given, or `on_failure` is
+            given without a `queue`.
         """
         if queue is None and exchange is None:
             raise ValueError(_NO_CONSUME_TARGET)
+        if on_failure is not None and queue is None:
+            raise ValueError(_FAILURE_POLICY_NEEDS_QUEUE)
         self.queue = queue
         self.exchange = exchange
         self.binding_keys: tuple[str, ...] = (
@@ -419,6 +562,7 @@ class RabbitMQConsumeConfig:
         self.exclusive = exclusive
         self.auto_delete = auto_delete
         self.arguments = arguments
+        self.on_failure = on_failure
 
 
 class _Registration:
@@ -460,8 +604,10 @@ class RabbitMQConsumer:
 
     A message is acked once its handler, its hooks and its middleware return, and its scope, if
     any, has closed. If decoding, the handler, a `before` hook, a middleware or closing the
-    scope raises, it's logged and nacked without requeue; a failure inside the scope closes it
-    with that error first, so its resources roll back. Observing hooks in a slot run
+    scope raises, it's logged and nacked without requeue, or, if its registration has a
+    {py:class}`RabbitMQFailurePolicy`, retried, dead-lettered or dropped under it. A failure
+    inside the scope closes it with that error first, so its resources roll back. A delivery
+    cancelled at shutdown isn't a failure: it stays unacked. Observing hooks in a slot run
     concurrently, so the ack waits for the slowest of them, not their sum; one that raises is
     logged and the message is still acked. Sync handlers run on the event loop and block other
     deliveries.
@@ -713,9 +859,11 @@ class RabbitMQConsumer:
         )
 
     async def _declare(self, channel: AbstractChannel, config: RabbitMQConsumeConfig) -> str:
-        """Declare config's queue, and its exchange and bindings if any."""
+        """Declare config's queue, its failure queues, and its exchange and bindings if any."""
         declared = await self._queue_declare_setup(channel, config)
         queue = config.queue or declared.queue or ""
+        if config.on_failure is not None:
+            await self._declare_failure_queues(channel, queue, config.on_failure)
         if config.exchange is None:
             return queue
         await channel.exchange_declare(
@@ -726,6 +874,24 @@ class RabbitMQConsumer:
         for binding_key in config.binding_keys:
             await channel.queue_bind(queue, config.exchange, routing_key=binding_key)
         return queue
+
+    async def _declare_failure_queues(
+        self, channel: AbstractChannel, queue: str, policy: RabbitMQFailurePolicy
+    ) -> None:
+        """Declare a policy's retry queues, each expiring back into `queue`, and dead letters."""
+        for delay in dict.fromkeys(policy.retry_delays):
+            await channel.queue_declare(
+                _retry_queue(queue, delay),
+                durable=True,
+                arguments={
+                    "x-message-ttl": _milliseconds(delay),
+                    "x-dead-letter-exchange": "",
+                    "x-dead-letter-routing-key": queue,
+                },
+            )
+        dead_letter = policy.dead_letter_target(queue)
+        if dead_letter is not None:
+            await channel.queue_declare(dead_letter, durable=True)
 
     def _discard_start(self, task: asyncio.Task[None]) -> None:
         """Drop a finished start task, logging any failure."""
@@ -759,22 +925,66 @@ class RabbitMQConsumer:
         return on_message
 
     async def _deliver(self, registration: _Registration, message: DeliveredMessage) -> None:
-        """Decode a message and dispatch it in its scope, then ack it, or nack it on failure."""
+        """Decode a message and dispatch it in its scope, then ack it, or settle its failure."""
         try:
             payload = self._deserialize(registration, message.body)
+        except Exception as exc:
+            await self._fail(registration, message, exc, retry=False)
+            return
+        try:
             with Envelope.scope(_envelope_from(message)):
                 if self._scope is None:
                     await invoke(registration.handler, payload)
                 else:
                     async with self._scope:
                         await invoke(registration.handler, payload)
-        except Exception:
-            _log.exception(
-                "handler for event '%s' failed; message nacked without requeue",
-                registration.event.name,
+        except Exception as exc:
+            await self._fail(registration, message, exc, retry=True)
+            return
+        if message.delivery_tag is not None:
+            await message.channel.basic_ack(message.delivery_tag)
+
+    async def _fail(
+        self,
+        registration: _Registration,
+        message: DeliveredMessage,
+        exc: Exception,
+        *,
+        retry: bool,
+    ) -> None:
+        """Nack a failed message, or retry, dead-letter or drop it under its failure policy."""
+        policy = registration.handler.config.on_failure
+        name = registration.event.name
+        if policy is None:
+            _log.error(
+                "handler for event '%s' failed; message nacked without requeue", name, exc_info=exc
             )
             if message.delivery_tag is not None:
                 await message.channel.basic_nack(message.delivery_tag, requeue=False)
             return
-        if message.delivery_tag is not None:
-            await message.channel.basic_ack(message.delivery_tag)
+        queue = cast(str, registration.handler.config.queue)
+        attempts = _attempts(message) + 1
+        target = policy.retry_queue(queue, attempts) if retry else None
+        if target is not None:
+            _log.warning(
+                "handler for event '%s' failed; retrying via '%s'", name, target, exc_info=exc
+            )
+        else:
+            target = policy.dead_letter_target(queue)
+            _log.error(
+                "handler for event '%s' failed after %d attempt(s); message %s",
+                name,
+                attempts,
+                f"dead-lettered to '{target}'" if target is not None else "dropped",
+                exc_info=exc,
+            )
+        if message.delivery_tag is None:
+            return
+        if target is not None:
+            await message.channel.basic_publish(
+                message.body,
+                exchange="",
+                routing_key=target,
+                properties=_failed(message, attempts, exc),
+            )
+        await message.channel.basic_ack(message.delivery_tag)
