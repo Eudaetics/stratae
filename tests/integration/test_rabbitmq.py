@@ -41,6 +41,9 @@ This test suite verifies the following behaviors:
   in either start order.
 - A topology declaration that conflicts with the broker's raises on entering the publisher,
   leaving it disconnected.
+- A mandatory publish that reaches no queue raises UnroutableError; with a queue bound, it's
+  delivered; without mandatory, the unroutable message is dropped silently.
+- Publishing to an exchange that doesn't exist raises.
 """
 
 import asyncio
@@ -53,10 +56,10 @@ import msgspec
 import pytest
 from aiormq import connect
 from aiormq.abc import AbstractChannel
-from aiormq.exceptions import ChannelPreconditionFailed
+from aiormq.exceptions import ChannelClosed, ChannelPreconditionFailed
 
 from stratae.events import Envelope, HandleCall, Hooks, Middleware, PublishCall, PubSub
-from stratae.events.exceptions import NotConnectedError
+from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.integrations.rabbitmq import (
     ATTEMPTS_HEADER,
     FAILURE_HEADER,
@@ -904,3 +907,64 @@ async def test_conflicting_topology_raises_on_enter(broker: _Broker):
     # Assert
     with pytest.raises(NotConnectedError):
         await publisher.emit(message_event, RabbitMQConfig("", queue), Message("lost"))
+
+
+async def test_mandatory_publish_requires_a_queue(broker: _Broker):
+    """
+    A mandatory publish should raise when no queue matches, and deliver when one does.
+
+    Given: A topic exchange with one queue bound for "job.*"
+    When: Mandatory messages are published with "job.run" and "report.run", and a plain one
+          with "report.run"
+    Then: "job.run" is delivered, the mandatory "report.run" raises UnroutableError, and the
+          plain one is dropped without an error
+    """
+    # Arrange
+    exchange = _unique("stratae-it-mandatory")
+    queue = _unique("stratae-it-mandatory-q")
+    broker.exchanges.append(exchange)
+    broker.queues.append(queue)
+    config = RabbitMQConsumeConfig(
+        queue, exchange=exchange, binding_key="job.*", exchange_type="topic"
+    )
+    received: list[Message] = []
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(message_event, received.append, config=config)
+
+    # Act
+    async with consumer:
+        async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+            await publisher.emit(
+                message_event, RabbitMQConfig(exchange, "job.run", mandatory=True), Message("ok")
+            )
+            with pytest.raises(UnroutableError, match="report.run"):
+                await publisher.emit(
+                    message_event,
+                    RabbitMQConfig(exchange, "report.run", mandatory=True),
+                    Message("lost"),
+                )
+            await publisher.emit(
+                message_event, RabbitMQConfig(exchange, "report.run"), Message("dropped")
+            )
+        await _eventually(lambda: len(received) == 1)
+        await asyncio.sleep(0.2)
+
+    # Assert
+    assert received == [Message("ok")]
+
+
+async def test_publish_to_missing_exchange_raises(broker: _Broker):
+    """
+    Publishing to an exchange that doesn't exist should raise.
+
+    Given: A connected publisher and an exchange name the broker doesn't know
+    When: A message is published to it
+    Then: The channel-close error is raised
+    """
+    # Arrange
+    missing = _unique("stratae-it-missing")
+
+    # Act / Assert
+    async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+        with pytest.raises(ChannelClosed, match="NOT_FOUND"):
+            await publisher.emit(message_event, RabbitMQConfig(missing, "any"), Message("x"))

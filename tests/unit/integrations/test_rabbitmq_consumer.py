@@ -98,6 +98,8 @@ RabbitMQFailurePolicy:
 - An unreadable attempt count is treated as a first failure.
 - A failed message without a delivery tag is neither published nor settled.
 - A delivery cancelled under a failure policy is neither published nor settled.
+- The consumer opens its channel with publisher confirms, so retries and dead letters are
+  confirmed before the original is acked.
 """
 
 import asyncio
@@ -2261,3 +2263,20 @@ async def test_cancelled_delivery_not_retried(consumer: RabbitMQConsumer, channe
     message.channel.basic_publish.assert_not_awaited()
     message.channel.basic_ack.assert_not_awaited()
     message.channel.basic_nack.assert_not_awaited()
+
+
+async def test_channel_opened_with_confirms(consumer: RabbitMQConsumer, connection: AsyncMock):
+    """
+    The consumer should open its channel with publisher confirms, raising on returns.
+
+    Given: A consumer
+    When: The context is entered
+    Then: The channel is opened with publisher_confirms and on_return_raises set, so a retry
+          or dead letter is confirmed before the original message is acked
+    """
+    # Act
+    async with consumer:
+        pass
+
+    # Assert
+    connection.channel.assert_awaited_once_with(publisher_confirms=True, on_return_raises=True)
