@@ -70,11 +70,21 @@ RabbitMQConsumer:
 - A handle middleware class that isn't a context manager is refused when the consumer is
   built; publish middleware isn't checked, so one Middleware can be shared with a publisher.
 - A schema-less event's hooks receive a NoPayload instance.
+- With a scope, a scope-cached dependency is made once per message and not shared between
+  messages.
+- With a scope, the message is acked only after the scope has closed.
+- A failing handler closes the scope with its exception, then the message is nacked.
+- A failure while closing the scope nacks the message, though its handler succeeded.
+- A delivery cancelled at the drain timeout closes its scope with the cancellation and stays
+  unacked.
+- Handle middleware and hooks run inside the message's scope.
+- A message that fails to decode never activates the scope.
 """
 
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from itertools import count
 from typing import Any, AsyncGenerator, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -96,6 +106,7 @@ from stratae.events import (
 )
 from stratae.events.exceptions import AlreadyConnectedError
 from stratae.integrations.rabbitmq import RabbitMQConsumeConfig, RabbitMQConsumer
+from stratae.lifecycle import AsyncScope, async_resource
 from stratae.serde import deserialize
 
 _URL = "amqp://guest:guest@localhost/"
@@ -1620,3 +1631,262 @@ async def test_swallowed_timeout_nacks(
     message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
     message.channel.basic_ack.assert_not_awaited()
     assert "MiddlewareError" in caplog.text
+
+
+def _scoped_resource(events: list[str], *, fail_close: bool = False) -> tuple[AsyncScope, Any]:
+    """Return a message scope and a resource cached in it, recording each open and close."""
+    scope = AsyncScope("message")
+    opened = count(1)
+
+    @scope.cache()
+    @async_resource
+    async def get_resource() -> AsyncGenerator[int, None]:
+        n = next(opened)
+        events.append(f"open {n}")
+        try:
+            yield n
+        except BaseException as exc:
+            events.append(f"close {n} with {type(exc).__name__}")
+            raise
+        if fail_close:
+            raise RuntimeError("commit failed")
+        events.append(f"close {n}")
+
+    return scope, get_resource
+
+
+async def test_scope_caches_once_per_message(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    A scope-cached dependency should be made once per message and not shared between messages.
+
+    Given: A consumer with a message scope, and a handler resolving a scope-cached resource twice
+    When: Two messages are delivered
+    Then: Each message gets its own resource, made once, and each is closed
+    """
+    # Arrange
+    events: list[str] = []
+    scope, get_resource = _scoped_resource(events)
+    seen: list[tuple[int, int]] = []
+
+    async def handler(order: _OrderPlaced) -> None:
+        seen.append((await get_resource(), await get_resource()))
+
+    consumer = RabbitMQConsumer(_URL, scope=scope)
+    consumer.handle(_order_placed, handler, config=_config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(_message(b'{"order_id": 1}'))
+        await _delivery_callback(channel)(_message(b'{"order_id": 2}'))
+
+    # Assert
+    assert seen == [(1, 1), (2, 2)]
+    assert events == ["open 1", "close 1", "open 2", "close 2"]
+
+
+async def test_scope_closes_before_ack(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    A message should be acked only after its scope has closed.
+
+    Given: A consumer with a message scope whose resource records its cleanup
+    When: A message is handled successfully
+    Then: The resource's cleanup runs before the ack
+    """
+    # Arrange
+    events: list[str] = []
+    scope, get_resource = _scoped_resource(events)
+
+    async def handler(order: _OrderPlaced) -> None:
+        await get_resource()
+
+    consumer = RabbitMQConsumer(_URL, scope=scope)
+    consumer.handle(_order_placed, handler, config=_config)
+    message = _message(b'{"order_id": 7}')
+
+    def record_ack(*_: object) -> None:
+        events.append("ack")
+
+    message.channel.basic_ack.side_effect = record_ack
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert events == ["open 1", "close 1", "ack"]
+    message.channel.basic_nack.assert_not_awaited()
+
+
+async def test_failing_handler_closes_scope_with_error_then_nacks(
+    connect_mock: AsyncMock, channel: AsyncMock
+):
+    """
+    A failing handler should close the scope with its exception before the message is nacked.
+
+    Given: A consumer with a message scope, and a handler that raises after resolving a resource
+    When: A message is delivered
+    Then: The resource sees the handler's exception, then the message is nacked without requeue
+    """
+    # Arrange
+    events: list[str] = []
+    scope, get_resource = _scoped_resource(events)
+
+    async def handler(order: _OrderPlaced) -> None:
+        await get_resource()
+        raise ValueError("boom")
+
+    consumer = RabbitMQConsumer(_URL, scope=scope)
+    consumer.handle(_order_placed, handler, config=_config)
+    message = _message(b'{"order_id": 7}')
+
+    def record_nack(*_: object, **__: object) -> None:
+        events.append("nack")
+
+    message.channel.basic_nack.side_effect = record_nack
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert events == ["open 1", "close 1 with ValueError", "nack"]
+    message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
+    message.channel.basic_ack.assert_not_awaited()
+
+
+async def test_failed_scope_close_nacks(
+    connect_mock: AsyncMock, channel: AsyncMock, caplog: pytest.LogCaptureFixture
+):
+    """
+    A failure while closing the scope should nack the message, though its handler succeeded.
+
+    Given: A consumer with a message scope whose resource raises in its cleanup
+    When: A message is handled successfully
+    Then: The message is nacked without requeue, never acked, and the failure is logged
+    """
+    # Arrange
+    events: list[str] = []
+    scope, get_resource = _scoped_resource(events, fail_close=True)
+
+    async def handler(order: _OrderPlaced) -> None:
+        await get_resource()
+
+    consumer = RabbitMQConsumer(_URL, scope=scope)
+    consumer.handle(_order_placed, handler, config=_config)
+    message = _message(b'{"order_id": 7}')
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
+    message.channel.basic_ack.assert_not_awaited()
+    assert "commit failed" in caplog.text
+
+
+async def test_cancelled_delivery_closes_scope_unacked(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    A delivery cancelled at shutdown should close its scope and leave the message unacked.
+
+    Given: A consumer with a short drain timeout and a message scope, around a handler that waits
+    When: The context exits and the drain timeout cancels the delivery
+    Then: The scope closes with the cancellation, and the message is neither acked nor nacked
+    """
+    # Arrange
+    events: list[str] = []
+    scope, get_resource = _scoped_resource(events)
+    started = asyncio.Event()
+
+    async def wait(order: _OrderPlaced) -> None:
+        await get_resource()
+        started.set()
+        await asyncio.Event().wait()
+
+    consumer = RabbitMQConsumer(_URL, drain_timeout=0.01, scope=scope)
+    consumer.handle(_order_placed, wait, config=_config)
+    await consumer.__aenter__()
+    message = _message(b'{"order_id": 7}')
+    delivery = asyncio.ensure_future(_delivery_callback(channel)(message))
+    await started.wait()
+
+    # Act
+    await consumer.__aexit__(None, None, None)
+    delivery.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await delivery
+
+    # Assert
+    assert events == ["open 1", "close 1 with CancelledError"]
+    message.channel.basic_ack.assert_not_awaited()
+    message.channel.basic_nack.assert_not_awaited()
+
+
+async def test_middleware_and_hooks_run_in_scope(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Handle middleware and hooks should run inside the message's scope.
+
+    Given: A consumer with a message scope, handle middleware and a before hook that each
+           resolve a scope-cached resource
+    When: A message is delivered
+    Then: The middleware, hook and handler all get the message's one resource
+    """
+    # Arrange
+    events: list[str] = []
+    scope, get_resource = _scoped_resource(events)
+    seen: list[tuple[str, int]] = []
+
+    @asynccontextmanager
+    async def record(call: HandleCall) -> AsyncGenerator[None, None]:
+        seen.append(("middleware", await get_resource()))
+        yield
+
+    async def before(event: Any, order: _OrderPlaced) -> None:
+        seen.append(("hook", await get_resource()))
+
+    async def handler(order: _OrderPlaced) -> None:
+        seen.append(("handler", await get_resource()))
+
+    consumer = RabbitMQConsumer(_URL, scope=scope, middleware=Middleware(handle=(record,)))
+    consumer.handle(_order_placed, handler, config=_config, hooks=Hooks(before=(before,)))
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(_message(b'{"order_id": 7}'))
+
+    # Assert
+    assert seen == [("middleware", 1), ("hook", 1), ("handler", 1)]
+    assert events == ["open 1", "close 1"]
+
+
+async def test_undecodable_message_never_activates_scope(
+    connect_mock: AsyncMock, channel: AsyncMock
+):
+    """
+    A message that fails to decode should be nacked without activating the scope.
+
+    Given: A consumer with a message scope
+    When: A message with an undecodable body is delivered
+    Then: The scope is never activated, and the message is nacked without requeue
+    """
+    # Arrange
+    activations: list[str] = []
+
+    class RecordingScope(AsyncScope):
+        __slots__ = ()
+
+        async def __aenter__(self) -> None:
+            activations.append(self.name)
+            await super().__aenter__()
+
+    consumer = RabbitMQConsumer(_URL, scope=RecordingScope("message"))
+    consumer.handle(_order_placed, lambda order: None, config=_config)
+    message = _message(b"not json")
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert activations == []
+    message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)

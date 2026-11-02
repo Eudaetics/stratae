@@ -13,6 +13,12 @@ headers, so correlation ids propagate across publishes and handlers.
 {py:class}`Hooks <stratae.events.hooks.Hooks>` passed to `bind` or `emit` run around each
 publish, and those passed to `handle` around each delivery's handler, before its ack or nack.
 
+Give the consumer a `scope` to run each message's work in its own
+{py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`, as
+{py:func}`scoped_route <stratae.integrations.starlette.scoped_route>` does per request. It's
+activated inside the message's envelope, around its middleware, hooks and handler, and the
+message is acked only once it has closed, so a commit in its cleanup lands before the ack.
+
 ````{example} Publishing an event to RabbitMQ, then consuming it back
 <!--- skip: next -->
 ```{code-block} python
@@ -113,6 +119,7 @@ from stratae.events.handler import invoke
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
 from stratae.events.pipeline import run_emit_async, wrap_handler
+from stratae.lifecycle import AsyncScope
 from stratae.serde import Deserializer, Serializer, deserialize, serialize
 
 if TYPE_CHECKING:
@@ -444,16 +451,18 @@ class RabbitMQConsumer:
     `exchange` config to fan out. Bodies are decoded with `deserializer(body, type=schema)`,
     defaulting to {py:obj}`stratae.serde.deserialize`.
 
-    A message is acked once its handler, its hooks and its middleware return. If decoding, the
-    handler, a `before` hook or a middleware raises, it's logged and nacked without requeue.
-    Observing hooks in a slot run concurrently, so the ack waits for the slowest of them, not
-    their sum; one that raises is logged and the message is still acked. Sync handlers run on
-    the event loop and block other deliveries.
+    A message is acked once its handler, its hooks and its middleware return, and its scope, if
+    any, has closed. If decoding, the handler, a `before` hook, a middleware or closing the
+    scope raises, it's logged and nacked without requeue; a failure inside the scope closes it
+    with that error first, so its resources roll back. Observing hooks in a slot run
+    concurrently, so the ack waits for the slowest of them, not their sum; one that raises is
+    logged and the message is still acked. Sync handlers run on the event loop and block other
+    deliveries.
 
     Exiting the context shuts down gracefully: it cancels every AMQP consumer so no new
     messages arrive, waits up to `drain_timeout` for running handlers to finish and ack, then
     closes the connection. A handler still running at the timeout is cancelled by the close,
-    and the broker redelivers its unacked message.
+    its scope closes with the cancellation, and the broker redelivers its unacked message.
     """
 
     def __init__(
@@ -463,6 +472,7 @@ class RabbitMQConsumer:
         prefetch_count: int | None = None,
         drain_timeout: float | None = 30.0,
         *,
+        scope: AsyncScope | None = None,
         middleware: Middleware = Middleware(),
     ) -> None:
         """
@@ -474,6 +484,9 @@ class RabbitMQConsumer:
         :param prefetch_count: Unacked messages delivered ahead; `None` for no limit.
         :param drain_timeout: Seconds exiting waits for running handlers before closing;
             `None` to wait for them indefinitely.
+        :param scope: Activated for each message, around its middleware, hooks and handler,
+            and closed before the ack or nack. A message that fails to decode never activates
+            it.
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `handle` half runs around every handler call, inside the message's
             envelope; a message that fails to decode never reaches it. Its `publish` half is a
@@ -482,6 +495,7 @@ class RabbitMQConsumer:
         """
         middleware.require(type(self).__name__, asynchronous=True, publish=False)
         self._handle_middleware = middleware.handle
+        self._scope = scope
         self._url = url
         self._deserializer = deserializer
         self._prefetch_count = prefetch_count
@@ -738,11 +752,15 @@ class RabbitMQConsumer:
         return on_message
 
     async def _deliver(self, registration: _Registration, message: DeliveredMessage) -> None:
-        """Decode and dispatch a message, then ack it, or nack it if either step raises."""
+        """Decode a message and dispatch it in its scope, then ack it, or nack it on failure."""
         try:
             payload = self._deserialize(registration, message.body)
             with Envelope.scope(_envelope_from(message)):
-                await invoke(registration.handler, payload)
+                if self._scope is None:
+                    await invoke(registration.handler, payload)
+                else:
+                    async with self._scope:
+                        await invoke(registration.handler, payload)
         except Exception:
             _log.exception(
                 "handler for event '%s' failed; message nacked without requeue",
