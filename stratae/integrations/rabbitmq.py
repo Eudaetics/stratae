@@ -9,7 +9,10 @@ with {py:func}`RabbitMQPublisher.bind` and a {py:class}`RabbitMQConfig`; consume
 `async with`.
 
 Each message carries its {py:class}`Envelope <stratae.events.envelope.Envelope>` in its
-headers, so correlation ids propagate across publishes and handlers.
+headers, so correlation ids propagate across publishes and handlers. Each publish gets a
+new envelope, a child of the active one, unless `emit` is given one: re-publishing a message
+with the envelope it was first sent with, as an outbox relay or a job retry would, keeps its
+message id, so consumers can deduplicate on it. Redelivery keeps it too.
 {py:class}`Hooks <stratae.events.hooks.Hooks>` passed to `bind` or `emit` run around each
 publish, and those passed to `handle` around each delivery's handler, before its ack or nack.
 
@@ -271,6 +274,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         *,
         serializer: Serializer[S] | None = None,
         hooks: Hooks[S, R] | None = None,
+        envelope: Envelope | None = None,
     ) -> R:
         """
         Serialize a payload and publish it.
@@ -281,15 +285,18 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         :param serializer: Overrides the publisher's serializer for this call.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around the publish,
             inside the message's envelope, so they see the ids it's sent with.
+        :param envelope: Sends the message with this envelope's ids and timestamp, unchanged,
+            instead of a child of the active one. Pass the envelope a message was first sent
+            with to re-publish it, so consumers can deduplicate on its message id.
         :raises NotConnectedError: If the publisher isn't connected.
         :raises NotImplementedError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         """
         self._check_event(event)
         # The message's own envelope, current while middleware and hooks run, so they see it.
-        with Envelope.scope() as envelope:
+        with Envelope.scope(envelope) as sent:
             if hooks is None and not self._publish_middleware:
-                await self._publish(event, config, payload, serializer, envelope)
+                await self._publish(event, config, payload, serializer, sent)
             else:
                 await run_emit_async(
                     hooks,
@@ -302,7 +309,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
                     config,
                     payload,
                     serializer,
-                    envelope,
+                    sent,
                 )
         return cast(R, None)
 
