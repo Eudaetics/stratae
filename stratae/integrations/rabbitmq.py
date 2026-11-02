@@ -6,7 +6,9 @@ RabbitMQ async publish and consume adapters.
 {py:class}`Consumer <stratae.events.protocols.Consumer>` protocols over `aiormq`. Publish
 with {py:func}`RabbitMQPublisher.bind` and a {py:class}`RabbitMQConfig`; consume with
 {py:func}`RabbitMQConsumer.handle` and a {py:class}`RabbitMQConsumeConfig`. Both connect in
-`async with`.
+`async with`. A consumer declares its queues when it starts; give a publisher the same
+consume configs as `topology` to declare them when it connects instead, so messages published
+before any consumer has run aren't dropped.
 
 Each message carries its {py:class}`Envelope <stratae.events.envelope.Envelope>` in its
 headers, so correlation ids propagate across publishes and handlers. Each publish gets a
@@ -170,6 +172,10 @@ _FAILURE_POLICY_NEEDS_QUEUE = (
     "a failure policy needs a named queue to route retries and dead letters back to"
 )
 
+_TOPOLOGY_NEEDS_QUEUE = (
+    "a publisher's topology declares queues for consumers, so each config needs a named queue"
+)
+
 _NON_POSITIVE_DELAY = "retry delays must be positive, got {!r}"
 
 _DROP_WITH_QUEUE = "dead_letter_queue is set, but dead_letter=False drops failed messages"
@@ -265,6 +271,12 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     from {py:class}`AsyncBindMixin <stratae.events.binding.AsyncBindMixin>`. It implements
     {py:class}`PubSub <stratae.events.patterns.PubSub>` and its subclasses only: binding or
     emitting any other event raises `NotImplementedError`.
+
+    A message routed to no queue is dropped by the broker, so one published before its
+    consumers have ever run is lost. Pass the consumers' {py:class}`RabbitMQConsumeConfig`s as
+    `topology` to declare their queues, exchanges, bindings and failure queues when the
+    publisher connects, exactly as the consumers will, so the broker keeps the messages until
+    they start.
     """
 
     def __init__(
@@ -272,6 +284,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         url: str,
         serializer: Serializer[object] = serialize,
         *,
+        topology: Iterable[RabbitMQConsumeConfig] = (),
         middleware: Middleware = Middleware(),
     ) -> None:
         """
@@ -280,13 +293,21 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         :param url: AMQP connection URL, e.g. `"amqp://guest:guest@localhost/"`.
         :param serializer: Default payload serializer. Defaults to
             {py:func}`stratae.serde.serialize`.
+        :param topology: Consume configs whose queues, exchanges, bindings and failure queues
+            are declared on entering the context, before anything is published. Each needs a
+            named `queue`.
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `publish` half runs around every publish, inside the message's
             envelope; its `handle` half is a consumer's, so one `Middleware` can be shared with
             a consumer.
         :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
+        :raises ValueError: If a `topology` config has no named `queue`.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
+        self._topology = tuple(topology)
+        for config in self._topology:
+            if config.queue is None:
+                raise ValueError(_TOPOLOGY_NEEDS_QUEUE)
         self._publish_middleware = middleware.publish
         self._url = url
         self._serializer = serializer
@@ -296,16 +317,21 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
 
     async def __aenter__(self) -> RabbitMQPublisher:
         """
-        Open the connection and channel.
+        Open the connection and channel, and declare the topology.
 
         :returns: `self`.
         :raises AlreadyConnectedError: If already connected.
+        :raises aiormq.exceptions.ChannelPreconditionFailed: If a topology declaration
+            conflicts with one the broker already holds. The publisher is left disconnected.
         """
         if self._connection is not None:
             raise AlreadyConnectedError(_ALREADY_CONNECTED.format("publisher"))
         self._connection = await connect(self._url)
         try:
-            self._channel = await self._connection.channel()
+            channel = await self._connection.channel()
+            for config in self._topology:
+                await _declare(channel, config)
+            self._channel = channel
         except BaseException:
             await self.__aexit__(None, None, None)
             raise
@@ -563,6 +589,55 @@ class RabbitMQConsumeConfig:
         self.auto_delete = auto_delete
         self.arguments = arguments
         self.on_failure = on_failure
+
+
+def _declare_queue(channel: AbstractChannel, config: RabbitMQConsumeConfig):
+    """Return the queue_declare call for config, inferring its flags."""
+    named = config.queue is not None
+    return channel.queue_declare(
+        config.queue or "",
+        durable=named if config.durable is None else config.durable,
+        exclusive=(not named) if config.exclusive is None else config.exclusive,
+        auto_delete=(not named) if config.auto_delete is None else config.auto_delete,
+        arguments=config.arguments,
+    )
+
+
+async def _declare(channel: AbstractChannel, config: RabbitMQConsumeConfig) -> str:
+    """Declare config's queue, its failure queues, and its exchange and bindings if any."""
+    declared = await _declare_queue(channel, config)
+    queue = config.queue or declared.queue or ""
+    if config.on_failure is not None:
+        await _declare_failure_queues(channel, queue, config.on_failure)
+    if config.exchange is None:
+        return queue
+    await channel.exchange_declare(
+        config.exchange,
+        exchange_type=config.exchange_type,
+        durable=config.exchange_durable,
+    )
+    for binding_key in config.binding_keys:
+        await channel.queue_bind(queue, config.exchange, routing_key=binding_key)
+    return queue
+
+
+async def _declare_failure_queues(
+    channel: AbstractChannel, queue: str, policy: RabbitMQFailurePolicy
+) -> None:
+    """Declare a policy's retry queues, each expiring back into `queue`, and dead letters."""
+    for delay in dict.fromkeys(policy.retry_delays):
+        await channel.queue_declare(
+            _retry_queue(queue, delay),
+            durable=True,
+            arguments={
+                "x-message-ttl": _milliseconds(delay),
+                "x-dead-letter-exchange": "",
+                "x-dead-letter-routing-key": queue,
+            },
+        )
+    dead_letter = policy.dead_letter_target(queue)
+    if dead_letter is not None:
+        await channel.queue_declare(dead_letter, durable=True)
 
 
 class _Registration:
@@ -840,58 +915,12 @@ class RabbitMQConsumer:
 
     async def _start(self, channel: AbstractChannel, registration: _Registration) -> None:
         """Declare the registration's queue and start consuming, unless removed mid-start."""
-        queue = await self._declare(channel, registration.handler.config)
+        queue = await _declare(channel, registration.handler.config)
         ok = await channel.basic_consume(queue, self._on_message(registration))
         registration.consumer_tag = ok.consumer_tag
         if registration.handler not in self._registrations and ok.consumer_tag is not None:
             registration.consumer_tag = None
             await channel.basic_cancel(ok.consumer_tag)
-
-    def _queue_declare_setup(self, channel: AbstractChannel, config: RabbitMQConsumeConfig):
-        """Return the queue_declare call for config, inferring its flags."""
-        named = config.queue is not None
-        return channel.queue_declare(
-            config.queue or "",
-            durable=named if config.durable is None else config.durable,
-            exclusive=(not named) if config.exclusive is None else config.exclusive,
-            auto_delete=(not named) if config.auto_delete is None else config.auto_delete,
-            arguments=config.arguments,
-        )
-
-    async def _declare(self, channel: AbstractChannel, config: RabbitMQConsumeConfig) -> str:
-        """Declare config's queue, its failure queues, and its exchange and bindings if any."""
-        declared = await self._queue_declare_setup(channel, config)
-        queue = config.queue or declared.queue or ""
-        if config.on_failure is not None:
-            await self._declare_failure_queues(channel, queue, config.on_failure)
-        if config.exchange is None:
-            return queue
-        await channel.exchange_declare(
-            config.exchange,
-            exchange_type=config.exchange_type,
-            durable=config.exchange_durable,
-        )
-        for binding_key in config.binding_keys:
-            await channel.queue_bind(queue, config.exchange, routing_key=binding_key)
-        return queue
-
-    async def _declare_failure_queues(
-        self, channel: AbstractChannel, queue: str, policy: RabbitMQFailurePolicy
-    ) -> None:
-        """Declare a policy's retry queues, each expiring back into `queue`, and dead letters."""
-        for delay in dict.fromkeys(policy.retry_delays):
-            await channel.queue_declare(
-                _retry_queue(queue, delay),
-                durable=True,
-                arguments={
-                    "x-message-ttl": _milliseconds(delay),
-                    "x-dead-letter-exchange": "",
-                    "x-dead-letter-routing-key": queue,
-                },
-            )
-        dead_letter = policy.dead_letter_target(queue)
-        if dead_letter is not None:
-            await channel.queue_declare(dead_letter, durable=True)
 
     def _discard_start(self, task: asyncio.Task[None]) -> None:
         """Drop a finished start task, logging any failure."""
