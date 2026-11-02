@@ -79,6 +79,25 @@ RabbitMQConsumer:
   unacked.
 - Handle middleware and hooks run inside the message's scope.
 - A message that fails to decode never activates the scope.
+
+RabbitMQFailurePolicy:
+- A non-positive retry delay raises ValueError.
+- A dead-letter queue name with dead_letter=False raises ValueError.
+- A failure policy on a config without a named queue raises ValueError.
+- retry_queue names one queue per delay and returns None past the last retry;
+  dead_letter_target defaults to <queue>.dead-letter, takes a custom name, and is None
+  when dropping.
+- The consumer declares one durable retry queue per distinct delay, each expiring back into
+  the consumed queue, and a durable dead-letter queue; a dropping policy declares none.
+- A failed message with retries left is published to its next retry queue with its body,
+  envelope ids, attempt count and failure, then acked.
+- A failed message out of retries is dead-lettered with its attempt count, then acked.
+- A message that fails to decode skips its retries and is dead-lettered.
+- With dead_letter=False, a failed message out of retries is acked and dropped.
+- A custom dead-letter queue receives the dead-lettered message.
+- An unreadable attempt count is treated as a first failure.
+- A failed message without a delivery tag is neither published nor settled.
+- A delivery cancelled under a failure policy is neither published nor settled.
 """
 
 import asyncio
@@ -86,10 +105,11 @@ import logging
 from contextlib import asynccontextmanager
 from itertools import count
 from typing import Any, AsyncGenerator, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 from uuid import uuid4
 
 import pytest
+from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
 from stratae.events import (
@@ -105,7 +125,13 @@ from stratae.events import (
     Request,
 )
 from stratae.events.exceptions import AlreadyConnectedError
-from stratae.integrations.rabbitmq import RabbitMQConsumeConfig, RabbitMQConsumer
+from stratae.integrations.rabbitmq import (
+    ATTEMPTS_HEADER,
+    FAILURE_HEADER,
+    RabbitMQConsumeConfig,
+    RabbitMQConsumer,
+    RabbitMQFailurePolicy,
+)
 from stratae.lifecycle import AsyncScope, async_resource
 from stratae.serde import deserialize
 
@@ -1890,3 +1916,348 @@ async def test_undecodable_message_never_activates_scope(
     # Assert
     assert activations == []
     message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
+
+
+def test_failure_policy_refuses_non_positive_delay():
+    """
+    RabbitMQFailurePolicy should refuse a retry delay that isn't positive.
+
+    Given: A retry delay of zero
+    When: A RabbitMQFailurePolicy is created
+    Then: A ValueError should be raised
+    """
+    with pytest.raises(ValueError, match="positive"):
+        RabbitMQFailurePolicy(retry_delays=(1, 0))
+
+
+def test_failure_policy_refuses_queue_when_dropping():
+    """
+    RabbitMQFailurePolicy should refuse a dead-letter queue name when it drops failures.
+
+    Given: A dead-letter queue name and dead_letter=False
+    When: A RabbitMQFailurePolicy is created
+    Then: A ValueError should be raised
+    """
+    with pytest.raises(ValueError, match="drops"):
+        RabbitMQFailurePolicy(dead_letter=False, dead_letter_queue="orders.dead")
+
+
+def test_failure_policy_needs_named_queue():
+    """
+    A failure policy should need a named queue to route retries and dead letters back to.
+
+    Given: An exchange config without a queue
+    When: It's created with a failure policy
+    Then: A ValueError should be raised
+    """
+    with pytest.raises(ValueError, match="named queue"):
+        RabbitMQConsumeConfig(exchange="events", on_failure=RabbitMQFailurePolicy())
+
+
+def test_failure_policy_names_its_queues():
+    """
+    A failure policy should name a retry queue per delay and its dead-letter queue.
+
+    Given: Policies retrying twice, with a custom dead-letter queue, and dropping
+    When: Their queues are named for the "orders" queue
+    Then: Each attempt maps to its delay's retry queue, then None; the dead-letter queue is
+          the default, the custom name, or None when dropping
+    """
+    policy = RabbitMQFailurePolicy(retry_delays=(0.5, 2))
+
+    assert [policy.retry_queue("orders", n) for n in (1, 2, 3)] == [
+        "orders.retry.500",
+        "orders.retry.2000",
+        None,
+    ]
+    assert policy.dead_letter_target("orders") == "orders.dead-letter"
+    assert RabbitMQFailurePolicy(dead_letter_queue="dlq").dead_letter_target("orders") == "dlq"
+    assert RabbitMQFailurePolicy(dead_letter=False).dead_letter_target("orders") is None
+
+
+async def test_failure_policy_declares_retry_and_dead_letter_queues(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    The consumer should declare a policy's retry and dead-letter queues when it starts.
+
+    Given: A registration whose policy retries after 1, 1 and 5 seconds
+    When: The async context is entered
+    Then: One durable retry queue per distinct delay is declared, expiring back into the
+          consumed queue, then a durable dead-letter queue
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(retry_delays=(1, 1, 5))
+    config = RabbitMQConsumeConfig("orders", on_failure=policy)
+    consumer.handle(_order_placed, lambda payload: None, config=config)
+
+    def back_to_orders(ttl: int) -> dict[str, Any]:
+        return {
+            "x-message-ttl": ttl,
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": "orders",
+        }
+
+    # Act
+    async with consumer:
+        # Assert
+        assert channel.queue_declare.await_args_list[1:] == [
+            call("orders.retry.1000", durable=True, arguments=back_to_orders(1000)),
+            call("orders.retry.5000", durable=True, arguments=back_to_orders(5000)),
+            call("orders.dead-letter", durable=True),
+        ]
+
+
+async def test_dropping_policy_declares_no_dead_letter_queue(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A policy that drops failures should declare no dead-letter queue.
+
+    Given: A registration whose policy drops failed messages without retrying
+    When: The async context is entered
+    Then: Only the consumed queue is declared
+    """
+    # Arrange
+    config = RabbitMQConsumeConfig("orders", on_failure=RabbitMQFailurePolicy(dead_letter=False))
+    consumer.handle(_order_placed, lambda payload: None, config=config)
+
+    # Act
+    async with consumer:
+        # Assert
+        assert [c.args[0] for c in channel.queue_declare.await_args_list] == ["orders"]
+
+
+def _sent(message: AsyncMock) -> tuple[str, bytes, Basic.Properties, dict[str, Any]]:
+    """Return the routing key, body, properties and headers a failed message was sent with."""
+    published = message.channel.basic_publish.await_args
+    properties: Basic.Properties = published.kwargs["properties"]
+    headers = properties.headers or {}
+    return published.kwargs["routing_key"], published.args[0], properties, headers
+
+
+def _failing(
+    policy: RabbitMQFailurePolicy, headers: dict[str, Any] | None = None
+) -> tuple[RabbitMQConsumeConfig, AsyncMock]:
+    """Return a config consuming "orders" under `policy`, and a message with real properties."""
+    message = _message(b'{"order_id": 7}')
+    message.header.properties = Basic.Properties(
+        headers=headers, message_id="m-1", correlation_id="c-1"
+    )
+    return RabbitMQConsumeConfig("orders", on_failure=policy), message
+
+
+def _boom(order: _OrderPlaced) -> None:
+    raise ValueError("boom")
+
+
+async def test_failed_message_retried(consumer: RabbitMQConsumer, channel: AsyncMock):
+    """
+    A failed message with retries left should go to its next retry queue, then be acked.
+
+    Given: A registration retrying after 1 and 10 seconds, and a handler that raises
+    When: A first delivery fails
+    Then: The message is published to the 1-second retry queue with its body, envelope ids,
+          one attempt and the failure, then acked, never nacked
+    """
+    # Arrange
+    config, message = _failing(RabbitMQFailurePolicy(retry_delays=(1, 10)))
+    consumer.handle(_order_placed, _boom, config=config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    routing_key, body, properties, headers = _sent(message)
+    assert (routing_key, body) == ("orders.retry.1000", b'{"order_id": 7}')
+    assert (properties.message_id, properties.correlation_id) == ("m-1", "c-1")
+    assert headers[ATTEMPTS_HEADER] == 1
+    assert headers[FAILURE_HEADER] == "ValueError: boom"
+    assert message.channel.basic_publish.await_args.kwargs["exchange"] == ""
+    message.channel.basic_ack.assert_awaited_once_with(11)
+    message.channel.basic_nack.assert_not_awaited()
+
+
+async def test_failed_message_dead_lettered_after_retries(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A failed message out of retries should be dead-lettered with its attempt count.
+
+    Given: A registration retrying twice, and a message that has already failed twice
+    When: It fails again
+    Then: It's published to the dead-letter queue with three attempts, then acked
+    """
+    # Arrange
+    config, message = _failing(
+        RabbitMQFailurePolicy(retry_delays=(1, 10)), headers={ATTEMPTS_HEADER: 2}
+    )
+    consumer.handle(_order_placed, _boom, config=config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    routing_key, _, _, headers = _sent(message)
+    assert routing_key == "orders.dead-letter"
+    assert headers[ATTEMPTS_HEADER] == 3
+    message.channel.basic_ack.assert_awaited_once_with(11)
+
+
+async def test_undecodable_message_skips_retries(consumer: RabbitMQConsumer, channel: AsyncMock):
+    """
+    A message that fails to decode should be dead-lettered without being retried.
+
+    Given: A registration with retries left, and a body that isn't valid JSON
+    When: The message is delivered
+    Then: It's published to the dead-letter queue on its first attempt, then acked
+    """
+    # Arrange
+    received: list[_OrderPlaced] = []
+    config, message = _failing(RabbitMQFailurePolicy(retry_delays=(1, 10)))
+    message.body = b"not json"
+    consumer.handle(_order_placed, received.append, config=config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    routing_key, body, _, headers = _sent(message)
+    assert (routing_key, body) == ("orders.dead-letter", b"not json")
+    assert headers[ATTEMPTS_HEADER] == 1
+    assert received == []
+    message.channel.basic_ack.assert_awaited_once_with(11)
+
+
+async def test_dropping_policy_acks_without_publishing(
+    consumer: RabbitMQConsumer, channel: AsyncMock, caplog: pytest.LogCaptureFixture
+):
+    """
+    A policy that drops failures should ack a failed message without publishing it.
+
+    Given: A registration that drops failed messages without retrying
+    When: Its handler raises
+    Then: The message is acked, nothing is published, and the drop is logged
+    """
+    # Arrange
+    config, message = _failing(RabbitMQFailurePolicy(dead_letter=False))
+    consumer.handle(_order_placed, _boom, config=config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    message.channel.basic_publish.assert_not_awaited()
+    message.channel.basic_ack.assert_awaited_once_with(11)
+    message.channel.basic_nack.assert_not_awaited()
+    assert "dropped" in caplog.text
+
+
+async def test_custom_dead_letter_queue_receives_message(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A custom dead-letter queue should receive the dead-lettered message.
+
+    Given: A registration dead-lettering to "orders.parked" without retrying
+    When: Its handler raises
+    Then: The message is published to "orders.parked"
+    """
+    # Arrange
+    config, message = _failing(RabbitMQFailurePolicy(dead_letter_queue="orders.parked"))
+    consumer.handle(_order_placed, _boom, config=config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert _sent(message)[0] == "orders.parked"
+
+
+async def test_unreadable_attempt_count_is_first_failure(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    An attempt count that isn't a positive integer should count as no earlier failures.
+
+    Given: A registration retrying once, and a message whose attempt header is a string
+    When: Its handler raises
+    Then: It's retried as a first failure, with one attempt
+    """
+    # Arrange
+    config, message = _failing(
+        RabbitMQFailurePolicy(retry_delays=(1,)), headers={ATTEMPTS_HEADER: "many"}
+    )
+    consumer.handle(_order_placed, _boom, config=config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    routing_key, _, _, headers = _sent(message)
+    assert routing_key == "orders.retry.1000"
+    assert headers[ATTEMPTS_HEADER] == 1
+
+
+async def test_failed_message_without_delivery_tag_not_rerouted(
+    consumer: RabbitMQConsumer, channel: AsyncMock
+):
+    """
+    A failed message without a delivery tag should be neither published nor settled.
+
+    Given: A registration with retries, and a message without a delivery tag
+    When: Its handler raises
+    Then: Nothing is published, acked or nacked
+    """
+    # Arrange
+    config, message = _failing(RabbitMQFailurePolicy(retry_delays=(1,)))
+    message.delivery_tag = None
+    consumer.handle(_order_placed, _boom, config=config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    message.channel.basic_publish.assert_not_awaited()
+    message.channel.basic_ack.assert_not_awaited()
+    message.channel.basic_nack.assert_not_awaited()
+
+
+async def test_cancelled_delivery_not_retried(consumer: RabbitMQConsumer, channel: AsyncMock):
+    """
+    A delivery cancelled under a failure policy should be neither retried nor settled.
+
+    Given: A registration with retries, around a handler that waits
+    When: The delivery is cancelled while the handler waits
+    Then: The cancellation propagates, and nothing is published, acked or nacked
+    """
+    # Arrange
+    started = asyncio.Event()
+
+    async def wait(order: _OrderPlaced) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    config, message = _failing(RabbitMQFailurePolicy(retry_delays=(1,)))
+    consumer.handle(_order_placed, wait, config=config)
+
+    async with consumer:
+        delivery = asyncio.ensure_future(_delivery_callback(channel)(message))
+        await started.wait()
+
+        # Act
+        delivery.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await delivery
+
+    # Assert
+    message.channel.basic_publish.assert_not_awaited()
+    message.channel.basic_ack.assert_not_awaited()
+    message.channel.basic_nack.assert_not_awaited()
