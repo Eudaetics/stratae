@@ -44,12 +44,18 @@ This test suite verifies the following behaviors:
 - A mandatory publish that reaches no queue raises UnroutableError; with a queue bound, it's
   delivered; without mandatory, the unroutable message is dropped silently.
 - Publishing to an exchange that doesn't exist raises.
+- Through a proxy that cuts connections and refuses new ones for a while, as a broker outage
+  does: a consumer reports reconnecting, then resumes and receives what's published after;
+  a publisher's emit raises at once during the outage, then publishes once reconnected; a
+  message being handled when the connection drops is redelivered, not retried or
+  dead-lettered; and exiting during the outage returns promptly, leaving it closed.
 """
 
 import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, cast
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import msgspec
@@ -63,11 +69,13 @@ from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.integrations.rabbitmq import (
     ATTEMPTS_HEADER,
     FAILURE_HEADER,
+    ConnectionState,
     RabbitMQConfig,
     RabbitMQConsumeConfig,
     RabbitMQConsumer,
     RabbitMQFailurePolicy,
     RabbitMQPublisher,
+    RabbitMQReconnect,
 )
 from stratae.lifecycle import AsyncScope, async_resource
 
@@ -968,3 +976,208 @@ async def test_publish_to_missing_exchange_raises(broker: _Broker):
     async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
         with pytest.raises(ChannelClosed, match="NOT_FOUND"):
             await publisher.emit(message_event, RabbitMQConfig(missing, "any"), Message("x"))
+
+
+class _Proxy:
+    """
+    A TCP proxy to the broker that can cut its connections and refuse new ones.
+
+    Cutting every connection and refusing new ones until `restore` is how a broker outage
+    looks to a client, without needing control of the broker itself.
+    """
+
+    def __init__(self, upstream_port: int) -> None:
+        self._upstream_port = upstream_port
+        self._server: asyncio.Server | None = None
+        self._writers: set[asyncio.StreamWriter] = set()
+        self.port = 0
+
+    @property
+    def url(self) -> str:
+        """The AMQP URL that reaches the broker through this proxy."""
+        return f"amqp://guest:guest@127.0.0.1:{self.port}/"
+
+    async def start(self) -> None:
+        """Accept connections, on the same port as before once started."""
+        self._server = await asyncio.start_server(self._accept, "127.0.0.1", self.port)
+        self.port = self._server.sockets[0].getsockname()[1]
+
+    async def outage(self) -> None:
+        """Stop accepting connections, and cut every open one."""
+        if self._server is not None:
+            self._server.close()
+            self._server = None
+        for writer in tuple(self._writers):
+            writer.transport.abort()
+        self._writers.clear()
+
+    async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        upstream_reader, upstream_writer = await asyncio.open_connection(
+            "127.0.0.1", self._upstream_port
+        )
+        self._writers |= {writer, upstream_writer}
+        await asyncio.gather(
+            self._pipe(reader, upstream_writer),
+            self._pipe(upstream_reader, writer),
+            return_exceptions=True,
+        )
+
+    async def _pipe(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            while data := await reader.read(65536):
+                writer.write(data)
+                await writer.drain()
+        finally:
+            writer.transport.abort()
+            self._writers.discard(writer)
+
+
+@pytest.fixture
+async def proxy(broker: _Broker) -> AsyncIterator[_Proxy]:
+    """Yield a started proxy to the live broker, shut down after the test."""
+    proxy = _Proxy(urlsplit(_URL).port or 5672)
+    await proxy.start()
+    try:
+        yield proxy
+    finally:
+        await proxy.outage()
+
+
+_QUICK = RabbitMQReconnect(initial_delay=0.1, max_delay=0.2)
+
+
+async def test_consumer_resumes_after_outage(broker: _Broker, proxy: _Proxy):
+    """
+    A consumer should reconnect after an outage and receive what's published afterwards.
+
+    Given: A consumer connected through the proxy
+    When: The proxy cuts its connection and refuses new ones, then lets them through again
+    Then: It reports reconnecting during the outage, connected after, and receives a message
+          published once it's back
+    """
+    # Arrange
+    queue = _unique("stratae-it-outage")
+    broker.queues.append(queue)
+    received: list[Message] = []
+    consumer = RabbitMQConsumer(proxy.url, deserializer=msgspec.json.decode, reconnect=_QUICK)
+    consumer.handle(message_event, received.append, config=RabbitMQConsumeConfig(queue))
+
+    async with consumer:
+        # Act
+        await proxy.outage()
+        await _eventually(lambda: consumer.state is ConnectionState.RECONNECTING)
+        await asyncio.sleep(0.3)
+        during = consumer.state
+        await proxy.start()
+        await _eventually(lambda: consumer.state is ConnectionState.CONNECTED)
+        await _publish(queue)
+        await _eventually(lambda: len(received) == 1)
+
+    # Assert
+    assert during is ConnectionState.RECONNECTING
+    assert received == [Message("work")]
+
+
+async def test_publisher_publishes_after_outage(broker: _Broker, proxy: _Proxy):
+    """
+    A publisher should fail fast during an outage, then publish once it has reconnected.
+
+    Given: A publisher connected through the proxy
+    When: The proxy has an outage, and then recovers
+    Then: emit during the outage raises NotConnectedError at once, and emit after the
+          reconnect is delivered
+    """
+    # Arrange
+    queue = _unique("stratae-it-outage-pub")
+    broker.queues.append(queue)
+    config = RabbitMQConsumeConfig(queue)
+    publisher = RabbitMQPublisher(
+        proxy.url, serializer=msgspec.json.encode, topology=[config], reconnect=_QUICK
+    )
+    loop = asyncio.get_running_loop()
+
+    async with publisher:
+        # Act
+        await proxy.outage()
+        await _eventually(lambda: publisher.state is ConnectionState.RECONNECTING)
+        started = loop.time()
+        with pytest.raises(NotConnectedError, match="reconnecting"):
+            await publisher.emit(message_event, RabbitMQConfig("", queue), Message("lost"))
+        failed_after = loop.time() - started
+        await proxy.start()
+        await _eventually(lambda: publisher.state is ConnectionState.CONNECTED)
+        await publisher.emit(message_event, RabbitMQConfig("", queue), Message("sent"))
+
+    # Assert
+    assert failed_after < 0.1
+    parked = await broker.channel.basic_get(queue, no_ack=True)
+    assert msgspec.json.decode(parked.body, type=Message) == Message("sent")
+
+
+async def test_in_flight_message_redelivered_after_outage(broker: _Broker, proxy: _Proxy):
+    """
+    A message being handled when the connection drops should be redelivered, not retried.
+
+    Given: A consumer through the proxy with a failure policy, whose handler waits on its
+           first delivery
+    When: The connection drops mid-handling, and the proxy recovers
+    Then: The message is handled again after the reconnect, and its retry and dead-letter
+          queues stay empty
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(retry_delays=(0.1,))
+    queue = _failure_queues(broker, "stratae-it-outage-inflight", policy)
+    started = asyncio.Event()
+    handled: list[Message] = []
+
+    async def first_waits(message: Message) -> None:
+        if not started.is_set():
+            started.set()
+            await asyncio.Event().wait()
+        handled.append(message)
+
+    consumer = RabbitMQConsumer(proxy.url, deserializer=msgspec.json.decode, reconnect=_QUICK)
+    consumer.handle(
+        message_event, first_waits, config=RabbitMQConsumeConfig(queue, on_failure=policy)
+    )
+
+    async with consumer:
+        await _publish(queue)
+        await asyncio.wait_for(started.wait(), timeout=5)
+
+        # Act
+        await proxy.outage()
+        await _eventually(lambda: consumer.state is ConnectionState.RECONNECTING)
+        await proxy.start()
+        await _eventually(lambda: len(handled) == 1)
+
+    # Assert
+    assert await _count(broker, cast(str, policy.retry_queue(queue, 1))) == 0
+    assert await _count(broker, cast(str, policy.dead_letter_target(queue))) == 0
+
+
+async def test_exit_during_outage_returns_promptly(broker: _Broker, proxy: _Proxy):
+    """
+    Exiting during an outage should stop reconnecting and return promptly.
+
+    Given: A consumer and a publisher through the proxy
+    When: The proxy has an outage that doesn't end, and both contexts exit
+    Then: Both exits return within a second, leaving both closed
+    """
+    # Arrange
+    consumer = RabbitMQConsumer(proxy.url, reconnect=_QUICK)
+    publisher = RabbitMQPublisher(proxy.url, reconnect=_QUICK)
+    await consumer.__aenter__()
+    await publisher.__aenter__()
+    await proxy.outage()
+    await _eventually(lambda: consumer.state is ConnectionState.RECONNECTING)
+    await _eventually(lambda: publisher.state is ConnectionState.RECONNECTING)
+
+    # Act
+    async with asyncio.timeout(1):
+        await consumer.__aexit__(None, None, None)
+        await publisher.__aexit__(None, None, None)
+
+    # Assert
+    assert consumer.state is ConnectionState.CLOSED
+    assert publisher.state is ConnectionState.CLOSED

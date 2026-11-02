@@ -100,6 +100,14 @@ RabbitMQFailurePolicy:
 - A delivery cancelled under a failure policy is neither published nor settled.
 - The consumer opens its channel with publisher confirms, so retries and dead letters are
   confirmed before the original is acked.
+
+Connection health and reconnecting:
+- The consumer reports closed before entering and after exiting, and connected inside.
+- When the channel closes unexpectedly, the consumer reports reconnecting, then reconnects,
+  sets QoS again and resumes every registration on the new channel, including one added
+  while it was reconnecting, and not one removed meanwhile.
+- With reconnecting turned off, a lost channel leaves the consumer closed.
+- Exiting while reconnecting stops trying and leaves the consumer closed.
 """
 
 import asyncio
@@ -130,9 +138,11 @@ from stratae.events.exceptions import AlreadyConnectedError
 from stratae.integrations.rabbitmq import (
     ATTEMPTS_HEADER,
     FAILURE_HEADER,
+    ConnectionState,
     RabbitMQConsumeConfig,
     RabbitMQConsumer,
     RabbitMQFailurePolicy,
+    RabbitMQReconnect,
 )
 from stratae.lifecycle import AsyncScope, async_resource
 from stratae.serde import deserialize
@@ -174,9 +184,11 @@ def _delivery_callback(channel: AsyncMock) -> Any:
 
 
 @pytest.fixture
-def channel() -> AsyncMock:
-    """Return a mock AMQP channel."""
-    return AsyncMock()
+async def channel() -> AsyncMock:
+    """Return a mock AMQP channel, whose closing future fails when the broker drops it."""
+    channel = AsyncMock()
+    channel.closing = asyncio.get_running_loop().create_future()
+    return channel
 
 
 @pytest.fixture
@@ -2280,3 +2292,132 @@ async def test_channel_opened_with_confirms(consumer: RabbitMQConsumer, connecti
 
     # Assert
     connection.channel.assert_awaited_once_with(publisher_confirms=True, on_return_raises=True)
+
+
+_FAST = RabbitMQReconnect(initial_delay=0.001, max_delay=0.001)
+
+
+def _new_channels(connection: AsyncMock) -> list[AsyncMock]:
+    """Make the connection open a fresh mock channel each time, returning those opened."""
+    opened: list[AsyncMock] = []
+
+    async def open_channel(**_: Any) -> AsyncMock:
+        channel = AsyncMock()
+        channel.closing = asyncio.get_running_loop().create_future()
+        opened.append(channel)
+        return channel
+
+    connection.channel.side_effect = open_channel
+    return opened
+
+
+async def _until(condition: Any) -> None:
+    """Yield to the loop until the condition holds, failing after a second."""
+    async with asyncio.timeout(1):
+        while not condition():
+            await asyncio.sleep(0.001)
+
+
+async def test_consumer_reports_state(consumer: RabbitMQConsumer):
+    """
+    The consumer should report its connection state.
+
+    Given: A consumer
+    When: It's created, entered and exited
+    Then: It's closed, connected, then closed
+    """
+    # Act / Assert
+    assert consumer.state is ConnectionState.CLOSED
+    async with consumer:
+        assert consumer.state is ConnectionState.CONNECTED
+    assert consumer.state is ConnectionState.CLOSED
+
+
+async def test_consumer_resumes_registrations_after_channel_loss(
+    connect_mock: AsyncMock, connection: AsyncMock
+):
+    """
+    A consumer whose channel closes unexpectedly should reconnect and resume consuming.
+
+    Given: A connected consumer with a prefetch count and two registrations
+    When: Its channel closes, one registration is removed and another added while it's
+          reconnecting
+    Then: It reports reconnecting, then reconnects, sets QoS again, and consumes the kept
+          and added registrations' queues on the new channel, but not the removed one's
+    """
+    # Arrange
+    channels = _new_channels(connection)
+    consumer = RabbitMQConsumer(_URL, prefetch_count=5, reconnect=RabbitMQReconnect(0.05, 0.05))
+    consumer.handle(_order_placed, lambda order: None, config=RabbitMQConsumeConfig("kept"))
+    removed = consumer.handle(
+        _order_placed, lambda order: None, config=RabbitMQConsumeConfig("removed")
+    )
+
+    async with consumer:
+        # Act
+        channels[0].closing.set_exception(ConnectionError("broker gone"))
+        await asyncio.sleep(0)
+        reconnecting = consumer.state
+        await consumer.remove(removed)
+        consumer.handle(_order_placed, lambda order: None, config=RabbitMQConsumeConfig("added"))
+        await _until(lambda: consumer.state is ConnectionState.CONNECTED)
+
+    # Assert
+    assert reconnecting is ConnectionState.RECONNECTING
+    channels[1].basic_qos.assert_awaited_once_with(prefetch_count=5)
+    resumed = [c.args[0] for c in channels[1].basic_consume.await_args_list]
+    assert resumed == ["kept", "added"]
+
+
+async def test_lost_channel_without_reconnect_closes_consumer(
+    connect_mock: AsyncMock, channel: AsyncMock, connection: AsyncMock
+):
+    """
+    With reconnecting turned off, a lost channel should leave the consumer closed.
+
+    Given: A connected consumer with reconnect=None
+    When: Its channel closes unexpectedly
+    Then: It's closed, its old connection is closed, and it never reconnects
+    """
+    # Arrange
+    consumer = RabbitMQConsumer(_URL, reconnect=None)
+
+    async with consumer:
+        # Act
+        channel.closing.set_exception(ConnectionError("gone"))
+        await _until(lambda: connection.close.await_count == 1)
+
+        # Assert
+        assert consumer.state is ConnectionState.CLOSED
+
+    connect_mock.assert_awaited_once()
+
+
+async def test_consumer_exit_while_reconnecting_stops(
+    connect_mock: AsyncMock, connection: AsyncMock
+):
+    """
+    Exiting while reconnecting should stop trying and leave the consumer closed.
+
+    Given: A connected consumer, and a broker that never answers a reconnect
+    When: Its channel closes, then its context exits
+    Then: The exit returns promptly, and the consumer is closed
+    """
+    # Arrange
+    channels = _new_channels(connection)
+    consumer = RabbitMQConsumer(_URL, reconnect=_FAST)
+
+    async def never(*_: Any) -> None:
+        await asyncio.Event().wait()
+
+    await consumer.__aenter__()
+    connect_mock.side_effect = never
+    channels[0].closing.set_exception(ConnectionError("gone"))
+    await _until(lambda: connect_mock.await_count == 2)
+
+    # Act
+    async with asyncio.timeout(1):
+        await consumer.__aexit__(None, None, None)
+
+    # Assert
+    assert consumer.state is ConnectionState.CLOSED
