@@ -27,3 +27,7 @@ class NotConnectedError(EventDispatchError):
 
 class AlreadyConnectedError(EventDispatchError):
     """Raised when opening an adapter that's already connected."""
+
+
+class UnroutableError(EventDispatchError):
+    """Raised when a message that must be routed reaches no queue or handler."""

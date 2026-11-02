@@ -44,13 +44,20 @@ RabbitMQPublisher:
   bindings, as a consumer would.
 - A failed topology declaration closes the connection and leaves the publisher disconnected.
 - A publisher without topology declares no queues on entering.
+- RabbitMQConfig doesn't require routing unless mandatory is set.
+- The publisher opens its channel with publisher confirms and raising returns.
+- emit publishes with the config's mandatory flag.
+- A returned mandatory message raises UnroutableError naming its exchange and routing key.
+- emit doesn't return until the broker's confirm arrives.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, cast
 from unittest.mock import AsyncMock, call
 
 import pytest
+from aiormq.exceptions import PublishError
 from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
@@ -66,7 +73,7 @@ from stratae.events import (
     PubSub,
     Request,
 )
-from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError
+from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
 from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
@@ -907,3 +914,102 @@ async def test_no_topology_declares_nothing(publisher: RabbitMQPublisher, channe
     channel.queue_declare.assert_not_awaited()
     channel.exchange_declare.assert_not_awaited()
     channel.queue_bind.assert_not_awaited()
+
+
+def test_config_mandatory_defaults_off():
+    """
+    RabbitMQConfig should not require routing unless asked to.
+
+    Given: Configs with and without mandatory
+    When: They're created
+    Then: mandatory is stored, defaulting to False
+    """
+    assert RabbitMQConfig("events", "order.placed").mandatory is False
+    assert RabbitMQConfig("events", "order.placed", mandatory=True).mandatory is True
+
+
+async def test_channel_opened_with_confirms(publisher: RabbitMQPublisher, connection: AsyncMock):
+    """
+    The publisher should open its channel with publisher confirms, raising on returns.
+
+    Given: A publisher
+    When: The context is entered
+    Then: The channel is opened with publisher_confirms and on_return_raises set
+    """
+    # Act
+    async with publisher:
+        pass
+
+    # Assert
+    connection.channel.assert_awaited_once_with(publisher_confirms=True, on_return_raises=True)
+
+
+async def test_emit_passes_mandatory(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    ``emit`` should publish with its config's mandatory flag.
+
+    Given: A config requiring routing
+    When: An event is emitted with it
+    Then: The message is published with mandatory=True
+    """
+    # Arrange
+    config = RabbitMQConfig("events", "order.placed", mandatory=True)
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, config, _OrderPlaced(1))
+
+    # Assert
+    assert channel.basic_publish.await_args.kwargs["mandatory"] is True
+
+
+async def test_returned_message_raises_unroutable(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    A mandatory message the broker returns should raise UnroutableError.
+
+    Given: A channel whose publish raises aiormq's PublishError, as a returned message does
+    When: An event is emitted with a mandatory config
+    Then: UnroutableError is raised, naming the exchange and routing key, from the PublishError
+    """
+    # Arrange
+    returned = PublishError.__new__(PublishError)
+    channel.basic_publish.side_effect = returned
+    config = RabbitMQConfig("events", "order.lost", mandatory=True)
+
+    # Act
+    async with publisher:
+        with pytest.raises(UnroutableError, match="'events'.*'order.lost'") as raised:
+            await publisher.emit(_order_placed, config, _OrderPlaced(1))
+
+    # Assert
+    assert raised.value.__cause__ is returned
+
+
+async def test_emit_waits_for_confirm(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    ``emit`` should not return until the broker's confirm arrives.
+
+    Given: A channel whose publish resolves only once the broker confirms
+    When: An event is emitted
+    Then: emit is still waiting before the confirm, and returns after it
+    """
+    # Arrange
+    confirmed = asyncio.Event()
+
+    async def publish(*args: Any, **kwargs: Any) -> None:
+        await confirmed.wait()
+
+    channel.basic_publish.side_effect = publish
+
+    async with publisher:
+        emitting = asyncio.ensure_future(publisher.emit(_order_placed, _config, _OrderPlaced(1)))
+        await asyncio.sleep(0.01)
+        waiting = not emitting.done()
+
+        # Act
+        confirmed.set()
+        await emitting
+
+    # Assert
+    assert waiting
+    assert emitting.done()

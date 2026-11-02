@@ -129,6 +129,7 @@ from typing import (
 )
 
 from aiormq import connect
+from aiormq.exceptions import PublishError
 from pamqp.commands import Basic
 
 from stratae.events import (
@@ -143,7 +144,7 @@ from stratae.events import (
     PubSub,
 )
 from stratae.events.binding import AsyncBindMixin
-from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError
+from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
 from stratae.events.handler import invoke
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
@@ -165,6 +166,11 @@ _REQUEST_REPLY_NOT_IMPLEMENTED = (
 )
 
 _PUBSUB_ONLY = "RabbitMQConsumer handles PubSub events only, got {!r}"
+
+_CHANNEL_OPTIONS: dict[str, Any] = {"publisher_confirms": True, "on_return_raises": True}
+"""Every channel waits for the broker's confirm on publish, and raises for a returned message."""
+
+_UNROUTABLE = "message to exchange {!r} with routing key {!r} reached no queue"
 
 _NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
 
@@ -234,7 +240,14 @@ def _failed(message: DeliveredMessage, attempts: int, exc: Exception) -> Basic.P
 class RabbitMQConfig:
     """Exchange and routing key for a {py:class}`RabbitMQPublisher` binding."""
 
-    __slots__ = ("exchange", "exchange_durable", "exchange_type", "properties", "routing_key")
+    __slots__ = (
+        "exchange",
+        "exchange_durable",
+        "exchange_type",
+        "mandatory",
+        "properties",
+        "routing_key",
+    )
 
     def __init__(
         self,
@@ -244,6 +257,7 @@ class RabbitMQConfig:
         exchange_type: str | None = None,
         exchange_durable: bool = False,
         properties: Basic.Properties | None = None,
+        mandatory: bool = False,
     ) -> None:
         """
         Create a publish target.
@@ -255,12 +269,16 @@ class RabbitMQConfig:
         :param exchange_durable: Whether a declared exchange survives a broker restart. Must
             match any existing declaration.
         :param properties: AMQP properties sent with every message.
+        :param mandatory: Whether a message must reach a queue. If it matches none, `emit`
+            raises {py:exc}`UnroutableError <stratae.events.exceptions.UnroutableError>`;
+            otherwise the broker drops it, and `emit` still succeeds.
         """
         self.exchange = exchange
         self.routing_key = routing_key
         self.exchange_type = exchange_type
         self.exchange_durable = exchange_durable
         self.properties = properties
+        self.mandatory = mandatory
 
 
 class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
@@ -271,6 +289,12 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     from {py:class}`AsyncBindMixin <stratae.events.binding.AsyncBindMixin>`. It implements
     {py:class}`PubSub <stratae.events.patterns.PubSub>` and its subclasses only: binding or
     emitting any other event raises `NotImplementedError`.
+
+    Publishing uses publisher confirms: `emit` returns only once the broker has taken
+    responsibility for the message, and raises if the broker refuses it or the channel closes
+    first. A message that reaches an exchange but matches no queue is still confirmed, and
+    dropped; set `mandatory` on its {py:class}`RabbitMQConfig` to raise
+    {py:exc}`UnroutableError <stratae.events.exceptions.UnroutableError>` instead.
 
     A message routed to no queue is dropped by the broker, so one published before its
     consumers have ever run is lost. Pass the consumers' {py:class}`RabbitMQConsumeConfig`s as
@@ -328,7 +352,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
             raise AlreadyConnectedError(_ALREADY_CONNECTED.format("publisher"))
         self._connection = await connect(self._url)
         try:
-            channel = await self._connection.channel()
+            channel = await self._connection.channel(**_CHANNEL_OPTIONS)
             for config in self._topology:
                 await _declare(channel, config)
             self._channel = channel
@@ -371,6 +395,10 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         :raises NotConnectedError: If the publisher isn't connected.
         :raises NotImplementedError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
+        :raises UnroutableError: If `config.mandatory` is set and the message reached no queue.
+        :raises aiormq.exceptions.DeliveryError: If the broker refuses the message.
+        :raises aiormq.exceptions.ChannelClosed: If the channel closes before the broker
+            confirms, e.g. because the exchange doesn't exist.
         """
         self._check_event(event)
         # The message's own envelope, current while middleware and hooks run, so they see it.
@@ -406,12 +434,16 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
             raise NotConnectedError(_NOT_CONNECTED)
         await self._declare_exchange(self._channel, config)
         body = self._encode(event, payload, serializer)
-        await self._channel.basic_publish(
-            body,
-            exchange=config.exchange,
-            routing_key=config.routing_key,
-            properties=_stamp(config.properties, envelope),
-        )
+        try:
+            await self._channel.basic_publish(
+                body,
+                exchange=config.exchange,
+                routing_key=config.routing_key,
+                properties=_stamp(config.properties, envelope),
+                mandatory=config.mandatory,
+            )
+        except PublishError as exc:
+            raise UnroutableError(_UNROUTABLE.format(config.exchange, config.routing_key)) from exc
 
     def _check_event(
         self,
@@ -745,7 +777,7 @@ class RabbitMQConsumer:
             raise AlreadyConnectedError(_ALREADY_CONNECTED.format("consumer"))
         self._connection = await connect(self._url)
         try:
-            channel = await self._connection.channel()
+            channel = await self._connection.channel(**_CHANNEL_OPTIONS)
             if self._prefetch_count is not None:
                 await channel.basic_qos(prefetch_count=self._prefetch_count)
             self._channel = channel
