@@ -16,13 +16,22 @@ abind without a factory:
 
 abind with hooks:
 - The hooks are forwarded to the emitter.
+
+bound callable signatures:
+- Without a factory, the bound coroutine function reports a payload of the event's schema,
+  returning its reply type.
+- A payload-less event's bound coroutine function takes no parameters, and still emits
+  NoPayload.
+- With an async factory, it reports the factory's parameters and the event's reply type.
+- AsyncDirectBus.bind gives the same typed, awaitable signature.
 """
 
 import asyncio
+import inspect
 from typing import Any
 from unittest.mock import Mock, create_autospec
 
-from stratae.events import EventType, Hooks, PubSub, abind
+from stratae.events import AsyncDirectBus, EventType, Hooks, NoPayload, PubSub, Request, abind
 
 
 async def _async_emit(
@@ -273,3 +282,95 @@ async def test_abind_forwards_hooks_to_emitter() -> None:
 
     # Assert
     emitter.assert_awaited_once_with(ev, None, payload, serializer=None, hooks=hooks)
+
+
+# region: Bound Callable Signatures
+
+
+class _Order:
+    def __init__(self, sku: str) -> None:
+        self.sku = sku
+
+
+class _Receipt:
+    pass
+
+
+_place_order = Request(_Order, reply=_Receipt)
+
+_payload_signature = inspect.Signature(
+    [inspect.Parameter("payload", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=_Order)],
+    return_annotation=_Receipt,
+)
+
+
+def test_abound_signature_without_factory_is_schema_to_reply() -> None:
+    """
+    An async bound callable without a factory should report the event's schema and reply.
+
+    Given: A request event with a schema and a reply type
+    When: It's bound with abind without a factory
+    Then: It's a coroutine function whose signature is (payload: schema) -> reply
+    """
+    # Act
+    bound = abind(_place_order, _async_emit, config=None)
+
+    # Assert
+    assert inspect.iscoroutinefunction(bound)
+    assert inspect.signature(bound) == _payload_signature
+
+
+async def test_abound_signal_takes_no_parameters() -> None:
+    """
+    A payload-less event's async bound callable should take no parameters.
+
+    Given: A payload-less request event with a reply type
+    When: It's bound with abind and awaited
+    Then: Its signature is () -> reply, and the emitter receives a NoPayload
+    """
+    # Arrange
+    emitter = Mock(side_effect=_async_emit)
+    bound = abind(Request(name="ping", reply=_Receipt), emitter, config=None)
+
+    # Act
+    await bound()
+
+    # Assert
+    assert inspect.signature(bound) == inspect.Signature([], return_annotation=_Receipt)
+    assert isinstance(emitter.call_args.args[2], NoPayload)
+
+
+def test_abound_signature_with_async_factory_has_factory_parameters() -> None:
+    """
+    An async bound callable with an async factory should report the factory's parameters.
+
+    Given: A request event, and an async factory
+    When: It's bound with the factory
+    Then: Its signature has the factory's parameters and the event's reply type
+    """
+
+    # Arrange
+    async def order(sku: str) -> _Order:
+        return _Order(sku)
+
+    # Act
+    bound = abind(_place_order, _async_emit, factory=order, config=None)
+
+    # Assert
+    assert inspect.signature(bound) == inspect.signature(order).replace(return_annotation=_Receipt)
+
+
+def test_async_direct_bus_bind_is_typed_and_awaitable() -> None:
+    """
+    AsyncDirectBus.bind should give a bound callable the event's types.
+
+    Given: An AsyncDirectBus and a request event with a reply type
+    When: The event is bound
+    Then: It's a coroutine function whose signature is (payload: schema) -> reply
+    """
+    # Act
+    bound = AsyncDirectBus().bind(_place_order)
+
+    # Assert
+    assert inspect.iscoroutinefunction(bound)
+    assert inspect.signature(bound) == _payload_signature

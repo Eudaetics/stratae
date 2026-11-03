@@ -2,9 +2,14 @@
 Callable facades that bind an event definition to a concrete emitter and routing config.
 
 {py:func}`bind` and {py:func}`abind` bind an event to a sync or async emitter and its
-routing config. With a `factory`, the result builds the payload from its arguments; without
+routing config. With a `factory`, the result builds the payload from its arguments. Without
 one, it takes a built payload, or nothing for a payload-less event. {py:class}`BindMixin`
 and {py:class}`AsyncBindMixin` give an adapter its own typed `bind` method.
+
+The bound callable's signature is typed at runtime, not only for type checkers. With a
+factory, it takes the factory's parameters. Without one, it takes a `payload` of the event's
+schema, or nothing for a payload-less event. It returns the event's reply type. A framework
+that inspects it, for example to build a route, sees those types.
 
 ````{example} Binding an event to a generic emitter
 ```{code-block} python
@@ -42,10 +47,26 @@ print(f"created order: {created.order_id}")
 created order: 42
 ```
 ````
+
+````{example} Reading a bound callable's types at runtime
+```{code-block} python
+import inspect
+
+create_built_order = bind(order_created, emit, config="orders")
+
+print(inspect.signature(create_order))
+print(inspect.signature(create_built_order))
+```
+```{output}
+(order_id: int) -> __main__.Order
+(payload: __main__.CreateOrder) -> __main__.Order
+```
+````
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, Literal, overload
+from inspect import Parameter, Signature, signature
+from typing import Any, Awaitable, Callable, Literal, cast, overload
 
 from stratae.events._typeguards import is_async_factory, is_sync_factory
 from stratae.events.hooks import Hooks
@@ -62,6 +83,35 @@ _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outsi
 
 _NO_PAYLOAD = NoPayload()
 """What a payload-less event's bound callable passes as its payload."""
+
+
+def _reply(event: AnyEvent) -> Any:
+    """Return the event's reply type as a return annotation: `None`, not `NoneType`."""
+    reply = event.emit_returns
+    return None if reply is type(None) else reply
+
+
+def _factory_parameters(factory: Callable[..., Any]) -> list[Parameter]:
+    """Return the factory's parameters, with string annotations resolved where they can be."""
+    try:
+        return list(signature(factory, eval_str=True).parameters.values())
+    except NameError:
+        return list(signature(factory).parameters.values())
+
+
+def _payload_parameters(event: AnyEvent) -> list[Parameter]:
+    """Return the single `payload` parameter, of the event's schema."""
+    return [Parameter("payload", Parameter.POSITIONAL_OR_KEYWORD, annotation=event.schema)]
+
+
+def _typed[F: Callable[..., Any]](bound: F, parameters: list[Parameter], event: AnyEvent) -> F:
+    """Give a bound callable the signature and annotations its event and factory imply."""
+    returns = _reply(event)
+    annotations = {p.name: p.annotation for p in parameters if p.annotation is not Parameter.empty}
+    target = cast(Any, bound)
+    target.__signature__ = Signature(parameters, return_annotation=returns)
+    target.__annotations__ = annotations | {"return": returns}
+    return bound
 
 
 def _emit_options(
@@ -138,12 +188,19 @@ def bind(
     :raises TypeError: If `factory` is async.
     """
     options = _emit_options(serializer, hooks)
+    if factory is None and event.is_signal:
+
+        def signal() -> Any:
+            return emitter(event, config, _NO_PAYLOAD, **options)
+
+        return _typed(signal, [], event)
+
     if factory is None:
 
-        def passthrough(payload: Any = _NO_PAYLOAD) -> Any:
+        def passthrough(payload: Any) -> Any:
             return emitter(event, config, payload, **options)
 
-        return passthrough
+        return _typed(passthrough, _payload_parameters(event), event)
 
     if not is_sync_factory(factory):
         raise TypeError(_SYNC_FACTORY_REQUIRED)
@@ -151,7 +208,7 @@ def bind(
     def construct(*args: Any, **kwargs: Any) -> Any:
         return emitter(event, config, factory(*args, **kwargs), **options)
 
-    return construct
+    return _typed(construct, _factory_parameters(factory), event)
 
 
 @overload
@@ -212,12 +269,19 @@ def abind(
     :returns: An async callable that dispatches through `emitter`.
     """
     options = _emit_options(serializer, hooks)
+    if factory is None and event.is_signal:
+
+        async def signal() -> Any:
+            return await emitter(event, config, _NO_PAYLOAD, **options)
+
+        return _typed(signal, [], event)
+
     if factory is None:
 
-        async def passthrough(payload: Any = _NO_PAYLOAD) -> Any:
+        async def passthrough(payload: Any) -> Any:
             return await emitter(event, config, payload, **options)
 
-        return passthrough
+        return _typed(passthrough, _payload_parameters(event), event)
 
     async_factory = factory if is_async_factory(factory) else None
 
@@ -228,7 +292,7 @@ def abind(
             payload = factory(*args, **kwargs)
         return await emitter(event, config, payload, **options)
 
-    return construct
+    return _typed(construct, _factory_parameters(factory), event)
 
 
 class BindMixin[C](ABC):
