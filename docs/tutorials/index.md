@@ -138,6 +138,10 @@ Use [Events](../apidocs/stratae.events/stratae.events)'s `PubSub` dispatch patte
 [Events](../apidocs/stratae.events/stratae.events) buses are swappable by design. Bind to `DirectBus` locally or in tests, and to [RabbitMQ](../apidocs/stratae.integrations/stratae.integrations.rabbitmq) in production, with no change to the event definitions or handlers.
 :::
 
+:::{dropdown} I need an event published only if my transaction commits.
+Use the [outbox](../apidocs/stratae.events/stratae.events.outbox). It writes the event as a record in your transaction, so a rollback drops it. A relay publishes committed records afterwards, under their original message ids.
+:::
+
 :::{dropdown} I need a database transaction per request or message.
 Follow [A database session per scope](database.md). A Lifecycle resource commits when its scope closes cleanly and rolls back otherwise. The commit lands before the response or the ack.
 :::

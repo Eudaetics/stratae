@@ -606,12 +606,8 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         except PublishError as exc:
             raise UnroutableError(_UNROUTABLE.format(config.exchange, config.routing_key)) from exc
 
-    def _check_event(
-        self,
-        event: AnyEvent,
-        hooks: Hooks[Any, Any] | None = None,  # noqa: S1172
-    ) -> None:
-        """Raise NotImplementedError for an event that isn't PubSub; any hooks can run."""
+    def _check_event(self, event: AnyEvent) -> None:
+        """Raise NotImplementedError for an event that isn't PubSub."""
         if not isinstance(event, PubSub):
             raise NotImplementedError(_REQUEST_REPLY_NOT_IMPLEMENTED)
 

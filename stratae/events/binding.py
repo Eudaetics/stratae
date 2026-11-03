@@ -81,6 +81,11 @@ from stratae.events.protocols import (
 
 _SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
 
+_SYNC_BIND_ASYNC_HOOKS = (
+    "{} binds synchronously and cannot await async hooks for '{}'; bind them on an async"
+    " adapter instead"
+)
+
 _NO_PAYLOAD = NoPayload()
 """What a payload-less event's bound callable passes as its payload."""
 
@@ -299,7 +304,8 @@ class BindMixin[C](ABC):
     """
     Give a sync adapter a typed `bind` method wrapping its `emit`.
 
-    `C` is the adapter's config type; with `BindMixin[None]`, `config` can be omitted.
+    `C` is the adapter's config type; with `BindMixin[None]`, `config` can be omitted. A sync
+    emit can't await, so `bind` refuses async hooks.
     """
 
     __slots__ = ()
@@ -322,9 +328,9 @@ class BindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _check_event(self, event: AnyEvent, hooks: Hooks[Any, Any] | None = None) -> None:
+    def _check_event(self, event: AnyEvent) -> None:
         """
-        Raise if this adapter can't emit the event's pattern, or run the given hooks.
+        Raise if this adapter can't emit the event's pattern.
 
         Called by `bind`, so an unsupported event is refused before anything emits it.
         """
@@ -380,7 +386,9 @@ class BindMixin[C](ABC):
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: A callable that dispatches through this adapter.
         """
-        self._check_event(event, hooks)
+        self._check_event(event)
+        if hooks is not None and hooks.has_async:
+            raise TypeError(_SYNC_BIND_ASYNC_HOOKS.format(type(self).__name__, event.name))
         return bind(
             event, self.emit, factory=factory, config=config, serializer=serializer, hooks=hooks
         )
@@ -413,9 +421,9 @@ class AsyncBindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _check_event(self, event: AnyEvent, hooks: Hooks[Any, Any] | None = None) -> None:
+    def _check_event(self, event: AnyEvent) -> None:
         """
-        Raise if this adapter can't emit the event's pattern, or run the given hooks.
+        Raise if this adapter can't emit the event's pattern.
 
         Called by `bind`, so an unsupported event is refused before anything emits it.
         """
@@ -471,7 +479,7 @@ class AsyncBindMixin[C](ABC):
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: An async callable that dispatches through this adapter.
         """
-        self._check_event(event, hooks)
+        self._check_event(event)
         return abind(
             event, self.emit, factory=factory, config=config, serializer=serializer, hooks=hooks
         )
