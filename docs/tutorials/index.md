@@ -119,6 +119,7 @@ Standalone, no dependency on the core three or on each other:
 
 - [FastAPI](../apidocs/stratae.integrations/stratae.integrations.fastapi) — `scoped_route` builds an `APIRoute` subclass that activates an `AsyncScope` around each request.
 - [Starlette](../apidocs/stratae.integrations/stratae.integrations.starlette) — the same `scoped_route` pattern, built on Starlette's `Route`.
+- [ASGI](../apidocs/stratae.integrations/stratae.integrations.asgi) — `EnvelopeMiddleware` gives each request its own `Envelope`, so the events it emits share one correlation id. It works with any ASGI app.
 - [RabbitMQ](../apidocs/stratae.integrations/stratae.integrations.rabbitmq) implements `stratae.events`' bus protocols over AMQP.
 - [msgspec](../apidocs/stratae.integrations/stratae.integrations.msgspec) registers a fast path onto `stratae.serde.serialize` for `msgspec.Struct` payloads.
 
