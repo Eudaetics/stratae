@@ -36,6 +36,13 @@ it on exit. Raised on exit, it replaces the call's reply or error, as in nested 
 statements; that's how `asyncio.timeout` turns its cancellation into `TimeoutError`. The call
 runs exactly once, in the bus's own task, so a retry belongs to the handler, or to the adapter.
 
+Middleware can send context with a message in its headers, such as a trace or a tenant. Publish
+middleware sets them on `call.headers`, a {py:class}`MessageHeaders`. Handle middleware reads
+them from its own `call.headers`, which it can't change. Over a broker, the headers travel in
+the message. On a direct bus, they're passed to the handlers of the same emit. Names and values
+are text. The envelope's headers are the bus's own, so setting one raises `ValueError`, and the
+message isn't sent.
+
 ````{example} Tracing every request a bus handles
 ```{code-block} python
 from contextlib import contextmanager
@@ -83,15 +90,56 @@ except LookupError:
 <- PlaceOrder failed: out of stock
 ```
 ````
+
+````{example} Sending a tenant header from publish middleware to handle middleware
+```{code-block} python
+from contextlib import nullcontext
+
+from stratae.events import DirectBus, Middleware, PubSub
+
+class OrderPlaced:
+    def __init__(self, item: str) -> None:
+        self.item = item
+
+def send_tenant(call):
+    call.headers["x-tenant"] = "acme"
+    return nullcontext()
+
+def log_tenant(call):
+    print(f"handling {call.payload.item} for {call.headers['x-tenant']}")
+    return nullcontext()
+
+order_placed_event = PubSub(OrderPlaced)
+bus = DirectBus(middleware=Middleware(publish=(send_tenant,), handle=(log_tenant,)))
+place_order = bus.bind(order_placed_event, factory=OrderPlaced)
+bus.handle(order_placed_event, lambda order: None)
+
+place_order(item="lamp")
+```
+```{output}
+handling lamp for acme
+```
+````
 """
 
 import asyncio
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass
-from types import CoroutineType
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, NoReturn
+from types import CoroutineType, MappingProxyType
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    NoReturn,
+)
 
 from stratae.events._frozen import freeze_tuples
+from stratae.events.envelope import ENVELOPE_HEADERS
 from stratae.events.exceptions import MiddlewareError
 
 if TYPE_CHECKING:
@@ -110,6 +158,10 @@ _NOT_SYNC = (
 _NOT_A_MANAGER = "middleware {!r} returned {!r}, which isn't a context manager"
 
 _SWALLOWED = "middleware {!r} tried to swallow {!r}, but middleware can't swallow errors"
+
+_NO_HEADERS: Mapping[str, str] = MappingProxyType({})
+
+_RESERVED = "{!r} is a header the bus sets itself, so middleware can't set it"
 
 _ASYNC_METHOD = (
     "middleware {!r} has an async __enter__ or __exit__; an async context manager defines"
@@ -168,10 +220,66 @@ class Middleware:
                 raise TypeError(message.format(bus, item))
 
 
+class MessageHeaders(MutableMapping[str, str]):
+    """
+    The headers a publish middleware adds to the message being published.
+
+    Names and values are text. A name the bus sets itself, such as an
+    {py:class}`Envelope <stratae.events.envelope.Envelope>` header, is reserved, compared
+    ignoring case: setting one raises `ValueError`, so the message isn't sent.
+    """
+
+    __slots__ = ("_headers", "_reserved")
+
+    def __init__(
+        self,
+        headers: Mapping[str, str] = _NO_HEADERS,
+        *,
+        reserved: Collection[str] = ENVELOPE_HEADERS,
+    ) -> None:
+        """
+        Create the headers for one message.
+
+        :param headers: Headers the message already carries, such as a re-published
+            message's.
+        :param reserved: The names the bus sets itself, in lower case.
+        :raises ValueError: If a name is reserved.
+        """
+        self._reserved = reserved
+        self._headers: dict[str, str] = {}
+        self.update(headers)
+
+    def __setitem__(self, name: str, value: str) -> None:
+        """Set a header, refusing a reserved name."""
+        if name.lower() in self._reserved:
+            raise ValueError(_RESERVED.format(name))
+        self._headers[name] = value
+
+    def __getitem__(self, name: str) -> str:
+        """Return a header's value."""
+        return self._headers[name]
+
+    def __delitem__(self, name: str) -> None:
+        """Remove a header."""
+        del self._headers[name]
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over the header names."""
+        return iter(self._headers)
+
+    def __len__(self) -> int:
+        """Return how many headers are set."""
+        return len(self._headers)
+
+    def __repr__(self) -> str:
+        """Show the headers."""
+        return f"MessageHeaders({self._headers!r})"
+
+
 class _Call:
     """What a middleware sees of one call."""
 
-    __slots__ = ("config", "event", "payload", "reply")
+    __slots__ = ("config", "event", "headers", "payload", "reply")
 
     def __init__(self, event: "AnyEvent", config: Any, payload: Any) -> None:
         """Describe one call for a middleware; buses build these."""
@@ -193,11 +301,34 @@ class PublishCall(_Call):
 
     __slots__ = ()
 
+    def __init__(
+        self, event: "AnyEvent", config: Any, payload: Any, headers: MessageHeaders
+    ) -> None:
+        """Describe one emit for a publish middleware; buses build these."""
+        super().__init__(event, config, payload)
+        self.headers = headers
+        """
+        The headers the message is published with. Set one to send it along, for handle
+        middleware to read.
+        """
+
 
 class HandleCall(_Call):
     """One handler call, as a handle middleware sees it."""
 
     __slots__ = ()
+
+    def __init__(
+        self, event: "AnyEvent", config: Any, payload: Any, headers: Mapping[str, str]
+    ) -> None:
+        """Describe one handler call for a handle middleware; buses build these."""
+        super().__init__(event, config, payload)
+        self.headers = headers
+        """
+        The headers of the message being handled, read-only. On a direct bus, they're the ones
+        its publish middleware set. Over a broker, they're the message's text headers, which
+        include its envelope's.
+        """
 
 
 def _entry(kind: type, asynchronous: bool) -> bool | None:
@@ -323,10 +454,7 @@ def _unwind(entered: _Entered, error: BaseException) -> NoReturn:
 
 def run_middleware[T](
     middleware: tuple[Callable[..., Any], ...],
-    call_type: type[_Call],
-    event: Any,
-    config: Any,
-    payload: Any,
+    seen: _Call,
     call: Callable[..., T],
     *args: Any,
 ) -> T:
@@ -334,16 +462,12 @@ def run_middleware[T](
     Run `call(*args)` inside sync middleware, returning or raising what it does.
 
     :param middleware: The middleware, outermost first.
-    :param call_type: What each middleware is given: {py:class}`PublishCall` around an emit,
+    :param seen: What each middleware is given: a {py:class}`PublishCall` around an emit, a
         {py:class}`HandleCall` around a handler call.
-    :param event: The event being emitted or handled.
-    :param config: The adapter's routing config, which middleware sees as `call.config`.
-    :param payload: The payload being emitted or handled.
     :param call: The emit or handler call the middleware wraps.
     :returns: What `call` returns.
     :raises TypeError: If a middleware doesn't return a sync context manager.
     """
-    seen = call_type(event, config, payload)
     entered: _Entered = []
     try:
         for item in middleware:
@@ -394,10 +518,7 @@ async def _unwind_async(entered: _EnteredAsync, error: BaseException) -> NoRetur
 
 async def run_middleware_async[T](
     middleware: tuple[Callable[..., Any], ...],
-    call_type: type[_Call],
-    event: Any,
-    config: Any,
-    payload: Any,
+    seen: _Call,
     call: Callable[..., Awaitable[T]],
     *args: Any,
 ) -> T:
@@ -405,16 +526,12 @@ async def run_middleware_async[T](
     Await `call(*args)` inside async middleware, returning or raising its result.
 
     :param middleware: The middleware, outermost first.
-    :param call_type: What each middleware is given: {py:class}`PublishCall` around an emit,
+    :param seen: What each middleware is given: a {py:class}`PublishCall` around an emit, a
         {py:class}`HandleCall` around a handler call.
-    :param event: The event being emitted or handled.
-    :param config: The adapter's routing config, which middleware sees as `call.config`.
-    :param payload: The payload being emitted or handled.
     :param call: The emit or handler call the middleware wraps.
     :returns: What `call` resolves to.
     :raises TypeError: If a middleware doesn't return a context manager.
     """
-    seen = call_type(event, config, payload)
     entered: _EnteredAsync = []
     try:
         for item in middleware:

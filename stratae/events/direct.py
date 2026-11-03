@@ -108,9 +108,9 @@ from stratae.events.binding import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
 from stratae.events.handler import Handler
 from stratae.events.hooks import Hooks
-from stratae.events.middleware import Middleware
+from stratae.events.middleware import MessageHeaders, Middleware
 from stratae.events.patterns import NoPayload, PubSub, Request
-from stratae.events.pipeline import run_emit, run_emit_async, wrap_handler
+from stratae.events.pipeline import receiving, run_emit, run_emit_async, wrap_handler
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
 
 _AnyEvent = AnyEvent
@@ -192,8 +192,9 @@ class BaseDirectBus(ABC):
     Handler registry and pattern dispatch shared by the direct buses.
 
     Every emit goes through `_emit`, which refuses an event the bus can't dispatch. A plain
-    emit, with no hooks, no publish middleware and no envelope, is then delivered to its
-    handlers directly; any other goes to the subclass's `_run`. A direct bus supplies only how
+    emit, with no hooks, no middleware and no envelope, is then delivered to its handlers
+    directly; any other goes to the subclass's `_run`. That delivers it with the headers its
+    publish middleware set, for handle middleware to read. A direct bus supplies only how
     it runs a checked emit, so it can't dispatch an event its dispatcher doesn't know.
     """
 
@@ -221,9 +222,9 @@ class BaseDirectBus(ABC):
         self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
         self._use_envelope = use_envelope
-        # Chosen once: with no publish middleware and no envelope, an emit without hooks can
-        # call its dispatcher directly.
-        self._plain = not middleware.publish and not use_envelope
+        # Chosen once: with no middleware and no envelope, an emit without hooks can call its
+        # dispatcher directly. Handle middleware needs the emit's headers, even if none are set.
+        self._plain = not middleware.publish and not middleware.handle and not use_envelope
 
     def _check_event(self, event: _AnyEvent) -> None:
         """Raise TypeError for an event with no dispatcher."""
@@ -431,11 +432,32 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         hooks: Hooks[Any, Any] | None,
     ) -> Any:
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
-        publish = self._middleware.publish
+        publish, headers = self._middleware.publish, MessageHeaders()
         with Envelope.scope() if self._use_envelope else nullcontext():
             return run_emit(
-                hooks, publish, event, None, payload, self._deliver, dispatcher, event, payload
+                hooks,
+                publish,
+                event,
+                None,
+                payload,
+                headers,
+                self._receive,
+                headers,
+                dispatcher,
+                event,
+                payload,
             )
+
+    def _receive(
+        self,
+        headers: MessageHeaders,
+        dispatcher: Callable[..., Any],
+        event: _AnyEvent,
+        payload: Any,
+    ) -> Any:
+        """Dispatch payload to the event's handlers, with the headers it was published with."""
+        with receiving(headers):
+            return self._deliver(dispatcher, event, payload)
 
 
 class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
@@ -572,8 +594,29 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         hooks: Hooks[Any, Any] | None,
     ) -> Any:
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
-        publish = self._middleware.publish
+        publish, headers = self._middleware.publish, MessageHeaders()
         with Envelope.scope() if self._use_envelope else nullcontext():
             return await run_emit_async(
-                hooks, publish, event, None, payload, self._deliver, dispatcher, event, payload
+                hooks,
+                publish,
+                event,
+                None,
+                payload,
+                headers,
+                self._receive,
+                headers,
+                dispatcher,
+                event,
+                payload,
             )
+
+    async def _receive(
+        self,
+        headers: MessageHeaders,
+        dispatcher: Callable[..., Any],
+        event: _AnyEvent,
+        payload: Any,
+    ) -> Any:
+        """Dispatch payload to the event's handlers, with the headers it was published with."""
+        with receiving(headers):
+            return await self._deliver(dispatcher, event, payload)

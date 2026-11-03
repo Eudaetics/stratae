@@ -22,6 +22,9 @@ headers, so correlation ids propagate across publishes and handlers. Each publis
 new envelope, a child of the active one, unless `emit` is given one: re-publishing a message
 with the envelope it was first sent with, as an outbox relay or a job retry would, keeps its
 message id, so consumers can deduplicate on it. Redelivery keeps it too.
+Headers that publish middleware adds are sent with the message, and handle middleware reads
+a delivered message's text headers. `emit` can be given headers as well, so a message can be
+re-published with the ones it was first sent with.
 {py:class}`Hooks <stratae.events.hooks.Hooks>` passed to `bind` or `emit` run around each
 publish, and those passed to `handle` around each delivery's handler, before its ack or nack.
 
@@ -134,6 +137,7 @@ from typing import (
     Iterable,
     Iterator,
     Literal,
+    Mapping,
     Protocol,
     cast,
     overload,
@@ -155,11 +159,12 @@ from stratae.events import (
     PubSub,
 )
 from stratae.events.binding import AsyncBindMixin
+from stratae.events.envelope import ENVELOPE_HEADERS
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
 from stratae.events.handler import invoke
 from stratae.events.hooks import Hooks
-from stratae.events.middleware import Middleware
-from stratae.events.pipeline import run_emit_async, wrap_handler
+from stratae.events.middleware import MessageHeaders, Middleware
+from stratae.events.pipeline import receiving, run_emit_async, wrap_handler
 from stratae.lifecycle import AsyncScope
 from stratae.serde import Deserializer, Serializer, deserialize, serialize
 
@@ -207,11 +212,16 @@ ATTEMPTS_HEADER = "x-attempts"
 FAILURE_HEADER = "x-failure"
 """Header naming the exception a retried or dead-lettered message last failed with."""
 
+_RESERVED = ENVELOPE_HEADERS | {ATTEMPTS_HEADER, FAILURE_HEADER}
+"""The headers the adapter sets itself, which middleware and `emit` can't."""
 
-def _stamp(properties: Basic.Properties | None, envelope: Envelope) -> Basic.Properties:
-    """Copy properties, stamped with the message's envelope headers, ids, and timestamp."""
+
+def _stamp(
+    properties: Basic.Properties | None, envelope: Envelope, headers: Mapping[str, str]
+) -> Basic.Properties:
+    """Copy properties, stamped with the message's headers, envelope ids, and timestamp."""
     stamped = copy(properties) if properties is not None else Basic.Properties()
-    stamped.headers = (stamped.headers or {}) | envelope.to_headers()
+    stamped.headers = (stamped.headers or {}) | dict(headers) | envelope.to_headers()
     stamped.message_id = str(envelope.message_id)
     stamped.correlation_id = str(envelope.correlation_id)
     stamped.timestamp = envelope.timestamp
@@ -234,6 +244,12 @@ def _envelope_from(message: DeliveredMessage) -> Envelope | None:
     except ValueError:
         _log.warning("unparseable envelope headers; scoping a fresh envelope: %r", headers)
         return None
+
+
+def _headers_from(message: DeliveredMessage) -> dict[str, str]:
+    """Return a delivered message's text headers, for handle middleware."""
+    headers = message.header.properties.headers or {}
+    return {name: value for name, value in headers.items() if isinstance(value, str)}
 
 
 def _attempts(message: DeliveredMessage) -> int:
@@ -538,6 +554,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         serializer: Serializer[S] | None = None,
         hooks: Hooks[S, R] | None = None,
         envelope: Envelope | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> R:
         """
         Serialize a payload and publish it.
@@ -551,6 +568,10 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         :param envelope: Sends the message with this envelope's ids and timestamp, unchanged,
             instead of a child of the active one. Pass the envelope a message was first sent
             with to re-publish it, so consumers can deduplicate on its message id.
+        :param headers: Headers to send the message with, which publish middleware sees and
+            can add to. Pass a message's headers to re-publish it with them.
+        :raises ValueError: If a header is one the publisher sets itself: an envelope header,
+            {py:data}`ATTEMPTS_HEADER` or {py:data}`FAILURE_HEADER`.
         :raises NotConnectedError: If the publisher isn't connected.
         :raises NotImplementedError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
@@ -560,10 +581,11 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
             confirms, e.g. because the exchange doesn't exist.
         """
         self._check_event(event)
+        stamped = MessageHeaders(headers or {}, reserved=_RESERVED)
         # The message's own envelope, current while middleware and hooks run, so they see it.
         with Envelope.scope(envelope) as sent:
             if hooks is None and not self._publish_middleware:
-                await self._publish(event, config, payload, serializer, sent)
+                await self._publish(event, config, payload, serializer, sent, stamped)
             else:
                 await run_emit_async(
                     hooks,
@@ -571,12 +593,14 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
                     event,
                     config,
                     payload,
+                    stamped,
                     self._publish,
                     event,
                     config,
                     payload,
                     serializer,
                     sent,
+                    stamped,
                 )
         return cast(R, None)
 
@@ -587,8 +611,9 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         payload: Any,
         serializer: Serializer[Any] | None,
         envelope: Envelope,
+        headers: MessageHeaders,
     ) -> None:
-        """Serialize a payload and publish it to config's exchange, stamped with `envelope`."""
+        """Serialize a payload and publish it to config's exchange, with its headers."""
         channel = self._link.channel
         if channel is None:
             reconnecting = self._link.state is ConnectionState.RECONNECTING
@@ -600,7 +625,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
                 body,
                 exchange=config.exchange,
                 routing_key=config.routing_key,
-                properties=_stamp(config.properties, envelope),
+                properties=_stamp(config.properties, envelope, headers),
                 mandatory=config.mandatory,
             )
         except PublishError as exc:
@@ -1155,7 +1180,7 @@ class RabbitMQConsumer:
             await self._fail(registration, message, exc, retry=False)
             return
         try:
-            with Envelope.scope(_envelope_from(message)):
+            with Envelope.scope(_envelope_from(message)), receiving(_headers_from(message)):
                 if self._scope is None:
                     await invoke(registration.handler, payload)
                 else:

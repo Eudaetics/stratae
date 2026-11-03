@@ -8,20 +8,50 @@ broker, uses them the same way. Its `emit` runs the publish with {py:func}`run_e
 {py:func}`wrap_handler` builds, which takes the payload whatever the event, as a
 {py:class}`Handler <stratae.events.handler.Handler>`, and calls it with
 {py:func}`invoke <stratae.events.handler.invoke>`.
+
+Headers travel with the message. An adapter gives its emit a
+{py:class}`MessageHeaders <stratae.events.middleware.MessageHeaders>` for publish middleware
+to add to, and sends them with the message. It handles a message inside
+{py:func}`receiving`, with the headers it arrived with, so handle middleware can read them.
 """
 
-from typing import Any, Awaitable, Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from types import MappingProxyType
+from typing import Any, Awaitable, Callable, Generator, Mapping
 
 from stratae._callables import is_async_callable
 from stratae.events.handler import WithoutPayload
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
 from stratae.events.middleware import (
     HandleCall,
+    MessageHeaders,
     PublishCall,
     run_middleware,
     run_middleware_async,
 )
 from stratae.events.protocols import AnyEvent
+
+_NO_HEADERS: Mapping[str, str] = MappingProxyType({})
+
+_received: ContextVar[Mapping[str, str]] = ContextVar("_received_headers")
+
+
+@contextmanager
+def receiving(headers: Mapping[str, str]) -> Generator[None, None, None]:
+    """
+    Make `headers` the headers handle middleware sees, for a block that handles a message.
+
+    Handle middleware outside any `receiving` block sees no headers.
+
+    :param headers: The headers the message arrived with. Handle middleware gets a read-only
+        copy, taken now.
+    """
+    token = _received.set(MappingProxyType(dict(headers)))
+    try:
+        yield
+    finally:
+        _received.reset(token)
 
 
 def run_emit(
@@ -30,6 +60,7 @@ def run_emit(
     event: Any,
     config: Any,
     payload: Any,
+    headers: MessageHeaders,
     call: Callable[..., Any],
     *args: Any,
 ) -> Any:
@@ -41,16 +72,16 @@ def run_emit(
     :param event: The event being emitted.
     :param config: The emit's routing config, which middleware sees as `call.config`.
     :param payload: The payload being emitted.
+    :param headers: The message's headers, which middleware adds to as `call.headers`. `call`
+        sends them.
     :param call: The emit itself, such as a dispatch.
     :returns: What `call` returns.
     """
     if hooks is not None:
         call, args = run_hooks, (hooks, event, payload, call, *args)
     if middleware:
-        call, args = (
-            run_middleware,
-            (middleware, PublishCall, event, config, payload, call, *args),
-        )
+        seen = PublishCall(event, config, payload, headers)
+        call, args = run_middleware, (middleware, seen, call, *args)
     return call(*args)
 
 
@@ -60,6 +91,7 @@ async def run_emit_async(
     event: Any,
     config: Any,
     payload: Any,
+    headers: MessageHeaders,
     call: Callable[..., Awaitable[Any]],
     *args: Any,
 ) -> Any:
@@ -71,17 +103,43 @@ async def run_emit_async(
     :param event: The event being emitted.
     :param config: The emit's routing config, which middleware sees as `call.config`.
     :param payload: The payload being emitted.
+    :param headers: The message's headers, which middleware adds to as `call.headers`. `call`
+        sends them.
     :param call: The emit itself, such as a dispatch or a publish.
     :returns: What `call` resolves to.
     """
     if hooks is not None:
         call, args = run_hooks_async, (hooks, event, payload, call, *args)
     if middleware:
-        call, args = (
-            run_middleware_async,
-            (middleware, PublishCall, event, config, payload, call, *args),
-        )
+        seen = PublishCall(event, config, payload, headers)
+        call, args = run_middleware_async, (middleware, seen, call, *args)
     return await call(*args)
+
+
+def _run_handle(
+    middleware: tuple[Callable[..., object], ...],
+    event: AnyEvent,
+    config: Any,
+    payload: Any,
+    call: Callable[..., Any],
+    *args: Any,
+) -> Any:
+    """Run a handler call inside sync handle middleware, with the received headers."""
+    seen = HandleCall(event, config, payload, _received.get(_NO_HEADERS))
+    return run_middleware(middleware, seen, call, *args)
+
+
+def _run_handle_async(
+    middleware: tuple[Callable[..., object], ...],
+    event: AnyEvent,
+    config: Any,
+    payload: Any,
+    call: Callable[..., Awaitable[Any]],
+    *args: Any,
+) -> Awaitable[Any]:
+    """Run a handler call inside async handle middleware, with the received headers."""
+    seen = HandleCall(event, config, payload, _received.get(_NO_HEADERS))
+    return run_middleware_async(middleware, seen, call, *args)
 
 
 class _Wrapped:
@@ -89,8 +147,8 @@ class _Wrapped:
     A sync handler call wrapped by a runner, such as hooks or handle middleware.
 
     The runner is called as `runner(*context, payload, call, payload)`, the shape
-    {py:func}`run_hooks <stratae.events.hooks.run_hooks>` and
-    {py:func}`run_middleware <stratae.events.middleware.run_middleware>` share.
+    {py:func}`run_hooks <stratae.events.hooks.run_hooks>` and the handle middleware runner
+    share.
     """
 
     __slots__ = ("call", "context", "runner")
@@ -166,9 +224,9 @@ def wrap_handler(
         else:
             call = _Wrapped(run_hooks, (hooks, event), call)
     if middleware:
-        context = (middleware, HandleCall, event, config)
+        context = (middleware, event, config)
         if asynchronous:
-            call, is_async = _AsyncWrapped(run_middleware_async, context, call, is_async), True
+            call, is_async = _AsyncWrapped(_run_handle_async, context, call, is_async), True
         else:
-            call = _Wrapped(run_middleware, context, call)
+            call = _Wrapped(_run_handle, context, call)
     return call, is_async

@@ -63,6 +63,8 @@ RabbitMQConsumer:
 - A success hook that raises is logged, and the handled message is still acked.
 - Handle middleware runs around each handler and its hooks, before the ack.
 - Handle middleware sees the event as call.event, and the consume config as call.config.
+- Handle middleware reads the message's text headers, envelope headers included; headers that
+  aren't text, such as the attempts count, are left out, and a message without headers has none.
 - Handle middleware that times out a handler nacks the message, and one that swallows the
   timeout does too, logging a MiddlewareError.
 - Handle middleware raising on entry nacks the message without running the handler.
@@ -1518,6 +1520,37 @@ async def test_handle_middleware_sees_event(connect_mock: AsyncMock, channel: As
     assert names == ["_OrderPlaced"]
     assert configs == [_config]
     message.channel.basic_ack.assert_awaited_once_with(11)
+
+
+async def test_handle_middleware_reads_text_headers(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Handle middleware should read the message's text headers, and only those.
+
+    Given: A consumer with handle middleware recording the headers it reads
+    When: A message arrives carrying a tenant, an attempts count and a correlation id, then one
+        without headers
+    Then: The middleware read the tenant and the correlation id, then no headers
+    """
+    # Arrange
+    seen: list[dict[str, str]] = []
+
+    @asynccontextmanager
+    async def record(call: HandleCall) -> AsyncGenerator[None, None]:
+        seen.append(dict(call.headers))
+        yield
+
+    consumer = RabbitMQConsumer(_URL, middleware=Middleware(handle=(record,)))
+    consumer.handle(_order_placed, lambda order: None, config=_config)
+    correlation_id = str(uuid4())
+    headers = {"x-tenant": "acme", ATTEMPTS_HEADER: 2, CORRELATION_ID_HEADER: correlation_id}
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(_message(b'{"order_id": 7}', headers))
+        await _delivery_callback(channel)(_message(b'{"order_id": 8}'))
+
+    # Assert
+    assert seen == [{"x-tenant": "acme", CORRELATION_ID_HEADER: correlation_id}, {}]
 
 
 @asynccontextmanager

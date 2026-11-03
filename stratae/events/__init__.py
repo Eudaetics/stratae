@@ -76,7 +76,7 @@ from .envelope import (
 )
 from .handler import Handler, WithoutPayload
 from .hooks import Hooks
-from .middleware import HandleCall, Middleware, PublishCall
+from .middleware import HandleCall, MessageHeaders, Middleware, PublishCall
 from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
     AnyEvent,
@@ -104,6 +104,7 @@ __all__ = [
     "Hooks",
     "Immutable",
     "MESSAGE_ID_HEADER",
+    "MessageHeaders",
     "Middleware",
     "NoPayload",
     "PayloadEvent",
