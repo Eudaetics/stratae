@@ -8,6 +8,7 @@ run_emit:
 - With hooks only, runs them around the emit.
 - With middleware only, runs it around the emit.
 - With both, runs the middleware outside the hooks.
+- Publish middleware adds to the headers the emit was given.
 
 wrap_handler:
 - Leaves a handler unwrapped without hooks or middleware.
@@ -15,6 +16,8 @@ wrap_handler:
   the event and payload.
 - Wraps a handler as an async call when the handler, a hook or the middleware is async.
 - Adapts a payload-less event's handler to take the payload.
+- Handle middleware, sync or async, reads the headers of the enclosing receiving block, as a
+  copy taken when it was entered; outside one, it reads none.
 """
 
 from contextlib import asynccontextmanager, contextmanager
@@ -23,7 +26,8 @@ from typing import Any, AsyncGenerator, Generator
 import pytest
 
 from stratae.events import HandleCall, Hooks, PublishCall, PubSub, Request
-from stratae.events.pipeline import run_emit, wrap_handler
+from stratae.events.middleware import MessageHeaders
+from stratae.events.pipeline import receiving, run_emit, wrap_handler
 
 
 class _Order:
@@ -73,7 +77,8 @@ def test_run_emit_nests_middleware_outside_hooks(
     stack = (middleware,) if with_middleware else ()
 
     # Act
-    reply = run_emit(hooks, stack, _order_placed, None, _Order("lamp"), call, _Order("lamp"))
+    order = _Order("lamp")
+    reply = run_emit(hooks, stack, _order_placed, None, order, MessageHeaders(), call, order)
 
     # Assert
     assert reply == "lamp"
@@ -192,3 +197,61 @@ def test_wrap_handler_payload_less() -> None:
 
     # Assert
     assert call(object()) == "pong"
+
+
+def test_run_emit_middleware_adds_headers() -> None:
+    """
+    Publish middleware should add to the headers run_emit was given.
+
+    Given: Headers holding a tenant, and publish middleware adding a trace header
+    When: run_emit runs an emit with them
+    Then: The headers hold both, for the emit to send
+    """
+    # Arrange
+    headers = MessageHeaders({"x-tenant": "acme"})
+
+    @contextmanager
+    def trace(call: PublishCall) -> Generator[None, None, None]:
+        call.headers["traceparent"] = "00-trace"
+        yield
+
+    # Act
+    run_emit(None, (trace,), _order_placed, None, _Order("lamp"), headers, lambda: None)
+
+    # Assert
+    assert dict(headers) == {"x-tenant": "acme", "traceparent": "00-trace"}
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_wrap_handler_middleware_reads_received_headers(asynchronous: bool) -> None:
+    """
+    Handle middleware should read the headers of the enclosing receiving block, or none.
+
+    Given: A handler wrapped in handle middleware recording the headers it reads
+    When: It's called inside a receiving block whose headers change after entry, then outside
+    Then: The middleware read the headers as received, then none
+    """
+    # Arrange
+    seen: list[dict[str, str]] = []
+
+    @contextmanager
+    def record(call: HandleCall) -> Generator[None, None, None]:
+        seen.append(dict(call.headers))
+        yield
+
+    call, is_async = wrap_handler(_order_placed, None, _shout, None, (record,), asynchronous)
+    received = {"x-tenant": "acme"}
+
+    async def handle() -> None:
+        reply = call(_Order("lamp"))
+        if is_async:
+            await reply
+
+    # Act
+    with receiving(received):
+        received["x-tenant"] = "changed"
+        await handle()
+    await handle()
+
+    # Assert
+    assert seen == [{"x-tenant": "acme"}, {}]

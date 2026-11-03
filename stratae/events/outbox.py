@@ -11,7 +11,8 @@ records afterwards.
 and adds an {py:class}`OutboxRecord` to an {py:class}`OutboxStore`. Nothing is published
 then. {py:class}`OutboxRelay` claims records, publishes each with the envelope it was
 emitted with, and marks it sent once the publisher returns. With publisher confirms, that's
-once the broker has it.
+once the broker has it. Headers the producer's publish middleware adds, such as a trace, are
+stored with the record and published with it. So they survive the wait in the outbox.
 
 Storage is the application's. A store implements five methods, each sync or async to suit
 its storage. It keeps records in the same transaction as the data they describe.
@@ -47,7 +48,7 @@ class OrderPlaced:
 
 class PrintingPublisher:
     async def emit(self, event: Any, config: Any, payload: Any, *, serializer: Any = None,
-                   envelope: Envelope | None = None) -> None:
+                   envelope: Envelope | None = None, headers: Any = None) -> None:
         print(f"published {serializer(payload)!r} to {config} as {event.name}")
 
 order_placed = PubSub(OrderPlaced)
@@ -100,9 +101,10 @@ from typing import (
 from uuid import UUID
 
 from stratae.events.binding import abind
-from stratae.events.envelope import Envelope
+from stratae.events.envelope import ENVELOPE_HEADERS, Envelope
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.hooks import Hooks
+from stratae.events.middleware import MessageHeaders, Middleware
 from stratae.events.patterns import NoPayload, PubSub
 from stratae.events.pipeline import run_emit_async
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
@@ -136,6 +138,11 @@ def _raw(body: bytes) -> bytes:
     return body
 
 
+def _added(headers: Mapping[str, str]) -> dict[str, str]:
+    """Return the headers publish middleware added to a record, without its envelope's."""
+    return {name: value for name, value in headers.items() if name not in ENVELOPE_HEADERS}
+
+
 def _require_pubsub(event: AnyEvent) -> None:
     """Refuse an event that isn't fire-and-forget: a request needs its reply now."""
     if not isinstance(event, PubSub):
@@ -163,7 +170,10 @@ class OutboxRecord:
     """The serialized payload."""
 
     headers: Mapping[str, str]
-    """The envelope it was emitted with, as headers."""
+    """
+    The headers it's published with: the envelope it was emitted with, and any its publish
+    middleware added.
+    """
 
     created_at: datetime
     """When it was emitted."""
@@ -260,16 +270,30 @@ class OutboxProducer:
     Bind {py:class}`PubSub <stratae.events.patterns.PubSub>` events to it with `bind`.
     Binding registers the route, so a relay knows every route before anything is emitted.
     Emitting writes a record. Hooks given to `bind` or `emit` run around that write, inside
-    the record's envelope. Binding a request event raises `TypeError`.
+    the record's envelope, and publish middleware around them. Headers the middleware adds
+    are stored with the record, and the relay publishes it with them. Binding a request event
+    raises `TypeError`.
     """
 
-    def __init__(self, store: OutboxStore, serializer: Callable[[Any], bytes]) -> None:
+    def __init__(
+        self,
+        store: OutboxStore,
+        serializer: Callable[[Any], bytes],
+        *,
+        middleware: Middleware = Middleware(),
+    ) -> None:
         """
         Create an outbox producer.
 
         :param store: Where records are added.
         :param serializer: Encodes payloads to bytes. A binding's own serializer overrides it.
+        :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
+            or async. Its `publish` half runs around every write, inside the record's envelope;
+            its `handle` half is a consumer's.
+        :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
         """
+        middleware.require(type(self).__name__, asynchronous=True, handle=False)
+        self._publish_middleware = middleware.publish
         self._store = store
         self._serializer = serializer
         self._routes: dict[str, tuple[AnyEvent, Any]] = {}
@@ -362,12 +386,16 @@ class OutboxProducer:
         """
         _require_pubsub(event)
         route = self._register(event, config)
+        headers = MessageHeaders()
         with Envelope.scope() as envelope:
-            args = (event, config, payload, serializer, envelope, route)
-            if hooks is None:
+            args = (event, config, payload, serializer, envelope, route, headers)
+            if hooks is None and not self._publish_middleware:
                 await self._write(*args)
             else:
-                await run_emit_async(hooks, (), event, config, payload, self._write, *args)
+                middleware = self._publish_middleware
+                await run_emit_async(
+                    hooks, middleware, event, config, payload, headers, self._write, *args
+                )
         return cast(R, None)
 
     def _register(self, event: AnyEvent, config: OutboxConfig[Any]) -> str:
@@ -386,15 +414,16 @@ class OutboxProducer:
         serializer: Callable[[Any], Any] | None,
         envelope: Envelope,
         route: str,
+        headers: MessageHeaders,
     ) -> None:
-        """Serialize the payload and add it to the store as a record."""
+        """Serialize the payload and add it to the store as a record, with its headers."""
         body = b"" if event.is_signal else (serializer or self._serializer)(payload)
         now = _now()
         record = OutboxRecord(
             id=envelope.message_id,
             route=route,
             body=body,
-            headers=envelope.to_headers(),
+            headers=dict(headers) | envelope.to_headers(),
             created_at=now,
             available_at=now,
             key=config.key(payload) if config.key is not None else None,
@@ -404,7 +433,7 @@ class OutboxProducer:
 
 class OutboxPublisher(Protocol):
     """
-    A publisher the relay can use: one that publishes under a given envelope.
+    A publisher the relay can use: one that publishes under a given envelope and headers.
 
     {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.RabbitMQPublisher>` is one.
     """
@@ -417,8 +446,9 @@ class OutboxPublisher(Protocol):
         *,
         serializer: Any = ...,
         envelope: Envelope | None = ...,
+        headers: Mapping[str, str] | None = ...,
     ) -> Awaitable[Any]:
-        """Publish a payload under `envelope`, returning once the broker has it."""
+        """Publish a payload under `envelope` with `headers`, returning once the broker has it."""
         ...
 
 
@@ -553,13 +583,18 @@ class OutboxRelay:
         return len(records), len(sent), outage
 
     async def _publish(self, record: OutboxRecord) -> None:
-        """Publish a record under its envelope, through its route's binding."""
+        """Publish a record under its envelope and headers, through its route's binding."""
         route = self._routes.get(record.route)
         if route is None:
             raise LookupError(_UNKNOWN_ROUTE.format(record.route))
         event, config = route
         await self._publisher.emit(
-            event, config, record.body, serializer=_raw, envelope=record.envelope
+            event,
+            config,
+            record.body,
+            serializer=_raw,
+            envelope=record.envelope,
+            headers=_added(record.headers),
         )
 
     async def _failed(self, record: OutboxRecord, exc: Exception) -> None:

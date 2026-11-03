@@ -60,6 +60,11 @@ CORRELATION_ID_HEADER = "x-correlation-id"
 CAUSATION_ID_HEADER = "x-causation-id"
 TIMESTAMP_HEADER = "x-timestamp"
 
+ENVELOPE_HEADERS = frozenset(
+    (MESSAGE_ID_HEADER, CORRELATION_ID_HEADER, CAUSATION_ID_HEADER, TIMESTAMP_HEADER)
+)
+"""The headers an envelope is carried in, which middleware can't set."""
+
 
 def _uuid(value: object | None) -> UUID | None:
     """Parse an optional header value as a UUID."""

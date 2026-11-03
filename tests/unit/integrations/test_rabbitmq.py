@@ -39,6 +39,11 @@ RabbitMQPublisher:
   fields, instead of a child of the active envelope.
 - Emitting twice with one envelope sends the same message id both times.
 - Publish middleware and hooks see the given envelope.
+- Headers publish middleware adds are sent with the config's and the envelope's; without
+  middleware, a message carries the envelope's headers alone.
+- emit given headers sends them, and publish middleware sees them and can add to them.
+- A reserved header, set by middleware or given to emit, raises ValueError, and nothing is
+  published: the envelope's, the attempts header and the failure header.
 - A topology config without a named queue is refused when the publisher is built.
 - Entering the context declares each topology config's queue, failure queues, exchange and
   bindings, as a consumer would.
@@ -831,6 +836,99 @@ async def test_middleware_and_hooks_see_given_envelope(connect_mock: AsyncMock, 
 
     # Assert
     assert seen == [held, held]
+
+
+@asynccontextmanager
+async def _tag_tenant(call: PublishCall) -> AsyncGenerator[None, None]:
+    call.headers["x-tenant"] = "acme"
+    yield
+
+
+async def test_middleware_headers_sent(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Headers publish middleware adds should be sent with the config's and the envelope's.
+
+    Given: A publisher whose middleware adds a tenant header, and a config carrying a header
+    When: An event is emitted with the config, then without middleware
+    Then: The first message carries all three kinds of header; the second the envelope's alone
+    """
+    # Arrange
+    config = RabbitMQConfig(
+        "events", "order.placed", properties=Basic.Properties(headers={"custom": "v"})
+    )
+    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(_tag_tenant,)))
+    plain = RabbitMQPublisher(_URL)
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, config, _OrderPlaced(1))
+    async with plain:
+        await plain.emit(_order_placed, _config, _OrderPlaced(2))
+
+    # Assert
+    tagged, untagged = (c.kwargs["properties"] for c in channel.basic_publish.await_args_list)
+    envelope = Envelope.from_headers(tagged.headers)
+    assert tagged.headers == {"custom": "v", "x-tenant": "acme"} | envelope.to_headers()
+    assert untagged.headers == Envelope.from_headers(untagged.headers).to_headers()
+
+
+async def test_emit_given_headers(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    ``emit`` given headers should send them, and middleware should see and add to them.
+
+    Given: A publisher whose middleware records the headers it sees, then adds a tenant
+    When: An event is emitted with a trace header
+    Then: The middleware saw the trace header, and the message carries both
+    """
+    # Arrange
+    seen: list[dict[str, str]] = []
+
+    @asynccontextmanager
+    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+        seen.append(dict(call.headers))
+        yield
+
+    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record, _tag_tenant)))
+
+    # Act
+    async with publisher:
+        await publisher.emit(
+            _order_placed, _config, _OrderPlaced(1), headers={"traceparent": "00-trace"}
+        )
+
+    # Assert
+    sent = channel.basic_publish.await_args.kwargs["properties"]
+    assert seen == [{"traceparent": "00-trace"}]
+    assert (sent.headers["traceparent"], sent.headers["x-tenant"]) == ("00-trace", "acme")
+
+
+@pytest.mark.parametrize("name", [MESSAGE_ID_HEADER, "x-attempts", "X-Failure"])
+async def test_reserved_header_refused(connect_mock: AsyncMock, channel: AsyncMock, name: str):
+    """
+    A reserved header should raise ValueError, from middleware or given to emit.
+
+    Given: A publisher whose middleware sets a reserved header, and one without middleware
+    When: Each emits, the second given the reserved header
+    Then: Both raise ValueError naming it, and nothing is published
+    """
+
+    # Arrange
+    @asynccontextmanager
+    async def forge(call: PublishCall) -> AsyncGenerator[None, None]:
+        call.headers[name] = "forged"
+        yield
+
+    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(forge,)))
+    plain = RabbitMQPublisher(_URL)
+    message = f"'{name}' is a header the bus sets itself"
+
+    # Act / Assert
+    async with publisher, plain:
+        with pytest.raises(ValueError, match=message):
+            await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        with pytest.raises(ValueError, match=message):
+            await plain.emit(_order_placed, _config, _OrderPlaced(1), headers={name: "forged"})
+    channel.basic_publish.assert_not_awaited()
 
 
 def test_topology_needs_named_queue(connect_mock: AsyncMock):

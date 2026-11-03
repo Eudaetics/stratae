@@ -58,6 +58,11 @@ DirectBus (middleware):
 - An async context manager class is refused as middleware when the bus is built.
 - An unsupported pattern emitted directly fails before any middleware runs.
 - A call object a middleware keeps doesn't keep the bus alive.
+- Handle middleware reads the headers publish middleware set, read-only.
+- A handler's own emit has its own headers, and the outer handler's are restored after it.
+- Publish middleware setting a reserved header refuses the emit; no handler runs.
+- Handle middleware on a bus without publish middleware sees no headers, even inside another
+  message's delivery.
 
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -96,6 +101,7 @@ from stratae.events.exceptions import (
     MultipleRespondersError,
     NoResponderError,
 )
+from stratae.events.pipeline import receiving
 
 
 class _TaskCreated:
@@ -1494,6 +1500,133 @@ def test_kept_call_does_not_keep_bus_alive():
     # Assert
     assert len(kept) == 1
     assert collected() is None
+
+
+@contextmanager
+def _tag_tenant(call: PublishCall) -> Generator[None, None, None]:
+    """Publish middleware adding the tenant header."""
+    call.headers["x-tenant"] = "acme"
+    yield
+
+
+def _recording_headers(seen: list[object]) -> Any:
+    """Return handle middleware recording the event's name and the headers it reads."""
+
+    @contextmanager
+    def record(call: HandleCall) -> Generator[None, None, None]:
+        seen.append((call.event.name, dict(call.headers)))
+        yield
+        seen.append((call.event.name, dict(call.headers)))
+
+    return record
+
+
+def test_handle_middleware_reads_publish_headers():
+    """
+    Handle middleware should read the headers publish middleware set, without changing them.
+
+    Given: A bus whose publish middleware adds a tenant header, and handle middleware that
+        records the headers, then tries to set one
+    When: An event is emitted
+    Then: The handle middleware read the tenant header, and setting one raised TypeError
+    """
+    # Arrange
+    seen: list[object] = []
+
+    @contextmanager
+    def record(call: HandleCall) -> Generator[None, None, None]:
+        seen.append(dict(call.headers))
+        try:
+            cast(Any, call.headers)["x-tenant"] = "other"
+        except TypeError:
+            seen.append("read-only")
+        yield
+
+    bus = DirectBus(middleware=Middleware(publish=(_tag_tenant,), handle=(record,)))
+    bus.handle(_task_created, lambda task: None)
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert seen == [{"x-tenant": "acme"}, "read-only"]
+
+
+def test_nested_emit_has_own_headers():
+    """
+    A handler's own emit should be handled with its own headers, then the outer ones restored.
+
+    Given: A bus whose publish middleware tags each emit with its event's name, handle
+        middleware recording the headers on entry and exit, and a handler emitting a request
+    When: The outer event is emitted
+    Then: Each handler's middleware read its own event's tag, the outer one on both sides
+    """
+    # Arrange
+    seen: list[object] = []
+
+    @contextmanager
+    def tag(call: PublishCall) -> Generator[None, None, None]:
+        call.headers["x-event"] = call.event.name
+        yield
+
+    bus = DirectBus(middleware=Middleware(publish=(tag,), handle=(_recording_headers(seen),)))
+    bus.handle(_find_book, lambda query: _BookResult(query.query))
+    bus.handle(_task_created, lambda task: bus.emit(_find_book, None, _BookQuery("dune")))
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    outer = ("_TaskCreated", {"x-event": "_TaskCreated"})
+    inner = ("_BookQuery", {"x-event": "_BookQuery"})
+    assert seen == [outer, inner, inner, outer]
+
+
+@pytest.mark.parametrize("name", ["x-correlation-id", "X-Message-Id"])
+def test_reserved_header_refuses_emit(name: str):
+    """
+    Publish middleware setting an envelope header should refuse the emit.
+
+    Given: A bus whose publish middleware sets an envelope header, in any case, and a handler
+    When: An event is emitted
+    Then: ValueError names the header, and the handler doesn't run
+    """
+    # Arrange
+    ran: list[str] = []
+
+    @contextmanager
+    def forge(call: PublishCall) -> Generator[None, None, None]:
+        call.headers[name] = "forged"
+        yield
+
+    bus = DirectBus(middleware=Middleware(publish=(forge,)))
+    bus.handle(_task_created, lambda task: ran.append("handler"))
+
+    # Act / Assert
+    with pytest.raises(ValueError, match=f"'{name}' is a header the bus sets itself"):
+        bus.emit(_task_created, None, _TaskCreated(1))
+    assert ran == []
+
+
+def test_handle_middleware_without_publish_middleware_sees_no_headers():
+    """
+    Handle middleware on a bus without publish middleware should see no headers.
+
+    Given: A bus with only handle middleware recording the headers
+    When: An event is emitted inside another message's delivery, which carries a header
+    Then: The middleware saw no headers, not the enclosing message's
+    """
+    # Arrange
+    seen: list[object] = []
+    bus = DirectBus(middleware=Middleware(handle=(_recording_headers(seen),)))
+    bus.handle(_task_created, lambda task: None)
+
+    # Act
+    with receiving({"x-tenant": "acme"}):
+        bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert seen == [("_TaskCreated", {}), ("_TaskCreated", {})]
 
 
 # endregion

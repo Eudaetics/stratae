@@ -48,6 +48,9 @@ AsyncDirectBus (middleware):
 - Publish middleware wraps an emit without hooks.
 - Sync middleware is entered alongside async middleware.
 - A class that isn't a context manager is refused as middleware when the bus is built.
+- Handle middleware reads the headers async publish middleware set, on every handler of a
+  concurrent fan-out, and concurrent emits each read their own.
+- Publish middleware setting a reserved header refuses the emit; no handler runs.
 
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -1266,6 +1269,83 @@ def test_non_manager_middleware_refused():
     # Act / Assert
     with pytest.raises(TypeError, match="AsyncDirectBus can't enter"):
         AsyncDirectBus(middleware=Middleware(handle=(cast(Any, Plain),)))
+
+
+async def test_handle_middleware_reads_publish_headers():
+    """
+    Handle middleware should read the headers publish middleware set, per emit.
+
+    Given: A bus whose async publish middleware tags each emit with its task id, handle
+        middleware recording the tag, and two async handlers yielding to the loop
+    When: Two events are emitted concurrently
+    Then: Each handler's middleware read its own emit's tag
+    """
+    # Arrange
+    seen: list[tuple[int, str]] = []
+
+    class Tag:
+        def __init__(self, call: PublishCall) -> None:
+            self.call = call
+
+        async def __aenter__(self) -> None:
+            self.call.headers["x-task"] = str(self.call.payload.task_id)
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    class Record:
+        def __init__(self, call: HandleCall) -> None:
+            self.call = call
+
+        async def __aenter__(self) -> None:
+            await asyncio.sleep(0)
+            seen.append((self.call.payload.task_id, self.call.headers["x-task"]))
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    async def handler(task: _TaskCreated) -> None:
+        await asyncio.sleep(0)
+
+    bus = AsyncDirectBus(middleware=Middleware(publish=(Tag,), handle=(Record,)))
+    bus.handle(_task_created, handler)
+    bus.handle(_task_created, handler)
+
+    # Act
+    await asyncio.gather(
+        bus.emit(_task_created, None, _TaskCreated(1)),
+        bus.emit(_task_created, None, _TaskCreated(2)),
+    )
+
+    # Assert
+    assert sorted(seen) == [(1, "1"), (1, "1"), (2, "2"), (2, "2")]
+
+
+async def test_reserved_header_refuses_emit():
+    """
+    Publish middleware setting an envelope header should refuse the emit.
+
+    Given: A bus whose publish middleware sets the correlation id header, and a responder
+    When: A request is emitted
+    Then: ValueError names the header, and the responder doesn't run
+    """
+    # Arrange
+    ran: list[str] = []
+
+    @contextmanager
+    def forge(call: PublishCall) -> Generator[None, None, None]:
+        call.headers["x-correlation-id"] = "forged"
+        yield
+
+    def respond(query: _BookQuery) -> _BookResult:
+        ran.append("responder")
+        return _BookResult(query.query)
+
+    bus = AsyncDirectBus(middleware=Middleware(publish=(forge,)))
+    bus.handle(_find_book, respond)
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="'x-correlation-id' is a header the bus sets itself"):
+        await bus.emit(_find_book, None, _BookQuery("dune"))
+    assert ran == []
 
 
 # endregion

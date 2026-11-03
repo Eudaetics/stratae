@@ -10,6 +10,9 @@ OutboxProducer:
   body, an ordering key from the payload, and its creation time.
 - A binding's serializer overrides the producer's; a payload-less event writes an empty body.
 - Hooks run around the write, inside the record's envelope.
+- Publish middleware runs around the write, and the headers it adds are stored with the
+  record's envelope headers; middleware setting an envelope header writes nothing.
+- A middleware class that isn't a context manager is refused when the producer is built.
 - Emitting returns None, and publishes nothing.
 - Binding or emitting a request event raises TypeError.
 - A route bound to another event or config raises ValueError; the same config object, or an
@@ -25,6 +28,7 @@ InMemoryOutboxStore:
 OutboxRelay:
 - run_once publishes each claimed record under its envelope, with its route's event and
   config and its stored body, then marks them sent.
+- A record is published with the headers its middleware added, without its envelope's.
 - A failed publish is an attempt: the record is rescheduled with its error, after a delay
   that doubles up to a cap, and isn't claimed before then.
 - Once out of attempts, a record is parked as failed with its error; without a limit, never.
@@ -41,13 +45,14 @@ OutboxRelay:
 
 import asyncio
 import logging
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Sequence
+from typing import Any, Generator, Mapping, Sequence, cast
 
 import pytest
 
-from stratae.events import Envelope, Hooks, PubSub, Request
+from stratae.events import Envelope, Hooks, Middleware, PublishCall, PubSub, Request
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.outbox import (
     InMemoryOutboxStore,
@@ -76,6 +81,7 @@ class _Publisher:
 
     def __init__(self, *outcomes: Exception | None) -> None:
         self.published: list[tuple[Any, Any, bytes, Envelope | None]] = []
+        self.headers: list[Mapping[str, str] | None] = []
         self.outcomes = list(outcomes)
 
     async def emit(
@@ -86,11 +92,13 @@ class _Publisher:
         *,
         serializer: Any = None,
         envelope: Envelope | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         outcome = self.outcomes.pop(0) if self.outcomes else None
         if outcome is not None:
             raise outcome
         self.published.append((event, config, serializer(payload), envelope))
+        self.headers.append(headers)
 
 
 def _record(store: InMemoryOutboxStore, order_id: int = 1, **changes: Any) -> OutboxRecord:
@@ -263,6 +271,74 @@ async def test_hooks_run_inside_record_envelope(outbox: OutboxProducer, store: I
     # Assert
     (record,) = store.pending()
     assert seen == [record.envelope]
+
+
+@contextmanager
+def _tag_tenant(call: PublishCall) -> Generator[None, None, None]:
+    """Publish middleware adding the tenant header, inside the record's envelope."""
+    call.headers["x-tenant"] = f"acme {Envelope.current() is not None}"
+    yield
+
+
+async def test_middleware_headers_stored(store: InMemoryOutboxStore):
+    """
+    Headers publish middleware adds should be stored with the record's envelope headers.
+
+    Given: A producer whose publish middleware adds a tenant header
+    When: An event is emitted
+    Then: The record holds the tenant header, added inside its envelope, and the envelope's
+    """
+    # Arrange
+    outbox = OutboxProducer(store, _encode, middleware=Middleware(publish=(_tag_tenant,)))
+    place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+
+    # Act
+    await place(order_id=1)
+
+    # Assert
+    (record,) = store.pending()
+    assert record.headers == {"x-tenant": "acme True"} | record.envelope.to_headers()
+
+
+async def test_middleware_reserved_header_writes_nothing(store: InMemoryOutboxStore):
+    """
+    Publish middleware setting an envelope header should refuse the write.
+
+    Given: A producer whose publish middleware sets the message id header
+    When: An event is emitted
+    Then: ValueError names the header, and no record is written
+    """
+
+    # Arrange
+    @contextmanager
+    def forge(call: PublishCall) -> Generator[None, None, None]:
+        call.headers["x-message-id"] = "forged"
+        yield
+
+    outbox = OutboxProducer(store, _encode, middleware=Middleware(publish=(forge,)))
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="'x-message-id' is a header the bus sets itself"):
+        await outbox.emit(_order_placed, OutboxConfig("orders"), _Order(1))
+    assert store.pending() == []
+
+
+def test_non_manager_middleware_refused(store: InMemoryOutboxStore):
+    """
+    The producer should refuse a middleware class that isn't a context manager.
+
+    Given: Publish middleware that's a plain class
+    When: A producer is built with it
+    Then: A TypeError says OutboxProducer can't enter it
+    """
+
+    # Arrange
+    class Plain:
+        def __init__(self, call: PublishCall) -> None: ...
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="OutboxProducer can't enter"):
+        OutboxProducer(store, _encode, middleware=Middleware(publish=(cast(Any, Plain),)))
 
 
 async def test_request_events_refused(outbox: OutboxProducer):
@@ -461,6 +537,29 @@ async def test_run_once_publishes_and_marks_sent(
         (_order_placed, "orders", b"2", records[1].envelope),
     ]
     assert store.sent() == records
+
+
+async def test_relay_publishes_added_headers(store: InMemoryOutboxStore):
+    """
+    The relay should publish a record with the headers its middleware added.
+
+    Given: A record written by a producer whose publish middleware adds a tenant header
+    When: The relay runs once
+    Then: The record is published under its envelope, with the tenant header alone
+    """
+    # Arrange
+    outbox = OutboxProducer(store, _encode, middleware=Middleware(publish=(_tag_tenant,)))
+    place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    await place(order_id=1)
+    (record,) = store.pending()
+    publisher = _Publisher()
+
+    # Act
+    await OutboxRelay(store, publisher, outbox).run_once()
+
+    # Assert
+    assert publisher.published == [(_order_placed, "orders", b"1", record.envelope)]
+    assert publisher.headers == [{"x-tenant": "acme True"}]
 
 
 async def test_failed_publish_retried_after_growing_delay(

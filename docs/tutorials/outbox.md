@@ -204,7 +204,7 @@ class OrderPlaced:
 
 class PrintingPublisher:
     async def emit(self, event: Any, config: Any, payload: Any, *, serializer: Any = None,
-                   envelope: Envelope | None = None) -> None:
+                   envelope: Envelope | None = None, headers: Any = None) -> None:
         print(f"published {serializer(payload)!r} to {config}")
 
 order_placed = PubSub(OrderPlaced)

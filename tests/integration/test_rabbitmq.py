@@ -23,6 +23,8 @@ This test suite verifies the following behaviors:
   consumer's handler, across the broker.
 - Publish middleware runs around the publish, and handle middleware around the consumer's
   handler, across the broker.
+- A header publish middleware adds reaches the consumer's handle middleware, alongside the
+  envelope's.
 - A delivery cancelled at the drain timeout closes its message scope with the cancellation,
   and the broker redelivers it to the next consumer, whose scope closes cleanly.
 - Re-publishing with a held envelope delivers both copies with its message id.
@@ -51,6 +53,9 @@ This test suite verifies the following behaviors:
   dead-lettered; and exiting during the outage returns promptly, leaving it closed.
 - Through the outbox, a committed unit's events reach a consumer under the message ids they
   were written with, and a rolled-back unit's never do.
+- A header the outbox producer's publish middleware adds is stored with the record, and
+  reaches the consumer's handle middleware once the relay publishes it; the relay's own
+  publish middleware sees it too.
 - Outbox records written during an outage are published once the broker is back, with no
   attempts counted.
 """
@@ -312,6 +317,58 @@ async def test_middleware_runs_on_both_sides_of_the_broker(broker: _Broker):
 
     # Assert: the publish side runs first; the handler runs inside the handle middleware.
     assert log == ["publish mw hello", "handler hello", "handle mw hello"]
+
+
+@asynccontextmanager
+async def _tag_tenant(call: PublishCall) -> AsyncGenerator[None, None]:
+    call.headers["x-tenant"] = "acme"
+    yield
+
+
+def _recording_headers(seen: list[dict[str, str]]) -> Any:
+    """Return handle middleware recording the headers it reads."""
+
+    @asynccontextmanager
+    async def record(call: HandleCall) -> AsyncGenerator[None, None]:
+        seen.append(dict(call.headers))
+        yield
+
+    return record
+
+
+async def test_middleware_header_crosses_the_broker(broker: _Broker):
+    """
+    A header publish middleware adds should reach the consumer's handle middleware.
+
+    Given: A publisher whose middleware adds a tenant header, and a consumer whose handle
+        middleware records the headers
+    When: A payload is published and consumed through the broker
+    Then: The handle middleware read the tenant header, and the envelope's correlation id
+    """
+    # Arrange
+    queue = _unique("stratae-it-headers")
+    broker.queues.append(queue)
+    seen: list[dict[str, str]] = []
+    consumer = RabbitMQConsumer(
+        _URL,
+        deserializer=msgspec.json.decode,
+        middleware=Middleware(handle=(_recording_headers(seen),)),
+    )
+    consumer.handle(message_event, lambda message: None, config=RabbitMQConsumeConfig(queue))
+
+    # Act
+    async with consumer:
+        async with RabbitMQPublisher(
+            _URL, serializer=msgspec.json.encode, middleware=Middleware(publish=(_tag_tenant,))
+        ) as publisher:
+            with Envelope.scope() as envelope:
+                await publisher.emit(message_event, RabbitMQConfig("", queue), Message("hi"))
+        await _eventually(lambda: len(seen) == 1)
+
+    # Assert
+    (headers,) = seen
+    assert headers["x-tenant"] == "acme"
+    assert headers["x-correlation-id"] == str(envelope.correlation_id)
 
 
 async def test_envelope_survives_the_wire(broker: _Broker):
@@ -1233,6 +1290,61 @@ async def test_outbox_relays_committed_events(broker: _Broker):
     assert sent == 1
     assert received == [(Message("committed"), written.id)]
     assert store.sent() == [written]
+
+
+async def test_outbox_relays_middleware_headers(broker: _Broker):
+    """
+    A header the producer's publish middleware adds should reach the consumer after the relay.
+
+    Given: An outbox producer whose middleware adds a tenant header, a relay publisher whose
+        middleware records the headers it sees, and a consumer recording them too
+    When: An event is written, and the relay runs
+    Then: The record holds the tenant header; the relay's middleware and the consumer's both
+        read it, under the record's message id
+    """
+    # Arrange
+    queue = _unique("stratae-it-outbox-headers")
+    broker.queues.append(queue)
+    store = InMemoryOutboxStore()
+    outbox = OutboxProducer(
+        store, serializer=msgspec.json.encode, middleware=Middleware(publish=(_tag_tenant,))
+    )
+    send = outbox.bind(
+        message_event, factory=Message, config=OutboxConfig(RabbitMQConfig("", queue))
+    )
+    relayed: list[dict[str, str]] = []
+
+    @asynccontextmanager
+    async def on_relay(call: PublishCall) -> AsyncGenerator[None, None]:
+        relayed.append(dict(call.headers))
+        yield
+
+    seen: list[dict[str, str]] = []
+    consumer = RabbitMQConsumer(
+        _URL,
+        deserializer=msgspec.json.decode,
+        middleware=Middleware(handle=(_recording_headers(seen),)),
+    )
+    consumer.handle(message_event, lambda message: None, config=RabbitMQConsumeConfig(queue))
+    await send(text="tagged")
+    (written,) = store.pending()
+
+    # Act
+    async with (
+        consumer,
+        RabbitMQPublisher(
+            _URL, serializer=msgspec.json.encode, middleware=Middleware(publish=(on_relay,))
+        ) as publisher,
+    ):
+        await OutboxRelay(store, publisher, outbox).run_once()
+        await _eventually(lambda: len(seen) == 1)
+
+    # Assert
+    assert written.headers["x-tenant"] == "acme"
+    assert relayed == [{"x-tenant": "acme"}]
+    (headers,) = seen
+    assert headers["x-tenant"] == "acme"
+    assert headers["x-message-id"] == str(written.id)
 
 
 async def test_outbox_waits_out_an_outage(broker: _Broker, proxy: _Proxy):

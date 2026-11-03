@@ -13,6 +13,11 @@ Middleware:
 - require leaves callables other than classes to be checked when they're called.
 - require can check only one half.
 
+MessageHeaders:
+- Holds the headers it's given, and those set later; they can be read, removed and counted.
+- A reserved name, in any case, raises ValueError when set or given; by default the
+  envelope's headers are reserved, and a bus can reserve its own.
+
 run_middleware:
 - Enters context managers outermost first, runs the call once, then exits innermost first,
   each seeing the event and payload, and the reply once the call returned.
@@ -60,7 +65,7 @@ import pytest
 
 from stratae.events import HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.events.exceptions import MiddlewareError
-from stratae.events.middleware import run_middleware, run_middleware_async
+from stratae.events.middleware import MessageHeaders, run_middleware, run_middleware_async
 
 
 class _Order:
@@ -179,16 +184,19 @@ def _araising_on_exit(error: BaseException) -> Any:
     return Raising
 
 
+def _call() -> PublishCall:
+    """Return what publish middleware sees of emitting an order lamp."""
+    return PublishCall(_order_placed, None, _Order("lamp"), MessageHeaders())
+
+
 def _run(middleware: tuple[Any, ...], call: Any, *args: Any) -> Any:
     """Run `call(*args)` inside sync publish middleware for an order lamp."""
-    return run_middleware(middleware, PublishCall, _order_placed, None, _Order("lamp"), call, *args)
+    return run_middleware(middleware, _call(), call, *args)
 
 
 async def _arun(middleware: tuple[Any, ...], call: Any, *args: Any) -> Any:
     """Await `call(*args)` inside async publish middleware for an order lamp."""
-    return await run_middleware_async(
-        middleware, PublishCall, _order_placed, None, _Order("lamp"), call, *args
-    )
+    return await run_middleware_async(middleware, _call(), call, *args)
 
 
 def _fail() -> None:
@@ -355,6 +363,72 @@ def test_require_checks_only_selected_half() -> None:
 
 # endregion
 
+# region: MessageHeaders
+
+
+def test_message_headers_mapping() -> None:
+    """
+    MessageHeaders should hold the headers it's given and those set later.
+
+    Given: Headers created with a tenant
+    When: A trace header is set, and the tenant removed
+    Then: The headers read as a mapping at each step
+    """
+    # Arrange
+    headers = MessageHeaders({"x-tenant": "acme"})
+
+    # Act
+    headers["traceparent"] = "00-trace"
+    before = (dict(headers), len(headers), headers["x-tenant"])
+    del headers["x-tenant"]
+
+    # Assert
+    assert before == ({"x-tenant": "acme", "traceparent": "00-trace"}, 2, "acme")
+    assert list(headers) == ["traceparent"]
+    assert repr(headers) == "MessageHeaders({'traceparent': '00-trace'})"
+
+
+@pytest.mark.parametrize("name", ["x-message-id", "X-Correlation-ID", "x-causation-id"])
+def test_message_headers_refuse_envelope_headers(name: str) -> None:
+    """
+    MessageHeaders should refuse the envelope's headers, in any case, set or given.
+
+    Given: An envelope header's name
+    When: It's set on headers, or given when they're created
+    Then: Each raises ValueError naming it, and nothing is set
+    """
+    # Arrange
+    headers = MessageHeaders()
+    message = f"'{name}' is a header the bus sets itself"
+
+    # Act / Assert
+    with pytest.raises(ValueError, match=message):
+        headers[name] = "forged"
+    with pytest.raises(ValueError, match=message):
+        MessageHeaders({name: "forged"})
+    assert dict(headers) == {}
+
+
+def test_message_headers_reserve_given_names() -> None:
+    """
+    MessageHeaders should refuse the names a bus reserves, in place of the envelope's.
+
+    Given: Headers reserving an attempts header
+    When: The attempts header is set, then the correlation id
+    Then: The attempts header is refused, and the correlation id isn't reserved
+    """
+    # Arrange
+    headers = MessageHeaders(reserved=frozenset({"x-attempts"}))
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="'x-attempts' is a header the bus sets itself"):
+        headers["x-attempts"] = "3"
+    headers["x-correlation-id"] = "custom"
+    assert dict(headers) == {"x-correlation-id": "custom"}
+
+
+# endregion
+
 # region: run_middleware
 
 
@@ -438,7 +512,8 @@ def test_middleware_sees_config_and_call_type() -> None:
         yield
 
     # Act
-    run_middleware((record,), HandleCall, _order_placed, "orders", _Order("lamp"), lambda: None)
+    handled = HandleCall(_order_placed, "orders", _Order("lamp"), {})
+    run_middleware((record,), handled, lambda: None)
 
     # Assert
     assert seen == ["orders", HandleCall]
