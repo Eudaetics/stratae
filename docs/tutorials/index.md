@@ -7,6 +7,7 @@ getting-started
 context
 checks
 serde
+database
 integrations/index
 ```
 
@@ -106,6 +107,10 @@ Standalone, no dependency on the core three or on each other:
 - [Checks](checks.md) runs a set of preconditions and raises if they don't hold. It's a natural fit for a Dependency Injection provider that exists only for its side effect (raising), not a return value. However, checks are useful well beyond that.
 - [Serde](serde.md) turns arbitrary objects into bytes and back. Particularly useful alongside Events integrations, where a payload has to cross a process boundary such as over RabbitMQ.
 
+## Recipes
+
+- [A database session per scope](database.md) gives each request or message its own transaction. It commits before the response or the ack, and rolls back on any failure. It needs nothing but Lifecycle resources.
+
 ## Integrations
 
 [Integrations](integrations/index) bridges the core modules to specific third-party tools:
@@ -131,6 +136,10 @@ Use [Events](../apidocs/stratae.events/stratae.events)'s `PubSub` dispatch patte
 
 :::{dropdown} I need a real broker in production, but an in-memory stand-in locally.
 [Events](../apidocs/stratae.events/stratae.events) buses are swappable by design. Bind to `DirectBus` locally or in tests, and to [RabbitMQ](../apidocs/stratae.integrations/stratae.integrations.rabbitmq) in production, with no change to the event definitions or handlers.
+:::
+
+:::{dropdown} I need a database transaction per request or message.
+Follow [A database session per scope](database.md). A Lifecycle resource commits when its scope closes cleanly and rolls back otherwise. The commit lands before the response or the ack.
 :::
 
 :::{dropdown} I need a connection to close automatically, even on error.
