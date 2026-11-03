@@ -225,11 +225,9 @@ class BaseDirectBus(ABC):
         # call its dispatcher directly.
         self._plain = not middleware.publish and not use_envelope
 
-    def _check_event(self, event: _AnyEvent, hooks: Hooks[Any, Any] | None = None) -> None:
-        """Raise TypeError for an event with no dispatcher, or hooks this bus can't run."""
+    def _check_event(self, event: _AnyEvent) -> None:
+        """Raise TypeError for an event with no dispatcher."""
         self._resolve(event)
-        if hooks is not None:
-            self._check_hooks(event, hooks)
 
     def _resolve(self, event: _AnyEvent) -> Callable[..., Any]:
         """Return the dispatcher for the event's pattern, or raise TypeError if there's none."""
@@ -249,7 +247,9 @@ class BaseDirectBus(ABC):
         self, config: _AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
     ) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn and its hooks as a Handler, and store it in the registry under config."""
-        self._check_event(config, hooks)
+        self._resolve(config)
+        if hooks is not None:
+            self._check_hooks(config, hooks)
         call, is_async = wrap_handler(
             config, None, fn, hooks, self._middleware.handle, self._asynchronous
         )

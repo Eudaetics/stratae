@@ -233,7 +233,7 @@ committed
 ```
 ````
 
-There's one order and one audit entry. The gift card's order *and* its audit entry rolled back together. This holds for in-process buses only. An event published to a broker leaves the transaction the moment it's sent. It's out even if the transaction later rolls back.
+There's one order and one audit entry. The gift card's order *and* its audit entry rolled back together. This holds for in-process buses only. An event published to a broker leaves the transaction the moment it's sent. It's out even if the transaction later rolls back. The [outbox](../apidocs/stratae.events/stratae.events.outbox) fixes that.
 
 ## Where the commit lands
 
@@ -315,4 +315,4 @@ The application scope belongs to whatever runs the service. That's the ASGI life
 - **Committing inside a handler.** A commit halfway through a unit of work splits it. A later failure rolls back only what came after. Commit once, in the resource's cleanup.
 - **Caching the session in the application scope.** Every request then shares one session and one transaction. Cache the engine and sessionmaker there. Cache the session in the unit-of-work scope.
 - **Opening the session in the outer request scope.** It then commits after the response has been sent. A failed commit can't change what the client was told. Use the `handler` scope instead.
-- **Expecting a broker publish to roll back.** Only in-process handlers share the transaction. A message sent to a broker during the unit of work is out, even if the unit later rolls back.
+- **Expecting a broker publish to roll back.** Only in-process handlers share the transaction. A message sent to a broker during the unit of work is out, even if the unit later rolls back. Write it through the [outbox](../apidocs/stratae.events/stratae.events.outbox) instead, so it commits with the data.

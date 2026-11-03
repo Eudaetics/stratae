@@ -49,6 +49,10 @@ This test suite verifies the following behaviors:
   a publisher's emit raises at once during the outage, then publishes once reconnected; a
   message being handled when the connection drops is redelivered, not retried or
   dead-lettered; and exiting during the outage returns promptly, leaving it closed.
+- Through the outbox, a committed unit's events reach a consumer under the message ids they
+  were written with, and a rolled-back unit's never do.
+- Outbox records written during an outage are published once the broker is back, with no
+  attempts counted.
 """
 
 import asyncio
@@ -66,6 +70,7 @@ from aiormq.exceptions import ChannelClosed, ChannelPreconditionFailed
 
 from stratae.events import Envelope, HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.events.exceptions import NotConnectedError, UnroutableError
+from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer, OutboxRelay
 from stratae.integrations.rabbitmq import (
     ATTEMPTS_HEADER,
     FAILURE_HEADER,
@@ -1181,3 +1186,93 @@ async def test_exit_during_outage_returns_promptly(broker: _Broker, proxy: _Prox
     # Assert
     assert consumer.state is ConnectionState.CLOSED
     assert publisher.state is ConnectionState.CLOSED
+
+
+async def test_outbox_relays_committed_events(broker: _Broker):
+    """
+    The outbox should deliver a committed unit's events under their ids, and drop the rest.
+
+    Given: An outbox bound to a queue, and a consumer on it
+    When: One unit of work commits an event, another rolls back, and the relay runs
+    Then: The consumer receives only the committed event, under the message id it was
+          written with, and its record is marked sent
+    """
+    # Arrange
+    queue = _unique("stratae-it-outbox")
+    broker.queues.append(queue)
+    store = InMemoryOutboxStore()
+    outbox = OutboxProducer(store, serializer=msgspec.json.encode)
+    send = outbox.bind(
+        message_event, factory=Message, config=OutboxConfig(RabbitMQConfig("", queue))
+    )
+    received: list[tuple[Message, UUID]] = []
+
+    def record(message: Message) -> None:
+        envelope = Envelope.current()
+        assert envelope is not None
+        received.append((message, envelope.message_id))
+
+    consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
+    consumer.handle(message_event, record, config=RabbitMQConsumeConfig(queue))
+
+    async with store.transaction():
+        await send(text="committed")
+    with pytest.raises(ValueError):
+        async with store.transaction():
+            await send(text="rolled back")
+            raise ValueError("payment declined")
+    (written,) = store.pending()
+
+    # Act
+    async with consumer, RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+        sent = await OutboxRelay(store, publisher, outbox).run_once()
+        await _eventually(lambda: len(received) == 1)
+        await asyncio.sleep(0.2)
+
+    # Assert
+    assert sent == 1
+    assert received == [(Message("committed"), written.id)]
+    assert store.sent() == [written]
+
+
+async def test_outbox_waits_out_an_outage(broker: _Broker, proxy: _Proxy):
+    """
+    Outbox records written during an outage should be published once the broker is back.
+
+    Given: A relay publishing through the proxy, and a record written while the proxy is down
+    When: The relay runs during the outage, then after the broker is back
+    Then: Nothing is sent during the outage and no attempt is counted; afterwards the record
+          is published and marked sent, with zero attempts
+    """
+    # Arrange
+    queue = _unique("stratae-it-outbox-outage")
+    broker.queues.append(queue)
+    config = RabbitMQConsumeConfig(queue)
+    store = InMemoryOutboxStore()
+    outbox = OutboxProducer(store, serializer=msgspec.json.encode)
+    send = outbox.bind(
+        message_event, factory=Message, config=OutboxConfig(RabbitMQConfig("", queue))
+    )
+    publisher = RabbitMQPublisher(
+        proxy.url, serializer=msgspec.json.encode, topology=[config], reconnect=_QUICK
+    )
+    relay = OutboxRelay(store, publisher, outbox)
+
+    async with publisher:
+        await proxy.outage()
+        await _eventually(lambda: publisher.state is ConnectionState.RECONNECTING)
+        await send(text="during the outage")
+
+        # Act
+        during = await relay.run_once()
+        waiting = store.pending()
+        await proxy.start()
+        await _eventually(lambda: publisher.state is ConnectionState.CONNECTED)
+        after = await relay.run_once()
+
+    # Assert
+    assert (during, after) == (0, 1)
+    assert [r.attempts for r in waiting] == [0]
+    assert [r.attempts for r in store.sent()] == [0]
+    parked = await broker.channel.basic_get(queue, no_ack=True)
+    assert msgspec.json.decode(parked.body, type=Message) == Message("during the outage")
