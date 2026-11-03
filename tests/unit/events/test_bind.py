@@ -17,16 +17,26 @@ bind without a factory:
 bind with hooks:
 - The hooks are forwarded to the emitter.
 - An emitter without a hooks parameter works without hooks, and refuses them loudly.
+
+bound callable signatures:
+- Without a factory, the signature is a payload of the event's schema, returning its reply
+  type, and get_type_hints reads the same types.
+- A pub/sub event's bound callable returns None.
+- A payload-less event's bound callable takes no parameters, and still emits NoPayload.
+- With a factory, the signature has the factory's parameters and the event's reply type.
+- A factory's string annotations are resolved; one that can't be resolved is kept as written.
+- DirectBus.bind gives the same typed signature.
 """
 
 import asyncio
-from typing import Any, cast
+import inspect
+from typing import Any, cast, get_type_hints
 from unittest.mock import Mock, create_autospec
 
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events import EmitCallable, Hooks, PubSub, bind
+from stratae.events import DirectBus, EmitCallable, Hooks, NoPayload, PubSub, Request, bind
 
 
 class _OrderCreated:
@@ -295,3 +305,139 @@ def test_emitter_without_hooks_parameter() -> None:
     assert received == [payload]
     with pytest.raises(TypeError, match="hooks"):
         hooked(payload)
+
+
+# region: Bound Callable Signatures
+
+
+class _Order:
+    def __init__(self, sku: str) -> None:
+        self.sku = sku
+
+
+class _Receipt:
+    pass
+
+
+_place_order = Request(_Order, reply=_Receipt)
+
+
+def test_bound_signature_without_factory_is_schema_to_reply() -> None:
+    """
+    A bound callable without a factory should report the event's schema and reply type.
+
+    Given: A request event with a schema and a reply type
+    When: It's bound without a factory
+    Then: Its signature is (payload: schema) -> reply, and get_type_hints reads the same
+    """
+    # Act
+    bound = bind(_place_order, create_autospec(EmitCallable), config=None)
+
+    # Assert
+    assert inspect.signature(bound) == inspect.Signature(
+        [inspect.Parameter("payload", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=_Order)],
+        return_annotation=_Receipt,
+    )
+    assert get_type_hints(bound) == {"payload": _Order, "return": _Receipt}
+
+
+def test_bound_pubsub_returns_none() -> None:
+    """
+    A bound pub/sub event should report that it returns None.
+
+    Given: A pub/sub event
+    When: It's bound without a factory
+    Then: Its return annotation is None, not NoneType
+    """
+    # Act
+    bound = bind(PubSub(_Order), create_autospec(EmitCallable), config=None)
+
+    # Assert
+    assert inspect.signature(bound).return_annotation is None
+
+
+def test_bound_signal_takes_no_parameters() -> None:
+    """
+    A payload-less event's bound callable should take no parameters.
+
+    Given: A payload-less request event with a reply type
+    When: It's bound and called
+    Then: Its signature is () -> reply, and the emitter receives a NoPayload
+    """
+    # Arrange
+    emitter = create_autospec(EmitCallable)
+    event = Request(name="ping", reply=_Receipt)
+    bound = bind(event, emitter, config=None)
+
+    # Act
+    bound()
+
+    # Assert
+    assert inspect.signature(bound) == inspect.Signature([], return_annotation=_Receipt)
+    assert isinstance(emitter.call_args.args[2], NoPayload)
+
+
+def test_bound_signature_with_factory_has_factory_parameters() -> None:
+    """
+    A bound callable with a factory should report the factory's parameters.
+
+    Given: A request event, and a factory taking a keyword-only quantity
+    When: It's bound with the factory
+    Then: Its signature has the factory's parameters and the event's reply type
+    """
+
+    # Arrange
+    def order(sku: str, *, quantity: int = 1) -> _Order:
+        return _Order(sku * quantity)
+
+    # Act
+    bound = bind(_place_order, create_autospec(EmitCallable), factory=order, config=None)
+
+    # Assert
+    assert inspect.signature(bound) == inspect.signature(order).replace(return_annotation=_Receipt)
+    assert get_type_hints(bound) == {"sku": str, "quantity": int, "return": _Receipt}
+
+
+def test_bound_factory_string_annotations_resolved() -> None:
+    """
+    A factory's string annotations should be resolved where they can be.
+
+    Given: Factories annotated with strings, one naming a known class and one an unknown one
+    When: Each is bound
+    Then: The known annotation is resolved to its class; the unknown one is kept as a string
+    """
+
+    # Arrange
+    def known(sku: "str") -> _Order:
+        return _Order(sku)
+
+    def unknown(sku: object) -> _Order:
+        return _Order(str(sku))
+
+    unknown.__annotations__ = {"sku": "Missing", "return": _Order}
+
+    # Act
+    resolved = bind(_place_order, create_autospec(EmitCallable), factory=known, config=None)
+    kept = bind(_place_order, create_autospec(EmitCallable), factory=unknown, config=None)
+
+    # Assert
+    assert inspect.signature(resolved).parameters["sku"].annotation is str
+    assert inspect.signature(kept).parameters["sku"].annotation == "Missing"
+
+
+def test_direct_bus_bind_is_typed() -> None:
+    """
+    DirectBus.bind should give a bound callable the event's types.
+
+    Given: A DirectBus and a request event with a reply type
+    When: The event is bound
+    Then: Its signature is (payload: schema) -> reply
+    """
+    # Act
+    bound = DirectBus().bind(_place_order)
+
+    # Assert
+    assert inspect.signature(bound) == inspect.Signature(
+        [inspect.Parameter("payload", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=_Order)],
+        return_annotation=_Receipt,
+    )
