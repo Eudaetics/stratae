@@ -16,7 +16,8 @@ once the broker has it.
 Storage is the application's. A store implements five methods, each sync or async to suit
 its storage. It keeps records in the same transaction as the data they describe.
 {py:class}`InMemoryOutboxStore` is a store for tests and examples, with a `transaction()`
-standing in for a database's.
+standing in for a database's. {doc}`An outbox store on SQLAlchemy </tutorials/outbox>` shows a
+store that shares the application's database.
 
 The guarantees:
 

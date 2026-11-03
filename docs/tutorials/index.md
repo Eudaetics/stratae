@@ -8,6 +8,7 @@ context
 checks
 serde
 database
+outbox
 integrations/index
 ```
 
@@ -110,6 +111,7 @@ Standalone, no dependency on the core three or on each other:
 ## Recipes
 
 - [A database session per scope](database.md) gives each request or message its own transaction. It commits before the response or the ack, and rolls back on any failure. It needs nothing but Lifecycle resources.
+- [An outbox store on SQLAlchemy](outbox.md) keeps outbox records in the same database as your data, so each record commits with the change it describes.
 
 ## Integrations
 
