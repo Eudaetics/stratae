@@ -2,6 +2,7 @@
 
 `stratae.integrations` bridges the core modules to specific third-party tools. Each integration is a small, focused module — importing it is what activates the bridge; nothing here changes how the core modules behave on their own.
 
+- **[ASGI](../../apidocs/stratae.integrations/stratae.integrations.asgi)** — `EnvelopeMiddleware` runs each HTTP request and WebSocket connection inside its own `Envelope`. Events emitted while handling it share its correlation id, and a caller's correlation id header is adopted and echoed back.
 - **[msgspec](../../apidocs/stratae.integrations/stratae.integrations.msgspec)** — registers a `msgspec.Struct`-specific fast path onto `stratae.serde.serialize`.
 - **[RabbitMQ](../../apidocs/stratae.integrations/stratae.integrations.rabbitmq)** — `RabbitMQPublisher` and `RabbitMQConsumer` implement `stratae.events`' bus protocols over AMQP, including automatic `Envelope` correlation across the wire.
 
