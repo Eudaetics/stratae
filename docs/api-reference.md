@@ -230,7 +230,7 @@ sprocket
 
 ### Integrations
 
-Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. msgspec enables a faster serialize path. RabbitMQ gets async publish and consume adapters.
+Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. msgspec enables a faster serialize path. RabbitMQ gets async publish and consume adapters. OpenTelemetry traces emits and handlers across them.
 
 ````{example} Publishing a msgspec.Struct event to RabbitMQ, then consuming it back
 <!--- skip: next -->

@@ -56,6 +56,10 @@ This test suite verifies the following behaviors:
 - A header the outbox producer's publish middleware adds is stored with the record, and
   reaches the consumer's handle middleware once the relay publishes it; the relay's own
   publish middleware sees it too.
+- Traced with OpenTelemetry, one trace spans an HTTP request, the RabbitMQ publish its
+  handler makes, and the consumer's handling of the message.
+- Traced through the outbox, the consumer's handling is in the trace that wrote the record,
+  and the relay's publish links to the write.
 - Outbox records written during an outage are published once the broker is back, with no
   attempts counted.
 """
@@ -67,15 +71,26 @@ from typing import Any, AsyncGenerator, AsyncIterator, Callable, cast
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
+import httpx2
 import msgspec
 import pytest
 from aiormq import connect
 from aiormq.abc import AbstractChannel
 from aiormq.exceptions import ChannelClosed, ChannelPreconditionFailed
+from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
 
 from stratae.events import Envelope, HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer, OutboxRelay
+from stratae.integrations.opentelemetry import tracing
 from stratae.integrations.rabbitmq import (
     ATTEMPTS_HEADER,
     FAILURE_HEADER,
@@ -482,7 +497,8 @@ async def test_competing_workers_split_backlog(broker: _Broker):
     # Assert
     texts = sorted(message.text for message in first + second)
     assert texts == sorted(f"task-{index}" for index in range(10))
-    assert first and second
+    assert first
+    assert second
 
 
 async def test_durable_queue_parks_offline_messages(broker: _Broker):
@@ -1345,6 +1361,128 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
     (headers,) = seen
     assert headers["x-tenant"] == "acme"
     assert headers["x-message-id"] == str(written.id)
+
+
+def _traced() -> tuple[TracerProvider, InMemorySpanExporter]:
+    """Return a tracer provider exporting to a new in-memory exporter."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    return provider, exporter
+
+
+def _finished(exporter: InMemorySpanExporter, name: str) -> Callable[[], bool]:
+    """Return a check that a span of that name has finished."""
+    return lambda: any(span.name == name for span in exporter.get_finished_spans())
+
+
+def _ids(span: ReadableSpan) -> tuple[int, int]:
+    """Return a finished span's trace id and span id."""
+    assert span.context is not None
+    return span.context.trace_id, span.context.span_id
+
+
+def _parent(span: ReadableSpan) -> int | None:
+    """Return a span's parent's span id, or None for a root."""
+    return span.parent.span_id if span.parent is not None else None
+
+
+async def test_trace_spans_request_publish_and_handler(broker: _Broker):
+    """
+    One trace should span an HTTP request, the publish it makes, and the message's handling.
+
+    Given: An HTTP app instrumented with OpenTelemetry's ASGI middleware, whose route
+        publishes through a traced publisher, and a traced consumer on the queue
+    When: The route is requested
+    Then: The publish span is the server span's child, the process span the publish span's,
+        all in one trace
+    """
+    # Arrange
+    queue = _unique("stratae-it-otel")
+    broker.queues.append(queue)
+    provider, exporter = _traced()
+    handled: list[Message] = []
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=msgspec.json.decode, middleware=tracing(provider)
+    )
+    consumer.handle(message_event, handled.append, config=RabbitMQConsumeConfig(queue))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=msgspec.json.encode, middleware=tracing(provider)
+    )
+
+    async def place_order(request: Request) -> PlainTextResponse:
+        await publisher.emit(message_event, RabbitMQConfig("", queue), Message("lamp"))
+        return PlainTextResponse("placed")
+
+    app = OpenTelemetryMiddleware(
+        Starlette(routes=[Route("/orders", place_order, methods=["POST"])]),
+        tracer_provider=provider,
+    )
+
+    # Act
+    async with consumer, publisher:
+        transport = httpx2.ASGITransport(app=app)
+        async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/orders")
+        await _eventually(_finished(exporter, f"process {queue}"))
+
+    # Assert
+    spans = exporter.get_finished_spans()
+    (server,) = (span for span in spans if span.kind is SpanKind.SERVER)
+    (publish,) = (span for span in spans if span.name == f"publish {queue}")
+    (process,) = (span for span in spans if span.name == f"process {queue}")
+    assert response.status_code == 200
+    assert handled == [Message("lamp")]
+    assert _parent(publish) == _ids(server)[1]
+    assert _parent(process) == _ids(publish)[1]
+    assert _ids(server)[0] == _ids(publish)[0] == _ids(process)[0]
+
+
+async def test_outbox_trace_links_relay_to_write(broker: _Broker):
+    """
+    Through the outbox, handling should be in the write's trace, and the relay link to it.
+
+    Given: A traced outbox producer, relay publisher and consumer
+    When: An event is written inside a request span, then relayed and consumed
+    Then: The write is the request's child and the process span the write's, in one trace;
+        the relay's publish is a CLIENT span in its own trace, linking to the write
+    """
+    # Arrange
+    queue = _unique("stratae-it-otel-outbox")
+    broker.queues.append(queue)
+    provider, exporter = _traced()
+    store = InMemoryOutboxStore()
+    outbox = OutboxProducer(store, msgspec.json.encode, middleware=tracing(provider))
+    send = outbox.bind(
+        message_event, factory=Message, config=OutboxConfig(RabbitMQConfig("", queue))
+    )
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=msgspec.json.decode, middleware=tracing(provider)
+    )
+    consumer.handle(message_event, lambda message: None, config=RabbitMQConsumeConfig(queue))
+    with provider.get_tracer("test").start_as_current_span("request"):
+        await send(text="lamp")
+
+    # Act
+    async with (
+        consumer,
+        RabbitMQPublisher(
+            _URL, serializer=msgspec.json.encode, middleware=tracing(provider)
+        ) as publisher,
+    ):
+        await OutboxRelay(store, publisher, outbox).run_once()
+        await _eventually(_finished(exporter, f"process {queue}"))
+
+    # Assert
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    request, write = spans["request"], spans[f"create {queue}"]
+    relay, process = spans[f"publish {queue}"], spans[f"process {queue}"]
+    assert _parent(write) == _ids(request)[1]
+    assert _parent(process) == _ids(write)[1]
+    assert _ids(request)[0] == _ids(write)[0] == _ids(process)[0]
+    assert relay.kind is SpanKind.CLIENT
+    assert [link.context.span_id for link in relay.links] == [_ids(write)[1]]
+    assert _ids(relay)[0] != _ids(write)[0]
 
 
 async def test_outbox_waits_out_an_outage(broker: _Broker, proxy: _Proxy):
