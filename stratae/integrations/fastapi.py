@@ -236,7 +236,7 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
 
     class ScopedRoute(APIRoute):
         async def handle(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
-            scope[_ACTIVATION_KEY] = lifecycle_scope.activate()
+            scope[_ACTIVATION_KEY] = await lifecycle_scope.activate()
             try:
                 await super().handle(scope, receive, send)
             except BaseException as exc:

@@ -319,7 +319,7 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
             super().__init__(path, scoped_endpoint, **kwargs)
 
         async def handle(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
-            scope[_ACTIVATION_KEY] = lifecycle_scope.activate()
+            scope[_ACTIVATION_KEY] = await lifecycle_scope.activate()
             try:
                 await super().handle(scope, receive, send)
             except BaseException as exc:
@@ -376,7 +376,7 @@ def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
             super().__init__(path, endpoint, **kwargs)
 
         async def handle(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
-            scope[_ACTIVATION_KEY] = lifecycle_scope.activate()
+            scope[_ACTIVATION_KEY] = await lifecycle_scope.activate()
             try:
                 await super().handle(scope, receive, send)
             except BaseException as exc:

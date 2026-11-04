@@ -6,7 +6,7 @@ from stratae.lifecycle.exceptions import ScopeActivationError
 from stratae.lifecycle.scope import AsyncScope
 
 
-def test_activate_marks_scope_active():
+async def test_activate_marks_scope_active():
     """
     activate() marks the scope active immediately, before entering it as a context manager.
 
@@ -18,7 +18,7 @@ def test_activate_marks_scope_active():
     scope = AsyncScope("application", "shared")
 
     # Act
-    scope.activate()
+    await scope.activate()
 
     # Assert
     assert scope.is_active()
@@ -29,14 +29,14 @@ async def test_async_with_block_activates_and_deactivates():
     Using activate() as an async with block deactivates the scope on exit.
 
     Given: An AsyncScope,
-    When: it is activated via `async with scope.activate():`,
+    When: it is activated via `async with await scope.activate():`,
     Then: is_active() is True inside the block and False after.
     """
     # Arrange
     scope = AsyncScope("application", "shared")
 
     # Act & Assert
-    async with scope.activate():
+    async with await scope.activate():
         assert scope.is_active()
     assert not scope.is_active()
 
@@ -51,7 +51,7 @@ async def test_manual_deactivate_by_token():
     """
     # Arrange
     scope = AsyncScope("application", "shared")
-    activation = scope.activate()
+    activation = await scope.activate()
 
     # Act
     await scope.deactivate(activation)
@@ -71,10 +71,10 @@ async def test_context_scope_can_reactivate_within_same_context():
     """
     # Arrange
     scope = AsyncScope("request", "context")
-    outer = scope.activate()
+    outer = await scope.activate()
 
     # Act
-    inner = scope.activate()
+    inner = await scope.activate()
 
     # Assert
     assert scope.is_active()
@@ -84,7 +84,7 @@ async def test_context_scope_can_reactivate_within_same_context():
     assert not scope.is_active()
 
 
-def test_shared_scope_reactivation_raises():
+async def test_shared_scope_reactivation_raises():
     """
     A shared scope cannot be activated again while already active.
 
@@ -94,11 +94,11 @@ def test_shared_scope_reactivation_raises():
     """
     # Arrange
     scope = AsyncScope("application", "shared")
-    scope.activate()
+    await scope.activate()
 
     # Act & Assert
     with pytest.raises(ScopeActivationError, match="Cannot activate shared scope 'application'"):
-        scope.activate()
+        await scope.activate()
 
 
 async def test_shared_scope_double_deactivate_raises():
@@ -111,7 +111,7 @@ async def test_shared_scope_double_deactivate_raises():
     """
     # Arrange
     scope = AsyncScope("application", "shared")
-    activation = scope.activate()
+    activation = await scope.activate()
     await scope.deactivate(activation)
 
     # Act & Assert
@@ -129,7 +129,7 @@ async def test_context_scope_double_deactivate_raises():
     """
     # Arrange
     scope = AsyncScope("request", "context")
-    activation = scope.activate()
+    activation = await scope.activate()
     await scope.deactivate(activation)
 
     # Act & Assert

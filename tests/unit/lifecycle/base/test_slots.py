@@ -4,8 +4,9 @@ Unit tests for BaseScope.allocate_slot/release_slot/get_slots.
 These are inherited unchanged by AsyncScope, so testing them through Scope covers both -
 there is no separate async test module for this.
 
-Slots 0 and 1 are reserved on every scope (the exit stack and the live-dependent count),
-so the first slot allocate_slot hands out is always 2.
+Slots 0-4 are reserved on every scope (the entered resources, the live-dependent count, the
+reset token, the parent's storage, and the activation's hook record), so the first slot
+allocate_slot hands out is always 5.
 """
 
 import re
@@ -19,36 +20,36 @@ from stratae.lifecycle.scope import Scope
 
 def test_allocate_slot_sequential_dense():
     """
-    allocate_slot hands out sequential ints for a dense-backed scope, skipping reserved slots 0-3.
+    allocate_slot hands out sequential ints for a dense-backed scope, skipping reserved slots 0-4.
 
     Given: A dense-backed scope with no functions registered yet,
     When: allocate_slot is called repeatedly,
-    Then: it returns 2, 3, 4, ..., none of them reused.
+    Then: it returns 5, 6, 7, ..., none of them reused.
     """
     # Arrange
     scope = Scope("application", "shared")
 
     # Act & Assert
-    assert scope.allocate_slot() == (4, False)
     assert scope.allocate_slot() == (5, False)
     assert scope.allocate_slot() == (6, False)
+    assert scope.allocate_slot() == (7, False)
 
 
 def test_allocate_slot_sequential_sparse():
     """
-    allocate_slot hands out sequential ints for a sparse-backed scope, skipping reserved slots 0-3.
+    allocate_slot hands out sequential ints for a sparse-backed scope, skipping reserved slots 0-4.
 
     Given: A sparse-backed scope with no functions registered yet,
     When: allocate_slot is called repeatedly,
-    Then: it returns 2, 3, 4, ..., none of them reused.
+    Then: it returns 5, 6, 7, ..., none of them reused.
     """
     # Arrange
     scope = Scope("application", "shared", "sparse")
 
     # Act & Assert
-    assert scope.allocate_slot() == (4, False)
     assert scope.allocate_slot() == (5, False)
     assert scope.allocate_slot() == (6, False)
+    assert scope.allocate_slot() == (7, False)
 
 
 def test_allocate_slot_reuses_released_slot_dense():
@@ -103,19 +104,19 @@ def test_allocate_slot_dense_grows_template():
     """
     allocate_slot grows the dense template by one entry per new slot.
 
-    Given: A fresh dense scope, whose template reserves slots 0-3,
+    Given: A fresh dense scope, whose template reserves slots 0-4,
     When: A new slot is allocated,
     Then: The template grows to hold the new slot too.
     """
     # Arrange
     scope = Scope("application", "shared")
-    assert len(scope._template) == 4  # pyright: ignore[reportPrivateUsage]
+    assert len(scope._template) == 5  # pyright: ignore[reportPrivateUsage]
 
     # Act
     scope.allocate_slot()
 
     # Assert
-    assert len(scope._template) == 5  # pyright: ignore[reportPrivateUsage]
+    assert len(scope._template) == 6  # pyright: ignore[reportPrivateUsage]
 
 
 def test_allocate_slot_dense_grows_live_active_slots():
@@ -135,7 +136,7 @@ def test_allocate_slot_dense_grows_live_active_slots():
     scope.allocate_slot()
 
     # Assert
-    assert len(scope.get_slots()) == 6
+    assert len(scope.get_slots()) == 7
 
 
 def test_release_slot_deletes_unwritten_sparse_key():
@@ -145,7 +146,7 @@ def test_release_slot_deletes_unwritten_sparse_key():
     Given: An active sparse scope with an allocated key that was never written to,
     When: That key is released,
     Then: The live dict gains no entry for that key - only the always-present reserved
-        slots 0-3 remain.
+        slots 0-4 remain.
     """
     # Arrange
     scope = Scope("application", "shared", "sparse")
@@ -156,7 +157,7 @@ def test_release_slot_deletes_unwritten_sparse_key():
     scope.release_slot(key)
 
     # Assert
-    assert len(scope.get_slots()) == 4
+    assert len(scope.get_slots()) == 5
 
 
 def test_get_slots_raises_when_inactive():

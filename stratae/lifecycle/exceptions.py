@@ -116,6 +116,22 @@ class CrossLoopWaitError(LifecycleConfigurationError):
         )
 
 
+class AsyncHookError(LifecycleConfigurationError, TypeError):
+    """Raised when a sync scope is given an async hook or callback, which it can't await."""
+
+    def __init__(self, name: str, hook: Callable[..., Any]) -> None:
+        """
+        Name the scope and the hook.
+
+        :param name: The scope's name.
+        :param hook: The async hook or callback.
+        """
+        super().__init__(
+            f"Scope {name!r} runs its hooks synchronously and can't await {hook!r}; "
+            "use an AsyncScope instead."
+        )
+
+
 class ScopeActivationError(LifecycleException, RuntimeError):
     """Raised when a scope can't be activated or deactivated."""
 
