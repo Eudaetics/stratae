@@ -5,6 +5,8 @@ __init__'s validation is inherited unchanged by AsyncScope, so testing it throug
 covers both - there is no separate async test module for this.
 """
 
+import re
+
 import pytest
 
 from stratae.lifecycle.exceptions import LifecycleConfigurationError
@@ -86,7 +88,8 @@ def test_scope_init_with_invalid_isolation():
     """
     # Act & Assert
     with pytest.raises(
-        LifecycleConfigurationError, match="Invalid scope isolation given for application."
+        LifecycleConfigurationError,
+        match=re.escape("Invalid scope isolation given for application."),
     ):
         Scope("application", "bogus")  # pyright: ignore[reportArgumentType]
 
@@ -101,7 +104,7 @@ def test_scope_init_with_invalid_storage():
     """
     # Act & Assert
     with pytest.raises(
-        LifecycleConfigurationError, match="Invalid scope storage given for application."
+        LifecycleConfigurationError, match=re.escape("Invalid scope storage given for application.")
     ):
         Scope("application", "shared", "bogus")  # pyright: ignore[reportArgumentType]
 
@@ -152,13 +155,15 @@ def test_scope_init_shared_requiring_context_raises():
     # Act & Assert
     with pytest.raises(
         LifecycleConfigurationError,
-        match="Shared scope 'child' cannot require context-isolated scope 'application'.",
+        match=re.escape(
+            "Shared scope 'child' cannot require context-isolated scope 'application'."
+        ),
     ):
         Scope("child", "shared", requires=parent)
 
 
 @pytest.mark.parametrize(
-    "child_isolation,parent_isolation",
+    ("child_isolation", "parent_isolation"),
     [("context", "context"), ("context", "shared"), ("shared", "shared")],
 )
 def test_scope_init_requires_allowed_combinations(child_isolation: str, parent_isolation: str):

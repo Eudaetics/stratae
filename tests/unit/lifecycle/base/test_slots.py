@@ -8,6 +8,8 @@ Slots 0 and 1 are reserved on every scope (the exit stack and the live-dependent
 so the first slot allocate_slot hands out is always 2.
 """
 
+import re
+
 import pytest
 
 from stratae.lifecycle._slots import UNSET, SlotDict
@@ -169,7 +171,7 @@ def test_get_slots_raises_when_inactive():
     scope = Scope("request", "context")
 
     # Act & Assert
-    with pytest.raises(ScopeInactiveError, match="Scope 'request' is not active."):
+    with pytest.raises(ScopeInactiveError, match=re.escape("Scope 'request' is not active.")):
         scope.get_slots()
 
 

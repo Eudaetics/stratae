@@ -6,8 +6,9 @@ A function returned directly by `resource` has its generator driven by the scope
 through its context manager. These tests check the two behave the same.
 """
 
+from collections.abc import Callable, Generator
 from functools import wraps
-from typing import Any, Callable, Generator, cast
+from typing import Any, cast
 
 import pytest
 
@@ -123,12 +124,17 @@ def _passthrough[F: Callable[..., Any]](func: F, events: list[str] | None = None
     return wrapper  # pyright: ignore[reportReturnType]
 
 
+def _kind(exc: BaseException) -> type[BaseException]:
+    """Return an exception's nearest builtin class, as contextlib would have raised it."""
+    return next(kind for kind in type(exc).__mro__ if kind.__module__ == "builtins")
+
+
 def _describe(exc: BaseException) -> tuple[Any, ...]:
-    """Describe an exception by type and message, recursing into a group's exceptions."""
+    """Describe an exception by kind and message, recursing into a group's exceptions."""
     if isinstance(exc, BaseExceptionGroup):
         group = cast(BaseExceptionGroup[BaseException], exc)
-        return (type(group), str(group), tuple(_describe(inner) for inner in group.exceptions))
-    return (type(exc), str(exc))
+        return (_kind(group), str(group), tuple(_describe(inner) for inner in group.exceptions))
+    return (_kind(exc), str(exc))
 
 
 def _outcome(run: Callable[[list[str]], Any]) -> tuple[Any, ...]:

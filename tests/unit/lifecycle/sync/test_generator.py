@@ -1,5 +1,6 @@
 """Test suite for synchronous generator (@resource) registration and cleanup via Scope.cache."""
 
+import re
 from unittest.mock import Mock
 
 import pytest
@@ -7,6 +8,41 @@ import pytest
 from stratae.lifecycle.exceptions import ScopeInactiveError
 from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
+
+
+class _AFailure(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("A Failure")
+
+
+class _BFailure(KeyError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("B Failure")
+
+
+class _CallerFailure(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Caller Failure")
+
+
+class _FirstFailure(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("first failure")
+
+
+class _TestFailure(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Test Failure")
 
 
 def test_generator_sync(scope: Scope):
@@ -63,7 +99,7 @@ def test_decorate_generator_inactive_scope(scope: Scope):
         yield "test"
 
     # Act & Assert
-    with pytest.raises(ScopeInactiveError, match="Scope 'application' is not active."):
+    with pytest.raises(ScopeInactiveError, match=re.escape("Scope 'application' is not active.")):
         sample_generator()
 
 
@@ -87,13 +123,16 @@ def test_decorate_generator_sync_exception_cleanup(scope: Scope):
             yield SimpleObject()
         finally:
             mock_cleanup()
-            raise ValueError("Test Failure")
+            raise _TestFailure()
 
     # Act & Assert
-    with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
+    def act() -> None:
         with scope:
             sample_generator()
             mock_cleanup.assert_not_called()
+
+    with pytest.raises(ValueError, match="Test Failure"):
+        act()
 
 
 def test_decorator_generator_sync_exception_handling(scope: Scope):
@@ -124,12 +163,15 @@ def test_decorator_generator_sync_exception_handling(scope: Scope):
             mock_cleanup()
 
     # Act & Assert
-    with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
+    def act() -> None:
         with scope:
             sample_generator()
             mock_cleanup.assert_not_called()
             mock_failure.assert_not_called()
             mock_except.assert_not_called()
+
+    with pytest.raises(ValueError, match="Test Failure"):
+        act()
 
     mock_except.assert_called_once()
     mock_cleanup.assert_called_once()
@@ -228,11 +270,14 @@ def test_generator_sync_exception_group(scope: Scope):
             mock_cleanup_3()
 
     # Act & Assert
-    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+    def act() -> None:
         with scope:
             generator_one()
             generator_two()
             generator_three()
+
+    with pytest.raises(ExceptionGroup) as exceptions:
+        act()
 
     assert len(exceptions.value.exceptions) == 3
     assert any(
@@ -280,10 +325,13 @@ def test_generator_sees_exception_raised_in_caller_block(scope: Scope):
             raise
 
     # Act & Assert
-    with pytest.raises(ValueError, match="Caller Failure"):  # noqa: S5778
+    def act() -> None:
         with scope:
             sample_generator()
-            raise ValueError("Caller Failure")
+            raise _CallerFailure()
+
+    with pytest.raises(ValueError, match="Caller Failure"):
+        act()
 
     mock_rollback.assert_called_once()
     mock_commit.assert_not_called()
@@ -315,7 +363,7 @@ def test_generator_can_suppress_exception_raised_in_caller_block(scope: Scope):
     # Act
     with scope:
         sample_generator()
-        raise ValueError("Caller Failure")
+        raise _CallerFailure()
 
     # Assert
     mock_suppressed.assert_called_once()
@@ -343,7 +391,7 @@ def test_multiple_generators_each_raise_from_callers_exception(scope: Scope):
         try:
             yield SimpleObject()
         except Exception:
-            raise RuntimeError("A Failure") from None
+            raise _AFailure() from None
 
     @scope.cache()
     @resource
@@ -351,14 +399,17 @@ def test_multiple_generators_each_raise_from_callers_exception(scope: Scope):
         try:
             yield SimpleObject()
         except Exception:
-            raise KeyError("B Failure") from None
+            raise _BFailure() from None
 
     # Act & Assert
-    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+    def act() -> None:
         with scope:
             resource_a()
             resource_b()
-            raise ValueError("Caller Failure")
+            raise _CallerFailure()
+
+    with pytest.raises(ExceptionGroup) as exceptions:
+        act()
 
     assert len(exceptions.value.exceptions) == 3
     assert any(
@@ -405,14 +456,17 @@ def test_resource_reraising_callers_exception_groups_it_once(scope: Scope):
         try:
             yield SimpleObject()
         except Exception:
-            raise KeyError("B Failure") from None
+            raise _BFailure() from None
 
     # Act
-    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+    def act() -> None:
         with scope:
             resource_a()
             resource_b()
             raise caller_failure
+
+    with pytest.raises(ExceptionGroup) as exceptions:
+        act()
 
     # Assert
     assert len(exceptions.value.exceptions) == 2
@@ -465,7 +519,7 @@ def test_resource_swallowing_exception_hides_it_from_earlier_resources(scope: Sc
     with scope:
         resource_a()
         resource_b()
-        raise ValueError("Caller Failure")
+        raise _CallerFailure()
 
     # Assert
     mock_swallowed_b.assert_called_once()
@@ -475,6 +529,9 @@ def test_resource_swallowing_exception_hides_it_from_earlier_resources(scope: Sc
 
 class _Interrupt(BaseException):
     """A non-Exception error, standing in for cancellation or KeyboardInterrupt."""
+
+    def __init__(self) -> None:
+        super().__init__("cancelled during cleanup")
 
 
 def test_cleanup_raising_non_exception_still_closes_earlier_resources(scope: Scope):
@@ -501,13 +558,16 @@ def test_cleanup_raising_non_exception_still_closes_earlier_resources(scope: Sco
     @resource
     def second():
         yield "second"
-        raise _Interrupt("cancelled during cleanup")
+        raise _Interrupt()
 
     # Act
-    with pytest.raises(_Interrupt):
+    def act() -> None:
         with scope:
             first()
             second()
+
+    with pytest.raises(_Interrupt):
+        act()
 
     # Assert
     assert closed == ["first"]
@@ -530,20 +590,23 @@ def test_non_exception_cleanup_failures_are_grouped_with_exceptions(scope: Scope
         try:
             yield "first"
         finally:
-            raise ValueError("first failure")
+            raise _FirstFailure()
 
     @scope.cache()
     @resource
     def second():
         yield "second"
-        raise _Interrupt("cancelled during cleanup")
+        raise _Interrupt()
 
     # Act
-    with pytest.raises(BaseExceptionGroup) as group:
+    def act() -> None:
         with scope:
             first()
             second()
 
+    with pytest.raises(BaseExceptionGroup) as group:
+        act()
+
     # Assert
     kinds = sorted(type(exc).__name__ for exc in group.value.exceptions)
-    assert kinds == ["ValueError", "_Interrupt"]
+    assert kinds == ["_FirstFailure", "_Interrupt"]

@@ -1,7 +1,9 @@
 """Unit tests for using a Scope directly as a context manager, and token-free deactivate()."""
 
+import re
+from collections.abc import Generator
+from contextlib import suppress
 from contextvars import copy_context
-from typing import Generator
 
 import pytest
 
@@ -84,7 +86,9 @@ def test_deactivate_without_token_raises_when_inactive():
     scope = Scope("request")
 
     # Act & Assert
-    with pytest.raises(ScopeActivationError, match="Cannot deactivate 'request': not active."):
+    with pytest.raises(
+        ScopeActivationError, match=re.escape("Cannot deactivate 'request': not active.")
+    ):
         scope.deactivate()
 
 
@@ -122,10 +126,8 @@ def test_deactivate_returns_whether_exception_was_suppressed():
     @scope.cache()
     @resource
     def get_value() -> Generator[int, None, None]:
-        try:
+        with suppress(ValueError):
             yield 1
-        except ValueError:
-            pass
 
     activation = scope.activate()
     get_value()

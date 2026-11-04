@@ -22,7 +22,7 @@ import pytest
 from stratae.serde import decode_enum, decode_enum_by_name, deserialize
 
 
-@pytest.fixture()
+@pytest.fixture
 def register_enum():
     """Temporarily register decode by enum value."""
     deserialize.register(Enum, decode_enum, takes_type=True)
@@ -30,7 +30,7 @@ def register_enum():
     deserialize.deregister(Enum)
 
 
-@pytest.fixture()
+@pytest.fixture
 def register_enum_by_name():
     """Temporarily register decode by enum name."""
     deserialize.register(Enum, decode_enum_by_name, takes_type=True)

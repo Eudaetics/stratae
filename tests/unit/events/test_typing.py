@@ -28,7 +28,9 @@ Built-in dispatchers:
 - Each fits its pattern for any payload and reply type, returning what the pattern emits.
 """
 
-from typing import Any, Awaitable, Callable, Collection, Literal, assert_type
+import asyncio
+from collections.abc import Awaitable, Callable, Collection
+from typing import Any, Literal, assert_type
 
 from stratae.events import AsyncDirectBus, DirectBus, Handler, Hooks, NoPayload, PubSub, Request
 from stratae.events._dispatch import (
@@ -169,6 +171,7 @@ async def test_async_direct_bus_types() -> None:
 
     # Arrange
     async def make_order(command: _PlaceOrder) -> _Order:
+        await asyncio.sleep(0)
         return _Order(command.item)
 
     bus = AsyncDirectBus()

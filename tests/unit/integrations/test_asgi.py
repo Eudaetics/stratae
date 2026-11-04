@@ -56,6 +56,7 @@ def _http(*headers: tuple[bytes, bytes]) -> ASGIScope:
 
 
 async def _receive() -> Message:
+    await asyncio.sleep(0)
     return {"type": "http.request", "body": b""}
 
 
@@ -64,6 +65,7 @@ async def _call(middleware: EnvelopeMiddleware, scope: ASGIScope) -> list[Messag
     sent: list[Message] = []
 
     async def send(message: Message) -> None:
+        await asyncio.sleep(0)
         sent.append(message)
 
     await middleware(scope, _receive, send)
@@ -117,6 +119,7 @@ async def test_emitted_events_share_correlation_id():
     requests: list[Envelope] = []
 
     async def app(scope: ASGIScope, receive: Receive, send: Send) -> None:
+        await asyncio.sleep(0)
         requests.append(_current())
         emit("placed")
 
@@ -310,10 +313,12 @@ async def test_lifespan_passes_through():
     seen: list[Any] = []
 
     async def app(scope: ASGIScope, receive: Receive, send: Send) -> None:
+        await asyncio.sleep(0)
         seen.extend([Envelope.current(), send])
 
     async def send(message: Message) -> None:
-        raise AssertionError("not sent")
+        await asyncio.sleep(0)
+        pytest.fail("not sent")
 
     # Act
     await EnvelopeMiddleware(app)({"type": "lifespan"}, _receive, send)

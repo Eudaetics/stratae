@@ -75,9 +75,10 @@ PlaceOrder: unicorn failed: out of stock
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from stratae._callables import is_async_callable
 from stratae.events._awaitables import reject_awaitable

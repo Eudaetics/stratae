@@ -191,9 +191,10 @@ with TestClient(app) as client, client.websocket_connect("/notes") as websocket:
 ````
 """
 
+from collections.abc import Awaitable, Callable
 from functools import partial, wraps
 from inspect import iscoroutinefunction, isfunction, ismethod
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, cast
 
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -205,6 +206,30 @@ from starlette.websockets import WebSocket
 
 from stratae.lifecycle import AsyncScope
 from stratae.lifecycle.scope import AsyncActivation
+
+
+class UnsupportedEndpointError(TypeError):
+    """Raised when a scoped route is given an endpoint it can't scope."""
+
+
+class ClassEndpointError(UnsupportedEndpointError):
+    """Raised when {py:func}`scoped_route` is given a class-based endpoint or an ASGI app."""
+
+    def __init__(self, endpoint: object) -> None:
+        """:param endpoint: The endpoint."""
+        super().__init__(
+            f"scoped_route needs a function or method endpoint, got {endpoint!r}. "
+            "Class-based endpoints such as HTTPEndpoint aren't supported."
+        )
+
+
+class SyncWebSocketEndpointError(UnsupportedEndpointError):
+    """Raised when {py:func}`scoped_websocket_route` is given a sync function endpoint."""
+
+    def __init__(self, endpoint: object) -> None:
+        """:param endpoint: The endpoint."""
+        super().__init__(f"scoped_websocket_route needs an async endpoint, got {endpoint!r}.")
+
 
 _ACTIVATION_KEY = "stratae.activation"
 """ASGI scope key holding a request's or connection's open activation, until whichever side
@@ -231,15 +256,12 @@ def _endpoint_function(endpoint: Callable[..., Any]) -> Callable[..., Any]:
     """
     Return the function or method behind `endpoint`, unwrapping `functools.partial`.
 
-    :raises TypeError: If it's an ASGI app or `HTTPEndpoint` class, which scoped routes
-        don't support.
+    :raises ClassEndpointError: If it's an ASGI app or `HTTPEndpoint` class, which scoped
+        routes don't support.
     """
     target = _unwrap_partial(endpoint)
     if not (isfunction(target) or ismethod(target)):
-        raise TypeError(
-            f"scoped_route needs a function or method endpoint, got {endpoint!r}. "
-            "Class-based endpoints such as HTTPEndpoint aren't supported."
-        )
+        raise ClassEndpointError(endpoint)
     return target
 
 
@@ -339,7 +361,8 @@ def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
         connection ended with, if any, including one Starlette handles, such as
         `WebSocketException`.
     :returns: A WebSocketRoute subclass. Its endpoints may be async functions or methods, or
-        classes such as `WebSocketEndpoint`; sync functions raise `TypeError`.
+        classes such as `WebSocketEndpoint`; sync functions raise
+        {py:exc}`SyncWebSocketEndpointError`.
     """
     lifecycle_scope = scope
 
@@ -348,9 +371,7 @@ def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
             target = _unwrap_partial(endpoint)
             if isfunction(target) or ismethod(target):
                 if not iscoroutinefunction(target):
-                    raise TypeError(
-                        f"scoped_websocket_route needs an async endpoint, got {endpoint!r}."
-                    )
+                    raise SyncWebSocketEndpointError(endpoint)
                 endpoint = _scoped_websocket_endpoint(endpoint)
             super().__init__(path, endpoint, **kwargs)
 

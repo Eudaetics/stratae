@@ -45,9 +45,10 @@ Closing audit.log
 ````
 """
 
+from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
 from inspect import unwrap
-from typing import Any, AsyncGenerator, Callable, Generator, cast
+from typing import Any, cast
 
 AUTO_ENTER_SYNC = object()
 """Sentinel tagging a function as a sync context manager for lifecycle to auto-enter."""

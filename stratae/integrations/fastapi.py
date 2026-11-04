@@ -197,7 +197,8 @@ with TestClient(app) as client, client.websocket_connect("/notes") as websocket:
 ````
 """
 
-from typing import Any, AsyncIterator, Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
+from typing import Any
 
 from fastapi import Depends, Request, Response, params
 from fastapi.routing import APIRoute

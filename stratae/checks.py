@@ -7,7 +7,7 @@ before a decorated function. {py:func}`any_of` and {py:func}`all_of` nest groups
 `mode` keyword controls failure handling:
 
 * `"all"` (default): raise the first failure.
-* `"gather"`: run every check, then raise all failures as an {py:exc}`ExceptionGroup`.
+* `"gather"`: run every check, then raise all failures as a {py:exc}`CheckFailures` group.
 * `"any"`: pass on the first success; raise all failures if none succeed.
 
 
@@ -43,15 +43,57 @@ Access denied: resource is archived
 ````
 """
 
+from collections.abc import Awaitable, Callable, Sequence
 from functools import wraps
 from inspect import isawaitable
-from typing import Any, Awaitable, Callable, Literal, TypeGuard, cast, overload
+from typing import Any, Literal, Self, TypeGuard, cast, overload
 
 from stratae._callables import is_async_callable
 
 type CheckMode = Literal["all", "gather", "any"]
 
 _Check = Callable[[], Any]
+
+
+class CheckFailures(ExceptionGroup[Exception]):
+    """Raised with every failure, in "gather" mode, or "any" mode when no check passes."""
+
+    def __new__(cls, label: str, failures: Sequence[Exception]) -> Self:
+        """
+        Group the failures of the checks a function ran.
+
+        :param label: The function that ran the checks.
+        :param failures: The checks' failures.
+        """
+        return super().__new__(cls, f"Failures in {label}", failures)
+
+    def __init__(self, label: str, failures: Sequence[Exception]) -> None:
+        """Group the failures of the checks a function ran."""
+        super().__init__(f"Failures in {label}", failures)
+
+
+class AwaitableCheckError(TypeError):
+    """Raised when {py:func}`check` runs a check that returns an awaitable."""
+
+    def __init__(self, fn: Callable[[], Any]) -> None:
+        """:param fn: The check."""
+        super().__init__(f"{fn!r} returned an awaitable; use check_async() instead.")
+
+
+class AsyncCheckOnSyncError(TypeError):
+    """Raised when {py:func}`require` is given async checks for a sync function."""
+
+    def __init__(self, fn: Callable[..., Any], count: int) -> None:
+        """
+        Describe the sync function and its async checks.
+
+        :param fn: The sync function.
+        :param count: How many of its checks are async.
+        """
+        super().__init__(
+            f"require() got {count} async check(s) but {fn.__name__!r} is sync; "
+            "an async check cannot run from inside a sync function"
+        )
 
 
 def _settle(exc: Exception, mode: CheckMode, exceptions: list[Exception]):
@@ -64,7 +106,7 @@ def _settle(exc: Exception, mode: CheckMode, exceptions: list[Exception]):
 def _raise_gathered(exceptions: list[Exception], label: str) -> None:
     """Raise the gathered exceptions as an ExceptionGroup, if there are any."""
     if exceptions:
-        raise ExceptionGroup(f"Failures in {label}", exceptions)
+        raise CheckFailures(label, exceptions)
 
 
 def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
@@ -74,8 +116,8 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
     :param checks: Zero-argument sync callables that raise on failure.
     :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs.
     :raises Exception: The first failure, in "all" mode.
-    :raises TypeError: If a check returns an awaitable; use {py:func}`check_async`.
-    :raises ExceptionGroup: All failures, in "gather" mode, or "any" mode if every check fails.
+    :raises AwaitableCheckError: If a check returns an awaitable; use {py:func}`check_async`.
+    :raises CheckFailures: All failures, in "gather" mode, or "any" mode if every check fails.
     """
     exceptions: list[Exception] = []
     for fn in checks:
@@ -86,7 +128,7 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
             continue
         if isawaitable(result):
             getattr(result, "close", lambda: None)()
-            raise TypeError(f"{fn!r} returned an awaitable; use check_async() instead.")
+            raise AwaitableCheckError(fn)
         if mode == "any":
             return
     _raise_gathered(exceptions, "check")
@@ -99,7 +141,7 @@ async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
     :param checks: Zero-argument callables that raise on failure.
     :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs.
     :raises Exception: The first failure, in "all" mode.
-    :raises ExceptionGroup: All failures, in "gather" mode, or "any" mode if every check fails.
+    :raises CheckFailures: All failures, in "gather" mode, or "any" mode if every check fails.
     """
     exceptions: list[Exception] = []
     for fn in checks:
@@ -121,7 +163,7 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
     The result is async if any check is async, and then needs {py:func}`check_async`.
 
     :param checks: Zero-argument callables to try in order.
-    :returns: A check raising an {py:exc}`ExceptionGroup` of all failures if none pass.
+    :returns: A check raising {py:exc}`CheckFailures` with all failures if none pass.
     """
     if any(is_async_callable(fn) for fn in checks):
 
@@ -181,10 +223,7 @@ def _wrap_sync[**P, R](
 ) -> Callable[P, R]:
     async_checks = [guard for guard in checks if _is_async_fn(guard)]
     if async_checks:
-        raise TypeError(
-            f"require() got {len(async_checks)} async check(s) but {fn.__name__!r} is sync; "
-            "an async check cannot run from inside a sync function"
-        )
+        raise AsyncCheckOnSyncError(fn, len(async_checks))
 
     @wraps(fn)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
@@ -209,7 +248,7 @@ def require[**P, R](
     :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs. The function is only
         called if the checks pass.
     :returns: A decorator preserving the function's signature.
-    :raises TypeError: At decoration, if a sync function is given an async check.
+    :raises AsyncCheckOnSyncError: At decoration, if a sync function is given an async check.
     """
 
     @overload

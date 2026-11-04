@@ -81,20 +81,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
 from types import MappingProxyType
 from typing import (
     Any,
-    AsyncGenerator,
-    Awaitable,
-    Callable,
-    Mapping,
     Protocol,
-    Sequence,
     cast,
     overload,
 )
@@ -130,7 +126,7 @@ _OUTAGES = (NotConnectedError, ConnectionError)
 
 def _now() -> datetime:
     """Return the current time, timezone-aware in UTC."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _raw(body: bytes) -> bytes:
@@ -207,7 +203,7 @@ class OutboxStore(Protocol):
     that doesn't need to, doesn't. The outbox awaits whichever returns an awaitable.
     """
 
-    def add(self, record: OutboxRecord) -> None | Awaitable[None]:
+    def add(self, record: OutboxRecord) -> Awaitable[None] | None:
         """Add a record, in the current unit of work's transaction."""
         ...
 
@@ -220,15 +216,15 @@ class OutboxStore(Protocol):
         """
         ...
 
-    def mark_sent(self, records: Sequence[OutboxRecord]) -> None | Awaitable[None]:
+    def mark_sent(self, records: Sequence[OutboxRecord]) -> Awaitable[None] | None:
         """Mark records published. The store may keep or delete them."""
         ...
 
-    def reschedule(self, record: OutboxRecord) -> None | Awaitable[None]:
+    def reschedule(self, record: OutboxRecord) -> Awaitable[None] | None:
         """Store a record's new attempts, error and `available_at`, and release it."""
         ...
 
-    def mark_failed(self, record: OutboxRecord) -> None | Awaitable[None]:
+    def mark_failed(self, record: OutboxRecord) -> Awaitable[None] | None:
         """Park a record that won't be retried, keeping it and its `error`."""
         ...
 

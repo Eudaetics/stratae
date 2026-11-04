@@ -37,6 +37,13 @@ from stratae.lifecycle import AsyncScope, async_resource
 pytestmark = pytest.mark.starlette
 
 
+class _DeliberateUnhandledFailure(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate unhandled failure")
+
+
 @pytest.fixture
 def events() -> list[str]:
     """Provide a fresh event log for the app fixture to record how each connection ended."""
@@ -44,12 +51,13 @@ def events() -> list[str]:
 
 
 @pytest.fixture
-def app(async_request_scope: AsyncScope, events: list[str]) -> Starlette:
+def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.Event) -> Starlette:
     """Build a Starlette app whose WebSocket routes activate a scope per connection."""
 
     @async_request_scope.cache()
     @async_resource
     async def get_session():
+        await asyncio.sleep(0)
         events.append("open")
         try:
             yield object()
@@ -90,12 +98,13 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> Starlette:
     async def unhandled(websocket: WebSocket) -> None:
         await websocket.accept()
         await get_session()
-        raise RuntimeError("deliberate unhandled failure")
+        raise _DeliberateUnhandledFailure()
 
     async def suspend(websocket: WebSocket) -> None:
         await websocket.accept()
         await get_session()
         events.append("suspended")
+        suspended.set()
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 
@@ -134,9 +143,8 @@ def test_server_close_ends_scope_cleanly(app: Starlette, events: list[str]):
     client = TestClient(app)
 
     # Act
-    with client.websocket_connect("/server-close") as websocket:
-        with pytest.raises(WebSocketDisconnect):
-            websocket.receive_text()
+    with client.websocket_connect("/server-close") as websocket, pytest.raises(WebSocketDisconnect):
+        websocket.receive_text()
 
     # Assert
     assert events == ["open", "ended cleanly"]
@@ -201,9 +209,11 @@ def test_client_disconnect_reaches_cleanup(app: Starlette, events: list[str]):
     client = TestClient(app)
 
     # Act
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect("/until-disconnect") as websocket:
-            websocket.close()
+    with (
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect("/until-disconnect") as websocket,
+    ):
+        websocket.close()
 
     # Assert
     assert events == ["open", "ended with WebSocketDisconnect"]
@@ -222,9 +232,11 @@ def test_handled_websocket_exception_reaches_cleanup(app: Starlette, events: lis
     client = TestClient(app)
 
     # Act
-    with client.websocket_connect("/reject") as websocket:
-        with pytest.raises(WebSocketDisconnect) as closed:
-            websocket.receive_text()
+    with (
+        client.websocket_connect("/reject") as websocket,
+        pytest.raises(WebSocketDisconnect) as closed,
+    ):
+        websocket.receive_text()
 
     # Assert
     assert closed.value.code == 4401
@@ -243,16 +255,21 @@ def test_unhandled_exception_reaches_cleanup(app: Starlette, events: list[str]):
     client = TestClient(app)
 
     # Act
-    with pytest.raises(RuntimeError, match="deliberate unhandled failure"):
-        with client.websocket_connect("/unhandled") as websocket:
-            websocket.receive_text()
+    with (
+        pytest.raises(RuntimeError, match="deliberate unhandled failure"),
+        client.websocket_connect("/unhandled") as websocket,
+    ):
+        websocket.receive_text()
 
     # Assert
-    assert events == ["open", "ended with RuntimeError"]
+    assert events == ["open", "ended with _DeliberateUnhandledFailure"]
 
 
 async def test_cancelled_connection_reaches_cleanup(
-    app: Starlette, events: list[str], cancel_mid_websocket: Callable[..., Awaitable[None]]
+    app: Starlette,
+    events: list[str],
+    suspended: asyncio.Event,
+    cancel_mid_websocket: Callable[..., Awaitable[None]],
 ):
     """
     A connection cancelled mid-endpoint should reach cleanup as CancelledError.
@@ -262,7 +279,7 @@ async def test_cancelled_connection_reaches_cleanup(
     Then: The connection-scoped resource sees CancelledError
     """
     # Act
-    await cancel_mid_websocket(app, "/suspend", lambda: "suspended" in events)
+    await cancel_mid_websocket(app, "/suspend", suspended)
 
     # Assert
     assert events == ["open", "suspended", "ended with CancelledError"]

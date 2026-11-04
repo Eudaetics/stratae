@@ -8,7 +8,7 @@ import pytest
 
 from stratae.depends import override, overrides
 from stratae.depends._provide import Provider
-from stratae.depends.exceptions import DependencyNotFoundError
+from stratae.depends.exceptions import DependencyNotFoundError, EmptyOverridesError
 
 
 def test_override_returns_value_while_active():
@@ -253,9 +253,8 @@ def test_overrides_unwinds_entered_on_partial_failure():
     wrapper_b.lock = failing_lock
 
     # Act
-    with pytest.raises(RuntimeError):
-        with overrides({dep_a: "override-a", dep_b: "override-b"}):
-            ...
+    with pytest.raises(RuntimeError), overrides({dep_a: "override-a", dep_b: "override-b"}):
+        ...
 
     # Assert
     assert wrapper_a.provide() == "real-a"
@@ -286,7 +285,7 @@ def test_overrides_raises_for_empty_mapping():
     When: overrides is called with it,
     Then: it should raise ValueError.
     """
-    with pytest.raises(ValueError):
+    with pytest.raises(EmptyOverridesError):
         overrides({})
 
 
@@ -382,7 +381,7 @@ def test_override_exit_in_other_context_still_restores_provide():
     ctx.__enter__()
 
     # Act
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="created in a different Context"):
         contextvars.copy_context().run(ctx.__exit__)
 
     # Assert

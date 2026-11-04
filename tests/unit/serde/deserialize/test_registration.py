@@ -20,6 +20,13 @@ import pytest
 from stratae.serde import deserialize, encode, serialize
 
 
+class _CountMustBeNonNegative(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("count must be non-negative")
+
+
 def test_deserialize_plain_dataclass():
     """
     A flat dataclass round-trips through deserialize once registered.
@@ -294,7 +301,7 @@ def test_deserialize_propagates_validation_error_from_target_init():
 
         def __post_init__(self):
             if self.count < 0:
-                raise ValueError("count must be non-negative")
+                raise _CountMustBeNonNegative()
 
     @deserialize.register(Product)
     def _(value: dict[str, Any]) -> Product:
@@ -453,7 +460,7 @@ def test_deserializer_deregister():
     def _(value: dict[str, Any]) -> Item:
         return Item(**value)
 
-    data = '{"sku": "test"}'.encode()
+    data = b'{"sku": "test"}'
     restored = deserialize(data, type=Item)
 
     # Act
@@ -461,7 +468,7 @@ def test_deserializer_deregister():
 
     # Assert
     assert isinstance(restored, Item)
-    with pytest.raises(TypeError, match="Cannot deserialize into.*Item.*: no handler registered"):
+    with pytest.raises(TypeError, match=r"Cannot deserialize into.*Item.*: no handler registered"):
         deserialize(data, type=Item)
 
 
@@ -477,5 +484,5 @@ def test_deserializer_deregister_no_handler():
     class Item:
         sku: str
 
-    with pytest.raises(ValueError, match="Cannot deregister.*Item.*no handler registered"):
+    with pytest.raises(ValueError, match=r"Cannot deregister.*Item.*no handler registered"):
         deserialize.deregister(Item)

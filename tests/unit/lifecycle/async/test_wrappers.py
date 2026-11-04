@@ -1,7 +1,9 @@
 """Test suite for AsyncScope.cache's wrapper/cache-key behavior, exercised via AsyncScope."""
 
 import asyncio
-from typing import Any, Awaitable, Callable, Literal
+import re
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
 from unittest.mock import Mock
 
 import pytest
@@ -65,13 +67,11 @@ def callable_factory(
         if cleanup_counter:
             cleanup_counter()
 
-    if type == "sync":
-        return get_object_sync
-    elif type == "cm_sync":
-        return get_object_cm_sync
-    elif type == "async":
-        return get_object_async
-    return get_object_cm_async
+    return {
+        "sync": get_object_sync,
+        "cm_sync": get_object_cm_sync,
+        "async": get_object_async,
+    }.get(type, get_object_cm_async)
 
 
 async def maybe_await(result: Awaitable[SimpleObject] | SimpleObject) -> SimpleObject:
@@ -468,7 +468,9 @@ def test_cache_invalid_params(async_scope: AsyncScope):
           cache_key.
     Then: A ValueError is raised.
     """
-    with pytest.raises(ValueError, match="Cannot use both ignore_params and cache_key together."):
+    with pytest.raises(
+        ValueError, match=re.escape("Cannot use both ignore_params and cache_key together.")
+    ):
         async_scope.cache(
             cache_key=lambda *args, **kwargs: (args[0], kwargs.get("x", None)),
             ignore_params=True,
@@ -489,6 +491,7 @@ async def test_cache_key_no_params(async_scope: AsyncScope):
 
     @async_scope.cache(cache_key=lambda: x)
     async def get_value() -> int:
+        await asyncio.sleep(0)
         counter()
         return counter.call_count
 
@@ -542,6 +545,7 @@ def test_cache_same_function_in_two_scopes_raises():
     scope_b = AsyncScope("b", "shared")
 
     async def get_value():
+        await asyncio.sleep(0)
         return object()
 
     scope_a.cache()(get_value)

@@ -9,10 +9,16 @@ dispatcher for, and their subclasses.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from functools import singledispatch
-from typing import Any, Awaitable, Callable, Collection, Iterable
+from typing import Any
 
-from stratae.events.exceptions import MultipleRespondersError, NoResponderError
+from stratae.events.exceptions import (
+    BaseHandlerErrors,
+    HandlerErrors,
+    MultipleRespondersError,
+    NoResponderError,
+)
 from stratae.events.handler import Handler, invoke
 from stratae.events.patterns import PubSub, Request
 from stratae.events.protocols import AnyEvent
@@ -40,11 +46,9 @@ def build_dispatcher(pairs: Iterable[tuple[type, Callable[..., Any]]]):
 def only_responder[H: Handler[Any, Any, Any]](event: AnyEvent, handlers: Collection[H]) -> H:
     """Return a request event's sole responder, or raise if there isn't exactly one."""
     if not handlers:
-        raise NoResponderError(f"no responder registered for request event '{event.name}'")
+        raise NoResponderError(event.name)
     if len(handlers) > 1:
-        raise MultipleRespondersError(
-            f"request event '{event.name}' has {len(handlers)} responders; exactly one is required"
-        )
+        raise MultipleRespondersError(event.name, len(handlers))
     (responder,) = handlers
     return responder
 
@@ -67,9 +71,9 @@ def dispatch_request_async[S, R](
 
 
 def fan_out[S](
-    event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, object]], payload: S
+    _event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, object]], payload: S
 ) -> None:
-    """Call every handler in turn, raising their failures together as an ExceptionGroup."""
+    """Call every handler in turn, raising their failures together as `HandlerErrors`."""
     exceptions: list[Exception] = []
     for handler in tuple(handlers):
         try:
@@ -77,22 +81,26 @@ def fan_out[S](
         except Exception as exc:
             exceptions.append(exc)
     if exceptions:
-        raise ExceptionGroup("handler errors", exceptions)
+        raise HandlerErrors(exceptions)
 
 
 async def fan_out_async[S](
-    event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, Any]], payload: S
+    _event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, Any]], payload: S
 ) -> None:
     """
     Run every handler concurrently, raising their failures together.
 
-    :raises BaseExceptionGroup: If any handler raises. An `ExceptionGroup` unless one raised a
-        `BaseException` such as `CancelledError`.
+    :raises BaseHandlerErrors: If any handler raises. {py:exc}`HandlerErrors
+        <stratae.events.exceptions.HandlerErrors>` unless one raised a `BaseException` such as
+        `CancelledError`.
     """
     results = await asyncio.gather(
         *(invoke(handler, payload) for handler in handlers),
         return_exceptions=True,
     )
-    exceptions = [result for result in results if isinstance(result, BaseException)]
-    if exceptions:
-        raise BaseExceptionGroup("handler errors", exceptions)
+    failures = [result for result in results if isinstance(result, BaseException)]
+    errors = [failure for failure in failures if isinstance(failure, Exception)]
+    if len(errors) < len(failures):
+        raise BaseHandlerErrors(failures)
+    if errors:
+        raise HandlerErrors(errors)

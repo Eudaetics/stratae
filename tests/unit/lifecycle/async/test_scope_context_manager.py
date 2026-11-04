@@ -1,8 +1,10 @@
 """Unit tests for using an AsyncScope directly as a context manager, and token-free deactivate()."""
 
 import asyncio
+import re
+from collections.abc import AsyncGenerator
+from contextlib import suppress
 from contextvars import copy_context
-from typing import AsyncGenerator
 
 import pytest
 
@@ -43,6 +45,7 @@ async def test_async_with_scope_closes_entered_resources():
     @scope.cache()
     @async_resource
     async def get_value() -> AsyncGenerator[int, None]:
+        await asyncio.sleep(0)
         yield 1
         events.append("closed")
 
@@ -85,7 +88,9 @@ async def test_deactivate_without_token_raises_when_inactive():
     scope = AsyncScope("request")
 
     # Act & Assert
-    with pytest.raises(ScopeActivationError, match="Cannot deactivate 'request': not active."):
+    with pytest.raises(
+        ScopeActivationError, match=re.escape("Cannot deactivate 'request': not active.")
+    ):
         await scope.deactivate()
 
 
@@ -122,10 +127,9 @@ async def test_deactivate_returns_whether_exception_was_suppressed():
     @scope.cache()
     @async_resource
     async def get_value() -> AsyncGenerator[int, None]:
-        try:
+        await asyncio.sleep(0)
+        with suppress(ValueError):
             yield 1
-        except ValueError:
-            pass
 
     activation = scope.activate()
     await get_value()

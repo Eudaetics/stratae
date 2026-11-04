@@ -3,8 +3,9 @@
 import asyncio
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from contextvars import copy_context
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import pytest
 
@@ -187,8 +188,7 @@ async def test_context_scope_cross_loop_waiter_raises(
         nonlocal calls
         calls += 1
         started.set()
-        while not release.is_set():
-            await asyncio.sleep(0.005)
+        await asyncio.to_thread(release.wait, 2)
         return object()
 
     async def owner_loop() -> list[object]:

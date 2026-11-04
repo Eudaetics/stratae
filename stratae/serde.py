@@ -47,6 +47,7 @@ True
 """
 
 import json
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum, EnumType
@@ -54,10 +55,8 @@ from functools import singledispatch
 from types import NoneType, UnionType
 from typing import (
     Any,
-    Callable,
     Literal,
     Protocol,
-    Sequence,
     TypeAliasType,
     Union,
     cast,
@@ -67,7 +66,69 @@ from typing import (
 )
 from uuid import UUID
 
-__all__ = ["encode", "serialize", "Serializer", "Deserializer", "deserialize"]
+__all__ = [
+    "AmbiguousUnionError",
+    "DeserializationError",
+    "Deserializer",
+    "NoDeserializerError",
+    "NotEncodableError",
+    "NotRegisteredError",
+    "Serializer",
+    "deserialize",
+    "encode",
+    "serialize",
+]
+
+
+class NotEncodableError(TypeError):
+    """Raised when encoding an object no encoder is registered for."""
+
+    def __init__(self, obj: object) -> None:
+        """:param obj: The object that can't be encoded."""
+        super().__init__(f"Object of type {type(obj)} is not encodable")
+
+
+class DeserializationError(TypeError):
+    """Raised when a decoded value can't become the target type."""
+
+    def __init__(self, value: Any, target: str, reason: str) -> None:
+        """
+        Describe why `value` can't become `target`.
+
+        :param value: The decoded value.
+        :param target: The target type's name.
+        :param reason: What `value` fails to be, e.g. `"not a str"`.
+        """
+        super().__init__(f"Cannot deserialize {value!r} into {target}: {reason}")
+
+
+class NoDeserializerError(TypeError):
+    """Raised when deserializing into a type no handler is registered for."""
+
+    def __init__(self, type_: Any) -> None:
+        """:param type_: The target type."""
+        super().__init__(
+            f"Cannot deserialize into {type_!r}: no handler registered for it. "
+            "Register one with @deserialize.register."
+        )
+
+
+class AmbiguousUnionError(TypeError):
+    """Raised when deserializing into a union with more than one non-None member."""
+
+    def __init__(self, members: tuple[Any, ...]) -> None:
+        """:param members: The union's members."""
+        super().__init__(
+            f"Cannot deserialize an ambiguous union with multiple members: {members!r}"
+        )
+
+
+class NotRegisteredError(ValueError):
+    """Raised when deregistering a type no handler is registered for."""
+
+    def __init__(self, type_: Any) -> None:
+        """:param type_: The type being deregistered."""
+        super().__init__(f"Cannot deregister {type_}: no handler registered.")
 
 
 @singledispatch
@@ -82,7 +143,7 @@ def encode(obj: object) -> Any:
     :returns: A JSON-serializable representation of `obj`.
     :raises TypeError: If `obj` has no registered encoder.
     """
-    raise TypeError(f"Object of type {type(obj)} is not encodable")
+    raise NotEncodableError(obj)
 
 
 @encode.register
@@ -205,9 +266,7 @@ def _require_array(value: Any, target: str) -> None:
     Guards against a str or dict being iterated into characters or keys.
     """
     if not isinstance(value, _ARRAY_TYPES):
-        raise TypeError(
-            f"Cannot deserialize {value!r} into {target}: not a list, tuple, set, or frozenset"
-        )
+        raise DeserializationError(value, target, "not a list, tuple, set, or frozenset")
 
 
 class Deserialize:
@@ -277,10 +336,7 @@ class Deserialize:
             return self.construct(type_.__value__, value)
         if constructor := self._origin_constructors.get(get_origin(type_)):
             return constructor(get_args(type_), value)
-        raise TypeError(
-            f"Cannot deserialize into {type_!r}: no handler registered for it. "
-            f"Register one with @deserialize.register."
-        )
+        raise NoDeserializerError(type_)
 
     def _lookup_handler(self, type: Any) -> tuple[Callable[..., Any], bool] | None:
         """
@@ -324,9 +380,8 @@ class Deserialize:
     def _construct_fixed_tuple(self, args: tuple[Any, ...], value: Any) -> tuple[Any, ...]:
         """Recurse into a fixed-length `tuple[...]` target, checking its length."""
         if len(value) != len(args):
-            raise TypeError(
-                f"Cannot deserialize {value!r} into tuple: expected {len(args)} elements, "
-                f"got {len(value)}"
+            raise DeserializationError(
+                value, "tuple", f"expected {len(args)} elements, got {len(value)}"
             )
         return tuple(
             self.construct(item_type, item) for item_type, item in zip(args, value, strict=True)
@@ -336,7 +391,7 @@ class Deserialize:
         """Recurse into each key and value of a `dict[K, V]` target."""
         key_type, value_type = args
         if not isinstance(value, dict):
-            raise TypeError(f"Cannot deserialize {value!r} into dict: not a dict")
+            raise DeserializationError(value, "dict", "not a dict")
         return {
             self.construct(key_type, key): self.construct(value_type, item)
             for key, item in cast(dict[Any, Any], value).items()
@@ -349,7 +404,7 @@ class Deserialize:
         members = [arg for arg in args if arg is not type(None)]
         if len(members) == 1:
             return self.construct(members[0], value)
-        raise TypeError(f"Cannot deserialize an ambiguous union with multiple members: {args!r}")
+        raise AmbiguousUnionError(args)
 
     @overload
     def register[F: Callable[[Any], Any]](
@@ -402,7 +457,7 @@ class Deserialize:
         try:
             del self._handlers[type_]
         except KeyError as exc:
-            raise ValueError(f"Cannot deregister {type_}: no handler registered.") from exc
+            raise NotRegisteredError(type_) from exc
 
 
 deserialize = Deserialize()
@@ -418,26 +473,26 @@ def decode_str(value: Any) -> str:
     :raises TypeError: If `value` isn't a str.
     """
     if not isinstance(value, str):
-        raise TypeError(f"Cannot deserialize {value!r} into str: not a str")
+        raise DeserializationError(value, "str", "not a str")
     return value
 
 
-def _to_number(value: Any) -> int | float:
-    """
-    Coerce a decoded value to `int` or `float`, rejecting `bool`.
-
-    :raises ValueError: If `value` isn't a number or numeric string.
-    """
+def _to_number(value: Any) -> int | float | None:
+    """Coerce a decoded value to `int` or `float`, or return `None` if it isn't a number."""
     if isinstance(value, bool):
-        raise ValueError("bool is not a number")
+        return None
     if isinstance(value, (int, float)):
         return value
     if isinstance(value, str):
         try:
             return int(value)
         except ValueError:
+            pass
+        try:
             return float(value)
-    raise ValueError("not a number or a numeric string")
+        except ValueError:
+            return None
+    return None
 
 
 @deserialize.register(int)
@@ -452,16 +507,13 @@ def decode_int(value: Any) -> int:
     :returns: `value` as an int.
     :raises TypeError: If `value` can't become an int without losing data.
     """
-    try:
-        number = _to_number(value)
-    except ValueError:
-        raise TypeError(
-            f"Cannot deserialize {value!r} into int: not an int or an int-shaped string"
-        ) from None
+    number = _to_number(value)
+    if number is None:
+        raise DeserializationError(value, "int", "not an int or an int-shaped string")
     if isinstance(number, int):
         return number
     if not number.is_integer():
-        raise TypeError(f"Cannot deserialize {value!r} into int: not a whole number")
+        raise DeserializationError(value, "int", "not a whole number")
     return int(number)
 
 
@@ -474,12 +526,9 @@ def decode_float(value: Any) -> float:
     :returns: `value` as a float.
     :raises TypeError: If `value` isn't a number or numeric string.
     """
-    try:
-        number = _to_number(value)
-    except ValueError:
-        raise TypeError(
-            f"Cannot deserialize {value!r} into float: not a number or a numeric string"
-        ) from None
+    number = _to_number(value)
+    if number is None:
+        raise DeserializationError(value, "float", "not a number or a numeric string")
     return float(number)
 
 
@@ -500,7 +549,7 @@ def decode_bool(value: Any) -> bool:
             return True
         if lowered == "false":
             return False
-    raise TypeError(f'Cannot deserialize {value!r} into bool: not a bool or "true"/"false"')
+    raise DeserializationError(value, "bool", 'not a bool or "true"/"false"')
 
 
 @deserialize.register(NoneType)
@@ -514,7 +563,7 @@ def decode_none(value: Any) -> None:
     :raises TypeError: If `value` isn't `None`.
     """
     if value is not None:
-        raise TypeError(f"Cannot deserialize {value!r} into NoneType: not None")
+        raise DeserializationError(value, "NoneType", "not None")
     return value
 
 
@@ -530,7 +579,7 @@ def decode_dict(value: Any) -> dict[Any, Any]:
     :raises TypeError: If `value` isn't a dict.
     """
     if not isinstance(value, dict):
-        raise TypeError(f"Cannot deserialize {value!r} into dict: not a dict")
+        raise DeserializationError(value, "dict", "not a dict")
     return cast(dict[Any, Any], value)
 
 
@@ -549,7 +598,7 @@ def decode_list(value: Any) -> list[Any]:
         return cast(list[Any], value)
     if isinstance(value, (tuple, set, frozenset)):
         return list(cast(list[Any], value))
-    raise TypeError(f"Cannot deserialize {value!r} into list: not a list, tuple, set, or frozenset")
+    raise DeserializationError(value, "list", "not a list, tuple, set, or frozenset")
 
 
 @deserialize.register(tuple)
@@ -567,9 +616,7 @@ def decode_tuple(value: Any) -> tuple[Any, ...]:
         return cast(tuple[Any, ...], value)
     if isinstance(value, (list, set, frozenset)):
         return tuple(cast(tuple[Any, ...], value))
-    raise TypeError(
-        f"Cannot deserialize {value!r} into tuple: not a tuple, list, set, or frozenset"
-    )
+    raise DeserializationError(value, "tuple", "not a tuple, list, set, or frozenset")
 
 
 @deserialize.register(set)
@@ -587,7 +634,7 @@ def decode_set(value: Any) -> set[Any]:
         return cast(set[Any], value)
     if isinstance(value, (list, tuple, frozenset)):
         return set(cast(set[Any], value))
-    raise TypeError(f"Cannot deserialize {value!r} into set: not a set, list, tuple, or frozenset")
+    raise DeserializationError(value, "set", "not a set, list, tuple, or frozenset")
 
 
 @deserialize.register(frozenset)
@@ -606,9 +653,7 @@ def decode_frozenset(value: Any) -> frozenset[Any]:
         return cast(frozenset[Any], value)
     if isinstance(value, (list, tuple, set)):
         return frozenset(cast(frozenset[Any], value))
-    raise TypeError(
-        f"Cannot deserialize {value!r} into frozenset: not a frozenset, list, tuple, or set"
-    )
+    raise DeserializationError(value, "frozenset", "not a frozenset, list, tuple, or set")
 
 
 @deserialize.register(UUID)
@@ -626,7 +671,7 @@ def decode_uuid(value: Any) -> UUID:
     if isinstance(value, UUID):
         return value
     if not isinstance(value, str):
-        raise TypeError(f"Cannot deserialize {value!r} into UUID: not a UUID or a string")
+        raise DeserializationError(value, "UUID", "not a UUID or a string")
     return UUID(value)
 
 
@@ -645,7 +690,7 @@ def decode_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     if not isinstance(value, str):
-        raise TypeError(f"Cannot deserialize {value!r} into datetime: not a datetime or a string")
+        raise DeserializationError(value, "datetime", "not a datetime or a string")
     return datetime.fromisoformat(value)
 
 
@@ -664,7 +709,7 @@ def decode_decimal(value: Any) -> Decimal:
     if isinstance(value, Decimal):
         return value
     if not isinstance(value, str):
-        raise TypeError(f"Cannot deserialize {value!r} into Decimal: not a Decimal or a string")
+        raise DeserializationError(value, "Decimal", "not a Decimal or a string")
     return Decimal(value)
 
 
@@ -685,9 +730,7 @@ def decode_enum[T: Enum](value: Any, type_: type[T]) -> T:
     try:
         return type_(value)
     except ValueError:
-        raise TypeError(
-            f"Cannot deserialize {value!r} into {type_.__name__}: not a valid member value"
-        ) from None
+        raise DeserializationError(value, type_.__name__, "not a valid member value") from None
 
 
 def decode_enum_by_name(value: Any, type_: type[Enum]) -> Enum:
@@ -707,6 +750,4 @@ def decode_enum_by_name(value: Any, type_: type[Enum]) -> Enum:
     try:
         return type_[value]
     except (KeyError, TypeError):
-        raise TypeError(
-            f"Cannot deserialize {value!r} into {type_.__name__}: not a valid member name"
-        ) from None
+        raise DeserializationError(value, type_.__name__, "not a valid member name") from None

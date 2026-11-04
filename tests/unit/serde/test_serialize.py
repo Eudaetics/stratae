@@ -80,7 +80,7 @@ def test_serialize_raises_type_error_for_non_encodable():
     payload = {"value": NonEncodable()}
 
     # Act & Assert
-    with pytest.raises(TypeError, match="Object of type .* is not encodable"):
+    with pytest.raises(TypeError, match=r"Object of type .* is not encodable"):
         serialize(payload)
 
 
@@ -160,7 +160,7 @@ def test_serialize_raises_for_set_payload():
     payload = {1, 2, 3}
 
     # Act & Assert
-    with pytest.raises(TypeError, match="Object of type .* is not encodable"):
+    with pytest.raises(TypeError, match=r"Object of type .* is not encodable"):
         serialize(payload)
 
 
@@ -177,7 +177,7 @@ def test_serialize_raises_for_raw_bytes_payload():
     payload = b"already bytes"
 
     # Act & Assert
-    with pytest.raises(TypeError, match="Object of type .* is not encodable"):
+    with pytest.raises(TypeError, match=r"Object of type .* is not encodable"):
         serialize(payload)
 
 

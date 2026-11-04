@@ -1,7 +1,8 @@
 """Inspection helpers for callables, shared across stratae's packages."""
 
+from collections.abc import Callable
 from inspect import iscoroutinefunction
-from typing import Any, Callable
+from typing import Any
 
 
 def is_async_callable(fn: Callable[..., Any]) -> bool:

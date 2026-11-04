@@ -1,6 +1,8 @@
 """Test suite for Scope.cache's wrapper/cache-key behavior, exercised via the sync Scope."""
 
-from typing import Any, Callable, Literal
+import re
+from collections.abc import Callable
+from typing import Any, Literal
 from unittest.mock import Mock
 
 import pytest
@@ -431,7 +433,9 @@ def test_cache_invalid_params(scope: Scope):
     When: Attempting to create a cache decorator with both ignore_params=True and a cache_key.
     Then: A ValueError is raised.
     """
-    with pytest.raises(ValueError, match="Cannot use both ignore_params and cache_key together."):
+    with pytest.raises(
+        ValueError, match=re.escape("Cannot use both ignore_params and cache_key together.")
+    ):
         scope.cache(
             cache_key=lambda *args, **kwargs: (args[0], kwargs.get("x", None)),
             ignore_params=True,

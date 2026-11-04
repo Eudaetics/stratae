@@ -35,7 +35,8 @@ log: first
 
 """
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from stratae._callables import is_async_callable
 

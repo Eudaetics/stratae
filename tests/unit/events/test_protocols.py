@@ -11,7 +11,8 @@ Consumer:
 - An implementation satisfies the Consumer protocol.
 """
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from stratae.events import Consumer, EmitCallable, EventType, Producer
 

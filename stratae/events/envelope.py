@@ -48,11 +48,11 @@ shipment scheduled: Envelope(message_id=..7d86, correlation_id=..740c, causation
 
 from __future__ import annotations
 
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Generator, Mapping
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 MESSAGE_ID_HEADER = "x-message-id"
@@ -73,7 +73,7 @@ def _uuid(value: object | None) -> UUID | None:
 
 def _when(value: object | None) -> datetime:
     """Parse an optional header timestamp, defaulting to the current time."""
-    return datetime.now(timezone.utc) if value is None else datetime.fromisoformat(str(value))
+    return datetime.now(UTC) if value is None else datetime.fromisoformat(str(value))
 
 
 @dataclass(frozen=True)
@@ -87,7 +87,7 @@ class Envelope:
     message_id: UUID = field(default_factory=uuid4)
     correlation_id: UUID = field(default_factory=uuid4)
     causation_id: UUID | None = None
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def child(self) -> Envelope:
         """

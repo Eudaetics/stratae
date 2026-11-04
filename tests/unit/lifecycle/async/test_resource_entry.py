@@ -6,8 +6,10 @@ skipping `contextlib.asynccontextmanager`. A resource wrapped by another decorat
 entered through its context manager. These tests check the two behave the same.
 """
 
+import asyncio
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from functools import wraps
-from typing import Any, AsyncGenerator, Awaitable, Callable, cast
+from typing import Any, cast
 
 import pytest
 
@@ -20,6 +22,7 @@ type Body = Callable[[list[str]], AsyncGenerator[Any, None]]
 
 def _clean() -> Body:
     async def body(events: list[str]):
+        await asyncio.sleep(0)
         yield "value"
         events.append("after")
 
@@ -28,6 +31,7 @@ def _clean() -> Body:
 
 def _suppressing() -> Body:
     async def body(events: list[str]):
+        await asyncio.sleep(0)
         try:
             yield "value"
         except Exception as exc:
@@ -38,6 +42,7 @@ def _suppressing() -> Body:
 
 def _replacing() -> Body:
     async def body(events: list[str]):
+        await asyncio.sleep(0)
         try:
             yield "value"
         except Exception:
@@ -48,6 +53,7 @@ def _replacing() -> Body:
 
 def _wrapping() -> Body:
     async def body(events: list[str]):
+        await asyncio.sleep(0)
         try:
             yield "value"
         except Exception as exc:
@@ -58,6 +64,7 @@ def _wrapping() -> Body:
 
 def _finally() -> Body:
     async def body(events: list[str]):
+        await asyncio.sleep(0)
         try:
             yield "value"
         finally:
@@ -68,6 +75,7 @@ def _finally() -> Body:
 
 def _extra_yield() -> Body:
     async def body(events: list[str]):
+        await asyncio.sleep(0)
         yield "value"
         yield "extra"
 
@@ -76,6 +84,7 @@ def _extra_yield() -> Body:
 
 def _yield_after_throw() -> Body:
     async def body(events: list[str]):
+        await asyncio.sleep(0)
         try:
             yield "value"
         except BaseException:
@@ -86,6 +95,7 @@ def _yield_after_throw() -> Body:
 
 def _no_yield() -> Body:
     async def body(events: list[str]):
+        await asyncio.sleep(0)
         return
         yield
 
@@ -124,12 +134,17 @@ def _passthrough[F: Callable[..., Any]](func: F, events: list[str] | None = None
     return wrapper  # pyright: ignore[reportReturnType]
 
 
+def _kind(exc: BaseException) -> type[BaseException]:
+    """Return an exception's nearest builtin class, as contextlib would have raised it."""
+    return next(kind for kind in type(exc).__mro__ if kind.__module__ == "builtins")
+
+
 def _describe(exc: BaseException) -> tuple[Any, ...]:
-    """Describe an exception by type and message, recursing into a group's exceptions."""
+    """Describe an exception by kind and message, recursing into a group's exceptions."""
     if isinstance(exc, BaseExceptionGroup):
         group = cast(BaseExceptionGroup[BaseException], exc)
-        return (type(group), str(group), tuple(_describe(inner) for inner in group.exceptions))
-    return (type(exc), str(exc))
+        return (_kind(group), str(group), tuple(_describe(inner) for inner in group.exceptions))
+    return (_kind(exc), str(exc))
 
 
 async def _outcome(run: Callable[[list[str]], Awaitable[Any]]) -> tuple[Any, ...]:
@@ -191,6 +206,7 @@ async def test_decorated_async_resource_still_runs_its_decorator():
     scope = AsyncScope("request")
 
     async def generator():
+        await asyncio.sleep(0)
         yield "value"
         events.append("exit")
 

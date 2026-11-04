@@ -351,6 +351,7 @@ def test_abound_signature_with_async_factory_has_factory_parameters() -> None:
 
     # Arrange
     async def order(sku: str) -> _Order:
+        await asyncio.sleep(0)
         return _Order(sku)
 
     # Act

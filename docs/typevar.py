@@ -19,7 +19,7 @@ _DOTTED_NAME = re.compile(r"[\w.]+")
 class TypeVarRenderer(MystRenderer):
     """MyST renderer mixin that unqualifies scoped type variable names."""
 
-    def format_annotation(self, annotation: None | str) -> str:
+    def format_annotation(self, annotation: str | None) -> str:
         """Format an annotation, unqualifying any scoped type variable names."""
         formatted = super().format_annotation(annotation)
         return _DOTTED_NAME.sub(self._unqualify, formatted)

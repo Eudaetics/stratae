@@ -1,6 +1,6 @@
 """Test decode_datetime directly: confirm a native datetime, or parse its ISO 8601 string form."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -15,7 +15,7 @@ def test_decode_datetime_parses_iso_string():
     When: decode_datetime is called with that value.
     Then: A datetime equal to the original is returned.
     """
-    value = datetime(2024, 1, 15, 9, 30)
+    value = datetime(2024, 1, 15, 9, 30, tzinfo=UTC)
 
     result = decode_datetime(value.isoformat())
 
@@ -30,7 +30,7 @@ def test_decode_datetime_accepts_native_instance():
     When: decode_datetime is called with that value.
     Then: The same datetime is returned.
     """
-    value = datetime(2024, 1, 15, 9, 30)
+    value = datetime(2024, 1, 15, 9, 30, tzinfo=UTC)
 
     result = decode_datetime(value)
 

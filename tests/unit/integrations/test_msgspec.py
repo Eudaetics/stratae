@@ -105,5 +105,5 @@ def test_serialize_struct_raises_type_error_for_non_encodable_field():
     struct = WithValue(value=NonEncodable())
 
     # Act & Assert
-    with pytest.raises(TypeError, match="Object of type .* is not encodable"):
+    with pytest.raises(TypeError, match=r"Object of type .* is not encodable"):
         serialize(struct)

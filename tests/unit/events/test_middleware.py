@@ -57,15 +57,30 @@ run_middleware_async:
 """
 
 import asyncio
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import AsyncGenerator, Coroutine, Generator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from inspect import CORO_CLOSED, getcoroutinestate
-from typing import Any, AsyncGenerator, Coroutine, Generator, cast
+from typing import Any, cast
 
 import pytest
 
 from stratae.events import HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.events.exceptions import MiddlewareError
 from stratae.events.middleware import MessageHeaders, run_middleware, run_middleware_async
+
+
+class _OutOfStock(LookupError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("out of stock")
+
+
+class _RateLimited(PermissionError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("rate limited")
 
 
 class _Order:
@@ -140,7 +155,7 @@ class _Refusing:
     def __init__(self, call: PublishCall) -> None: ...
 
     def __enter__(self) -> None:
-        raise PermissionError("rate limited")
+        raise _RateLimited()
 
     def __exit__(self, *exc: object) -> None: ...
 
@@ -151,7 +166,7 @@ class _ARefusing:
     def __init__(self, call: PublishCall) -> None: ...
 
     async def __aenter__(self) -> None:
-        raise PermissionError("rate limited")
+        raise _RateLimited()
 
     async def __aexit__(self, *exc: object) -> None: ...
 
@@ -200,14 +215,16 @@ async def _arun(middleware: tuple[Any, ...], call: Any, *args: Any) -> Any:
 
 
 def _fail() -> None:
-    raise LookupError("out of stock")
+    raise _OutOfStock()
 
 
 async def _afail() -> None:
-    raise LookupError("out of stock")
+    await asyncio.sleep(0)
+    raise _OutOfStock()
 
 
 async def _reply() -> str:
+    await asyncio.sleep(0)
     return "sent"
 
 
@@ -309,7 +326,7 @@ def test_require_refuses_non_manager_class_for_async_bus() -> None:
     middleware = Middleware(publish=(cast(Any, Plain),))
 
     # Act / Assert
-    with pytest.raises(TypeError, match="AsyncDirectBus can't enter .*isn't a context manager"):
+    with pytest.raises(TypeError, match=r"AsyncDirectBus can't enter .*isn't a context manager"):
         middleware.require("AsyncDirectBus", asynchronous=True)
 
 
@@ -534,15 +551,13 @@ def test_exit_cannot_swallow_error(swallow: str) -> None:
 
     @contextmanager
     def catch(call: PublishCall) -> Generator[None, None, None]:
-        try:
+        with suppress(LookupError):
             yield
-        except LookupError:
-            pass
 
     inner = catch if swallow == "contextmanager" else _Suppressing
 
     # Act
-    with pytest.raises(MiddlewareError, match="tried to swallow LookupError") as raised:
+    with pytest.raises(MiddlewareError, match="tried to swallow _OutOfStock") as raised:
         _run((_logging(log, "outer"), inner), _fail)
 
     # Assert
@@ -605,7 +620,7 @@ def test_raising_entry_refuses_call() -> None:
 
     # Assert
     assert calls == []
-    assert log == ["outer in _Order lamp", "outer out None PermissionError('rate limited')"]
+    assert log == ["outer in _Order lamp", "outer out None _RateLimited('rate limited')"]
 
 
 def test_raising_exit_replaces_reply() -> None:
@@ -679,7 +694,7 @@ def test_reraised_error_is_left_as_is() -> None:
 
     # Assert
     assert raised.value.__context__ is None
-    assert log[-1] == "outer out None LookupError('out of stock')"
+    assert log[-1] == "outer out None _OutOfStock('out of stock')"
 
 
 def test_non_manager_middleware_raises() -> None:
@@ -787,6 +802,7 @@ async def test_async_middleware_wraps_call_outermost_first() -> None:
     log: list[str] = []
 
     async def call() -> str:
+        await asyncio.sleep(0)
         log.append("call")
         return "sent"
 
@@ -815,7 +831,7 @@ async def test_async_bus_enters_sync_managers_too() -> None:
         await _arun(middleware, _afail)
 
     # Assert
-    error = "LookupError('out of stock')"
+    error = "_OutOfStock('out of stock')"
     assert log == [
         "outer in _Order lamp",
         "middle in",
@@ -932,6 +948,7 @@ async def test_async_swallowed_base_exception_raised_again() -> None:
 
     # Arrange
     async def stop() -> None:
+        await asyncio.sleep(0)
         raise _Stop
 
     # Act / Assert
@@ -951,7 +968,7 @@ async def test_async_failed_exit_clears_reply() -> None:
     log: list[str] = []
 
     # Act
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"^no$"):
         await _arun((_alogging(log, "outer"), _araising_on_exit(ValueError("no"))), _reply)
 
     # Assert
@@ -1012,6 +1029,7 @@ async def test_async_raising_entry_refuses_call() -> None:
     calls: list[str] = []
 
     async def call() -> None:
+        await asyncio.sleep(0)
         calls.append("call")
 
     # Act
@@ -1020,7 +1038,7 @@ async def test_async_raising_entry_refuses_call() -> None:
 
     # Assert
     assert calls == []
-    assert log == ["outer in", "outer out None PermissionError('rate limited')"]
+    assert log == ["outer in", "outer out None _RateLimited('rate limited')"]
 
 
 async def test_async_raising_exits_replace_error_chained() -> None:
@@ -1067,7 +1085,7 @@ async def test_async_reraised_and_reply_replacing_exits() -> None:
     # Act
     with pytest.raises(LookupError) as reraised:
         await _arun((Reraise,), _afail)
-    with pytest.raises(ValueError) as replaced:
+    with pytest.raises(ValueError, match="rejected") as replaced:
         await _arun((_araising_on_exit(ValueError("rejected")),), _reply)
 
     # Assert

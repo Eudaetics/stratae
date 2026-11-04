@@ -7,12 +7,19 @@ Deactivation empties the activation's storage before closing them, so an entry f
 after that sees the emptied storage, exits at once, and raises.
 """
 
+from collections.abc import AsyncGenerator, Generator
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from types import AsyncGeneratorType, GeneratorType, TracebackType
-from typing import Any, AsyncGenerator, Generator
+from typing import Any
 
 from stratae.lifecycle._slots import SlotStorage
-from stratae.lifecycle.exceptions import ScopeInactiveError
+from stratae.lifecycle.exceptions import (
+    BaseCleanupErrors,
+    CleanupErrors,
+    EndedDuringEntryError,
+    ResourceDidNotStopError,
+    ResourceDidNotYieldError,
+)
 
 Contexts = list[tuple[bool, Any]]
 
@@ -52,11 +59,15 @@ def _settle(pending: list[BaseException], received: BaseException | None) -> boo
         return received is not None
     if len(pending) == 1:
         raise pending[0]
-    raise BaseExceptionGroup("Multiple exceptions raised during scope cleanup", pending[::-1])
+    failures = pending[::-1]
+    errors = [failure for failure in failures if isinstance(failure, Exception)]
+    if len(errors) < len(failures):
+        raise BaseCleanupErrors(failures)
+    raise CleanupErrors(errors)
 
 
-def _closed_error() -> ScopeInactiveError:
-    return ScopeInactiveError("Cannot enter a resource: its scope activation has ended.")
+def _closed_error() -> EndedDuringEntryError:
+    return EndedDuringEntryError()
 
 
 def _exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) -> bool:
@@ -73,7 +84,7 @@ def _exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) 
         except StopIteration:
             return False
         try:
-            raise RuntimeError("generator didn't stop")
+            raise ResourceDidNotStopError()
         finally:
             gen.close()
     tb = exc.__traceback__
@@ -95,7 +106,7 @@ def _exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) 
         err.__traceback__ = tb
         return False
     try:
-        raise RuntimeError("generator didn't stop after throw()")
+        raise ResourceDidNotStopError("throw()")
     finally:
         gen.close()
 
@@ -112,7 +123,7 @@ async def _exit_async_generator(gen: AsyncGenerator[Any, None], exc: BaseExcepti
         except StopAsyncIteration:
             return False
         try:
-            raise RuntimeError("generator didn't stop")
+            raise ResourceDidNotStopError()
         finally:
             await gen.aclose()
     tb = exc.__traceback__
@@ -134,7 +145,7 @@ async def _exit_async_generator(gen: AsyncGenerator[Any, None], exc: BaseExcepti
         err.__traceback__ = tb
         return False
     try:
-        raise RuntimeError("generator didn't stop after athrow()")
+        raise ResourceDidNotStopError("athrow()")
     finally:
         await gen.aclose()
 
@@ -173,14 +184,14 @@ def enter_generator[T](slots: SlotStorage, gen: Generator[T, None, None]) -> T:
     """
     Advance a resource generator to its yielded value, registering it in the activation.
 
-    :raises RuntimeError: If the generator doesn't yield.
+    :raises ResourceDidNotYieldError: If the generator doesn't yield.
     :raises ScopeInactiveError: If the activation ended during entry; `gen` is finished at
         once.
     """
     try:
         result = next(gen)
     except StopIteration:
-        raise RuntimeError("generator didn't yield") from None
+        raise ResourceDidNotYieldError() from None
     if not slots:
         _exit_generator(gen, None)
         raise _closed_error()
@@ -206,14 +217,14 @@ async def enter_async_generator[T](slots: SlotStorage, gen: AsyncGenerator[T, No
     """
     Advance a resource async generator to its yielded value, registering it in the activation.
 
-    :raises RuntimeError: If the generator doesn't yield.
+    :raises ResourceDidNotYieldError: If the generator doesn't yield.
     :raises ScopeInactiveError: If the activation ended during entry; `gen` is finished at
         once.
     """
     try:
         result = await anext(gen)
     except StopAsyncIteration:
-        raise RuntimeError("generator didn't yield") from None
+        raise ResourceDidNotYieldError() from None
     if not slots:
         await _exit_async_generator(gen, None)
         raise _closed_error()

@@ -55,10 +55,12 @@ from=notifications@example.com to=jane@example.com subject='Welcome!'
 ````
 """
 
+from collections.abc import Callable
 from contextvars import Token
-from typing import Any, Callable
+from typing import Any
 
 from stratae.depends._provide import Provider
+from stratae.depends.exceptions import EmptyOverridesError
 
 _OverrideMap = dict[Callable[..., Any], Any]
 
@@ -76,7 +78,7 @@ class _ReusableAwaitable:
 
 
 class _Override:
-    __slots__ = ("dep", "value", "tokens")
+    __slots__ = ("dep", "tokens", "value")
 
     def __init__(self, dep: Provider, value: Any):
         self.dep = dep
@@ -146,9 +148,9 @@ def overrides(mapping: _OverrideMap) -> _Overrides:
 
     :param mapping: Providers mapped to replacement values.
     :returns: A context manager like {py:func}`override`'s, applying every override.
-    :raises ValueError: If `mapping` is empty.
+    :raises EmptyOverridesError: If `mapping` is empty.
     :raises DependencyNotFoundError: If any provider was never passed to `Depends`.
     """
     if not mapping:
-        raise ValueError("overrides() requires at least one entry.")
+        raise EmptyOverridesError()
     return _Overrides(mapping)

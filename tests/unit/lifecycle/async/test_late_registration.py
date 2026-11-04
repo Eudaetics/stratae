@@ -52,6 +52,7 @@ async def test_function_registered_during_live_activation_is_cached(
     def register() -> None:
         @async_context_scope.cache()
         async def get_late() -> object:
+            await asyncio.sleep(0)
             nonlocal calls
             calls += 1
             return object()
@@ -86,6 +87,7 @@ async def test_keyed_function_registered_during_live_activation_is_cached(
     def register() -> None:
         @async_context_scope.cache()
         async def get_item(key: str) -> object:
+            await asyncio.sleep(0)
             nonlocal calls
             calls += 1
             return object()
@@ -120,6 +122,7 @@ async def test_resource_registered_during_live_activation_is_entered_and_cleaned
         @async_context_scope.cache()
         @async_resource
         async def get_connection():
+            await asyncio.sleep(0)
             events.append("open")
             try:
                 yield object()

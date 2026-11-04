@@ -13,15 +13,19 @@ per activation, swapped for a `WatchedClaim` once another task waits.
 
 import asyncio
 import threading
-from typing import Any, Hashable
+from collections.abc import Hashable
+from typing import Any
 
-from stratae.lifecycle.exceptions import CacheCycleError, LifecycleConfigurationError
+from stratae.lifecycle.exceptions import (
+    CacheCycleError,
+    CrossLoopWaitError,
+)
 
 
 class Pending:
     """A claimed sync computation: its owning thread, and an event created on first wait."""
 
-    __slots__ = ("owner", "done")
+    __slots__ = ("done", "owner")
 
     def __init__(self, owner: int | None = None) -> None:
         """Claim for thread `owner`, or the calling thread if omitted."""
@@ -35,7 +39,7 @@ class Pending:
         :raises CacheCycleError: If the calling thread owns this computation.
         """
         if self.owner == threading.get_ident():
-            raise CacheCycleError("Cached call depends on its own in-progress computation.")
+            raise CacheCycleError()
         if self.done is None:
             self.done = threading.Event()
         return self.done
@@ -67,7 +71,7 @@ class AsyncPending:
         :raises CacheCycleError: If the calling task owns this computation.
         """
         if self.owner is asyncio.current_task():
-            raise CacheCycleError("Cached call depends on its own in-progress computation.")
+            raise CacheCycleError()
         waiter = asyncio.get_running_loop().create_future()
         if self.waiters is None:
             self.waiters = [waiter]
@@ -91,7 +95,7 @@ def _wake(waiter: asyncio.Future[None]) -> None:
 class WatchedClaim:
     """A context scope's claim once a task waits on it: the owner and an event."""
 
-    __slots__ = ("owner", "done")
+    __slots__ = ("done", "owner")
 
     def __init__(self, owner: asyncio.Task[Any]) -> None:
         """Watch `owner`'s claim, with an event for it to set on release."""
@@ -112,13 +116,9 @@ async def wait_for_claim(claims: dict[Hashable, Any], key: Hashable, claim: Any)
     watched = claim.__class__ is WatchedClaim
     owner = claim.owner if watched else claim
     if owner is asyncio.current_task():
-        raise CacheCycleError("Cached call depends on its own in-progress computation.")
+        raise CacheCycleError()
     if owner.get_loop() is not asyncio.get_running_loop():
-        raise LifecycleConfigurationError(
-            "Cached call awaited on a different event loop than the one computing it. "
-            "Event loops on other threads sharing an activation need a scope created with "
-            "threads=True."
-        )
+        raise CrossLoopWaitError()
     if not watched:
         claim = claims[key] = WatchedClaim(claim)
     await claim.done.wait()

@@ -2,14 +2,22 @@
 
 import threading
 import time
+from collections.abc import Callable
 from contextvars import copy_context
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 
 from stratae.lifecycle.exceptions import CacheCycleError, ScopeInactiveError
 from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope, StorageType
+
+
+class _FirstComputationFails(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("first computation fails")
 
 
 def _run_in_threads(target: Callable[[], Any], count: int) -> list[Any]:
@@ -234,7 +242,7 @@ def test_threaded_waiter_recomputes_after_owner_fails(threaded_scope: Scope):
         if calls == 1:
             owner_started.set()
             release_owner.wait(timeout=2)
-            raise RuntimeError("first computation fails")
+            raise _FirstComputationFails()
         return 42
 
     # Act

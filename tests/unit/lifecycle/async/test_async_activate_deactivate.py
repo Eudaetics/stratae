@@ -6,7 +6,7 @@ from stratae.lifecycle.exceptions import ScopeActivationError
 from stratae.lifecycle.scope import AsyncScope
 
 
-async def test_activate_marks_scope_active():
+def test_activate_marks_scope_active():
     """
     activate() marks the scope active immediately, before entering it as a context manager.
 
@@ -84,7 +84,7 @@ async def test_context_scope_can_reactivate_within_same_context():
     assert not scope.is_active()
 
 
-async def test_shared_scope_reactivation_raises():
+def test_shared_scope_reactivation_raises():
     """
     A shared scope cannot be activated again while already active.
 

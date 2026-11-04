@@ -74,8 +74,9 @@ DirectBus (with envelope):
 
 import gc
 import weakref
+from collections.abc import Collection, Generator
 from contextlib import contextmanager
-from typing import Any, Collection, Generator, Literal, cast
+from typing import Any, Literal, cast
 from unittest.mock import Mock
 
 import pytest
@@ -102,6 +103,20 @@ from stratae.events.exceptions import (
     NoResponderError,
 )
 from stratae.events.pipeline import receiving
+
+
+class _NoSuchBook(LookupError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("no such book")
+
+
+class _RateLimited(PermissionError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("rate limited")
 
 
 class _TaskCreated:
@@ -711,7 +726,7 @@ def test_request_responder_exception_propagates_directly(bus: DirectBus):
     bus.handle(_find_book, Mock(side_effect=error))
 
     # Act / Assert
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="boom") as exc_info:
         bus.emit(_find_book, None, _BookQuery("dune"))
 
     assert exc_info.value is error
@@ -1105,7 +1120,7 @@ def test_handle_hooks_see_responder_failure(bus: DirectBus):
     log: list[str] = []
 
     def missing(_: _BookQuery) -> _BookResult:
-        raise LookupError("no such book")
+        raise _NoSuchBook()
 
     bus.handle(_find_book, missing, hooks=_log_hooks(log, "handle"))
 
@@ -1382,7 +1397,7 @@ def test_handle_middleware_raising_on_entry_refuses_handler():
 
     @contextmanager
     def refuse(call: HandleCall) -> Generator[None, None, None]:
-        raise PermissionError("rate limited")
+        raise _RateLimited()
         yield
 
     def respond(query: _BookQuery) -> _BookResult:

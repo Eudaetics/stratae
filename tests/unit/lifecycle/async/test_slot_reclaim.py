@@ -30,6 +30,7 @@ async def test_reclaimed_slot_does_not_leak_stale_value(async_scope: AsyncScope)
     def make_get_a():
         @async_scope.cache()
         async def get_a():
+            await asyncio.sleep(0)
             call_counter("a")
             return SimpleObject(1)
 
@@ -38,6 +39,7 @@ async def test_reclaimed_slot_does_not_leak_stale_value(async_scope: AsyncScope)
     def make_get_b():
         @async_scope.cache()
         async def get_b():
+            await asyncio.sleep(0)
             call_counter("b")
             return SimpleObject(2)
 
@@ -73,6 +75,7 @@ async def test_hot_loop_template_growth_is_bounded(async_scope: AsyncScope):
 
             @async_scope.cache()
             async def get_value():
+                await asyncio.sleep(0)
                 return SimpleObject(1)
 
             await get_value()
@@ -82,7 +85,7 @@ async def test_hot_loop_template_growth_is_bounded(async_scope: AsyncScope):
     assert len(async_scope._template) == 5  # pyright: ignore[reportPrivateUsage]
 
 
-async def test_context_scope_template_growth_is_bounded(async_context_scope: AsyncScope):
+def test_context_scope_template_growth_is_bounded(async_context_scope: AsyncScope):
     """
     A context-isolated dense scope's template must not grow forever either.
 
@@ -94,6 +97,7 @@ async def test_context_scope_template_growth_is_bounded(async_context_scope: Asy
 
         @async_context_scope.cache()
         async def foo():
+            await asyncio.sleep(0)
             return SimpleObject(1)
 
         del foo
@@ -117,6 +121,7 @@ async def test_reclaimed_slot_is_cleared_in_a_concurrent_request(async_context_s
     def make_cached(value: int):
         @async_context_scope.cache()
         async def get_value():
+            await asyncio.sleep(0)
             return SimpleObject(value)
 
         return get_value

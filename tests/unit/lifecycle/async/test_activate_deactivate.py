@@ -1,6 +1,8 @@
 """Unit tests for AsyncScope.activate/deactivate, exercised via the async AsyncScope class."""
 
+import asyncio
 from contextvars import copy_context
+from typing import NoReturn
 
 import pytest
 
@@ -9,7 +11,12 @@ from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
-async def test_activate_marks_scope_active():
+def _lookup_missing() -> NoReturn:
+    """Fail a lookup, as code under test would, so a handler has an error to handle."""
+    raise KeyError("missing")
+
+
+def test_activate_marks_scope_active():
     """
     activate() marks the scope active immediately, before entering it as a context manager.
 
@@ -87,7 +94,7 @@ async def test_context_scope_can_reactivate_within_same_context():
     assert not scope.is_active()
 
 
-async def test_shared_scope_reactivation_raises():
+def test_shared_scope_reactivation_raises():
     """
     A shared scope cannot be activated again while already active.
 
@@ -171,12 +178,15 @@ async def test_exception_raised_while_handling_another_propagates_unchanged():
     raised = ValueError("translated")
 
     # Act
-    with pytest.raises(ValueError) as exc_info:
+    async def act() -> None:
         async with scope.activate():
             try:
-                raise KeyError("missing")
+                _lookup_missing()
             except KeyError:
                 raise raised from None
+
+    with pytest.raises(ValueError, match="translated") as exc_info:
+        await act()
 
     # Assert
     assert exc_info.value is raised
@@ -197,6 +207,7 @@ async def test_exception_raised_while_handling_another_propagates_unchanged_thro
     @scope.cache()
     @async_resource
     async def get_connection():
+        await asyncio.sleep(0)
         try:
             yield object()
         except Exception as exc:
@@ -206,13 +217,16 @@ async def test_exception_raised_while_handling_another_propagates_unchanged_thro
     raised = ValueError("translated")
 
     # Act
-    with pytest.raises(ValueError) as exc_info:
+    async def act() -> None:
         async with scope.activate():
             await get_connection()
             try:
-                raise KeyError("missing")
+                _lookup_missing()
             except KeyError:
                 raise raised from None
+
+    with pytest.raises(ValueError, match="translated") as exc_info:
+        await act()
 
     # Assert
     assert seen == [raised]

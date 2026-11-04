@@ -168,7 +168,7 @@ def test_deserialize_typing_optional():
     data = json.dumps("hi").encode()
 
     # Act
-    result = deserialize(data, type=Optional[str])
+    result = deserialize(data, type=Optional[str])  # noqa: UP045 - the legacy spelling is tested
 
     # Assert
     assert result == "hi"

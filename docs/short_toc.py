@@ -6,7 +6,7 @@ Toctree entries are titled with the short module name so that the sidebar shows
 the full dotted name.
 """
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from autodoc2.render.myst_ import MystRenderer
 from autodoc2.utils import ItemData

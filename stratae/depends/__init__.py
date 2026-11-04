@@ -49,7 +49,7 @@ from .overriding import override, overrides
 
 __all__ = [
     "Depends",
+    "inject",
     "override",
     "overrides",
-    "inject",
 ]

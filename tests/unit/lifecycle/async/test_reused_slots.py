@@ -2,9 +2,10 @@
 
 import asyncio
 import gc
+from collections.abc import Callable
 from contextvars import Context, copy_context
 from inspect import isawaitable
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 import pytest
 
@@ -29,6 +30,7 @@ def _make_cached(
     if kind == "async":
 
         async def compute_async(key: str) -> int:
+            await asyncio.sleep(0)
             calls.append(value)
             return value
 
@@ -44,6 +46,7 @@ def _make_cached(
 
     @async_resource
     async def compute_async_resource(key: str):
+        await asyncio.sleep(0)
         calls.append(value)
         yield value
 

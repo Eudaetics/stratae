@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, TypeGuard
+from collections.abc import Awaitable, Callable
+from typing import TypeGuard
 
 from stratae._callables import is_async_callable
 

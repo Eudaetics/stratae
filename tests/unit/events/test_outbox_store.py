@@ -17,12 +17,13 @@ This test suite verifies the following behaviors:
 - A failed record is never claimed again.
 """
 
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
 from pathlib import Path
-from typing import Any, AsyncGenerator, AsyncIterator, Protocol, Sequence
+from typing import Any, Protocol
 
 import pytest
 from sybil import Sybil
@@ -32,6 +33,13 @@ from stratae.events import Envelope
 from stratae.events.outbox import InMemoryOutboxStore, OutboxRecord, OutboxStore
 
 _RECIPE = Path(__file__).parents[3] / "docs" / "tutorials" / "outbox.md"
+
+
+class _RolledBack(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("rolled back")
 
 
 class _Harness(Protocol):
@@ -97,7 +105,7 @@ async def _call(result: Any) -> Any:
 def _record(order: int, **changes: Any) -> OutboxRecord:
     """Return a record created `order` seconds after a fixed past moment."""
     envelope = Envelope()
-    created = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=order)
+    created = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order)
     record = OutboxRecord(
         id=envelope.message_id,
         route="orders",
@@ -157,9 +165,9 @@ async def test_rolled_back_record_never_kept(harness: _Harness):
     store = harness.store()
 
     # Act
-    with pytest.raises(ValueError):
+    with pytest.raises(_RolledBack):
         async with _added(harness, store, _record(1)):
-            raise ValueError("rolled back")
+            raise _RolledBack()
 
     # Assert
     assert await _claim(store) == []
@@ -176,7 +184,7 @@ async def test_claim_oldest_first_and_due_only(harness: _Harness):
     # Arrange
     store = harness.store()
     first, second, third = _record(1), _record(2), _record(3)
-    later = _record(0, available_at=datetime.now(timezone.utc) + timedelta(hours=1))
+    later = _record(0, available_at=datetime.now(UTC) + timedelta(hours=1))
     async with _added(harness, store, third, later, first, second):
         pass
 
@@ -272,7 +280,7 @@ async def test_rescheduled_record_keeps_attempt(harness: _Harness):
     failed = replace(record, attempts=1, error="RuntimeError: refused")
 
     # Act
-    in_an_hour = datetime.now(timezone.utc) + timedelta(hours=1)
+    in_an_hour = datetime.now(UTC) + timedelta(hours=1)
     await _call(store.reschedule(replace(failed, available_at=in_an_hour)))
     waiting = await _claim(store)
     await _call(store.reschedule(failed))

@@ -1,7 +1,8 @@
 """Tests for async lifecycle management with dependency injection."""
 
 import asyncio
-from typing import Annotated, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Annotated
 from unittest.mock import Mock
 
 import pytest
@@ -9,6 +10,27 @@ import pytest
 from stratae.context import Context
 from stratae.depends import Depends, inject
 from stratae.lifecycle import AsyncScope, async_resource
+
+
+class _SimulatedException(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Simulated exception")
+
+
+class _SimulatedExceptionAfterYield(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Simulated exception after yield")
+
+
+class _SimulatedExceptionAfterYieldAttribute(AttributeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Simulated exception after yield")
 
 
 async def test_lifecycle_inject_async_gen(async_application_scope: AsyncScope):
@@ -31,6 +53,7 @@ async def test_lifecycle_inject_async_gen(async_application_scope: AsyncScope):
     @inject
     @async_resource
     async def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
+        await asyncio.sleep(0)
         try:
             yield db
             mock_side_effect()
@@ -72,6 +95,7 @@ async def test_lifecycle_inject_nested_async_gen(
     @inject
     @async_resource
     async def get_app_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
+        await asyncio.sleep(0)
         try:
             yield resource
             mock_side_effect()
@@ -84,6 +108,7 @@ async def test_lifecycle_inject_nested_async_gen(
     async def get_request_resource(
         resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())],
     ):
+        await asyncio.sleep(0)
         try:
             yield resource
         finally:
@@ -127,11 +152,12 @@ async def test_lifecycle_inject_async_with_exception(async_application_scope: As
     @async_application_scope.cache()
     @inject
     async def get_resource(_: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
-        raise ValueError("Simulated exception")
+        await asyncio.sleep(0)
+        raise _SimulatedException()
 
     # Act / Assert
     async with async_application_scope:
-        with pytest.raises(ValueError):
+        with pytest.raises(_SimulatedException):
             await get_resource()
 
 
@@ -154,17 +180,21 @@ async def test_lifecycle_inject_async_gen_with_exception(async_application_scope
     @inject
     @async_resource
     async def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
+        await asyncio.sleep(0)
         try:
             yield db
         finally:
             mock_cleanup()
-            raise ValueError("Simulated exception after yield")
+            raise _SimulatedExceptionAfterYield()
 
     # Act / Assert
-    with pytest.raises(ValueError, match="Simulated exception after yield"):
+    async def act() -> None:
         async with async_application_scope:
             resource_instance = await get_resource()
             assert isinstance(resource_instance, SimpleObject)
+
+    with pytest.raises(ValueError, match="Simulated exception after yield"):
+        await act()
     assert mock_cleanup.call_count == 1
 
 
@@ -198,7 +228,7 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(
             mock_side_effect()
         finally:
             mock_cleanup()
-            raise ValueError("Simulated exception after yield")
+            raise _SimulatedExceptionAfterYield()
 
     @async_application_scope.cache()
     @inject
@@ -212,15 +242,18 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(
             mock_side_effect()
         finally:
             mock_cleanup()
-            raise AttributeError("Simulated exception after yield")
+            raise _SimulatedExceptionAfterYieldAttribute()
 
     # Act / Assert
-    with pytest.raises(ExceptionGroup) as exceptions:
+    async def act() -> None:
         async with async_application_scope:
             resource_instance = await get_one()
             resource_instance_2 = await get_two()
             assert isinstance(resource_instance, SimpleObject)
             assert isinstance(resource_instance_2, SimpleObject)
+
+    with pytest.raises(ExceptionGroup) as exceptions:
+        await act()
 
     assert len(exceptions.value.exceptions) == 2
     assert any(isinstance(e, ValueError) for e in exceptions.value.exceptions)
@@ -248,6 +281,7 @@ async def test_async_lifecycle_outer_cache_and_context_change(
     @async_application_scope.cache()
     @inject
     async def get_value(x: Annotated[int, Depends(lambda: mock.call_count)]) -> int:
+        await asyncio.sleep(0)
         mock()
         return x + 1
 
@@ -278,6 +312,7 @@ async def test_async_lifecycle_outer_cache_inject_change_with_custom_key(
     @async_application_scope.cache(cache_key=lambda: mock.call_count)
     @inject
     async def get_value(x: Annotated[int, Depends(lambda: mock.call_count)]) -> int:
+        await asyncio.sleep(0)
         mock()
         return x + 1
 
@@ -307,6 +342,7 @@ async def test_async_lifecycle_inner_cache_inject(async_application_scope: Async
     @inject
     @async_application_scope.cache()
     async def get_value(x: Annotated[int, Depends(x)]) -> int:
+        await asyncio.sleep(0)
         counter()
         return x * 2
 

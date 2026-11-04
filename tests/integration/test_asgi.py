@@ -10,6 +10,7 @@ This test suite verifies the following behaviors:
 - Lifespan startup and shutdown run as they would without the middleware.
 """
 
+import asyncio
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
@@ -44,6 +45,7 @@ def _chain() -> str:
 
 
 async def _async_endpoint(request: Request) -> PlainTextResponse:
+    await asyncio.sleep(0)
     return PlainTextResponse(_chain())
 
 
@@ -52,10 +54,12 @@ def _sync_endpoint(request: Request) -> PlainTextResponse:
 
 
 async def _failing(request: Request) -> PlainTextResponse:
+    await asyncio.sleep(0)
     raise LookupError("missing")
 
 
 async def _on_lookup_error(request: Request, exc: Exception) -> JSONResponse:
+    await asyncio.sleep(0)
     return JSONResponse({"chain": _chain()}, status_code=404)
 
 
@@ -154,6 +158,7 @@ def test_envelope_active_inside_scoped_route(async_request_scope: AsyncScope):
 
     @async_request_scope.cache()
     async def get_chain() -> str:
+        await asyncio.sleep(0)
         chains.append(_chain())
         return chains[-1]
 

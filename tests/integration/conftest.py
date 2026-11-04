@@ -11,16 +11,22 @@ type ASGIApp = Callable[[dict[str, Any], Any, Any], Awaitable[None]]
 
 
 @pytest.fixture
-def cancel_mid_request() -> Callable[[ASGIApp, str, Callable[[], bool]], Awaitable[None]]:
+def suspended() -> asyncio.Event:
+    """Provide the event an app's suspending route sets once it's parked mid-request."""
+    return asyncio.Event()
+
+
+@pytest.fixture
+def cancel_mid_request() -> Callable[[ASGIApp, str, asyncio.Event], Awaitable[None]]:
     """
     Provide a driver that cancels an in-flight request, as a client disconnect or timeout would.
 
     The driver calls the app over raw ASGI - no test client, which would wait the request
-    out - waits until `suspended()` reports the handler is parked mid-request, then cancels
+    out - waits until `suspended` is set, once the handler is parked mid-request, then cancels
     the request task and waits for it to unwind.
     """
 
-    async def drive(app: ASGIApp, path: str, suspended: Callable[[], bool]) -> None:
+    async def drive(app: ASGIApp, path: str, suspended: asyncio.Event) -> None:
         scope: dict[str, Any] = {
             "type": "http",
             "asgi": {"version": "3.0"},
@@ -45,8 +51,7 @@ def cancel_mid_request() -> Callable[[ASGIApp, str, Callable[[], bool]], Awaitab
 
         task = asyncio.ensure_future(app(scope, receive, send))
         async with asyncio.timeout(2):
-            while not suspended():
-                await asyncio.sleep(0)
+            await suspended.wait()
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -55,15 +60,15 @@ def cancel_mid_request() -> Callable[[ASGIApp, str, Callable[[], bool]], Awaitab
 
 
 @pytest.fixture
-def cancel_mid_websocket() -> Callable[[ASGIApp, str, Callable[[], bool]], Awaitable[None]]:
+def cancel_mid_websocket() -> Callable[[ASGIApp, str, asyncio.Event], Awaitable[None]]:
     """
     Provide a driver that cancels an open WebSocket connection, as a server shutdown would.
 
-    The driver connects over raw ASGI, waits until `suspended()` reports the endpoint is
+    The driver connects over raw ASGI, waits until `suspended` is set, once the endpoint is
     parked mid-connection, then cancels the connection task and waits for it to unwind.
     """
 
-    async def drive(app: ASGIApp, path: str, suspended: Callable[[], bool]) -> None:
+    async def drive(app: ASGIApp, path: str, suspended: asyncio.Event) -> None:
         scope: dict[str, Any] = {
             "type": "websocket",
             "asgi": {"version": "3.0"},
@@ -85,8 +90,7 @@ def cancel_mid_websocket() -> Callable[[ASGIApp, str, Callable[[], bool]], Await
 
         task = asyncio.ensure_future(app(scope, incoming.get, send))
         async with asyncio.timeout(2):
-            while not suspended():
-                await asyncio.sleep(0)
+            await suspended.wait()
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

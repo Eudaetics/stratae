@@ -6,6 +6,7 @@ unless that parent is already active, and the parent tracks a live-dependent cou
 slot 1) that blocks its own deactivation while a scope requiring it is still active.
 """
 
+import re
 from unittest.mock import Mock
 
 import pytest
@@ -31,7 +32,7 @@ def test_activate_without_active_parent_raises():
     # Act & Assert
     with pytest.raises(
         ScopeActivationError,
-        match="Cannot activate 'request': required scope 'application' is not active.",
+        match=re.escape("Cannot activate 'request': required scope 'application' is not active."),
     ):
         child.activate()
 
@@ -49,9 +50,8 @@ def test_activate_with_active_parent_succeeds():
     child = Scope("request", requires=parent)
 
     # Act & Assert
-    with parent:
-        with child:
-            assert child.is_active()
+    with parent, child:
+        assert child.is_active()
 
 
 def test_deactivate_parent_while_child_active_raises():
@@ -71,7 +71,7 @@ def test_deactivate_parent_while_child_active_raises():
     # Act & Assert
     with pytest.raises(
         ScopeActivationError,
-        match="Cannot deactivate 'application': a scope requiring it is still active.",
+        match=re.escape("Cannot deactivate 'application': a scope requiring it is still active."),
     ):
         parent.deactivate(parent_activation)
     assert parent.is_active()
@@ -137,12 +137,10 @@ def test_three_level_chain_activates_and_deactivates_in_order(
     application, session, request = scope_chain
 
     # Act & Assert
-    with application:
-        with session:
-            with request:
-                assert application.is_active()
-                assert session.is_active()
-                assert request.is_active()
+    with application, session, request:
+        assert application.is_active()
+        assert session.is_active()
+        assert request.is_active()
     assert not application.is_active()
     assert not session.is_active()
     assert not request.is_active()
@@ -244,7 +242,7 @@ def test_deactivate_raises_when_own_sparse_scope_has_active_dependent():
     # Act & Assert
     with pytest.raises(
         ScopeActivationError,
-        match="Cannot deactivate 'application': a scope requiring it is still active.",
+        match=re.escape("Cannot deactivate 'application': a scope requiring it is still active."),
     ):
         parent.deactivate(parent_activation)
     assert parent.is_active()
@@ -330,6 +328,7 @@ def test_parent_cannot_deactivate_while_child_is_mid_activation():
         child_active, parent_active = child.is_active(), parent.is_active()
 
     # Assert
-    assert child_active and parent_active
+    assert child_active
+    assert parent_active
     assert len(refused) == 1
     assert "a scope requiring it is still active" in str(refused[0])

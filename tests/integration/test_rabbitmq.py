@@ -66,8 +66,10 @@ This test suite verifies the following behaviors:
 
 import asyncio
 import os
+import re
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, AsyncIterator, Callable, cast
+from typing import Any, cast, override
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -78,7 +80,7 @@ from aiormq import connect
 from aiormq.abc import AbstractChannel
 from aiormq.exceptions import ChannelClosed, ChannelPreconditionFailed
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import SpanKind
@@ -107,6 +109,34 @@ from stratae.lifecycle import AsyncScope, async_resource
 pytestmark = pytest.mark.rabbitmq
 
 _URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost/")
+
+
+class _DropMe(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("drop me")
+
+
+class _PaymentDeclined(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("payment declined")
+
+
+class _StillBroken(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("still broken")
+
+
+class _TryAgain(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("try again")
 
 
 class Message(msgspec.Struct):
@@ -152,15 +182,44 @@ def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:8]}"
 
 
-async def _eventually(condition: Callable[[], bool], timeout: float = 5.0) -> None:
-    """Poll until the condition holds, failing after the timeout."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not condition():
-        if loop.time() > deadline:
-            msg = "condition not met before timeout"
-            raise AssertionError(msg)
-        await asyncio.sleep(0.05)
+_WAIT = 10.0
+"""Seconds a test waits for the broker to deliver, or a connection to change state."""
+
+
+class _Log[T](list[T]):
+    """A list a test can wait on, woken each time an item is appended."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._grew = asyncio.Event()
+
+    @override
+    def append(self, item: T) -> None:
+        super().append(item)
+        self._grew.set()
+        self._grew = asyncio.Event()
+
+    async def wait_for_length(self, length: int) -> None:
+        """Wait until the log holds `length` items."""
+        await self._until(lambda: len(self) >= length)
+
+    async def wait_for_item(self, item: T) -> None:
+        """Wait until `item` is in the log."""
+        await self._until(lambda: item in self)
+
+    async def _until(self, done: Callable[[], bool]) -> None:
+        """Wait for appends until `done` holds, failing after `_WAIT` seconds."""
+        async with asyncio.timeout(_WAIT):
+            while not done():
+                await self._grew.wait()
+
+
+async def _wait_for_state(
+    link: RabbitMQPublisher | RabbitMQConsumer, state: ConnectionState
+) -> None:
+    """Wait until a publisher or consumer reaches `state`, failing after `_WAIT` seconds."""
+    async with asyncio.timeout(_WAIT):
+        await link.wait_for_state(state)
 
 
 async def test_msgspec_round_trip(broker: _Broker):
@@ -174,7 +233,7 @@ async def test_msgspec_round_trip(broker: _Broker):
     # Arrange
     exchange = _unique("stratae-it")
     broker.exchanges.append(exchange)
-    received: list[Message] = []
+    received = _Log[Message]()
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(message_event, received.append, config=RabbitMQConsumeConfig(exchange=exchange))
 
@@ -187,7 +246,7 @@ async def test_msgspec_round_trip(broker: _Broker):
                 config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
             )
             await send(text="hello")
-        await _eventually(lambda: len(received) == 1)
+        await received.wait_for_length(1)
 
     # Assert
     assert received[0] == Message(text="hello")
@@ -204,7 +263,7 @@ async def test_signal_event_round_trip(broker: _Broker):
     # Arrange
     exchange = _unique("stratae-it")
     broker.exchanges.append(exchange)
-    calls: list[bool] = []
+    calls = _Log[bool]()
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
 
     def on_heartbeat() -> None:
@@ -219,7 +278,7 @@ async def test_signal_event_round_trip(broker: _Broker):
                 heartbeat_event, config=RabbitMQConfig(exchange, "", exchange_type="fanout")
             )
             await send()
-        await _eventually(lambda: len(calls) == 1)
+        await calls.wait_for_length(1)
 
     # Assert
     assert calls == [True]
@@ -237,7 +296,7 @@ async def test_hooks_run_on_both_sides_of_the_broker(broker: _Broker):
     # Arrange
     exchange = _unique("stratae-it")
     broker.exchanges.append(exchange)
-    log: list[str] = []
+    log = _Log[str]()
 
     def hooks(side: str) -> Hooks[Any, Any]:
         def before(event: Any, payload: Message) -> None:
@@ -271,7 +330,7 @@ async def test_hooks_run_on_both_sides_of_the_broker(broker: _Broker):
                 hooks=hooks("publish"),
             )
             await send(text="hello")
-        await _eventually(lambda: len(log) == 5)
+        await log.wait_for_length(5)
 
     # Assert: each side in order; the two sides may interleave.
     assert [entry for entry in log if entry.startswith("publish")] == [
@@ -296,7 +355,7 @@ async def test_middleware_runs_on_both_sides_of_the_broker(broker: _Broker):
     # Arrange
     exchange = _unique("stratae-it")
     broker.exchanges.append(exchange)
-    log: list[str] = []
+    log = _Log[str]()
 
     @asynccontextmanager
     async def on_publish(call: PublishCall) -> AsyncGenerator[None, None]:
@@ -328,7 +387,7 @@ async def test_middleware_runs_on_both_sides_of_the_broker(broker: _Broker):
                 config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
             )
             await send(text="hello")
-        await _eventually(lambda: len(log) == 3)
+        await log.wait_for_length(3)
 
     # Assert: the publish side runs first; the handler runs inside the handle middleware.
     assert log == ["publish mw hello", "handler hello", "handle mw hello"]
@@ -363,7 +422,7 @@ async def test_middleware_header_crosses_the_broker(broker: _Broker):
     # Arrange
     queue = _unique("stratae-it-headers")
     broker.queues.append(queue)
-    seen: list[dict[str, str]] = []
+    seen = _Log[dict[str, str]]()
     consumer = RabbitMQConsumer(
         _URL,
         deserializer=msgspec.json.decode,
@@ -378,7 +437,7 @@ async def test_middleware_header_crosses_the_broker(broker: _Broker):
         ) as publisher:
             with Envelope.scope() as envelope:
                 await publisher.emit(message_event, RabbitMQConfig("", queue), Message("hi"))
-        await _eventually(lambda: len(seen) == 1)
+        await seen.wait_for_length(1)
 
     # Assert
     (headers,) = seen
@@ -398,7 +457,7 @@ async def test_envelope_survives_the_wire(broker: _Broker):
     # Arrange
     exchange = _unique("stratae-it")
     broker.exchanges.append(exchange)
-    seen: list[Envelope | None] = []
+    seen = _Log[Envelope | None]()
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(
         message_event,
@@ -416,7 +475,7 @@ async def test_envelope_survives_the_wire(broker: _Broker):
             )
             with Envelope.scope() as envelope:
                 await send(text="traced")
-        await _eventually(lambda: len(seen) == 1)
+        await seen.wait_for_length(1)
 
     # Assert
     delivered = seen[0]
@@ -436,8 +495,8 @@ async def test_fanout_delivers_to_every_subscriber(broker: _Broker):
     # Arrange
     exchange = _unique("stratae-it")
     broker.exchanges.append(exchange)
-    first: list[Message] = []
-    second: list[Message] = []
+    first = _Log[Message]()
+    second = _Log[Message]()
     consumer_a = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer_a.handle(message_event, first.append, config=RabbitMQConsumeConfig(exchange=exchange))
     consumer_b = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
@@ -452,7 +511,8 @@ async def test_fanout_delivers_to_every_subscriber(broker: _Broker):
                 config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
             )
             await send(text="broadcast")
-        await _eventually(lambda: len(first) == 1 and len(second) == 1)
+        await first.wait_for_length(1)
+        await second.wait_for_length(1)
 
     # Assert
     assert first[0] == Message(text="broadcast")
@@ -470,15 +530,14 @@ async def test_competing_workers_split_backlog(broker: _Broker):
     # Arrange
     queue = _unique("stratae-it-work")
     broker.queues.append(queue)
-    first: list[Message] = []
-    second: list[Message] = []
+    handled = _Log[tuple[str, Message]]()
 
     async def worker_a(payload: Message) -> None:
-        first.append(payload)
+        handled.append(("a", payload))
         await asyncio.sleep(0.05)
 
     async def worker_b(payload: Message) -> None:
-        second.append(payload)
+        handled.append(("b", payload))
         await asyncio.sleep(0.05)
 
     consumer_a = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode, prefetch_count=1)
@@ -492,13 +551,12 @@ async def test_competing_workers_split_backlog(broker: _Broker):
             send = publisher.bind(message_event, factory=Message, config=RabbitMQConfig("", queue))
             for index in range(10):
                 await send(text=f"task-{index}")
-        await _eventually(lambda: len(first) + len(second) == 10, timeout=10.0)
+        await handled.wait_for_length(10)
 
     # Assert
-    texts = sorted(message.text for message in first + second)
+    texts = sorted(message.text for _, message in handled)
     assert texts == sorted(f"task-{index}" for index in range(10))
-    assert first
-    assert second
+    assert {worker for worker, _ in handled} == {"a", "b"}
 
 
 async def test_durable_queue_parks_offline_messages(broker: _Broker):
@@ -514,7 +572,7 @@ async def test_durable_queue_parks_offline_messages(broker: _Broker):
     queue = _unique("stratae-it-park")
     broker.exchanges.append(exchange)
     broker.queues.append(queue)
-    received: list[Message] = []
+    received = _Log[Message]()
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(
         message_event, received.append, config=RabbitMQConsumeConfig(queue, exchange=exchange)
@@ -531,7 +589,7 @@ async def test_durable_queue_parks_offline_messages(broker: _Broker):
         )
         await send(text="parked")
     async with consumer:
-        await _eventually(lambda: len(received) == 1)
+        await received.wait_for_length(1)
 
     # Assert
     assert received[0] == Message(text="parked")
@@ -580,11 +638,12 @@ async def test_cancelled_scoped_delivery_is_redelivered(broker: _Broker):
     queue = _unique("stratae-it-scoped")
     broker.queues.append(queue)
     scope = AsyncScope("message")
-    events: list[str] = []
+    events = _Log[str]()
 
     @scope.cache()
     @async_resource
     async def get_transaction() -> AsyncGenerator[None, None]:
+        await asyncio.sleep(0)
         try:
             yield
         except BaseException as exc:
@@ -614,9 +673,9 @@ async def test_cancelled_scoped_delivery_is_redelivered(broker: _Broker):
             send = publisher.bind(message_event, factory=Message, config=RabbitMQConfig("", queue))
             await send(text="retry me")
         await asyncio.wait_for(started.wait(), timeout=5)
-    await _eventually(lambda: "rolled back on CancelledError" in events)
+    await events.wait_for_item("rolled back on CancelledError")
     async with second:
-        await _eventually(lambda: "committed" in events)
+        await events.wait_for_item("committed")
 
     # Assert
     assert events == ["rolled back on CancelledError", "handled retry me", "committed"]
@@ -633,7 +692,7 @@ async def test_republished_envelope_keeps_message_id(broker: _Broker):
     # Arrange
     queue = _unique("stratae-it-republish")
     broker.queues.append(queue)
-    seen: list[Envelope | None] = []
+    seen = _Log[Envelope | None]()
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(
         message_event,
@@ -649,7 +708,7 @@ async def test_republished_envelope_keeps_message_id(broker: _Broker):
                 await publisher.emit(
                     message_event, RabbitMQConfig("", queue), Message("again"), envelope=held
                 )
-        await _eventually(lambda: len(seen) == 2)
+        await seen.wait_for_length(2)
 
     # Assert
     assert [(e.message_id, e.correlation_id) for e in seen if e is not None] == [
@@ -670,7 +729,7 @@ async def test_redelivered_message_keeps_message_id(broker: _Broker):
     # Arrange
     queue = _unique("stratae-it-redeliver")
     broker.queues.append(queue)
-    seen: list[UUID] = []
+    seen = _Log[UUID]()
 
     def record() -> None:
         envelope = Envelope.current()
@@ -690,9 +749,9 @@ async def test_redelivered_message_keeps_message_id(broker: _Broker):
     async with first:
         async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
             await publisher.emit(message_event, RabbitMQConfig("", queue), Message("once"))
-        await _eventually(lambda: len(seen) == 1)
+        await seen.wait_for_length(1)
     async with second:
-        await _eventually(lambda: len(seen) == 2)
+        await seen.wait_for_length(2)
 
     # Assert
     assert seen[0] == seen[1]
@@ -742,14 +801,14 @@ async def test_failing_handler_retried_with_backoff_then_acked(broker: _Broker):
     policy = RabbitMQFailurePolicy(retry_delays=(0.2, 0.4))
     queue = _failure_queues(broker, "stratae-it-retry", policy)
     loop = asyncio.get_running_loop()
-    attempts: list[tuple[float, UUID]] = []
+    attempts = _Log[tuple[float, UUID]]()
 
     def flaky(message: Message) -> None:
         envelope = Envelope.current()
         assert envelope is not None
         attempts.append((loop.time(), envelope.message_id))
         if len(attempts) < 3:
-            raise RuntimeError("try again")
+            raise _TryAgain()
 
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(message_event, flaky, config=RabbitMQConsumeConfig(queue, on_failure=policy))
@@ -757,7 +816,7 @@ async def test_failing_handler_retried_with_backoff_then_acked(broker: _Broker):
     # Act
     async with consumer:
         sent = await _publish(queue)
-        await _eventually(lambda: len(attempts) == 3)
+        await attempts.wait_for_length(3)
         await asyncio.sleep(0.1)
 
     # Assert
@@ -782,11 +841,11 @@ async def test_failing_handler_dead_lettered_after_retries(broker: _Broker):
     policy = RabbitMQFailurePolicy(retry_delays=(0.1, 0.1))
     queue = _failure_queues(broker, "stratae-it-dlq", policy)
     dead_letter = cast(str, policy.dead_letter_target(queue))
-    calls: list[Message] = []
+    calls = _Log[Message]()
 
     def failing(message: Message) -> None:
         calls.append(message)
-        raise RuntimeError("still broken")
+        raise _StillBroken()
 
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(message_event, failing, config=RabbitMQConsumeConfig(queue, on_failure=policy))
@@ -794,7 +853,7 @@ async def test_failing_handler_dead_lettered_after_retries(broker: _Broker):
     # Act
     async with consumer:
         sent = await _publish(queue)
-        await _eventually(lambda: len(calls) == 3)
+        await calls.wait_for_length(3)
         await asyncio.sleep(0.2)
         parked = await broker.channel.basic_get(dead_letter, no_ack=True)
 
@@ -803,7 +862,7 @@ async def test_failing_handler_dead_lettered_after_retries(broker: _Broker):
     headers = properties.headers or {}
     assert parked.body == b'{"text": "work"}'
     assert headers[ATTEMPTS_HEADER] == 3
-    assert headers[FAILURE_HEADER] == "RuntimeError: still broken"
+    assert headers[FAILURE_HEADER] == "_StillBroken: still broken"
     assert properties.message_id == str(sent.message_id)
     assert len(calls) == 3
 
@@ -849,11 +908,11 @@ async def test_dropping_policy_leaves_nothing(broker: _Broker):
     # Arrange
     policy = RabbitMQFailurePolicy(dead_letter=False)
     queue = _failure_queues(broker, "stratae-it-drop", policy)
-    calls: list[Message] = []
+    calls = _Log[Message]()
 
     def failing(message: Message) -> None:
         calls.append(message)
-        raise RuntimeError("drop me")
+        raise _DropMe()
 
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(message_event, failing, config=RabbitMQConsumeConfig(queue, on_failure=policy))
@@ -861,7 +920,7 @@ async def test_dropping_policy_leaves_nothing(broker: _Broker):
     # Act
     async with consumer:
         await _publish(queue)
-        await _eventually(lambda: len(calls) == 1)
+        await calls.wait_for_length(1)
         await asyncio.sleep(0.3)
 
     # Assert
@@ -883,7 +942,7 @@ async def test_cancelled_delivery_under_policy_is_redelivered(broker: _Broker):
     queue = _failure_queues(broker, "stratae-it-cancel", policy)
     config = RabbitMQConsumeConfig(queue, on_failure=policy)
     started = asyncio.Event()
-    received: list[Message] = []
+    received = _Log[Message]()
 
     async def stuck(message: Message) -> None:
         started.set()
@@ -899,7 +958,7 @@ async def test_cancelled_delivery_under_policy_is_redelivered(broker: _Broker):
         await _publish(queue)
         await asyncio.wait_for(started.wait(), timeout=5)
     async with second:
-        await _eventually(lambda: len(received) == 1)
+        await received.wait_for_length(1)
 
     # Assert
     assert await _count(broker, cast(str, policy.retry_queue(queue, 1))) == 0
@@ -924,7 +983,7 @@ async def test_topology_keeps_messages_published_before_consumers(broker: _Broke
     bound_config = RabbitMQConsumeConfig(
         bound, exchange=exchange, binding_key="job.*", exchange_type="topic"
     )
-    received: list[Message] = []
+    received = _Log[Message]()
 
     # Act
     async with RabbitMQPublisher(
@@ -936,7 +995,7 @@ async def test_topology_keeps_messages_published_before_consumers(broker: _Broke
     consumer.handle(message_event, received.append, config=direct_config)
     consumer.handle(message_event, received.append, config=bound_config)
     async with consumer:
-        await _eventually(lambda: len(received) == 2)
+        await received.wait_for_length(2)
 
     # Assert
     assert sorted(message.text for message in received) == ["bound", "direct"]
@@ -955,7 +1014,7 @@ async def test_publisher_and_consumer_declare_alike(broker: _Broker, publisher_f
     policy = RabbitMQFailurePolicy(retry_delays=(0.1,))
     queue = _failure_queues(broker, "stratae-it-alike", policy)
     config = RabbitMQConsumeConfig(queue, on_failure=policy)
-    received: list[Message] = []
+    received = _Log[Message]()
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(message_event, received.append, config=config)
     publisher = RabbitMQPublisher(_URL, serializer=msgspec.json.encode, topology=[config])
@@ -964,7 +1023,7 @@ async def test_publisher_and_consumer_declare_alike(broker: _Broker, publisher_f
     # Act
     async with first, second:
         await publisher.emit(message_event, RabbitMQConfig("", queue), Message("alike"))
-        await _eventually(lambda: len(received) == 1)
+        await received.wait_for_length(1)
 
     # Assert
     assert received == [Message("alike")]
@@ -1013,7 +1072,7 @@ async def test_mandatory_publish_requires_a_queue(broker: _Broker):
     config = RabbitMQConsumeConfig(
         queue, exchange=exchange, binding_key="job.*", exchange_type="topic"
     )
-    received: list[Message] = []
+    received = _Log[Message]()
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(message_event, received.append, config=config)
 
@@ -1023,7 +1082,7 @@ async def test_mandatory_publish_requires_a_queue(broker: _Broker):
             await publisher.emit(
                 message_event, RabbitMQConfig(exchange, "job.run", mandatory=True), Message("ok")
             )
-            with pytest.raises(UnroutableError, match="report.run"):
+            with pytest.raises(UnroutableError, match=re.escape("report.run")):
                 await publisher.emit(
                     message_event,
                     RabbitMQConfig(exchange, "report.run", mandatory=True),
@@ -1032,7 +1091,7 @@ async def test_mandatory_publish_requires_a_queue(broker: _Broker):
             await publisher.emit(
                 message_event, RabbitMQConfig(exchange, "report.run"), Message("dropped")
             )
-        await _eventually(lambda: len(received) == 1)
+        await received.wait_for_length(1)
         await asyncio.sleep(0.2)
 
     # Assert
@@ -1136,20 +1195,20 @@ async def test_consumer_resumes_after_outage(broker: _Broker, proxy: _Proxy):
     # Arrange
     queue = _unique("stratae-it-outage")
     broker.queues.append(queue)
-    received: list[Message] = []
+    received = _Log[Message]()
     consumer = RabbitMQConsumer(proxy.url, deserializer=msgspec.json.decode, reconnect=_QUICK)
     consumer.handle(message_event, received.append, config=RabbitMQConsumeConfig(queue))
 
     async with consumer:
         # Act
         await proxy.outage()
-        await _eventually(lambda: consumer.state is ConnectionState.RECONNECTING)
+        await _wait_for_state(consumer, ConnectionState.RECONNECTING)
         await asyncio.sleep(0.3)
         during = consumer.state
         await proxy.start()
-        await _eventually(lambda: consumer.state is ConnectionState.CONNECTED)
+        await _wait_for_state(consumer, ConnectionState.CONNECTED)
         await _publish(queue)
-        await _eventually(lambda: len(received) == 1)
+        await received.wait_for_length(1)
 
     # Assert
     assert during is ConnectionState.RECONNECTING
@@ -1177,13 +1236,13 @@ async def test_publisher_publishes_after_outage(broker: _Broker, proxy: _Proxy):
     async with publisher:
         # Act
         await proxy.outage()
-        await _eventually(lambda: publisher.state is ConnectionState.RECONNECTING)
+        await _wait_for_state(publisher, ConnectionState.RECONNECTING)
         started = loop.time()
         with pytest.raises(NotConnectedError, match="reconnecting"):
             await publisher.emit(message_event, RabbitMQConfig("", queue), Message("lost"))
         failed_after = loop.time() - started
         await proxy.start()
-        await _eventually(lambda: publisher.state is ConnectionState.CONNECTED)
+        await _wait_for_state(publisher, ConnectionState.CONNECTED)
         await publisher.emit(message_event, RabbitMQConfig("", queue), Message("sent"))
 
     # Assert
@@ -1206,7 +1265,7 @@ async def test_in_flight_message_redelivered_after_outage(broker: _Broker, proxy
     policy = RabbitMQFailurePolicy(retry_delays=(0.1,))
     queue = _failure_queues(broker, "stratae-it-outage-inflight", policy)
     started = asyncio.Event()
-    handled: list[Message] = []
+    handled = _Log[Message]()
 
     async def first_waits(message: Message) -> None:
         if not started.is_set():
@@ -1225,9 +1284,9 @@ async def test_in_flight_message_redelivered_after_outage(broker: _Broker, proxy
 
         # Act
         await proxy.outage()
-        await _eventually(lambda: consumer.state is ConnectionState.RECONNECTING)
+        await _wait_for_state(consumer, ConnectionState.RECONNECTING)
         await proxy.start()
-        await _eventually(lambda: len(handled) == 1)
+        await handled.wait_for_length(1)
 
     # Assert
     assert await _count(broker, cast(str, policy.retry_queue(queue, 1))) == 0
@@ -1248,8 +1307,8 @@ async def test_exit_during_outage_returns_promptly(broker: _Broker, proxy: _Prox
     await consumer.__aenter__()
     await publisher.__aenter__()
     await proxy.outage()
-    await _eventually(lambda: consumer.state is ConnectionState.RECONNECTING)
-    await _eventually(lambda: publisher.state is ConnectionState.RECONNECTING)
+    await _wait_for_state(consumer, ConnectionState.RECONNECTING)
+    await _wait_for_state(publisher, ConnectionState.RECONNECTING)
 
     # Act
     async with asyncio.timeout(1):
@@ -1278,7 +1337,7 @@ async def test_outbox_relays_committed_events(broker: _Broker):
     send = outbox.bind(
         message_event, factory=Message, config=OutboxConfig(RabbitMQConfig("", queue))
     )
-    received: list[tuple[Message, UUID]] = []
+    received = _Log[tuple[Message, UUID]]()
 
     def record(message: Message) -> None:
         envelope = Envelope.current()
@@ -1290,16 +1349,20 @@ async def test_outbox_relays_committed_events(broker: _Broker):
 
     async with store.transaction():
         await send(text="committed")
-    with pytest.raises(ValueError):
+
+    async def act() -> None:
         async with store.transaction():
             await send(text="rolled back")
-            raise ValueError("payment declined")
+            raise _PaymentDeclined()
+
+    with pytest.raises(_PaymentDeclined):
+        await act()
     (written,) = store.pending()
 
     # Act
     async with consumer, RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
         sent = await OutboxRelay(store, publisher, outbox).run_once()
-        await _eventually(lambda: len(received) == 1)
+        await received.wait_for_length(1)
         await asyncio.sleep(0.2)
 
     # Assert
@@ -1335,7 +1398,7 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
         relayed.append(dict(call.headers))
         yield
 
-    seen: list[dict[str, str]] = []
+    seen = _Log[dict[str, str]]()
     consumer = RabbitMQConsumer(
         _URL,
         deserializer=msgspec.json.decode,
@@ -1353,7 +1416,7 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
         ) as publisher,
     ):
         await OutboxRelay(store, publisher, outbox).run_once()
-        await _eventually(lambda: len(seen) == 1)
+        await seen.wait_for_length(1)
 
     # Assert
     assert written.headers["x-tenant"] == "acme"
@@ -1363,17 +1426,24 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
     assert headers["x-message-id"] == str(written.id)
 
 
-def _traced() -> tuple[TracerProvider, InMemorySpanExporter]:
-    """Return a tracer provider exporting to a new in-memory exporter."""
-    exporter = InMemorySpanExporter()
+class _Ended(SpanProcessor):
+    """Logs the name of each span as it ends, so a test can wait for one."""
+
+    def __init__(self, names: _Log[str]) -> None:
+        self._names = names
+
+    @override
+    def on_end(self, span: ReadableSpan) -> None:
+        self._names.append(span.name)
+
+
+def _traced() -> tuple[TracerProvider, InMemorySpanExporter, _Log[str]]:
+    """Return a tracer provider exporting to a new in-memory exporter, and its ended spans."""
+    exporter, ended = InMemorySpanExporter(), _Log[str]()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
-    return provider, exporter
-
-
-def _finished(exporter: InMemorySpanExporter, name: str) -> Callable[[], bool]:
-    """Return a check that a span of that name has finished."""
-    return lambda: any(span.name == name for span in exporter.get_finished_spans())
+    provider.add_span_processor(_Ended(ended))
+    return provider, exporter, ended
 
 
 def _ids(span: ReadableSpan) -> tuple[int, int]:
@@ -1400,7 +1470,7 @@ async def test_trace_spans_request_publish_and_handler(broker: _Broker):
     # Arrange
     queue = _unique("stratae-it-otel")
     broker.queues.append(queue)
-    provider, exporter = _traced()
+    provider, exporter, ended = _traced()
     handled: list[Message] = []
     consumer = RabbitMQConsumer(
         _URL, deserializer=msgspec.json.decode, middleware=tracing(provider)
@@ -1424,7 +1494,7 @@ async def test_trace_spans_request_publish_and_handler(broker: _Broker):
         transport = httpx2.ASGITransport(app=app)
         async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post("/orders")
-        await _eventually(_finished(exporter, f"process {queue}"))
+        await ended.wait_for_item(f"process {queue}")
 
     # Assert
     spans = exporter.get_finished_spans()
@@ -1450,7 +1520,7 @@ async def test_outbox_trace_links_relay_to_write(broker: _Broker):
     # Arrange
     queue = _unique("stratae-it-otel-outbox")
     broker.queues.append(queue)
-    provider, exporter = _traced()
+    provider, exporter, ended = _traced()
     store = InMemoryOutboxStore()
     outbox = OutboxProducer(store, msgspec.json.encode, middleware=tracing(provider))
     send = outbox.bind(
@@ -1471,7 +1541,7 @@ async def test_outbox_trace_links_relay_to_write(broker: _Broker):
         ) as publisher,
     ):
         await OutboxRelay(store, publisher, outbox).run_once()
-        await _eventually(_finished(exporter, f"process {queue}"))
+        await ended.wait_for_item(f"process {queue}")
 
     # Assert
     spans = {span.name: span for span in exporter.get_finished_spans()}
@@ -1510,14 +1580,14 @@ async def test_outbox_waits_out_an_outage(broker: _Broker, proxy: _Proxy):
 
     async with publisher:
         await proxy.outage()
-        await _eventually(lambda: publisher.state is ConnectionState.RECONNECTING)
+        await _wait_for_state(publisher, ConnectionState.RECONNECTING)
         await send(text="during the outage")
 
         # Act
         during = await relay.run_once()
         waiting = store.pending()
         await proxy.start()
-        await _eventually(lambda: publisher.state is ConnectionState.CONNECTED)
+        await _wait_for_state(publisher, ConnectionState.CONNECTED)
         after = await relay.run_once()
 
     # Assert

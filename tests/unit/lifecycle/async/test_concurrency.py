@@ -369,6 +369,7 @@ async def test_task_outliving_activation_cannot_use_its_cache(async_context_scop
     # Arrange
     @async_context_scope.cache()
     async def get_value() -> object:
+        await asyncio.sleep(0)
         return object()
 
     activation_ended = asyncio.Event()

@@ -57,6 +57,7 @@ pi_2000_123456
 
 import __future__
 
+from collections.abc import Awaitable, Callable
 from inspect import (
     Parameter,
     Signature,
@@ -68,7 +69,7 @@ from inspect import (
     ismethod,
     unwrap,
 )
-from typing import Annotated, Any, Awaitable, Callable, get_origin, overload
+from typing import Annotated, Any, get_origin, overload
 
 from stratae.codegen import read_signature
 from stratae.depends._provide import Provider
@@ -79,8 +80,12 @@ from stratae.depends._wrappers import (
     create_sync_wrapper,
 )
 from stratae.depends.exceptions import (
+    AsyncDependencyError,
     CircularDependencyError,
-    InjectionSignatureError,
+    InjectedDefaultError,
+    PostponedAnnotationsError,
+    StringAnnotationError,
+    UninjectableCallableError,
 )
 
 
@@ -157,7 +162,7 @@ def _resolve_function[**P, R](
     if _resolving is None:
         _resolving = set()
     if func in _resolving:
-        raise CircularDependencyError(f"Circular dependency detected for {func}.")
+        raise CircularDependencyError(func)
 
     _resolving.add(func)
     sig = read_signature(func)
@@ -178,10 +183,7 @@ def _reject_callable_objects(func: Callable[..., Any], resolved_deps: dict[str, 
     `__call__` or `__init__` is meant.
     """
     if resolved_deps and not (isfunction(func) or ismethod(func) or isclass(func)):
-        raise InjectionSignatureError(
-            f"Cannot inject into {func!r}: inject supports functions, methods, and classes. "
-            "Decorate its __call__ method with @inject instead, or wrap it in a function."
-        )
+        raise UninjectableCallableError(func)
 
 
 def _annotated_function(func: Callable[..., Any]) -> Any:
@@ -203,11 +205,7 @@ def _reject_future_annotations(func: Callable[..., Any], sig: Signature) -> None
         for param in sig.parameters.values()
     )
     if required and _uses_future_annotations(func):
-        raise InjectionSignatureError(
-            f"{func.__qualname__} is from a module using 'from __future__ import annotations', "
-            "which inject doesn't support: its annotations are strings, so injected "
-            "parameters can't be found."
-        )
+        raise PostponedAnnotationsError(func)
 
 
 def _is_quoted_dependency(annotation: Any, namespace: dict[str, Any]) -> bool:
@@ -232,11 +230,7 @@ def _reject_quoted_dependencies(func: Callable[..., Any], sig: Signature) -> Non
     namespace: dict[str, Any] = getattr(_annotated_function(func), "__globals__", {})
     for param in sig.parameters.values():
         if _is_quoted_dependency(param.annotation, namespace):
-            raise InjectionSignatureError(
-                f"{func.__qualname__} parameter {param.name!r} has a string annotation, which "
-                "inject doesn't support: it reads annotation objects, so the dependency "
-                "can't be found. Unquote it, or remove 'from __future__ import annotations'."
-            )
+            raise StringAnnotationError(func, param.name)
 
 
 def _resolve_parameters(sig: Signature, _resolving: set[Callable[..., Any]]) -> dict[str, Provider]:
@@ -272,7 +266,7 @@ def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., Any]]) ->
     if depends is None:
         return None
     elif param.default is not Parameter.empty:
-        raise InjectionSignatureError(f"Cannot use a default with injected parameter {param.name}")
+        raise InjectedDefaultError(param.name)
 
     if not depends.resolved:
         depends.update(_resolve_function(depends.dependency, _resolving))
@@ -288,9 +282,7 @@ def _validate_sync_async_constraint(
         return
 
     if any(v.is_async for v in resolved_deps.values()):
-        raise InjectionSignatureError(
-            f"Sync function '{func.__name__}' cannot have async dependencies."
-        )
+        raise AsyncDependencyError(func)
 
 
 def _create_wrapper(

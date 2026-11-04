@@ -1,8 +1,10 @@
 """Test inject with generators."""
 
+import asyncio
 import inspect
-from contextlib import asynccontextmanager
-from typing import Annotated, Any, AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager, suppress
+from typing import Annotated, Any
 from unittest.mock import Mock
 
 import pytest
@@ -15,6 +17,7 @@ def _sync_number() -> int:
 
 
 async def _async_number() -> int:
+    await asyncio.sleep(0)
     return 1
 
 
@@ -38,6 +41,7 @@ async def test_inject_on_async_generator():
     @inject
     async def gen_func(dep: Annotated[int, Depends(lambda: 5)]):
         """Inject into a function that returns a generator."""
+        await asyncio.sleep(0)
         for i in range(dep):
             yield i
         mock_cleanup()
@@ -48,10 +52,8 @@ async def test_inject_on_async_generator():
     mock_cleanup.assert_not_called()
     assert [x async for x in generator] == [0, 1, 2, 3, 4]
 
-    try:
+    with suppress(StopAsyncIteration):
         await anext(generator)
-    except StopAsyncIteration:
-        pass
     mock_cleanup.assert_called_once()
 
 
@@ -68,6 +70,7 @@ async def test_inject_generator_dep():
 
     async def gen_dep():
         """Create an async generator dependency."""
+        await asyncio.sleep(0)
         for i in range(3):
             yield i
         mock_cleanup()
@@ -97,6 +100,7 @@ async def test_inject_nested_async_generators():
     # Arrange
     async def inner_gen():
         """Inner async generator dependency."""
+        await asyncio.sleep(0)
         for i in range(2):
             yield f"inner-{i}"
 
@@ -128,6 +132,7 @@ async def test_inject_on_async_generator_with_args():
     @inject
     async def gen_func_with_args(count: int, dep: Annotated[int, Depends(lambda: 3)]):
         """Inject into a function that returns a generator and takes args."""
+        await asyncio.sleep(0)
         for i in range(min(count, dep)):
             yield i
 
@@ -150,6 +155,7 @@ async def test_inject_async_generator_with_kwargs():
     @inject
     async def gen_func_with_kwargs(*, count: int = 4, dep: Annotated[int, Depends(lambda: 2)]):
         """Inject into a function that returns a generator and takes kwargs."""
+        await asyncio.sleep(0)
         for i in range(count):
             yield i + dep
 
@@ -174,6 +180,7 @@ async def test_inject_async_generator_with_mixed_args():
     async def gen_func_with_mixed_args(
         count: int, *, start: int = 0, dep: Annotated[int, Depends(lambda: 3)]
     ):
+        await asyncio.sleep(0)
         for i in range(start, count + start):
             yield i * dep
 
@@ -196,6 +203,7 @@ def test_injected_async_generator_is_an_async_generator_function(provider: Calla
     # Act
     @inject
     async def gen(n: Annotated[int, Depends(provider)]):
+        await asyncio.sleep(0)
         yield n
 
     # Assert
@@ -250,6 +258,7 @@ async def test_sent_values_reach_generator(provider: Callable[[], Any]):
     # Arrange
     @inject
     async def echo(n: Annotated[int, Depends(provider)]) -> AsyncGenerator[object, object]:
+        await asyncio.sleep(0)
         received: object = yield n
         while True:
             received = yield received
@@ -280,6 +289,7 @@ async def test_aclose_closes_generator(provider: Callable[[], Any]):
 
     @inject
     async def gen(n: Annotated[int, Depends(provider)]):
+        await asyncio.sleep(0)
         try:
             yield n
         finally:
@@ -310,6 +320,7 @@ async def test_generator_handling_a_thrown_exception_keeps_yielding(
     # Arrange
     @inject
     async def gen(n: Annotated[int, Depends(provider)]):
+        await asyncio.sleep(0)
         try:
             yield n
         except ValueError:

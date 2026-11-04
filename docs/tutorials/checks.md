@@ -62,8 +62,8 @@ checks passed
 
 ### Optional modes
 By default (`mode="all"`), `check` stops at the first failure and propagates its exception as-is. Two other modes change how failures are collected:
-- `mode="gather"` -- run every check regardless of earlier failures, then raise one `ExceptionGroup` if any failed. Useful for form or batch validation, where you want to report every problem at once instead of stopping at the first.
-- `mode="any"` -- succeed as soon as one check passes; if all fail, raises an `ExceptionGroup` of every failure.
+- `mode="gather"` -- run every check regardless of earlier failures, then raise one `CheckFailures` group, an `ExceptionGroup`, if any failed. Useful for form or batch validation, where you want to report every problem at once instead of stopping at the first.
+- `mode="any"` -- succeed as soon as one check passes; if all fail, raises a `CheckFailures` group of every failure.
 
 ### Boolean expressions
 `mode` is one setting for the whole `check` call, so it can't express nested AND/OR logic on its own. `any_of` and `all_of` collect a set of checks into a group, so `check(any_of(is_admin, is_owner), not_pending)` reads as `(is_admin OR is_owner) AND not_pending`. See [Composing boolean logic](#composing-boolean-logic) for the full walkthrough.
