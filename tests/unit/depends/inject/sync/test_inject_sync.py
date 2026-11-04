@@ -1,7 +1,8 @@
 """Tests for the inject decorator in the dependency injection system."""
 
+from collections.abc import Callable
 from functools import wraps
-from typing import Annotated, Callable
+from typing import Annotated
 
 import pytest
 

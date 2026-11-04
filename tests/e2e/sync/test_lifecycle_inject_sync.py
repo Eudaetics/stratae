@@ -10,6 +10,27 @@ from stratae.depends import Depends, inject
 from stratae.lifecycle import Scope, resource
 
 
+class _SimulatedException(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Simulated exception")
+
+
+class _SimulatedExceptionAfterYield(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Simulated exception after yield")
+
+
+class _SimulatedExceptionAfterYieldAttribute(AttributeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Simulated exception after yield")
+
+
 def test_lifecycle_inject_sync(application_scope: Scope):
     """
     Test lifecycle management with dependency injection with sync dependencies.
@@ -173,12 +194,11 @@ def test_lifecycle_inject_sync_with_exception(application_scope: Scope):
     @resource
     def get_resource(_: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         yield
-        raise ValueError("Simulated exception")
+        raise _SimulatedException()
 
     # Act / Assert
-    with pytest.raises(ValueError):
-        with application_scope:
-            get_resource()
+    with pytest.raises(_SimulatedException), application_scope:
+        get_resource()
 
 
 def test_lifecycle_inject_sync_gen_with_exception(application_scope: Scope):
@@ -206,13 +226,16 @@ def test_lifecycle_inject_sync_gen_with_exception(application_scope: Scope):
             mock_side_effect()
         finally:
             mock_cleanup()
-            raise ValueError("Simulated exception after yield")
+            raise _SimulatedExceptionAfterYield()
 
     # Act / Assert
-    with pytest.raises(ValueError, match="Simulated exception after yield"):
+    def act() -> None:
         with application_scope:
             resource_instance = get_resource()
             assert isinstance(resource_instance, SimpleObject)
+
+    with pytest.raises(ValueError, match="Simulated exception after yield"):
+        act()
 
     assert mock_side_effect.call_count == 1
     assert mock_cleanup.call_count == 1
@@ -247,7 +270,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(application_scope: S
             raise
         finally:
             mock_cleanup()
-            raise ValueError("Simulated exception after yield")
+            raise _SimulatedExceptionAfterYield()
 
     @application_scope.cache()
     @inject
@@ -258,15 +281,18 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(application_scope: S
             mock_side_effect()
         finally:
             mock_cleanup()
-            raise AttributeError("Simulated exception after yield")
+            raise _SimulatedExceptionAfterYieldAttribute()
 
     # Act / Assert
-    with pytest.raises(ExceptionGroup) as exceptions:
+    def act() -> None:
         with application_scope:
             resource_instance = get_one()
             resource_instance_2 = get_two()
             assert isinstance(resource_instance, SimpleObject)
             assert isinstance(resource_instance_2, SimpleObject)
+
+    with pytest.raises(ExceptionGroup) as exceptions:
+        act()
 
     assert len(exceptions.value.exceptions) == 2
     assert any(

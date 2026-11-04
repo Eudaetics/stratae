@@ -103,7 +103,8 @@ with Envelope.scope(Envelope(correlation_id=UUID("0b9d7a52-6f1e-4c3a-9d2b-5e8f1a
 ````
 """
 
-from typing import Any, Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, MutableMapping
+from typing import Any
 from uuid import UUID, uuid4
 
 from stratae.events.envelope import CORRELATION_ID_HEADER, Envelope

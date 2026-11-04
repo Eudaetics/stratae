@@ -114,9 +114,10 @@ Connection health and reconnecting:
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from itertools import count
-from typing import Any, AsyncGenerator, cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, call
 from uuid import uuid4
 
@@ -152,6 +153,34 @@ from stratae.serde import deserialize
 _URL = "amqp://guest:guest@localhost/"
 
 
+class _AuditDown(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("audit down")
+
+
+class _CommitFailed(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("commit failed")
+
+
+class _NotToday(PermissionError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("not today")
+
+
+class _RateLimited(PermissionError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("rate limited")
+
+
 class _OrderPlaced:
     def __init__(self, order_id: int) -> None:
         self.order_id = order_id
@@ -183,14 +212,6 @@ def _message(body: bytes, headers: dict[str, Any] | None = None) -> AsyncMock:
 def _delivery_callback(channel: AsyncMock) -> Any:
     """Return the on-message callback the consumer registered on the channel."""
     return channel.basic_consume.await_args.args[1]
-
-
-@pytest.fixture
-async def channel() -> AsyncMock:
-    """Return a mock AMQP channel, whose closing future fails when the broker drops it."""
-    channel = AsyncMock()
-    channel.closing = asyncio.get_running_loop().create_future()
-    return channel
 
 
 @pytest.fixture
@@ -456,6 +477,7 @@ async def test_async_handler_awaited(consumer: RabbitMQConsumer, channel: AsyncM
     received: list[_OrderPlaced] = []
 
     async def on_order(payload: _OrderPlaced) -> None:
+        await asyncio.sleep(0)
         received.append(payload)
 
     consumer.handle(_order_placed, on_order, config=_config)
@@ -1337,7 +1359,7 @@ async def test_raising_handle_hook_nacks(consumer: RabbitMQConsumer, channel: As
     received: list[_OrderPlaced] = []
 
     def refuse(event: Any, payload: _OrderPlaced) -> None:
-        raise PermissionError("not today")
+        raise _NotToday()
 
     consumer.handle(_order_placed, received.append, config=_config, hooks=Hooks(before=(refuse,)))
     message = _message(b'{"order_id": 7}')
@@ -1368,6 +1390,7 @@ async def test_signal_handle_hooks_receive_no_payload(
     calls: list[str] = []
 
     async def record(event: Any, payload: NoPayload) -> None:
+        await asyncio.sleep(0)
         payloads.append(payload)
 
     consumer.handle(
@@ -1398,7 +1421,7 @@ async def test_raising_success_hook_still_acks(
     received: list[_OrderPlaced] = []
 
     def audit(event: Any, payload: _OrderPlaced, reply: object) -> None:
-        raise RuntimeError("audit down")
+        raise _AuditDown()
 
     consumer.handle(_order_placed, received.append, config=_config, hooks=Hooks(success=(audit,)))
     message = _message(b'{"order_id": 7}')
@@ -1470,7 +1493,7 @@ async def test_handle_middleware_refusing_nacks(
 
     @asynccontextmanager
     async def refuse(call: HandleCall) -> AsyncGenerator[None, None]:
-        raise PermissionError("rate limited")
+        raise _RateLimited()
         yield
 
     consumer = RabbitMQConsumer(_URL, middleware=Middleware(handle=(refuse,)))
@@ -1714,6 +1737,7 @@ def _scoped_resource(events: list[str], *, fail_close: bool = False) -> tuple[As
     @scope.cache()
     @async_resource
     async def get_resource() -> AsyncGenerator[int, None]:
+        await asyncio.sleep(0)
         n = next(opened)
         events.append(f"open {n}")
         try:
@@ -1722,7 +1746,7 @@ def _scoped_resource(events: list[str], *, fail_close: bool = False) -> tuple[As
             events.append(f"close {n} with {type(exc).__name__}")
             raise
         if fail_close:
-            raise RuntimeError("commit failed")
+            raise _CommitFailed()
         events.append(f"close {n}")
 
     return scope, get_resource
@@ -2335,6 +2359,7 @@ def _new_channels(connection: AsyncMock) -> list[AsyncMock]:
     opened: list[AsyncMock] = []
 
     async def open_channel(**_: Any) -> AsyncMock:
+        await asyncio.sleep(0)
         channel = AsyncMock()
         channel.closing = asyncio.get_running_loop().create_future()
         opened.append(channel)
@@ -2342,13 +2367,6 @@ def _new_channels(connection: AsyncMock) -> list[AsyncMock]:
 
     connection.channel.side_effect = open_channel
     return opened
-
-
-async def _until(condition: Any) -> None:
-    """Yield to the loop until the condition holds, failing after a second."""
-    async with asyncio.timeout(1):
-        while not condition():
-            await asyncio.sleep(0.001)
 
 
 async def test_consumer_reports_state(consumer: RabbitMQConsumer):
@@ -2393,7 +2411,8 @@ async def test_consumer_resumes_registrations_after_channel_loss(
         reconnecting = consumer.state
         await consumer.remove(removed)
         consumer.handle(_order_placed, lambda order: None, config=RabbitMQConsumeConfig("added"))
-        await _until(lambda: consumer.state is ConnectionState.CONNECTED)
+        async with asyncio.timeout(1):
+            await consumer.wait_for_state(ConnectionState.CONNECTED)
 
     # Assert
     assert reconnecting is ConnectionState.RECONNECTING
@@ -2417,8 +2436,11 @@ async def test_lost_channel_without_reconnect_closes_consumer(
 
     async with consumer:
         # Act
+        closed = asyncio.Event()
+        connection.close.side_effect = lambda: closed.set()
         channel.closing.set_exception(ConnectionError("gone"))
-        await _until(lambda: connection.close.await_count == 1)
+        async with asyncio.timeout(1):
+            await closed.wait()
 
         # Assert
         assert consumer.state is ConnectionState.CLOSED
@@ -2440,13 +2462,17 @@ async def test_consumer_exit_while_reconnecting_stops(
     channels = _new_channels(connection)
     consumer = RabbitMQConsumer(_URL, reconnect=_FAST)
 
+    attempted = asyncio.Event()
+
     async def never(*_: Any) -> None:
+        attempted.set()
         await asyncio.Event().wait()
 
     await consumer.__aenter__()
     connect_mock.side_effect = never
     channels[0].closing.set_exception(ConnectionError("gone"))
-    await _until(lambda: connect_mock.await_count == 2)
+    async with asyncio.timeout(1):
+        await attempted.wait()
 
     # Act
     async with asyncio.timeout(1):

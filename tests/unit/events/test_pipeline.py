@@ -20,8 +20,10 @@ wrap_handler:
   copy taken when it was entered; outside one, it reads none.
 """
 
+import asyncio
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any, AsyncGenerator, Generator
+from typing import Any
 
 import pytest
 
@@ -90,6 +92,7 @@ def _shout(order: _Order) -> str:
 
 
 async def _ashout(order: _Order) -> str:
+    await asyncio.sleep(0)
     return order.item.upper()
 
 
@@ -161,6 +164,7 @@ async def test_wrap_handler_async(handler: Any, hook_is_async: bool, with_middle
         log.append("hook")
 
     async def async_hook(event: Any, payload: _Order) -> None:
+        await asyncio.sleep(0)
         log.append("hook")
 
     @asynccontextmanager

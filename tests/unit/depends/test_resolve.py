@@ -2,9 +2,10 @@
 
 import asyncio
 import inspect
+from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import asynccontextmanager, contextmanager
 from functools import wraps
-from typing import Annotated, Any, AsyncGenerator, Callable, Generator
+from typing import Annotated, Any
 from unittest.mock import Mock
 
 import pytest
@@ -175,7 +176,7 @@ def test_resolve_sync_function_with_async_dependency():
 
     # Act & Assert
     with pytest.raises(
-        InjectionSignatureError, match="Sync function '.*' cannot have async dependencies"
+        InjectionSignatureError, match=r"Sync function '.*' cannot have async dependencies"
     ):
         _resolve_function(sync_function)
 
@@ -613,7 +614,7 @@ def test_circular_dependency_detected():
     dep1.__annotations__["dep"] = Annotated[int, Depends(dep2)]
 
     # Act & Assert
-    with pytest.raises(CircularDependencyError, match="Circular dependency detected for .*dep1.*"):
+    with pytest.raises(CircularDependencyError, match=r"Circular dependency detected for .*dep1.*"):
         _resolve_function(dep1)
 
 
@@ -709,6 +710,7 @@ async def test_resolve_function_wraps_async_context_manager_with_async_dependenc
         return 1
 
     async def cm_func(dep: Annotated[int, Depends(async_dependency)]) -> AsyncGenerator[int, None]:
+        await asyncio.sleep(0)
         yield dep
         mock_cleanup()
 

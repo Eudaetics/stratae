@@ -1,7 +1,7 @@
 """Unit test suite for Envelope."""
 
 import asyncio
-from datetime import timezone
+from datetime import UTC
 from uuid import uuid4
 
 import pytest
@@ -29,7 +29,7 @@ def test_envelope_default_fields():
     assert envelope.message_id is not None
     assert envelope.correlation_id is not None
     assert envelope.causation_id is None
-    assert envelope.timestamp.tzinfo == timezone.utc
+    assert envelope.timestamp.tzinfo == UTC
 
 
 def test_envelope_unique_message_ids():
@@ -173,7 +173,7 @@ def test_from_headers_defaults_absent_fields():
     assert rebuilt.message_id == message_id
     assert rebuilt.correlation_id is not None
     assert rebuilt.causation_id is None
-    assert rebuilt.timestamp.tzinfo == timezone.utc
+    assert rebuilt.timestamp.tzinfo == UTC
 
 
 def test_from_headers_treats_none_values_as_absent():
@@ -259,10 +259,9 @@ def test_scope_nested_creates_child():
     Then: The inner envelope's causation_id equals the outer envelope's message_id.
     """
     # Act & Assert
-    with Envelope.scope() as outer:
-        with Envelope.scope() as inner:
-            assert inner.correlation_id == outer.correlation_id
-            assert inner.causation_id == outer.message_id
+    with Envelope.scope() as outer, Envelope.scope() as inner:
+        assert inner.correlation_id == outer.correlation_id
+        assert inner.causation_id == outer.message_id
 
 
 def test_scope_restores_context_on_exit():
@@ -344,9 +343,8 @@ def test_scope_restores_context_on_exception():
     """
     # Act & Assert
     with Envelope.scope() as outer:
-        with pytest.raises(RuntimeError):
-            with Envelope.scope():
-                raise RuntimeError("boom")
+        with pytest.raises(RuntimeError), Envelope.scope():
+            raise RuntimeError("boom")
         assert Envelope.current() is outer
 
 

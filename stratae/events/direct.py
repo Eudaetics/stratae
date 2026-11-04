@@ -92,8 +92,9 @@ scheduled shipment for order 1
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import nullcontext
-from typing import Any, Awaitable, Callable, ClassVar, Collection, Protocol, overload
+from typing import Any, ClassVar, Protocol, overload, override
 
 from stratae._callables import is_async_callable
 from stratae.events._dispatch import (
@@ -327,6 +328,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
     _asynchronous = False
     _defaults = _SYNC_DEFAULTS
 
+    @override
     def emit[S, R](
         self,
         event: EventType[S, R, Any, Any],
@@ -339,7 +341,8 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         """
         Dispatch a payload to the event's handlers.
 
-        Pub/sub handler failures are raised together as an {py:exc}`ExceptionGroup`. A
+        Pub/sub handler failures are raised together as {py:exc}`HandlerErrors
+        <stratae.events.exceptions.HandlerErrors>`, an `ExceptionGroup`. A
         responder's exception propagates directly.
 
         :param event: The event to dispatch.
@@ -480,6 +483,7 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
     _asynchronous = True
     _defaults = _ASYNC_DEFAULTS
 
+    @override
     async def emit[S, R](
         self,
         event: EventType[S, R, Any, Any],

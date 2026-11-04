@@ -45,10 +45,11 @@ OutboxRelay:
 
 import asyncio
 import logging
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
-from typing import Any, Generator, Mapping, Sequence, cast
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast, override
 
 import pytest
 
@@ -61,6 +62,27 @@ from stratae.events.outbox import (
     OutboxRecord,
     OutboxRelay,
 )
+
+
+class _InnerRolledBack(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("inner rolled back")
+
+
+class _OuterRolledBack(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("outer rolled back")
+
+
+class _RolledBack(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("rolled back")
 
 
 class _Order:
@@ -104,7 +126,7 @@ class _Publisher:
 def _record(store: InMemoryOutboxStore, order_id: int = 1, **changes: Any) -> OutboxRecord:
     """Add a record straight to the store, as the producer would, and return it."""
     envelope = Envelope()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     record = OutboxRecord(
         id=envelope.message_id,
         route="_Order",
@@ -157,10 +179,30 @@ class _AsyncStore:
         self.inner.mark_failed(record)
 
 
+class _WatchedStore(InMemoryOutboxStore):
+    """An in-memory store a test can wait on, woken each time records are marked sent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._marked = asyncio.Event()
+
+    @override
+    def mark_sent(self, records: Sequence[OutboxRecord]) -> None:
+        super().mark_sent(records)
+        self._marked.set()
+        self._marked = asyncio.Event()
+
+    async def wait_for_sent(self, count: int) -> None:
+        """Wait until `count` records are marked sent, failing after a second."""
+        async with asyncio.timeout(1):
+            while len(self.sent()) < count:
+                await self._marked.wait()
+
+
 @pytest.fixture
-def store() -> InMemoryOutboxStore:
+def store() -> _WatchedStore:
     """Return an empty in-memory outbox store."""
-    return InMemoryOutboxStore()
+    return _WatchedStore()
 
 
 @pytest.fixture
@@ -400,10 +442,14 @@ async def test_transaction_keeps_or_drops(outbox: OutboxProducer, store: InMemor
     await place(order_id=1)
     async with store.transaction():
         await place(order_id=2)
-    with pytest.raises(ValueError):
+
+    async def act() -> None:
         async with store.transaction():
             await place(order_id=3)
-            raise ValueError("rolled back")
+            raise _RolledBack()
+
+    with pytest.raises(_RolledBack):
+        await act()
 
     # Assert
     assert [record.body for record in store.pending()] == [b"1", b"2"]
@@ -421,24 +467,30 @@ async def test_nested_transactions(outbox: OutboxProducer, store: InMemoryOutbox
     # Arrange
     place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
 
-    # Act
-    with pytest.raises(ValueError):
+    async def fail_outer() -> None:
         async with store.transaction():
             async with store.transaction():
                 await place(order_id=1)
-            raise ValueError("outer rolled back")
+            raise _OuterRolledBack()
+
+    async def fail_inner() -> None:
+        async with store.transaction():
+            await place(order_id=3)
+            raise _InnerRolledBack()
+
+    # Act
+    with pytest.raises(_OuterRolledBack):
+        await fail_outer()
     async with store.transaction():
         await place(order_id=2)
-        with pytest.raises(ValueError):
-            async with store.transaction():
-                await place(order_id=3)
-                raise ValueError("inner rolled back")
+        with pytest.raises(_InnerRolledBack):
+            await fail_inner()
 
     # Assert
     assert [record.body for record in store.pending()] == [b"2"]
 
 
-async def test_claim_due_unclaimed_oldest_first(store: InMemoryOutboxStore):
+def test_claim_due_unclaimed_oldest_first(store: InMemoryOutboxStore):
     """
     ``claim`` should return due, unclaimed, pending records oldest first, up to the limit.
 
@@ -448,7 +500,7 @@ async def test_claim_due_unclaimed_oldest_first(store: InMemoryOutboxStore):
     """
     # Arrange
     first, second, third = [_record(store, n) for n in (1, 2, 3)]
-    later = datetime.now(timezone.utc) + timedelta(hours=1)
+    later = datetime.now(UTC) + timedelta(hours=1)
     _record(store, 4, available_at=later)
     store.mark_sent([_record(store, 5)])
 
@@ -459,7 +511,7 @@ async def test_claim_due_unclaimed_oldest_first(store: InMemoryOutboxStore):
     assert claimed == [[first, second], [third]]
 
 
-async def test_claimed_record_leased_until_released(store: InMemoryOutboxStore):
+def test_claimed_record_leased_until_released(store: InMemoryOutboxStore):
     """
     A claimed record shouldn't be claimed again until it's released or its lease runs out.
 
@@ -485,7 +537,7 @@ async def test_claimed_record_leased_until_released(store: InMemoryOutboxStore):
     assert len(expired) == 1
 
 
-async def test_marking_moves_records(store: InMemoryOutboxStore):
+def test_marking_moves_records(store: InMemoryOutboxStore):
     """
     mark_sent, reschedule and mark_failed should move records between states.
 
@@ -592,7 +644,7 @@ async def test_failed_publish_retried_after_growing_delay(
     assert early == 0
     assert (first.attempts, first.error) == (1, "RuntimeError: refused")
     assert (second.attempts, second.error) == (2, "RuntimeError: refused again")
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     assert timedelta(seconds=14) < second.available_at - now <= timedelta(seconds=15)
     assert timedelta(seconds=9) < first.available_at - first.created_at <= timedelta(seconds=11)
     assert publisher.published == []
@@ -714,7 +766,7 @@ async def test_crash_before_marking_sent_resends_same_id():
     assert len(memory.sent()) == 1
 
 
-async def test_background_relay_woken(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_background_relay_woken(outbox: OutboxProducer, store: _WatchedStore):
     """
     Entered with async with, the relay should relay in the background, at once when woken.
 
@@ -732,9 +784,7 @@ async def test_background_relay_woken(outbox: OutboxProducer, store: InMemoryOut
         await asyncio.sleep(0)
         await place(order_id=1)
         relay.wake()
-        async with asyncio.timeout(1):
-            while not publisher.published:
-                await asyncio.sleep(0.001)
+        await store.wait_for_sent(1)
 
     # Assert
     assert len(store.sent()) == 1
@@ -767,7 +817,7 @@ async def test_background_store_failure_logged(caplog: pytest.LogCaptureFixture)
     Then: The failure is logged, and the record is published on a later poll
     """
     # Arrange
-    memory = InMemoryOutboxStore()
+    memory = _WatchedStore()
     store = _AsyncStore(memory, claim=RuntimeError("database gone"))
     producer = OutboxProducer(store, serializer=_encode)
     await producer.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))(order_id=1)
@@ -778,16 +828,14 @@ async def test_background_store_failure_logged(caplog: pytest.LogCaptureFixture)
         async with OutboxRelay(
             store, publisher, producer, poll_interval=0.001, max_poll_interval=0.001
         ):
-            async with asyncio.timeout(1):
-                while not publisher.published:
-                    await asyncio.sleep(0.001)
+            await memory.wait_for_sent(1)
 
     # Assert
     assert "outbox relay failed to relay a batch" in caplog.text
     assert len(memory.sent()) == 1
 
 
-async def test_full_batch_followed_at_once(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_full_batch_followed_at_once(outbox: OutboxProducer, store: _WatchedStore):
     """
     A full batch should be followed straight away by the next.
 
@@ -805,9 +853,7 @@ async def test_full_batch_followed_at_once(outbox: OutboxProducer, store: InMemo
     async with OutboxRelay(
         store, publisher, outbox, batch_size=2, poll_interval=60, max_poll_interval=60
     ):
-        async with asyncio.timeout(1):
-            while len(publisher.published) < 3:
-                await asyncio.sleep(0.001)
+        await store.wait_for_sent(3)
 
     # Assert
     assert len(store.sent()) == 3

@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
 import pytest
 
@@ -21,6 +21,67 @@ from stratae.lifecycle.exceptions import ScopeInactiveError
 pytestmark = pytest.mark.fastapi
 
 
+def _lookup_missing() -> NoReturn:
+    """Fail a lookup, as code under test would, so a handler has an error to handle."""
+    raise KeyError("missing")
+
+
+class _DeliberateCommitFailure(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate commit failure")
+
+
+class _DeliberateFailureAfterCallingResourceTwice(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate failure after calling resource twice")
+
+
+class _DeliberateFailureBeforeTouchingAnyResource(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate failure before touching any resource")
+
+
+class _DeliberateFailureMidStream(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate failure mid-stream")
+
+
+class _DeliberateFailureSwallowedByResourceCleanup(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate failure swallowed by resource cleanup")
+
+
+class _DeliberateMidStreamFailureBeforeTouchingAnyResource(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate mid-stream failure before touching any resource")
+
+
+class _DeliberateMidStreamFailureSwallowedByResourceCleanup(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate mid-stream failure swallowed by resource cleanup")
+
+
+class _DeliberateUnhandledFailure(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate unhandled failure")
+
+
 @pytest.fixture
 def events() -> list[str]:
     """Provide a fresh event log for the app fixture to record open/commit/rollback/close into."""
@@ -28,12 +89,13 @@ def events() -> list[str]:
 
 
 @pytest.fixture
-def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
+def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.Event) -> FastAPI:
     """Build a FastAPI app whose request scope is activated via scoped_route."""
 
     @async_request_scope.cache()
     @async_resource
     async def get_transaction():
+        await asyncio.sleep(0)
         events.append("open")
         try:
             yield "connection"
@@ -60,7 +122,7 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
     @fastapi_app.get("/unhandled")
     async def unhandled() -> None:  # pyright: ignore[reportUnusedFunction]
         await get_transaction()
-        raise RuntimeError("deliberate unhandled failure")
+        raise _DeliberateUnhandledFailure()
 
     @fastapi_app.get("/twice")
     async def twice() -> dict[str, bool]:  # pyright: ignore[reportUnusedFunction]
@@ -74,13 +136,14 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
         second = await get_transaction()
         if first is not second:
             raise HTTPException(status_code=409, detail="expected the same cached connection")
-        raise RuntimeError("deliberate failure after calling resource twice")
+        raise _DeliberateFailureAfterCallingResourceTwice()
 
     @fastapi_app.get("/stream")
     async def stream() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
         connection = await get_transaction()
 
         async def body():
+            await asyncio.sleep(0)
             events.append(f"stream:{connection}")
             yield b"chunk1"
             events.append("stream-done")
@@ -104,26 +167,29 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
         await get_transaction()
 
         async def body():
+            await asyncio.sleep(0)
             yield b"chunk1"
-            raise RuntimeError("deliberate failure mid-stream")
+            raise _DeliberateFailureMidStream()
 
         return StreamingResponse(body())
 
     @fastapi_app.get("/fail-before-resource")
     async def fail_before_resource() -> None:  # pyright: ignore[reportUnusedFunction]
-        raise RuntimeError("deliberate failure before touching any resource")
+        raise _DeliberateFailureBeforeTouchingAnyResource()
 
     @fastapi_app.get("/stream-fail-before-resource")
     async def stream_fail_untouched() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
         async def body():
+            await asyncio.sleep(0)
             yield b"chunk1"
-            raise RuntimeError("deliberate mid-stream failure before touching any resource")
+            raise _DeliberateMidStreamFailureBeforeTouchingAnyResource()
 
         return StreamingResponse(body())
 
     @async_request_scope.cache()
     @async_resource
     async def get_swallowing_transaction():
+        await asyncio.sleep(0)
         events.append("open")
         try:
             yield "connection"
@@ -136,15 +202,16 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
     @fastapi_app.get("/swallowed-exception")
     async def swallowed_exception_route() -> None:  # pyright: ignore[reportUnusedFunction]
         await get_swallowing_transaction()
-        raise ValueError("deliberate failure swallowed by resource cleanup")
+        raise _DeliberateFailureSwallowedByResourceCleanup()
 
     @fastapi_app.get("/stream-swallowed-exception")
     async def stream_swallowed_exception() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
         await get_swallowing_transaction()
 
         async def body():
+            await asyncio.sleep(0)
             yield b"chunk1"
-            raise ValueError("deliberate mid-stream failure swallowed by resource cleanup")
+            raise _DeliberateMidStreamFailureSwallowedByResourceCleanup()
 
         return StreamingResponse(body())
 
@@ -152,7 +219,7 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
     async def http_exception_while_handling() -> None:  # pyright: ignore[reportUnusedFunction]
         await get_transaction()
         try:
-            raise KeyError("missing")
+            _lookup_missing()
         except KeyError:
             raise HTTPException(status_code=404, detail="deliberate 404 while handling") from None
 
@@ -160,6 +227,7 @@ def app(async_request_scope: AsyncScope, events: list[str]) -> FastAPI:
     async def suspend() -> None:  # pyright: ignore[reportUnusedFunction]
         await get_transaction()
         events.append("suspended")
+        suspended.set()
         await asyncio.Event().wait()
 
     return fastapi_app
@@ -403,7 +471,10 @@ def test_http_exception_raised_while_handling_another_keeps_its_status(
 
 
 async def test_cancelled_request_still_closes_resource(
-    app: FastAPI, events: list[str], cancel_mid_request: Callable[..., Awaitable[None]]
+    app: FastAPI,
+    events: list[str],
+    suspended: asyncio.Event,
+    cancel_mid_request: Callable[..., Awaitable[None]],
 ):
     """
     A request cancelled mid-handler should still close its request-scoped resource.
@@ -413,7 +484,7 @@ async def test_cancelled_request_still_closes_resource(
     Then: The request-scoped resource is closed without committing
     """
     # Act
-    await cancel_mid_request(app, "/suspend", lambda: "suspended" in events)
+    await cancel_mid_request(app, "/suspend", suspended)
 
     # Assert
     assert "commit" not in events
@@ -481,11 +552,17 @@ def transaction_app(
     @request_scope.cache()
     @async_resource
     async def get_connection():
+        await asyncio.sleep(0)
         events.append("connection-open")
         try:
             yield "connection"
         finally:
             events.append("connection-close")
+
+    def commit() -> None:
+        if commit_fails["commit"]:
+            raise _DeliberateCommitFailure()
+        events.append("commit")
 
     @transaction_scope.cache()
     @async_resource
@@ -494,9 +571,7 @@ def transaction_app(
         events.append("begin")
         try:
             yield "transaction"
-            if commit_fails["commit"]:
-                raise RuntimeError("deliberate commit failure")
-            events.append("commit")
+            commit()
         except BaseException:
             events.append("rollback")
             raise

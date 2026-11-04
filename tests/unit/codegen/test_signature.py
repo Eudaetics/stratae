@@ -1,7 +1,8 @@
 """Test suite for parameter-list signature rendering."""
 
+from collections.abc import Callable
 from inspect import Parameter, signature
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 

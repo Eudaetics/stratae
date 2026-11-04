@@ -1,13 +1,15 @@
 """Minimal line-based writer for generating indented source code."""
 
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
+
+from stratae.codegen.exceptions import InvalidIndentWidthError
 
 
 class Writer:
     """Accumulates lines of source text, indented by `block()` nesting."""
 
-    __slots__ = ("_nesting", "_lines", "_whitespace")
+    __slots__ = ("_lines", "_nesting", "_whitespace")
 
     def __init__(self, width: int = 4, use_tabs: bool = False) -> None:
         """
@@ -15,13 +17,10 @@ class Writer:
 
         :param width: Spaces per indent level. Ignored if `use_tabs` is True.
         :param use_tabs: Indent with tabs instead of spaces.
-        :raises ValueError: If `width` is less than 1 without `use_tabs`.
+        :raises InvalidIndentWidthError: If `width` is less than 1 without `use_tabs`.
         """
         if not use_tabs and width < 1:
-            raise ValueError(
-                "Indent width must be a positive integer. "
-                "The recommended indent width per PEP 8 is 4 spaces."
-            )
+            raise InvalidIndentWidthError()
         self._whitespace = " " * width if not use_tabs else "\t"
         self._nesting = 0
         self._lines: list[str] = []

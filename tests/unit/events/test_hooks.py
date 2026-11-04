@@ -30,12 +30,27 @@ run_hooks_async:
 """
 
 import asyncio
-from typing import Any, Generator, cast
+from collections.abc import Generator
+from typing import Any, cast
 
 import pytest
 
 from stratae.events import Hooks, PubSub
 from stratae.events.hooks import run_hooks, run_hooks_async
+
+
+class _AlertFailed(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("alert failed")
+
+
+class _OutOfStock(LookupError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("out of stock")
 
 
 class _Order:
@@ -187,11 +202,11 @@ def test_run_hooks_order_on_failure() -> None:
             _recording_hooks(log),
             _order_placed,
             _Order("lamp"),
-            _raise(LookupError("out of stock")),
+            _raise(_OutOfStock()),
         )
 
     # Assert
-    assert log == ["before lamp", "failure out of stock", "complete LookupError"]
+    assert log == ["before lamp", "failure out of stock", "complete _OutOfStock"]
 
 
 def test_run_hooks_before_raising_prevents_call() -> None:
@@ -289,10 +304,10 @@ def test_run_hooks_failure_hook_error_is_logged(caplog: pytest.LogCaptureFixture
 
     # Act
     with pytest.raises(LookupError, match="out of stock"):
-        run_hooks(hooks, _order_placed, _Order("lamp"), _raise(LookupError("out of stock")))
+        run_hooks(hooks, _order_placed, _Order("lamp"), _raise(_OutOfStock()))
 
     # Assert
-    assert log == ["complete LookupError"]
+    assert log == ["complete _OutOfStock"]
     assert "alert failed" in caplog.text
 
 
@@ -383,9 +398,11 @@ async def test_run_hooks_async_mixes_sync_and_async_hooks() -> None:
     recording = _recording_hooks(log)
 
     async def before(event: Any, payload: Any) -> None:
+        await asyncio.sleep(0)
         log.append(f"async before {payload.item}")
 
     async def call(order: _Order) -> str:
+        await asyncio.sleep(0)
         log.append("call")
         return f"placed {order.item}"
 
@@ -413,10 +430,12 @@ async def test_run_hooks_async_order_on_failure() -> None:
     log: list[str] = []
 
     async def failure(event: Any, payload: Any, error: Exception) -> None:
+        await asyncio.sleep(0)
         log.append(f"failure {error}")
 
     async def call() -> None:
-        raise LookupError("out of stock")
+        await asyncio.sleep(0)
+        raise _OutOfStock()
 
     hooks: Hooks[Any, Any] = Hooks(failure=(failure,), complete=_recording_hooks(log).complete)
 
@@ -425,7 +444,7 @@ async def test_run_hooks_async_order_on_failure() -> None:
         await run_hooks_async(hooks, _order_placed, _Order("lamp"), call)
 
     # Assert
-    assert log == ["failure out of stock", "complete LookupError"]
+    assert log == ["failure out of stock", "complete _OutOfStock"]
 
 
 async def test_run_hooks_async_failure_hook_error_is_logged(
@@ -441,10 +460,12 @@ async def test_run_hooks_async_failure_hook_error_is_logged(
 
     # Arrange
     async def failure(event: Any, payload: Any, error: Exception) -> None:
-        raise RuntimeError("alert failed")
+        await asyncio.sleep(0)
+        raise _AlertFailed()
 
     async def call() -> None:
-        raise LookupError("out of stock")
+        await asyncio.sleep(0)
+        raise _OutOfStock()
 
     hooks: Hooks[Any, Any] = Hooks(failure=(failure,))
 
@@ -468,6 +489,7 @@ async def test_run_hooks_async_cancellation_reaches_complete_only() -> None:
     log: list[str] = []
 
     async def call() -> None:
+        await asyncio.sleep(0)
         raise asyncio.CancelledError
 
     # Act
@@ -495,10 +517,12 @@ async def test_run_hooks_async_observing_hooks_run_concurrently() -> None:
         log.append("first")
 
     async def second(event: Any, payload: Any, reply: Any) -> None:
+        await asyncio.sleep(0)
         second_started.set()
         log.append("second")
 
     async def call() -> str:
+        await asyncio.sleep(0)
         return "reply"
 
     hooks: Hooks[Any, Any] = Hooks(success=(first, second))

@@ -7,7 +7,8 @@ Structural protocols for the event system.
 adapter. {py:class}`EmitCallable` describes a single emitter with a concrete return type.
 """
 
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from stratae.events.hooks import Hooks
 from stratae.events.patterns import NoPayload

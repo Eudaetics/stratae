@@ -123,18 +123,13 @@ handling lamp for acme
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, MutableMapping
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass
 from types import CoroutineType, MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
-    Callable,
-    Collection,
-    Iterator,
-    Mapping,
-    MutableMapping,
     NoReturn,
 )
 

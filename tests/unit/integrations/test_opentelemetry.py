@@ -32,6 +32,7 @@ Without an SDK or a known adapter:
 
 import asyncio
 import sys
+from itertools import pairwise
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -68,6 +69,9 @@ _order_placed = PubSub(_OrderPlaced)
 
 class _OutOfStock(LookupError):
     """An error from outside builtins, recorded under its module's name."""
+
+    def __init__(self) -> None:
+        super().__init__("out of stock")
 
 
 @encode.register
@@ -193,7 +197,7 @@ def test_direct_bus_spans_nest(provider: TracerProvider, exporter: InMemorySpanE
         "emit shipped",
         "handle shipped",
     ]
-    for parent, child in zip(chain, chain[1:], strict=False):
+    for parent, child in pairwise(chain):
         assert _parent_of(spans[child]) == _id_of(spans[parent])
     assert len({_trace_of(span) for span in spans.values()}) == 1
     outer = (spans["emit _OrderPlaced"].attributes or {})["stratae.envelope.message_id"]
@@ -237,7 +241,7 @@ def test_failing_handler_recorded(provider: TracerProvider, exporter: InMemorySp
     """
     A handler that raises should have the error recorded on its span.
 
-    Given: A traced direct bus whose handler raises LookupError
+    Given: A traced direct bus whose handler raises an error from outside builtins
     When: An event is emitted
     Then: The error propagates; the handle and emit spans have ERROR status, error.type, and
         an exception event
@@ -245,7 +249,7 @@ def test_failing_handler_recorded(provider: TracerProvider, exporter: InMemorySp
 
     # Arrange
     def fail(order: _OrderPlaced) -> None:
-        raise _OutOfStock("out of stock")
+        raise _OutOfStock()
 
     bus = DirectBus(middleware=tracing(provider))
     bus.handle(_order_placed, fail)
@@ -261,20 +265,37 @@ def test_failing_handler_recorded(provider: TracerProvider, exporter: InMemorySp
     assert handle.status.description == "out of stock"
     assert (handle.attributes or {})["error.type"] == f"{__name__}._OutOfStock"
     assert [event.name for event in handle.events] == ["exception"]
-    assert (emit.attributes or {})["error.type"] == "ExceptionGroup"
+    assert (emit.attributes or {})["error.type"] == "stratae.events.exceptions.HandlerErrors"
+
+
+def test_builtin_error_named_bare(provider: TracerProvider, exporter: InMemorySpanExporter):
+    """
+    A builtin error should be recorded by its bare name, as error.type takes it.
+
+    Given: A traced direct bus whose handler raises KeyError
+    When: An event is emitted
+    Then: The handle span's error.type is "KeyError"
+    """
+
+    # Arrange
+    def fail(order: _OrderPlaced) -> None:
+        raise KeyError(order.order_id)
+
+    bus = DirectBus(middleware=tracing(provider))
+    bus.handle(_order_placed, fail)
+
+    # Act
+    with pytest.raises(ExceptionGroup):
+        bus.emit(_order_placed, None, _OrderPlaced(1))
+
+    # Assert
+    handle = _spans(exporter)["handle _OrderPlaced"]
+    assert (handle.attributes or {})["error.type"] == "KeyError"
 
 
 # endregion
 
 # region: RabbitMQ
-
-
-@pytest.fixture
-async def channel() -> AsyncMock:
-    """Return a mock AMQP channel, whose closing future fails when the broker drops it."""
-    channel = AsyncMock()
-    channel.closing = asyncio.get_running_loop().create_future()
-    return channel
 
 
 @pytest.fixture
@@ -473,7 +494,7 @@ async def test_failing_consumer_handler_recorded(
 
     # Arrange
     def fail(order: _OrderPlaced) -> None:
-        raise _OutOfStock("out of stock")
+        raise _OutOfStock()
 
     consumer = RabbitMQConsumer(_URL, middleware=tracing(provider))
     consumer.handle(_order_placed, fail, config=RabbitMQConsumeConfig("orders"))

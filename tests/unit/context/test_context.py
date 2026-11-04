@@ -1,11 +1,16 @@
 """Test suite for context variable wrapper."""
 
 import asyncio
+import re
 from contextvars import Token
 
 import pytest
 
 from stratae.context import IGNORE_DEFAULT, Context
+
+
+class _LeftTheBlock(Exception):
+    """Raised by a test to leave a block early."""
 
 
 def test_context_set():
@@ -74,7 +79,7 @@ def test_context_get_unset_no_default_raises():
     test = Context[int]("test")
 
     # Act / Assert
-    with pytest.raises(RuntimeError, match="Context 'test' is not set."):
+    with pytest.raises(RuntimeError, match=re.escape("Context 'test' is not set.")):
         test.get()
 
 
@@ -162,7 +167,7 @@ def test_context_ignore_default_raises():
     test = Context[int]("test", default=1)
 
     # Act / Assert
-    with pytest.raises(RuntimeError, match="Context 'test' is not set."):
+    with pytest.raises(RuntimeError, match=re.escape("Context 'test' is not set.")):
         test.get(default=IGNORE_DEFAULT)
 
 
@@ -191,7 +196,9 @@ def test_context_constructor_default_ignore_raises():
     Then: A ValueError should be raised.
     """
     # Act / Assert
-    with pytest.raises(ValueError, match="IGNORE_DEFAULT cannot be used as a constructor default."):
+    with pytest.raises(
+        ValueError, match=re.escape("IGNORE_DEFAULT cannot be used as a constructor default.")
+    ):
         Context[int]("test", default=IGNORE_DEFAULT)
 
 
@@ -207,7 +214,7 @@ def test_context_get_unset_raises():
     test = Context[float]("test")
 
     # Act / Assert
-    with pytest.raises(RuntimeError, match="Context 'test' is not set."):
+    with pytest.raises(RuntimeError, match=re.escape("Context 'test' is not set.")):
         test()
 
 
@@ -247,7 +254,7 @@ def test_context_reset_to_unset():
     test.reset(token)
 
     # Assert
-    with pytest.raises(RuntimeError, match="Context 'test' is not set."):
+    with pytest.raises(RuntimeError, match=re.escape("Context 'test' is not set.")):
         test()
 
 
@@ -285,10 +292,13 @@ def test_context_manager_exception():
     token = test.set(1)
 
     # Act / Assert
-    with pytest.raises(ValueError):
+    def act() -> None:
         with test.use(0):
             assert test() == 0
-            raise ValueError("test")
+            raise _LeftTheBlock()
+
+    with pytest.raises(_LeftTheBlock):
+        act()
 
     assert test() == 1
     test.reset(token)

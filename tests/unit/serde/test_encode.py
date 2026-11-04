@@ -1,13 +1,20 @@
 """Test the encode function for various data types."""
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 
 from stratae.serde import encode
+
+
+class _NaiveDatetimeError(ValueError):
+    """A consumer's stricter encoder refusing a naive datetime."""
+
+    def __init__(self, value: datetime) -> None:
+        super().__init__(f"naive datetime {value!r} is not encodable; attach a timezone")
 
 
 @contextmanager
@@ -18,7 +25,7 @@ def strict_datetime_encoding():
     @encode.register
     def _(obj: datetime) -> str:
         if obj.tzinfo is None:
-            raise ValueError(f"naive datetime {obj!r} is not encodable; attach a timezone")
+            raise _NaiveDatetimeError(obj)
         return obj.isoformat()
 
     try:
@@ -55,7 +62,7 @@ def test_datetime_encoding():
     Then: The result should be an ISO 8601 string representation of the datetime.
     """
     # Arrange
-    value = datetime(2023, 10, 1, 12, 0, 0)
+    value = datetime(2023, 10, 1, 12, 0, 0, tzinfo=UTC)
 
     # Act
     result = encode(value)
@@ -94,8 +101,8 @@ def test_override_datetime_encoding_for_stricter_tz_awareness():
     Then: Naive datetimes raise, while aware datetimes still encode normally.
     """
     # Arrange
-    naive = datetime(2023, 10, 1, 12, 0, 0)
-    aware = datetime(2023, 10, 1, 12, 0, 0, tzinfo=timezone.utc)
+    aware = datetime(2023, 10, 1, 12, 0, 0, tzinfo=UTC)
+    naive = aware.replace(tzinfo=None)
 
     # Act & Assert
     with strict_datetime_encoding():
@@ -122,7 +129,7 @@ def test_custom_object_encoding_dict():
     value = CustomDictObject()
 
     # Act & Assert
-    with pytest.raises(TypeError, match="Object of type .*CustomDictObject.* is not encodable"):
+    with pytest.raises(TypeError, match=r"Object of type .*CustomDictObject.* is not encodable"):
         encode(value)
 
 
@@ -141,7 +148,7 @@ def test_encode_raises_type_error_for_non_encodable():
         return "I am not encodable"
 
     # Act & Assert
-    with pytest.raises(TypeError, match="Object of type .* is not encodable"):
+    with pytest.raises(TypeError, match=r"Object of type .* is not encodable"):
         encode(non_encodable_function)
 
 
@@ -154,7 +161,7 @@ def test_encode_exhausts_all_options():
             self.value = "test_value"
 
     # Act & Assert
-    with pytest.raises(TypeError, match="Object of type .*ObjectWithNothing.* is not encodable"):
+    with pytest.raises(TypeError, match=r"Object of type .*ObjectWithNothing.* is not encodable"):
         encode(ObjectWithNothing())
 
 

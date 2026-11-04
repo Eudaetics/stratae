@@ -13,7 +13,8 @@ Handler:
 """
 
 import asyncio
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -42,7 +43,7 @@ class _AsyncCallable:
 
 
 @pytest.mark.parametrize(
-    "call,expected",
+    ("call", "expected"),
     [
         (_sync_handler, False),
         (_async_handler, True),

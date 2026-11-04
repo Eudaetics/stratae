@@ -1,7 +1,9 @@
 """Test suite for verifying dependency injection in class methods and constructors."""
 
+import asyncio
+from collections.abc import Callable
 from functools import partial
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any
 
 import pytest
 
@@ -16,6 +18,7 @@ def get_dep():
 
 async def get_async_dep() -> int:
     """Async dependent function returning an integer."""
+    await asyncio.sleep(0)
     return 43
 
 

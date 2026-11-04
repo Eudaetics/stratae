@@ -1,5 +1,6 @@
 """Test suite for the require guard decorator."""
 
+import asyncio
 from unittest.mock import AsyncMock, Mock, call
 
 import pytest
@@ -149,6 +150,7 @@ async def test_require_async_check_runs_before_async_function():
 
     @require(check)
     async def fn() -> None:
+        await asyncio.sleep(0)
         manager.fn()
 
     # Act
@@ -175,6 +177,7 @@ async def test_require_async_function_accepts_mixed_sync_and_async_checks():
 
     @require(sync_check, async_check)
     async def fn() -> None:
+        await asyncio.sleep(0)
         manager.fn()
 
     # Act
@@ -198,6 +201,7 @@ async def test_require_async_check_raise_prevents_function_call():
 
     @require(check)
     async def fn() -> None:
+        await asyncio.sleep(0)
         fn_mock()
 
     # Act / Assert

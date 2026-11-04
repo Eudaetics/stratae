@@ -65,8 +65,9 @@ print(inspect.signature(create_built_order))
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from inspect import Parameter, Signature, signature
-from typing import Any, Awaitable, Callable, Literal, cast, overload
+from typing import Any, Literal, cast, overload
 
 from stratae.events._typeguards import is_async_factory, is_sync_factory
 from stratae.events.hooks import Hooks

@@ -11,6 +11,13 @@ from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
+class _FirstComputationFails(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("first computation fails")
+
+
 async def test_shared_scope_slot_eligible_computed_once_under_task_contention(
     async_scope: AsyncScope,
 ):
@@ -124,6 +131,7 @@ async def test_shared_scope_reentrant_dependency_does_not_deadlock(
     # Arrange
     @async_scope.cache()
     async def inner() -> int:
+        await asyncio.sleep(0)
         return 1
 
     @async_scope.cache()
@@ -237,7 +245,7 @@ async def test_shared_scope_waiter_recomputes_after_owner_fails(async_scope: Asy
         if calls == 1:
             owner_started.set()
             await release_owner.wait()
-            raise RuntimeError("first computation fails")
+            raise _FirstComputationFails()
         return 42
 
     # Act

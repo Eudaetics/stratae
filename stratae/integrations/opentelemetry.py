@@ -187,12 +187,12 @@ class _Traced:
     """A span around one call, current while the call runs."""
 
     __slots__ = (
+        "_attributes",
         "_inject",
         "_kind",
         "_links",
         "_name",
         "_parent",
-        "_attributes",
         "_span",
         "_token",
         "_tracer",

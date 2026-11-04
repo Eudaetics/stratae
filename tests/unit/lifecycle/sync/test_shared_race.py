@@ -2,11 +2,18 @@
 
 import threading
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from stratae.lifecycle.exceptions import CacheCycleError
 from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
+
+
+class _FirstComputationFails(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("first computation fails")
 
 
 def test_shared_scope_slot_eligible_computed_once_under_thread_contention(scope: Scope):
@@ -287,7 +294,8 @@ def test_shared_scope_cross_thread_dependencies_do_not_deadlock(scope: Scope):
         thread_b.join(timeout=2)
 
     # Assert
-    assert not thread_a.is_alive() and not thread_b.is_alive(), "a/b deadlocked across threads"
+    assert not thread_a.is_alive(), "a deadlocked across threads"
+    assert not thread_b.is_alive(), "b deadlocked across threads"
     assert results == [2, 2]
 
 
@@ -349,7 +357,7 @@ def test_shared_scope_waiter_recomputes_after_owner_fails(scope: Scope):
         if calls == 1:
             owner_started.set()
             release_owner.wait(timeout=2)
-            raise RuntimeError("first computation fails")
+            raise _FirstComputationFails()
         return 42
 
     outcomes: dict[str, object] = {}

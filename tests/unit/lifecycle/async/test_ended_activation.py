@@ -22,6 +22,7 @@ async def test_keyed_call_from_task_outliving_activation_raises(async_context_sc
     # Arrange
     @async_context_scope.cache()
     async def get_item(key: str) -> object:
+        await asyncio.sleep(0)
         return object()
 
     activation_ended = asyncio.Event()

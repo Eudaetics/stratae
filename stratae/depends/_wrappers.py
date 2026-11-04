@@ -5,9 +5,10 @@ Generated wrappers expose the original signature minus injected parameters, so o
 tooling can introspect them.
 """
 
+from collections.abc import Callable
 from functools import wraps
 from inspect import Parameter, Signature, isclass, markcoroutinefunction
-from typing import Any, Callable
+from typing import Any
 
 from stratae.codegen import Writer, read_signature, render_parameters, wrapper_filename
 from stratae.depends._provide import Provider

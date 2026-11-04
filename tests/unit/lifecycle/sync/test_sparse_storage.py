@@ -1,6 +1,7 @@
 """Test suite for sparse-backed slot storage (Scope(storage="sparse")), sync flavor."""
 
-from typing import Callable, Literal
+from collections.abc import Callable
+from typing import Literal
 from unittest.mock import Mock
 
 import pytest
@@ -20,13 +21,13 @@ class SimpleObject:
 @pytest.fixture
 def app_sparse():
     """Provide a sparse-backed shared scope."""
-    yield Scope("app_sparse", "shared", "sparse")
+    return Scope("app_sparse", "shared", "sparse")
 
 
 @pytest.fixture
 def req_sparse():
     """Provide a sparse-backed context scope."""
-    yield Scope("req_sparse", "context", "sparse")
+    return Scope("req_sparse", "context", "sparse")
 
 
 type TestType = Literal["sync", "cm_sync"]

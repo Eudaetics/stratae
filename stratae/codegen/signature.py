@@ -1,9 +1,10 @@
 """Read function signatures, and render them into source text."""
 
 import sys
+from collections.abc import Callable
 from enum import Enum, auto
 from inspect import Parameter, Signature, signature
-from typing import Any, Callable
+from typing import Any
 
 from stratae.codegen.exceptions import InvalidTransitionError
 
@@ -71,10 +72,7 @@ def _advance(section: _Section, param: Parameter) -> tuple[_Section, tuple[str, 
     try:
         markers = _TRANSITION[(section, next_section)]
     except KeyError:
-        raise InvalidTransitionError(
-            f"Cannot transition from {section.name} to {next_section.name} "
-            f"at parameter {param.name!r}."
-        ) from None
+        raise InvalidTransitionError(section.name, next_section.name, param.name) from None
     return next_section, markers
 
 

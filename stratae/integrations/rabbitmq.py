@@ -10,9 +10,11 @@ with {py:func}`RabbitMQPublisher.bind` and a {py:class}`RabbitMQConfig`; consume
 consume configs as `topology` to declare them when it connects instead, so messages published
 before any consumer has run aren't dropped.
 
-Both report their {py:class}`ConnectionState` as `state`, e.g. for a health check. If the
-connection or channel drops, they reconnect with the backoff of a {py:class}`RabbitMQReconnect`,
-then declare their topology again, or resume every registration. While reconnecting, `emit`
+Both report their {py:class}`ConnectionState` as `state`, e.g. for a health check. Their
+`wait_for_state` waits until they reach a given state, e.g. to hold off work until
+reconnected. If the connection or channel drops, they reconnect with the backoff of a
+{py:class}`RabbitMQReconnect`, then declare their topology again, or resume every
+registration. While reconnecting, `emit`
 raises {py:exc}`NotConnectedError <stratae.events.exceptions.NotConnectedError>` at once, so
 the caller decides whether to retry; nothing is buffered in memory. A message whose handler
 was running when the connection dropped is cancelled unacked, and the broker redelivers it.
@@ -125,19 +127,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping
 from contextlib import suppress
 from copy import copy
 from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
-    Callable,
-    Coroutine,
-    Iterable,
-    Iterator,
     Literal,
-    Mapping,
     Protocol,
     cast,
     overload,
@@ -386,7 +384,32 @@ class _Link:
         self._watch: asyncio.Future[Any] | None = None
         self._reconnecting: asyncio.Task[None] | None = None
         self.channel: AbstractChannel | None = None
-        self.state = ConnectionState.CLOSED
+        self._state = ConnectionState.CLOSED
+        self._waiting: dict[ConnectionState, set[asyncio.Event]] = defaultdict(set)
+
+    @property
+    def state(self) -> ConnectionState:
+        """Where the connection is."""
+        return self._state
+
+    @state.setter
+    def state(self, state: ConnectionState) -> None:
+        """Move to `state`, waking whoever waits for it."""
+        self._state = state
+        for reached in self._waiting.pop(state, ()):
+            reached.set()
+
+    async def wait_for(self, state: ConnectionState) -> None:
+        """Return once the connection is in `state`, now or next."""
+        if self._state is state:
+            return
+        reached = asyncio.Event()
+        waiting = self._waiting[state]
+        waiting.add(reached)
+        try:
+            await reached.wait()
+        finally:
+            waiting.discard(reached)
 
     async def open(self) -> None:
         """Connect and run `on_open`, raising if already open or if either step fails."""
@@ -522,6 +545,18 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     def state(self) -> ConnectionState:
         """The publisher's {py:class}`ConnectionState`, e.g. for a health check."""
         return self._link.state
+
+    async def wait_for_state(self, state: ConnectionState) -> None:
+        """
+        Wait until the publisher's connection is in `state`.
+
+        Returns at once if it's already there. Otherwise returns when it next gets there, even
+        if it has moved on by the time the caller resumes. Bound the wait with
+        `asyncio.timeout`.
+
+        :param state: The {py:class}`ConnectionState` to wait for.
+        """
+        await self._link.wait_for(state)
 
     async def __aenter__(self) -> RabbitMQPublisher:
         """
@@ -955,6 +990,18 @@ class RabbitMQConsumer:
     def state(self) -> ConnectionState:
         """The consumer's {py:class}`ConnectionState`, e.g. for a health check."""
         return self._link.state
+
+    async def wait_for_state(self, state: ConnectionState) -> None:
+        """
+        Wait until the consumer's connection is in `state`.
+
+        Returns at once if it's already there. Otherwise returns when it next gets there, even
+        if it has moved on by the time the caller resumes. Bound the wait with
+        `asyncio.timeout`.
+
+        :param state: The {py:class}`ConnectionState` to wait for.
+        """
+        await self._link.wait_for(state)
 
     async def __aenter__(self) -> RabbitMQConsumer:
         """

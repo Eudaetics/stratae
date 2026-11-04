@@ -1,6 +1,8 @@
 """Test inject with generators."""
 
-from typing import Annotated, Generator
+from collections.abc import Generator, Iterator
+from contextlib import suppress
+from typing import Annotated
 from unittest.mock import Mock
 
 from stratae.depends import Depends, inject
@@ -19,10 +21,9 @@ def test_inject_on_generator():
 
     # Act (the decorator)
     @inject
-    def gen_func(dep: Annotated[int, Depends(lambda: 5)]):
+    def gen_func(dep: Annotated[int, Depends(lambda: 5)]) -> Iterator[int]:
         """Inject into a function that returns a generator."""
-        for i in range(dep):
-            yield i
+        yield from range(dep)
         mock_cleanup()
 
     generator = gen_func()
@@ -31,10 +32,8 @@ def test_inject_on_generator():
     mock_cleanup.assert_not_called()
     assert list(generator) == [0, 1, 2, 3, 4]
 
-    try:
+    with suppress(StopIteration):
         next(generator)
-    except StopIteration:
-        pass
     mock_cleanup.assert_called_once()
 
 
@@ -49,9 +48,8 @@ def test_inject_generator_dep():
     # Arrange
     mock_cleanup = Mock()
 
-    def gen_dep():
-        for i in range(3):
-            yield i
+    def gen_dep() -> Iterator[int]:
+        yield from range(3)
         mock_cleanup()
 
     @inject

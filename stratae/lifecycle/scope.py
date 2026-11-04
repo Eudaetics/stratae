@@ -98,18 +98,27 @@ request 2 block 4: logging 102
 """
 
 import threading
+from collections.abc import Callable, Hashable
 from contextvars import ContextVar
 from functools import partial
 from types import TracebackType
-from typing import Any, Callable, Hashable, Literal, NoReturn, cast, get_args
+from typing import Any, Literal, NoReturn, cast, get_args
 
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._slots import UNSET, ScopeVar, SharedVar, SlotDict, SlotStorage
 from stratae.lifecycle._stack import aclose, close
 from stratae.lifecycle.exceptions import (
-    LifecycleConfigurationError,
-    ScopeActivationError,
-    ScopeInactiveError,
+    ActivationEndedError,
+    AlreadyDeactivatedError,
+    CacheKeyConflictError,
+    DependentScopeActiveError,
+    InvalidScopeOptionError,
+    NoActivationError,
+    NothingToDeactivateError,
+    RequiredScopeInactiveError,
+    SharedRequiresContextError,
+    SharedScopeThreadsError,
+    WrongContextDeactivationError,
 )
 
 _RESERVED_SLOTS = 4
@@ -124,23 +133,19 @@ StorageType = Literal["dense", "sparse"]
 
 def _validate_types(name: str, isolation: IsolationType, storage: StorageType) -> None:
     if isolation not in frozenset(get_args(IsolationType)):
-        raise LifecycleConfigurationError(f"Invalid scope isolation given for {name}.")
+        raise InvalidScopeOptionError(name, "isolation")
     if storage not in frozenset(get_args(StorageType)):
-        raise LifecycleConfigurationError(f"Invalid scope storage given for {name}.")
+        raise InvalidScopeOptionError(name, "storage")
 
 
 def _validate_threads(name: str, isolation: IsolationType, threads: bool) -> None:
     if threads and isolation == "shared":
-        raise LifecycleConfigurationError(
-            f"Shared scope {name!r} cannot take threads=True: it's already thread-safe."
-        )
+        raise SharedScopeThreadsError(name)
 
 
 def _validate_requires(name: str, isolation: IsolationType, requires: "BaseScope | None") -> None:
     if requires and isolation == "shared" and requires.isolation == "context":
-        raise LifecycleConfigurationError(
-            f"Shared scope {name!r} cannot require context-isolated scope {requires.name!r}."
-        )
+        raise SharedRequiresContextError(name, requires.name)
 
 
 class BaseScope:
@@ -151,19 +156,19 @@ class BaseScope:
     """
 
     __slots__ = (
-        "name",
-        "_isolation",
-        "_storage",
-        "_threads",
-        "_requires",
-        "_var",
-        "_template",
-        "_new_slots",
         "_counter",
         "_free_slots",
-        "_slot_lock",
+        "_isolation",
         "_lock",
+        "_new_slots",
         "_parent_lock",
+        "_requires",
+        "_slot_lock",
+        "_storage",
+        "_template",
+        "_threads",
+        "_var",
+        "name",
     )
 
     _isolation: IsolationType
@@ -267,9 +272,9 @@ class BaseScope:
         try:
             slots = self._var.get()
         except LookupError:
-            raise ScopeInactiveError(f"Scope {self.name!r} is not active.") from None
+            raise NoActivationError(self.name) from None
         if not slots:
-            raise ScopeInactiveError(f"Scope {self.name!r} is not active: its activation ended.")
+            raise ActivationEndedError(self.name)
         self._extend(slots)
         return slots
 
@@ -292,10 +297,7 @@ class BaseScope:
             try:
                 parent_slots = requires._var.get(None)
                 if not parent_slots:
-                    raise ScopeActivationError(
-                        f"Cannot activate {self.name!r}: required scope "
-                        f"{requires.name!r} is not active."
-                    )
+                    raise RequiredScopeInactiveError(self.name, requires.name)
                 parent_slots[1] += 1
             finally:
                 if parent_lock is not None:
@@ -333,17 +335,13 @@ class BaseScope:
             if expected is not None and slots is not expected:
                 _raise_not_current(self.name, expected)
             if not slots:
-                raise ScopeActivationError(f"Cannot deactivate {self.name!r}: not active.")
+                raise NothingToDeactivateError(self.name)
             if slots[1] > 0:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.name!r}: a scope requiring it is still active."
-                )
+                raise DependentScopeActiveError(self.name)
             try:
                 var.reset(slots[2])
             except ValueError:
-                raise ScopeActivationError(
-                    f"Cannot deactivate {self.name!r} outside the context that activated it."
-                ) from None
+                raise WrongContextDeactivationError(self.name) from None
             return slots
         finally:
             if lock is not None:
@@ -399,8 +397,8 @@ def _release(parent_slots: SlotStorage, parent_lock: "threading.Lock | None") ->
 def _raise_not_current(name: str, expected: SlotStorage) -> NoReturn:
     """Raise for a token whose activation isn't the scope's current one."""
     if not expected:
-        raise ScopeActivationError(f"Cannot deactivate {name!r}: already deactivated.")
-    raise ScopeActivationError(f"Cannot deactivate {name!r} outside the context that activated it.")
+        raise AlreadyDeactivatedError(name)
+    raise WrongContextDeactivationError(name)
 
 
 class Activation:
@@ -558,10 +556,10 @@ class Scope(BaseScope):
             arguments themselves.
         :param ignore_params: Cache one value per activation regardless of arguments.
         :returns: A decorator, applied to the function whose result should be cached.
-        :raises ValueError: If both `cache_key` and `ignore_params` are given.
+        :raises CacheKeyConflictError: If both `cache_key` and `ignore_params` are given.
         """
         if ignore_params and cache_key is not None:
-            raise ValueError("Cannot use both ignore_params and cache_key together.")
+            raise CacheKeyConflictError()
         return CacheDecorator(self, cache_key, ignore_params)
 
 
@@ -652,8 +650,8 @@ class AsyncScope(BaseScope):
             arguments themselves.
         :param ignore_params: Cache one value per activation regardless of arguments.
         :returns: A decorator, applied to the function whose result should be cached.
-        :raises ValueError: If both `cache_key` and `ignore_params` are given.
+        :raises CacheKeyConflictError: If both `cache_key` and `ignore_params` are given.
         """
         if ignore_params and cache_key is not None:
-            raise ValueError("Cannot use both ignore_params and cache_key together.")
+            raise CacheKeyConflictError()
         return AsyncCacheDecorator(self, cache_key, ignore_params)

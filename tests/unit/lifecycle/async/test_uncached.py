@@ -26,6 +26,7 @@ def test_uncached_is_the_original_function(async_scope: AsyncScope):
 
     # Arrange
     async def get_value() -> int:
+        await asyncio.sleep(0)
         return 1
 
     original = get_value
@@ -55,6 +56,7 @@ async def test_uncached_parameter_types(async_scope: AsyncScope):
     async def foo(
         x: int, /, y: int, z: int = 0, *args: int, c: int = 1, **kwargs: int
     ) -> Container:
+        await asyncio.sleep(0)
         return Container(x + y + z + c + sum(args) + sum(kwargs.values()))
 
     # Act
@@ -144,6 +146,7 @@ async def test_uncached_async_resource_outside_scope(async_scope: AsyncScope):
     @async_scope.cache()
     @async_resource
     async def get_object():
+        await asyncio.sleep(0)
         call_counter()
         try:
             yield SimpleObject(1)
@@ -177,6 +180,7 @@ async def test_uncached_async_resource_inside_scope(async_scope: AsyncScope):
     @async_scope.cache()
     @async_resource
     async def get_object():
+        await asyncio.sleep(0)
         call_counter()
         try:
             yield SimpleObject(1)

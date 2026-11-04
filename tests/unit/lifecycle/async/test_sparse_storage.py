@@ -1,7 +1,8 @@
 """Test suite for sparse-backed slot storage (AsyncScope(storage="sparse")), async flavor."""
 
 import asyncio
-from typing import Awaitable, Callable, Literal
+from collections.abc import Awaitable, Callable
+from typing import Literal
 from unittest.mock import Mock
 
 import pytest
@@ -21,13 +22,13 @@ class SimpleObject:
 @pytest.fixture
 def app_sparse():
     """Provide a sparse-backed shared AsyncScope."""
-    yield AsyncScope("app_sparse", "shared", "sparse")
+    return AsyncScope("app_sparse", "shared", "sparse")
 
 
 @pytest.fixture
 def req_sparse():
     """Provide a sparse-backed context AsyncScope."""
-    yield AsyncScope("req_sparse", "context", "sparse")
+    return AsyncScope("req_sparse", "context", "sparse")
 
 
 type TestType = Literal["sync", "cm_sync", "async", "cm_async"]
@@ -70,13 +71,11 @@ def callable_factory(
         if cleanup_counter:
             cleanup_counter()
 
-    if type == "sync":
-        return get_object_sync
-    elif type == "cm_sync":
-        return get_object_cm_sync
-    elif type == "async":
-        return get_object_async
-    return get_object_cm_async
+    return {
+        "sync": get_object_sync,
+        "cm_sync": get_object_cm_sync,
+        "async": get_object_async,
+    }.get(type, get_object_cm_async)
 
 
 async def maybe_await(result: Awaitable[SimpleObject] | SimpleObject) -> SimpleObject:
@@ -230,6 +229,7 @@ async def test_async_sparse_storage_exit_stack_cleaned_up(
     @scope.cache()
     @async_resource
     async def test_resource():
+        await asyncio.sleep(0)
         try:
             yield
         finally:

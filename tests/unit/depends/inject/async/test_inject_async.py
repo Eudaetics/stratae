@@ -1,8 +1,9 @@
 """Tests for the inject decorator in the dependency injection system."""
 
 import asyncio
+from collections.abc import Callable
 from functools import wraps
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any
 
 import pytest
 
@@ -42,6 +43,7 @@ async def test_inject_with_async():
 
     @inject
     async def test_dep(val: Annotated[SampleType, Depends(async_factory_function)]) -> SampleType:
+        await asyncio.sleep(0)
         return val
 
     # Act
@@ -78,6 +80,7 @@ async def test_inject_with_async_multiple_calls():
 
     @inject
     async def test_dep(val: Annotated[SampleType, Depends(async_factory_function)]) -> SampleType:
+        await asyncio.sleep(0)
         return val
 
     # Act
@@ -122,6 +125,7 @@ async def test_inject_async_mixed():
         val1: Annotated[SampleType, Depends(async_factory_function)],
         val2: Annotated[SampleType, Depends(sync_factory_function)],
     ) -> tuple[SampleType, SampleType]:
+        await asyncio.sleep(0)
         return val1, val2
 
     # Act
@@ -164,11 +168,12 @@ def test_inject_sync_async_nested_error():
         val: Annotated[SampleType, Depends(sync_after_async_factory_function)],
     ) -> SampleType:
         """Create async factory function that returns a SampleType instance."""
+        await asyncio.sleep(0)
         return SampleType(20 + val.value)
 
     # Act and Assert
     with pytest.raises(
-        InjectionSignatureError, match="Sync function '.*' cannot have async dependencies."
+        InjectionSignatureError, match=r"Sync function '.*' cannot have async dependencies\."
     ):
 
         @inject
@@ -203,6 +208,7 @@ async def test_inject_async_sync_nested():
         val: Annotated[SampleType, Depends(sync_factory_function)],
     ) -> SampleType:
         """Create async factory function that returns a SampleType instance."""
+        await asyncio.sleep(0)
         return SampleType(5 + val.value)
 
     # Assert
@@ -233,6 +239,7 @@ async def test_inject_with_parens_and_async():
 
     @inject()
     async def test_dep(val: Annotated[SampleType, Depends(async_factory_function)]) -> SampleType:
+        await asyncio.sleep(0)
         return val
 
     # Act
@@ -269,6 +276,7 @@ async def test_inject_annotated_async_dependency():
     async def test_dep(
         val: Annotated[SampleType, Depends(async_factory_function)],
     ) -> SampleType:
+        await asyncio.sleep(0)
         return val
 
     # Act
@@ -363,6 +371,7 @@ async def test_mixed_depends_types_async():
         no_dep: int = -2,
     ) -> int:
         """Sum the various dependencies."""
+        await asyncio.sleep(0)
         return no_default + no_dep + type_dep + annotated_dep + db
 
     # Act
@@ -372,7 +381,7 @@ async def test_mixed_depends_types_async():
     assert result == 5 - 2 + 42 + 2 + 3
 
 
-async def test_behavior_with_annotated_and_default_async():
+def test_behavior_with_annotated_and_default_async():
     """
     Annotated params cannot use defaults.
 
@@ -418,6 +427,7 @@ async def test_inject_with_outer_wrapper_async():
     @outer_wrapper
     @inject
     async def test_dep(val: IntDependency) -> int:
+        await asyncio.sleep(0)
         return val
 
     # Act
@@ -445,6 +455,7 @@ async def test_async_callable_object_dependency_is_awaited():
 
     @inject
     async def handler(n: Annotated[int, Depends(get_number)]) -> int:
+        await asyncio.sleep(0)
         return n
 
     # Act

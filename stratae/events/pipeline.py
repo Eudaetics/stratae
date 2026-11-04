@@ -15,10 +15,11 @@ to add to, and sends them with the message. It handles a message inside
 {py:func}`receiving`, with the headers it arrived with, so handle middleware can read them.
 """
 
+from collections.abc import Awaitable, Callable, Generator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from types import MappingProxyType
-from typing import Any, Awaitable, Callable, Generator, Mapping
+from typing import Any
 
 from stratae._callables import is_async_callable
 from stratae.events.handler import WithoutPayload

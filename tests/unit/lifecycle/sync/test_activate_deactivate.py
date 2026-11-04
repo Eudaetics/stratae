@@ -2,6 +2,7 @@
 
 import threading
 from contextvars import copy_context
+from typing import NoReturn
 
 import pytest
 
@@ -9,6 +10,11 @@ from stratae.lifecycle._slots import SharedVar
 from stratae.lifecycle.exceptions import ScopeActivationError
 from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
+
+
+def _lookup_missing() -> NoReturn:
+    """Fail a lookup, as code under test would, so a handler has an error to handle."""
+    raise KeyError("missing")
 
 
 def test_activate_marks_scope_active():
@@ -173,12 +179,15 @@ def test_exception_raised_while_handling_another_propagates_unchanged():
     raised = ValueError("translated")
 
     # Act
-    with pytest.raises(ValueError) as exc_info:
+    def act() -> None:
         with scope.activate():
             try:
-                raise KeyError("missing")
+                _lookup_missing()
             except KeyError:
                 raise raised from None
+
+    with pytest.raises(ValueError, match="translated") as exc_info:
+        act()
 
     # Assert
     assert exc_info.value is raised
@@ -208,13 +217,16 @@ def test_exception_raised_while_handling_another_propagates_unchanged_through_re
     raised = ValueError("translated")
 
     # Act
-    with pytest.raises(ValueError) as exc_info:
+    def act() -> None:
         with scope.activate():
             get_connection()
             try:
-                raise KeyError("missing")
+                _lookup_missing()
             except KeyError:
                 raise raised from None
+
+    with pytest.raises(ValueError, match="translated") as exc_info:
+        act()
 
     # Assert
     assert seen == [raised]

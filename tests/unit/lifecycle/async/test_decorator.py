@@ -1,5 +1,6 @@
 """Tests for the AsyncScope.cache decorator syntax across sync/async factories and generators."""
 
+import asyncio
 from unittest.mock import Mock
 
 from stratae.lifecycle.resource import async_resource, resource
@@ -80,6 +81,7 @@ async def test_decorator_on_async(async_scope: AsyncScope):
 
     @async_scope.cache()
     async def sample():
+        await asyncio.sleep(0)
         mock()
         return Sample(2)
 
@@ -105,6 +107,7 @@ async def test_decorator_on_async_generator(async_scope: AsyncScope):
     @async_scope.cache()
     @async_resource
     async def sample_generator():
+        await asyncio.sleep(0)
         try:
             yield "test"
         finally:

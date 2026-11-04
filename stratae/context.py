@@ -60,6 +60,22 @@ On earlier versions, use {py:func}`Context.use`.
 from contextvars import ContextVar, Token
 
 
+class ContextNotSetError(RuntimeError):
+    """Raised when reading a {py:class}`Context` that isn't set and has no default."""
+
+    def __init__(self, name: str) -> None:
+        """:param name: The context's name."""
+        super().__init__(f"Context '{name}' is not set. Use `with {name}.use(value):` to set it.")
+
+
+class IgnoreDefaultError(ValueError):
+    """Raised when `IGNORE_DEFAULT` is given as a {py:class}`Context`'s constructor default."""
+
+    def __init__(self) -> None:
+        """Explain where `IGNORE_DEFAULT` belongs."""
+        super().__init__("IGNORE_DEFAULT cannot be used as a constructor default.")
+
+
 class _NoDefault:
     __slots__ = ()
 
@@ -73,17 +89,17 @@ Sentinel passed as a 'default' to skip the constructor default and require a set
 [`ContextVar`](https://docs.python.org/3/library/contextvars.html#contextvars.ContextVar.get).
 If there is no value set in the current context, then {py:func}`Context.get` returns first
 the default provided to {py:func}`Context.get`, then the constructor level default, and
-finally raises a RuntimeError.
-The `IGNORE_DEFAULT` sentinel provides a third option. If the {py:func}`Context.get` is called with
-`IGNORE_DEFAULT`, then it will raise a RuntimeError if no value is set and ignore the constructor
-level default.
+finally raises {py:exc}`ContextNotSetError`.
+The `IGNORE_DEFAULT` sentinel provides a third option. If {py:func}`Context.get` is called
+with `IGNORE_DEFAULT`, it ignores the constructor level default, and raises
+{py:exc}`ContextNotSetError` if no value is set.
 """
 
 
 class _ContextScope[T]:
     """Context manager returned by {py:func}`Context.use`, tracking its own token."""
 
-    __slots__ = ("_provider", "_value", "_token")
+    __slots__ = ("_provider", "_token", "_value")
 
     def __init__(self, provider: "Context[T]", value: T):
         """Initialize the context scope with provider and value."""
@@ -104,7 +120,7 @@ class _ContextScope[T]:
 class Context[T]:
     """A named value backed by a ContextVar, usable as a Depends() provider."""
 
-    __slots__ = ("_name", "_var", "_default")
+    __slots__ = ("_default", "_name", "_var")
 
     def __init__(self, name: str, default: T | _NoDefault = _NO_DEFAULT):
         """
@@ -112,10 +128,10 @@ class Context[T]:
 
         :param name: Name for the `ContextVar` and error messages.
         :param default: Value returned while unset. If omitted, an unset read raises.
-        :raises ValueError: If `default` is `IGNORE_DEFAULT`.
+        :raises IgnoreDefaultError: If `default` is `IGNORE_DEFAULT`.
         """
         if default is IGNORE_DEFAULT:
-            raise ValueError("IGNORE_DEFAULT cannot be used as a constructor default.")
+            raise IgnoreDefaultError()
         self._name = name
         self._var: ContextVar[T] = ContextVar(name)
         self._default = default
@@ -127,16 +143,14 @@ class Context[T]:
         :param default: Value returned if unset, overriding the constructor's default. Pass
             `IGNORE_DEFAULT` to require a set value.
         :returns: The set value, otherwise a default.
-        :raises RuntimeError: If unset with no default.
+        :raises ContextNotSetError: If unset with no default.
         """
         if default is _NO_DEFAULT:
             default = self._default
         try:
             return self._var.get() if isinstance(default, _NoDefault) else self._var.get(default)
         except LookupError as lookup_err:
-            raise RuntimeError(
-                f"Context '{self._name}' is not set. Use `with {self._name}.use(value):` to set it."
-            ) from lookup_err
+            raise ContextNotSetError(self._name) from lookup_err
 
     __call__ = get
     """An alias of {py:func}`Context.get`. Calling an instance is equivalent to instance.get()"""

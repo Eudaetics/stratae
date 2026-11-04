@@ -8,15 +8,13 @@ doesn't vary by argument reads one slot instead of a keyed dict.
 import threading
 import weakref
 from asyncio import current_task
+from collections.abc import Awaitable, Callable, Hashable
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from functools import wraps
 from inspect import Parameter, isasyncgenfunction, isgeneratorfunction
 from typing import (
     TYPE_CHECKING,
     Any,
-    Awaitable,
-    Callable,
-    Hashable,
     Literal,
     NoReturn,
     Protocol,
@@ -40,7 +38,9 @@ from stratae.lifecycle._stack import (
     enter_context,
     enter_generator,
 )
-from stratae.lifecycle.exceptions import ScopeInactiveError
+from stratae.lifecycle.exceptions import (
+    ActivationEndedError,
+)
 from stratae.lifecycle.resource import resource_generator
 
 if TYPE_CHECKING:
@@ -285,7 +285,7 @@ def _claim_style(scope: "BaseScope", is_async: bool) -> ClaimStyle:
 
 def _raise_ended(scope: "BaseScope") -> NoReturn:
     """Raise for a claim waiter whose activation ended while it was waiting."""
-    raise ScopeInactiveError(f"Scope {scope.name!r} is not active: its activation ended.")
+    raise ActivationEndedError(scope.name)
 
 
 def _build_namespace(

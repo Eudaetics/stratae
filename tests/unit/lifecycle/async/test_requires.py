@@ -1,5 +1,7 @@
 """Unit tests for AsyncScope's `requires` parent relationship, async flavor."""
 
+import asyncio
+import re
 from unittest.mock import Mock
 
 import pytest
@@ -10,7 +12,7 @@ from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
-async def test_activate_without_active_parent_raises():
+def test_activate_without_active_parent_raises():
     """
     Activating a scope with an inactive required parent raises.
 
@@ -25,7 +27,7 @@ async def test_activate_without_active_parent_raises():
     # Act & Assert
     with pytest.raises(
         ScopeActivationError,
-        match="Cannot activate 'request': required scope 'application' is not active.",
+        match=re.escape("Cannot activate 'request': required scope 'application' is not active."),
     ):
         child.activate()
 
@@ -43,9 +45,8 @@ async def test_activate_with_active_parent_succeeds():
     child = AsyncScope("request", requires=parent)
 
     # Act & Assert
-    async with parent:
-        async with child:
-            assert child.is_active()
+    async with parent, child:
+        assert child.is_active()
 
 
 async def test_deactivate_parent_while_child_active_raises():
@@ -65,7 +66,7 @@ async def test_deactivate_parent_while_child_active_raises():
     # Act & Assert
     with pytest.raises(
         ScopeActivationError,
-        match="Cannot deactivate 'application': a scope requiring it is still active.",
+        match=re.escape("Cannot deactivate 'application': a scope requiring it is still active."),
     ):
         await parent.deactivate(parent_activation)
     assert parent.is_active()
@@ -131,18 +132,16 @@ async def test_three_level_chain_activates_and_deactivates_in_order(
     application, session, request = async_scope_chain
 
     # Act & Assert
-    async with application:
-        async with session:
-            async with request:
-                assert application.is_active()
-                assert session.is_active()
-                assert request.is_active()
+    async with application, session, request:
+        assert application.is_active()
+        assert session.is_active()
+        assert request.is_active()
     assert not application.is_active()
     assert not session.is_active()
     assert not request.is_active()
 
 
-async def test_three_level_chain_middle_scope_activate_requires_immediate_parent(
+def test_three_level_chain_middle_scope_activate_requires_immediate_parent(
     async_scope_chain: tuple[AsyncScope, AsyncScope, AsyncScope],
 ):
     """
@@ -204,6 +203,7 @@ async def test_deactivate_child_with_resource_cleans_up_exit_stack(storage: str)
     @child.cache()
     @async_resource
     async def get_resource():
+        await asyncio.sleep(0)
         try:
             yield object()
         finally:
@@ -237,7 +237,7 @@ async def test_deactivate_raises_when_own_sparse_scope_has_active_dependent():
     # Act & Assert
     with pytest.raises(
         ScopeActivationError,
-        match="Cannot deactivate 'application': a scope requiring it is still active.",
+        match=re.escape("Cannot deactivate 'application': a scope requiring it is still active."),
     ):
         await parent.deactivate(parent_activation)
     assert parent.is_active()
@@ -323,6 +323,7 @@ async def test_parent_cannot_deactivate_while_child_is_mid_activation():
         child_active, parent_active = child.is_active(), parent.is_active()
 
     # Assert
-    assert child_active and parent_active
+    assert child_active
+    assert parent_active
     assert len(refused) == 1
     assert "a scope requiring it is still active" in str(refused[0])

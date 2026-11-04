@@ -61,8 +61,9 @@ AsyncDirectBus (with envelope):
 """
 
 import asyncio
+from collections.abc import Awaitable, Collection, Generator
 from contextlib import contextmanager
-from typing import Any, Awaitable, Collection, Generator, Literal, cast
+from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -593,6 +594,7 @@ async def test_signal_pubsub_calls_async_handler_with_no_arguments(bus: AsyncDir
 
     @bus.handle(_heartbeat)
     async def _() -> None:
+        await asyncio.sleep(0)
         calls.append(True)
 
     signal = bus.bind(_heartbeat)
@@ -704,7 +706,7 @@ async def test_request_responder_exception_propagates_directly(bus: AsyncDirectB
     bus.handle(_find_book, AsyncMock(side_effect=error))
 
     # Act / Assert
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match="boom") as exc_info:
         await bus.emit(_find_book, None, _BookQuery("dune"))
 
     assert exc_info.value is error
@@ -723,6 +725,7 @@ async def test_request_responder_registered_via_decorator(bus: AsyncDirectBus):
 
     @bus.handle(_find_book)
     async def _(_: _BookQuery) -> _BookResult:
+        await asyncio.sleep(0)
         return reply
 
     # Act
@@ -767,6 +770,7 @@ async def test_signal_request_calls_async_responder_with_no_arguments(bus: Async
     # Arrange
     @bus.handle(_ping)
     async def _() -> str:
+        await asyncio.sleep(0)
         return "pong"
 
     ping = bus.bind(_ping)
@@ -792,6 +796,7 @@ async def test_handler_can_access_envelope_during_dispatch(bus_with_envelope: As
 
     @bus_with_envelope.handle(_task_created)
     async def _(_) -> None:
+        await asyncio.sleep(0)
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
@@ -818,6 +823,7 @@ async def test_each_emission_creates_independent_envelope(bus_with_envelope: Asy
 
     @bus_with_envelope.handle(_task_created)
     async def _(_) -> None:
+        await asyncio.sleep(0)
         envelope = Envelope.current()
         assert envelope is not None
         captured.append(envelope)
@@ -856,6 +862,7 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncD
 
     @bus_with_envelope.handle(inner_event)
     async def _(_) -> None:
+        await asyncio.sleep(0)
         envelope = Envelope.current()
         assert envelope is not None
         inner_envelopes.append(envelope)
@@ -973,9 +980,11 @@ async def test_custom_pattern_dispatched_via_async_dispatcher():
 
     # Arrange
     async def length(query: _BookQuery) -> int:
+        await asyncio.sleep(0)
         return len(query.query)
 
     async def double_length(query: _BookQuery) -> int:
+        await asyncio.sleep(0)
         return 2 * len(query.query)
 
     bus = AsyncDirectBus(dispatchers=[Dispatch(_Gather, _gather_replies)])
@@ -1035,6 +1044,7 @@ def _alog(log: list[str], label: str) -> Any:
     """Return an async hook logging its label and the reply or payload type it sees."""
 
     async def hook(event: Any, payload: Any, *rest: Any) -> None:
+        await asyncio.sleep(0)
         log.append(f"{label} {rest[0]!r}" if rest else f"{label} {type(payload).__name__}")
 
     return hook
@@ -1057,6 +1067,7 @@ async def test_publish_hooks_see_request_reply(bus: AsyncDirectBus):
     )
 
     async def respond(query: _BookQuery) -> str:
+        await asyncio.sleep(0)
         return query.query.title()
 
     bus.handle(find_book, respond)
@@ -1104,6 +1115,7 @@ async def test_publish_hooks_run_inside_envelope(bus_with_envelope: AsyncDirectB
     seen: list[Envelope | None] = []
 
     async def record(event: Any, payload: Any) -> None:
+        await asyncio.sleep(0)
         seen.append(Envelope.current())
 
     bus_with_envelope.handle(_task_created, lambda task: seen.append(Envelope.current()))
@@ -1213,6 +1225,7 @@ async def test_publish_middleware_without_hooks():
     bus = AsyncDirectBus(middleware=Middleware(publish=(_alabelled(log, "mw"),)))
 
     async def respond(query: _BookQuery) -> str:
+        await asyncio.sleep(0)
         return query.query.title()
 
     find_book = Request(_BookQuery, reply=str)

@@ -1,10 +1,11 @@
+from collections.abc import Callable, Hashable
 from contextvars import ContextVar
 from threading import Lock
-from typing import Any, Callable, Hashable, Self
+from typing import Any, ClassVar, Self
 from weakref import WeakValueDictionary
 
 from stratae._callables import is_async_callable
-from stratae.depends.exceptions import DependencyNotFoundError, InjectionSignatureError
+from stratae.depends.exceptions import DependencyNotFoundError, UnhashableDependencyError
 
 _UNSET = object()
 
@@ -13,17 +14,17 @@ class Provider:
     """A registered dependency provider and its override state."""
 
     __slots__ = {
+        "__weakref__",
         "dependency",
-        "provide",
         "is_async",
+        "lock",
         "override",
         "override_count",
-        "lock",
+        "provide",
         "resolved",
-        "__weakref__",
     }
 
-    _registry: WeakValueDictionary[Hashable, Self] = WeakValueDictionary()
+    _registry: ClassVar[WeakValueDictionary[Hashable, Self]] = WeakValueDictionary()
     dependency: Callable[[], Any]
     provide: Callable[[], Any]
     is_async: bool
@@ -41,10 +42,7 @@ class Provider:
         try:
             existing = cls._registry.get(dependency)
         except TypeError:
-            raise InjectionSignatureError(
-                f"Cannot use {dependency!r} as a dependency: it's unhashable. "
-                "Wrap it in a function instead."
-            ) from None
+            raise UnhashableDependencyError(dependency) from None
         if existing is not None:
             return existing
         instance = super().__new__(cls)
@@ -78,4 +76,4 @@ class Provider:
         try:
             return cls._registry[func]
         except KeyError:
-            raise DependencyNotFoundError(f"No Dependency found for {func}") from None
+            raise DependencyNotFoundError(func) from None

@@ -3,6 +3,7 @@
 import pytest
 
 from stratae.codegen import Writer
+from stratae.codegen.exceptions import InvalidIndentWidthError
 
 
 def test_writer_init():
@@ -75,7 +76,7 @@ def test_writer_init_invalid_width():
     Then: A ValueError should be raised.
     """
     # Act & Assert
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidIndentWidthError):
         Writer(width=0)
 
 
@@ -165,9 +166,8 @@ def test_writer_block_nested():
     writer = Writer()
 
     # Act
-    with writer.block():
-        with writer.block():
-            writer.write("x = 1")
+    with writer.block(), writer.block():
+        writer.write("x = 1")
 
     # Assert
     assert writer.render() == "        x = 1"
@@ -205,9 +205,8 @@ def test_writer_block_restores_after_exception():
     writer = Writer()
 
     # Act
-    with pytest.raises(RuntimeError):
-        with writer.block():
-            raise RuntimeError
+    with pytest.raises(RuntimeError), writer.block():
+        raise RuntimeError
 
     # Assert
     assert writer._nesting == 0  # pyright: ignore[reportPrivateUsage]

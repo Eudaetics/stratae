@@ -1,6 +1,7 @@
 """Test suite for async generator (@async_resource) registration and cleanup."""
 
 import asyncio
+import re
 from unittest.mock import Mock
 
 import pytest
@@ -8,6 +9,41 @@ import pytest
 from stratae.lifecycle.exceptions import ScopeInactiveError
 from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
+
+
+class _AFailure(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("A Failure")
+
+
+class _BFailure(KeyError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("B Failure")
+
+
+class _CallerFailure(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Caller Failure")
+
+
+class _FirstFailure(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("first failure")
+
+
+class _TestFailure(ValueError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("Test Failure")
 
 
 async def test_generator_async(async_scope: AsyncScope):
@@ -27,6 +63,7 @@ async def test_generator_async(async_scope: AsyncScope):
     @async_scope.cache()
     @async_resource
     async def sample_generator():
+        await asyncio.sleep(0)
         try:
             yield SimpleObject()
             mock_commit()
@@ -60,10 +97,11 @@ async def test_register_generator_inactive_scope_async(async_scope: AsyncScope):
     @async_scope.cache()
     @async_resource
     async def sample_generator():
+        await asyncio.sleep(0)
         yield "test"
 
     # Act & Assert
-    with pytest.raises(ScopeInactiveError, match="Scope 'application' is not active."):
+    with pytest.raises(ScopeInactiveError, match=re.escape("Scope 'application' is not active.")):
         await sample_generator()
 
 
@@ -88,13 +126,16 @@ async def test_decorate_generator_async_exception_cleanup(async_scope: AsyncScop
             await asyncio.sleep(0)
         finally:
             mock_cleanup()
-            raise ValueError("Test Failure")
+            raise _TestFailure()
 
     # Act & Assert
-    with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
+    async def act() -> None:
         async with async_scope:
             await sample_generator()
             mock_cleanup.assert_not_called()
+
+    with pytest.raises(ValueError, match="Test Failure"):
+        await act()
 
 
 async def test_decorator_generator_async_exception_handling(async_scope: AsyncScope):
@@ -126,12 +167,15 @@ async def test_decorator_generator_async_exception_handling(async_scope: AsyncSc
             mock_cleanup()
 
     # Act & Assert
-    with pytest.raises(ValueError, match="Test Failure"):  # noqa: S5778
+    async def act() -> None:
         async with async_scope:
             await sample_generator()
             mock_cleanup.assert_not_called()
             mock_failure.assert_not_called()
             mock_except.assert_not_called()
+
+    with pytest.raises(ValueError, match="Test Failure"):
+        await act()
 
     mock_except.assert_called_once()
     mock_cleanup.assert_called_once()
@@ -236,11 +280,14 @@ async def test_generator_async_exception_group(async_scope: AsyncScope):
             mock_cleanup_3()
 
     # Act & Assert
-    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+    async def act() -> None:
         async with async_scope:
             await generator_one()
             await generator_two()
             await generator_three()
+
+    with pytest.raises(ExceptionGroup) as exceptions:
+        await act()
 
     assert len(exceptions.value.exceptions) == 3
     assert any(
@@ -289,10 +336,13 @@ async def test_generator_sees_exception_raised_in_caller_block_async(async_scope
             raise
 
     # Act & Assert
-    with pytest.raises(ValueError, match="Caller Failure"):  # noqa: S5778
+    async def act() -> None:
         async with async_scope:
             await sample_generator()
-            raise ValueError("Caller Failure")
+            raise _CallerFailure()
+
+    with pytest.raises(ValueError, match="Caller Failure"):
+        await act()
 
     mock_rollback.assert_called_once()
     mock_commit.assert_not_called()
@@ -327,7 +377,7 @@ async def test_generator_can_suppress_exception_raised_in_caller_block_async(
     # Act
     async with async_scope:
         await sample_generator()
-        raise ValueError("Caller Failure")
+        raise _CallerFailure()
 
     # Assert
     mock_suppressed.assert_called_once()
@@ -358,7 +408,7 @@ async def test_multiple_generators_each_raise_from_callers_exception_async(
             await asyncio.sleep(0)
             yield SimpleObject()
         except Exception:
-            raise RuntimeError("A Failure") from None
+            raise _AFailure() from None
 
     @async_scope.cache()
     @async_resource
@@ -367,14 +417,17 @@ async def test_multiple_generators_each_raise_from_callers_exception_async(
             await asyncio.sleep(0)
             yield SimpleObject()
         except Exception:
-            raise KeyError("B Failure") from None
+            raise _BFailure() from None
 
     # Act & Assert
-    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+    async def act() -> None:
         async with async_scope:
             await resource_a()
             await resource_b()
-            raise ValueError("Caller Failure")
+            raise _CallerFailure()
+
+    with pytest.raises(ExceptionGroup) as exceptions:
+        await act()
 
     assert len(exceptions.value.exceptions) == 3
     assert any(
@@ -423,14 +476,17 @@ async def test_resource_reraising_callers_exception_groups_it_once(async_scope: 
             await asyncio.sleep(0)
             yield SimpleObject()
         except Exception:
-            raise KeyError("B Failure") from None
+            raise _BFailure() from None
 
     # Act
-    with pytest.raises(ExceptionGroup) as exceptions:  # noqa: S5778
+    async def act() -> None:
         async with async_scope:
             await resource_a()
             await resource_b()
             raise caller_failure
+
+    with pytest.raises(ExceptionGroup) as exceptions:
+        await act()
 
     # Assert
     assert len(exceptions.value.exceptions) == 2
@@ -487,7 +543,7 @@ async def test_resource_swallowing_exception_hides_it_from_earlier_resources_asy
     async with async_scope:
         await resource_a()
         await resource_b()
-        raise ValueError("Caller Failure")
+        raise _CallerFailure()
 
     # Assert
     mock_swallowed_b.assert_called_once()
@@ -497,6 +553,9 @@ async def test_resource_swallowing_exception_hides_it_from_earlier_resources_asy
 
 class _Interrupt(BaseException):
     """A non-Exception error, standing in for cancellation or KeyboardInterrupt."""
+
+    def __init__(self) -> None:
+        super().__init__("cancelled during cleanup")
 
 
 async def test_cleanup_raising_non_exception_still_closes_earlier_resources(
@@ -516,6 +575,7 @@ async def test_cleanup_raising_non_exception_still_closes_earlier_resources(
     @async_scope.cache()
     @async_resource
     async def first():
+        await asyncio.sleep(0)
         try:
             yield "first"
         finally:
@@ -524,14 +584,18 @@ async def test_cleanup_raising_non_exception_still_closes_earlier_resources(
     @async_scope.cache()
     @async_resource
     async def second():
+        await asyncio.sleep(0)
         yield "second"
-        raise _Interrupt("cancelled during cleanup")
+        raise _Interrupt()
 
     # Act
-    with pytest.raises(_Interrupt):
+    async def act() -> None:
         async with async_scope:
             await first()
             await second()
+
+    with pytest.raises(_Interrupt):
+        await act()
 
     # Assert
     assert closed == ["first"]
@@ -551,23 +615,28 @@ async def test_non_exception_cleanup_failures_are_grouped_with_exceptions(async_
     @async_scope.cache()
     @async_resource
     async def first():
+        await asyncio.sleep(0)
         try:
             yield "first"
         finally:
-            raise ValueError("first failure")
+            raise _FirstFailure()
 
     @async_scope.cache()
     @async_resource
     async def second():
+        await asyncio.sleep(0)
         yield "second"
-        raise _Interrupt("cancelled during cleanup")
+        raise _Interrupt()
 
     # Act
-    with pytest.raises(BaseExceptionGroup) as group:
+    async def act() -> None:
         async with async_scope:
             await first()
             await second()
 
+    with pytest.raises(BaseExceptionGroup) as group:
+        await act()
+
     # Assert
     kinds = sorted(type(exc).__name__ for exc in group.value.exceptions)
-    assert kinds == ["ValueError", "_Interrupt"]
+    assert kinds == ["_FirstFailure", "_Interrupt"]

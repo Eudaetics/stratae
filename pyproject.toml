@@ -52,7 +52,7 @@ dev = [
     "pre-commit>=4.2.0",
     "pyright>=1.1.403",
     "radon>=6.0.1",
-    "ruff>=0.12.2",
+    "ruff>=0.17.2",
     "rust-just>=1.36.0",
 ]
 test = [
@@ -83,9 +83,17 @@ include = ["stratae*"]
 stratae = ["py.typed"]
 
 [tool.ruff]
-lint.select = ["E", "F", "B", "I", "D", "S", "W"]
+lint.select = [
+    "E", "F", "B", "I", "D", "S", "W",
+    "ASYNC", "RUF", "UP", "SIM", "PT", "ARG", "TRY", "DTZ",
+    "RUF029", # preview: async functions that never await
+]
+# Not BLE: isolating failures raised by user code (handlers, hooks, checks, resources) is
+# the library's job, so its catch-alls are deliberate.
 lint.ignore = ["D203", "D212", "B008"]
-lint.external = ["S7497"]
+lint.preview = true
+lint.explicit-preview-rules = true
+lint.external = ["S1172", "S1542", "S5778", "S5797", "S7497"] # SonarQube rules
 line-length = 100
 
 

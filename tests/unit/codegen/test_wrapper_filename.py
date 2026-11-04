@@ -1,6 +1,8 @@
 """Test suite for wrapper filename generation."""
 
-from typing import Callable
+from collections.abc import Callable
+
+import pytest
 
 from stratae.codegen import wrapper_filename
 
@@ -27,7 +29,7 @@ class _Named:
     def __call__(self): ...
 
     def __repr__(self) -> str:
-        raise AssertionError("repr should not be evaluated when a name is available")
+        pytest.fail("repr should not be evaluated when a name is available")
 
 
 def test_wrapper_filename_uses_module_and_qualname():

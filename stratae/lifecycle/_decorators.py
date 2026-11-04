@@ -4,9 +4,10 @@ Decorator objects returned by `Scope.cache` and `AsyncScope.cache`.
 A function may be cached in only one scope, so its cache always has one fixed home.
 """
 
+from collections.abc import Awaitable, Callable, Hashable
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from inspect import unwrap
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Hashable, TypeGuard, cast, overload
+from typing import TYPE_CHECKING, Any, TypeGuard, cast, overload
 
 from stratae._callables import is_async_callable
 from stratae.lifecycle._wrappers import (
@@ -17,7 +18,10 @@ from stratae.lifecycle._wrappers import (
     create_sync_wrapper,
     create_synccm_wrapper,
 )
-from stratae.lifecycle.exceptions import LifecycleConfigurationError
+from stratae.lifecycle.exceptions import (
+    AlreadyCachedError,
+    UncacheableError,
+)
 from stratae.lifecycle.resource import AUTO_ENTER_ASYNC, AUTO_ENTER_SYNC
 
 if TYPE_CHECKING:
@@ -52,25 +56,19 @@ def _mark_as_scoped(func: Callable[..., Any], scope: "BaseScope") -> None:
     :raises LifecycleConfigurationError: If func is already cached, or can't hold the mark.
     """
     target = unwrap(func)
-    existing: "BaseScope | None" = getattr(target, "__cache_scope__", None)
+    existing: BaseScope | None = getattr(target, "__cache_scope__", None)
     if existing is not None:
-        raise LifecycleConfigurationError(
-            f"{func!r} is already cached in scope {existing.name!r}; "
-            f"cannot also cache it in {scope.name!r}."
-        )
+        raise AlreadyCachedError(func, existing.name, scope.name)
     try:
         target.__cache_scope__ = scope
     except (AttributeError, TypeError):
-        raise LifecycleConfigurationError(
-            f"Cannot cache {func!r} in scope {scope.name!r}: builtins, bound methods, and other "
-            "objects that can't hold attributes can't be cached. Wrap it in a function instead."
-        ) from None
+        raise UncacheableError(func, scope.name) from None
 
 
 class CacheDecorator:
     """Decorator returned by `Scope.cache()`."""
 
-    __slots__ = ("_scope", "_cache_key", "_ignore_params")
+    __slots__ = ("_cache_key", "_ignore_params", "_scope")
 
     def __init__(
         self,
@@ -127,7 +125,7 @@ class CacheDecorator:
 class AsyncCacheDecorator:
     """Decorator returned by `AsyncScope.cache()`."""
 
-    __slots__ = ("_scope", "_cache_key", "_ignore_params")
+    __slots__ = ("_cache_key", "_ignore_params", "_scope")
 
     def __init__(
         self,
