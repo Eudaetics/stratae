@@ -281,7 +281,7 @@ class _ConnectionScope:
 
     async def __call__(self) -> AsyncIterator[None]:
         async with self.scope:
-            yield
+            yield  # noqa: ASYNC119 - FastAPI closes a yield dependency when the connection ends
 
 
 def scoped_websocket(scope: AsyncScope) -> params.Depends:

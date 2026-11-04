@@ -129,7 +129,7 @@ async def test_deactivate_returns_whether_exception_was_suppressed():
     async def get_value() -> AsyncGenerator[int, None]:
         await asyncio.sleep(0)
         with suppress(ValueError):
-            yield 1
+            yield 1  # noqa: ASYNC119 - the scope closes an async_resource generator
 
     activation = scope.activate()
     await get_value()

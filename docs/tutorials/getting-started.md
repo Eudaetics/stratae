@@ -173,3 +173,5 @@ An event defines its shape independent of any bus. Its class is the dispatch pat
 ## Conclusion
 
 With Lifecycle, Injection, and Events in place, extending this script is a matter of adding, not editing: a new handler can subscribe to `user_added_event` without touching `persist_user`, and a new provider can replace `get_connection` without touching `add_user` or `list_users`.
+
+Next, [Building a service](service.md) takes the same pieces into a web service. It handles requests over HTTP, publishes events through an outbox to RabbitMQ, and traces each request into the consumer that handles its event.

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stratae"
 description = "A toolkit of composable tools for dependency injection, lifecycle management, and more."
-version = "0.3.3"
+version = "0.3.4"
 readme = "readme.md"
 requires-python = ">=3.12"
 license = {text = "MIT"}
@@ -87,6 +87,7 @@ lint.select = [
     "E", "F", "B", "I", "D", "S", "W",
     "ASYNC", "RUF", "UP", "SIM", "PT", "ARG", "TRY", "DTZ",
     "RUF029", # preview: async functions that never await
+    "ASYNC119", # preview: yield in a context manager in an async generator
 ]
 # Not BLE: isolating failures raised by user code (handlers, hooks, checks, resources) is
 # the library's job, so its catch-alls are deliberate.

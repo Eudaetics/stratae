@@ -16,7 +16,9 @@ typed by the event they're passed with: `S` is its payload and `R` the reply the
 
 `success`, `failure` and `complete` only observe. Every one of them runs, and one that
 raises is logged rather than changing the call's outcome: its reply, or its error, stands.
-Use `before`, or bus middleware, for anything that should be able to fail the call.
+Use `before`, or bus middleware, for anything that should be able to fail the call. Work
+that must succeed or fail with the call, such as a write in its transaction, belongs in the
+handler, or a decorator around it.
 
 On an async bus, the observing hooks in a slot run concurrently, so a slow one doesn't hold
 up the others; `complete` still runs after `success` or `failure`. `before` hooks, and every

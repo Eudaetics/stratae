@@ -4,6 +4,7 @@
 :maxdepth: 1
 :hidden:
 getting-started
+service
 context
 checks
 serde
@@ -12,7 +13,7 @@ outbox
 integrations/index
 ```
 
-New to Stratae? See [Getting Started](getting-started) for installation and examples, then the additional tutorials for each module to see more in-depth documentation.
+New to Stratae? See [Getting Started](getting-started) for installation and examples. Then [Building a service](service.md) puts the parts together in one service, from an HTTP request through a broker to a consumer. The tutorials for each module go into more depth.
 ## The core
 
 [Dependency Injection](../apidocs/stratae.depends/stratae.depends), [Lifecycle](../apidocs/stratae.lifecycle/stratae.lifecycle), and [Events](../apidocs/stratae.events/stratae.events) are the core elements and are fully independent. Read whichever one matches the problem you have.
@@ -110,6 +111,7 @@ Standalone, no dependency on the core three or on each other:
 
 ## Recipes
 
+- [Building a service](service.md) wires one service end to end. It shows scopes for the request and each unit of work, injected storage, a command and an event, the outbox and RabbitMQ, and one correlation id and one trace across all of it.
 - [A database session per scope](database.md) gives each request or message its own transaction. It commits before the response or the ack, and rolls back on any failure. It needs nothing but Lifecycle resources.
 - [An outbox store on SQLAlchemy](outbox.md) keeps outbox records in the same database as your data, so each record commits with the change it describes.
 
