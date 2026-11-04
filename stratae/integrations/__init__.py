@@ -7,5 +7,7 @@ Integrations with third-party tools. Import each submodule directly.
   routes that activate a scope per request.
 * {py:mod}`stratae.integrations.msgspec`: a faster
   {py:func}`serialize <stratae.serde.serialize>` for `msgspec.Struct`.
+* {py:mod}`stratae.integrations.opentelemetry`: bus middleware that traces emits and handlers,
+  carrying the trace across brokers and the outbox.
 * {py:mod}`stratae.integrations.rabbitmq`: async publish and consume adapters over `aiormq`.
 """

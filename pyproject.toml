@@ -43,6 +43,9 @@ starlette = [
     "starlette>=1.2.0",
     "httpx2>=2.0.0",
 ]
+opentelemetry = [
+    "opentelemetry-api>=1.27.0",
+]
 
 [dependency-groups]
 dev = [
@@ -54,6 +57,8 @@ dev = [
 ]
 test = [
     "aiosqlite>=0.20.0",
+    "opentelemetry-instrumentation-asgi>=0.48b0",
+    "opentelemetry-sdk>=1.27.0",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
     "pytest-cov>=6.1.1",

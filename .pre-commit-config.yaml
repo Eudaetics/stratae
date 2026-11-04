@@ -30,5 +30,6 @@ repos:
           - aiormq
           - fastapi
           - msgspec
+          - opentelemetry-api
           - starlette
         exclude: ^tests/|^docs|conftest.py

@@ -121,6 +121,7 @@ Standalone, no dependency on the core three or on each other:
 - [Starlette](../apidocs/stratae.integrations/stratae.integrations.starlette) — the same `scoped_route` pattern, built on Starlette's `Route`.
 - [ASGI](../apidocs/stratae.integrations/stratae.integrations.asgi) — `EnvelopeMiddleware` gives each request its own `Envelope`, so the events it emits share one correlation id. It works with any ASGI app.
 - [RabbitMQ](../apidocs/stratae.integrations/stratae.integrations.rabbitmq) implements `stratae.events`' bus protocols over AMQP.
+- [OpenTelemetry](../apidocs/stratae.integrations/stratae.integrations.opentelemetry) — `tracing` is bus middleware that traces each emit and handler call. One trace follows an event from its request, through the broker or the outbox, into its handler.
 - [msgspec](../apidocs/stratae.integrations/stratae.integrations.msgspec) registers a fast path onto `stratae.serde.serialize` for `msgspec.Struct` payloads.
 
 ## Looking for something specific?
