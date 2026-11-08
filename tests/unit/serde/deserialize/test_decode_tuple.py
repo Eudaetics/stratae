@@ -47,7 +47,7 @@ def test_decode_tuple_accepts_set_source():
     When: decode_tuple is called with that value.
     Then: A tuple with the same elements is returned.
     """
-    assert sorted(decode_tuple({1, 2, 3})) == [1, 2, 3]  # pyright: ignore[reportUnknownArgumentType]
+    assert sorted(decode_tuple({1, 2, 3})) == [1, 2, 3]
 
 
 def test_decode_tuple_accepts_frozenset_source():
@@ -58,4 +58,4 @@ def test_decode_tuple_accepts_frozenset_source():
     When: decode_tuple is called with that value.
     Then: A tuple with the same elements is returned.
     """
-    assert sorted(decode_tuple(frozenset({1, 2, 3}))) == [1, 2, 3]  # pyright: ignore[reportUnknownArgumentType]
+    assert sorted(decode_tuple(frozenset({1, 2, 3}))) == [1, 2, 3]

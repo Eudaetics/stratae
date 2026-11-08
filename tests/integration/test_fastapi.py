@@ -110,28 +110,28 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
     fastapi_app.router.route_class = scoped_route(async_request_scope)
 
     @fastapi_app.get("/ok")
-    async def ok() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+    async def ok() -> dict[str, str]:
         await get_transaction()
         return {"status": "ok"}
 
     @fastapi_app.get("/http-exception")
-    async def http_exception_route() -> None:  # pyright: ignore[reportUnusedFunction]
+    async def http_exception_route() -> None:
         await get_transaction()
         raise HTTPException(status_code=400, detail="deliberate 400")
 
     @fastapi_app.get("/unhandled")
-    async def unhandled() -> None:  # pyright: ignore[reportUnusedFunction]
+    async def unhandled() -> None:
         await get_transaction()
         raise _DeliberateUnhandledFailure()
 
     @fastapi_app.get("/twice")
-    async def twice() -> dict[str, bool]:  # pyright: ignore[reportUnusedFunction]
+    async def twice() -> dict[str, bool]:
         first = await get_transaction()
         second = await get_transaction()
         return {"same_connection": first is second}
 
     @fastapi_app.get("/twice-then-fail")
-    async def twice_then_fail() -> None:  # pyright: ignore[reportUnusedFunction]
+    async def twice_then_fail() -> None:
         first = await get_transaction()
         second = await get_transaction()
         if first is not second:
@@ -139,7 +139,7 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
         raise _DeliberateFailureAfterCallingResourceTwice()
 
     @fastapi_app.get("/stream")
-    async def stream() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+    async def stream() -> StreamingResponse:
         connection = await get_transaction()
 
         async def body():
@@ -152,7 +152,7 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
         return StreamingResponse(body())
 
     @fastapi_app.get("/stream-twice")
-    async def stream_twice() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+    async def stream_twice() -> StreamingResponse:
         first = await get_transaction()
 
         async def body():
@@ -163,7 +163,7 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
         return StreamingResponse(body())
 
     @fastapi_app.get("/stream-then-fail")
-    async def stream_then_fail() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+    async def stream_then_fail() -> StreamingResponse:
         await get_transaction()
 
         async def body():
@@ -174,11 +174,11 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
         return StreamingResponse(body())
 
     @fastapi_app.get("/fail-before-resource")
-    async def fail_before_resource() -> None:  # pyright: ignore[reportUnusedFunction]
+    async def fail_before_resource() -> None:
         raise _DeliberateFailureBeforeTouchingAnyResource()
 
     @fastapi_app.get("/stream-fail-before-resource")
-    async def stream_fail_untouched() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+    async def stream_fail_untouched() -> StreamingResponse:
         async def body():
             await asyncio.sleep(0)
             yield b"chunk1"
@@ -200,12 +200,12 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
             events.append("close")
 
     @fastapi_app.get("/swallowed-exception")
-    async def swallowed_exception_route() -> None:  # pyright: ignore[reportUnusedFunction]
+    async def swallowed_exception_route() -> None:
         await get_swallowing_transaction()
         raise _DeliberateFailureSwallowedByResourceCleanup()
 
     @fastapi_app.get("/stream-swallowed-exception")
-    async def stream_swallowed_exception() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+    async def stream_swallowed_exception() -> StreamingResponse:
         await get_swallowing_transaction()
 
         async def body():
@@ -216,7 +216,7 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
         return StreamingResponse(body())
 
     @fastapi_app.get("/http-exception-while-handling")
-    async def http_exception_while_handling() -> None:  # pyright: ignore[reportUnusedFunction]
+    async def http_exception_while_handling() -> None:
         await get_transaction()
         try:
             _lookup_missing()
@@ -224,7 +224,7 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
             raise HTTPException(status_code=404, detail="deliberate 404 while handling") from None
 
     @fastapi_app.get("/suspend")
-    async def suspend() -> None:  # pyright: ignore[reportUnusedFunction]
+    async def suspend() -> None:
         await get_transaction()
         events.append("suspended")
         suspended.set()
@@ -516,7 +516,7 @@ def test_route_subclass_can_post_process_the_response(async_request_scope: Async
     timed_app.router.route_class = TimedRoute
 
     @timed_app.get("/ok")
-    async def ok() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+    async def ok() -> dict[str, str]:
         return {"status": "ok"}
 
     # Act
@@ -580,17 +580,17 @@ def transaction_app(
     fastapi_app.router.route_class = scoped_route(request_scope, handler=transaction_scope)
 
     @fastapi_app.post("/write")
-    async def write() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
+    async def write() -> dict[str, str]:
         await get_transaction()
         return {"status": "written"}
 
     @fastapi_app.post("/write-conflict")
-    async def write_conflict() -> None:  # pyright: ignore[reportUnusedFunction]
+    async def write_conflict() -> None:
         await get_transaction()
         raise HTTPException(status_code=409, detail="deliberate conflict")
 
     @fastapi_app.post("/write-then-stream")
-    async def write_then_stream() -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+    async def write_then_stream() -> StreamingResponse:
         await get_transaction()
 
         async def body():
@@ -604,7 +604,7 @@ def transaction_app(
         return StreamingResponse(body())
 
     @fastapi_app.post("/write-then-background")
-    async def write_then_background(  # pyright: ignore[reportUnusedFunction]
+    async def write_then_background(
         tasks: BackgroundTasks,
     ) -> dict[str, str]:
         await get_transaction()
@@ -770,7 +770,7 @@ def test_injected_route_filters_response_by_return_annotation():
 
     @fastapi_app.get("/users/{name}")
     @inject
-    def read_user(  # pyright: ignore[reportUnusedFunction]
+    def read_user(
         name: str, store: Annotated[dict[str, StoredUser], Depends(get_store)]
     ) -> PublicUser:
         return store[name]

@@ -127,7 +127,7 @@ Standalone, no dependency on the core three or on each other:
 ## Looking for something specific?
 
 :::{dropdown} I want to improve testability.
-Use [Dependency Injection](../apidocs/stratae.depends/stratae.depends) and `override`/`overrides` to swap in a mock for the duration of a `with` block, without restructuring the function it's injected into.
+Use [Dependency Injection](../apidocs/stratae.depends/stratae.depends) and `override` to swap in a mock for the duration of a `with` block, without restructuring the function it's injected into.
 :::
 
 :::{dropdown} I need authorization guards on business logic or an HTTP endpoint.

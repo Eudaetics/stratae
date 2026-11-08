@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from stratae.depends import override, overrides
+from stratae.depends import override
 from stratae.depends._provide import Provider
-from stratae.depends.exceptions import DependencyNotFoundError, EmptyOverridesError
+from stratae.depends.exceptions import DependencyNotFoundError
 
 
 def test_override_returns_value_while_active():
@@ -24,7 +24,7 @@ def test_override_returns_value_while_active():
     depends = Provider(dep)
 
     # Act & Assert
-    with override(dep, "overridden"):
+    with override(dep).to("overridden"):
         assert depends.provide() == "overridden"
 
 
@@ -41,7 +41,7 @@ async def test_override_returns_value_while_active_async():
     depends = Provider(dep)
 
     # Act & Assert
-    with override(dep, "overridden"):
+    with override(dep).to("overridden"):
         assert await depends.provide() == "overridden"
 
 
@@ -58,7 +58,7 @@ async def test_override_supports_repeated_provide_calls_async():
     depends = Provider(dep)
 
     # Act & Assert
-    with override(dep, "overridden"):
+    with override(dep).to("overridden"):
         assert await depends.provide() == "overridden"
         assert await depends.provide() == "overridden"
 
@@ -76,7 +76,7 @@ def test_override_restores_dependency_after_exit():
     depends = Provider(dep)
 
     # Act
-    with override(dep, "overridden"):
+    with override(dep).to("overridden"):
         ...
 
     # Assert
@@ -96,7 +96,7 @@ def test_override_does_not_call_dependency_while_active():
     depends = Provider(dep)
 
     # Act
-    with override(dep, "overridden"):
+    with override(dep).to("overridden"):
         depends.provide()
 
     # Assert
@@ -118,7 +118,7 @@ def test_override_tracks_active_count():
     # Act & Assert
     assert depends.override_count == 0
 
-    with override(dep, "overridden"):
+    with override(dep).to("overridden"):
         assert depends.override_count == 1
 
     assert depends.override_count == 0
@@ -138,10 +138,10 @@ def test_nested_override_same_dependency():
     depends = Provider(dep)
 
     # Act & Assert
-    with override(dep, "outer"):
+    with override(dep).to("outer"):
         assert depends.provide() == "outer"
 
-        with override(dep, "inner"):
+        with override(dep).to("inner"):
             assert depends.provide() == "inner"
 
         assert depends.provide() == "outer"
@@ -149,13 +149,14 @@ def test_nested_override_same_dependency():
     assert depends.provide() == "real"
 
 
-def test_override_dict_overrides_all_while_active():
+def test_several_overrides_apply_and_restore_together():
     """
-    All deps in the mapping should return their override values while active.
+    Several overrides in one with statement should apply together and restore together.
 
     Given: two Providers for separate dependencies,
-    When: both are overridden together via a dict,
-    Then: both should return their override values inside the with block.
+    When: both are overridden in one with statement, and provide is called on each,
+    Then: each returns its own override value without calling its dependency, and both
+        call their real dependencies again after the block exits.
     """
     # Arrange
     dep_a = Mock(return_value="real-a")
@@ -164,81 +165,22 @@ def test_override_dict_overrides_all_while_active():
     wrapper_b = Provider(dep_b)
 
     # Act & Assert
-    with overrides({dep_a: "override-a", dep_b: "override-b"}):
+    with override(dep_a).to("override-a"), override(dep_b).to("override-b"):
         assert wrapper_a.provide() == "override-a"
         assert wrapper_b.provide() == "override-b"
+        dep_a.assert_not_called()
+        dep_b.assert_not_called()
 
-
-def test_override_dict_restores_all_after_exit():
-    """
-    All deps in the mapping should be restored to their real values after the block exits.
-
-    Given: two Providers for separate dependencies,
-    When: both are overridden together and the block exits,
-    Then: both should call their real dependencies again.
-    """
-    # Arrange
-    dep_a = Mock(return_value="real-a")
-    dep_b = Mock(return_value="real-b")
-    wrapper_a = Provider(dep_a)
-    wrapper_b = Provider(dep_b)
-
-    # Act
-    with overrides({dep_a: "override-a", dep_b: "override-b"}):
-        ...
-
-    # Assert
     assert wrapper_a.provide() == "real-a"
     assert wrapper_b.provide() == "real-b"
 
 
-def test_override_dict_does_not_call_dependencies_while_active():
+def test_several_overrides_unwind_entered_on_partial_failure():
     """
-    The real dependencies should not be invoked while the dict override is active.
-
-    Given: two Providers for separate dependencies,
-    When: both are overridden together and provide is called on each,
-    Then: neither real dependency should be invoked.
-    """
-    # Arrange
-    dep_a = Mock()
-    dep_b = Mock()
-    wrapper_a = Provider(dep_a)
-    wrapper_b = Provider(dep_b)
-
-    # Act
-    with overrides({dep_a: "override-a", dep_b: "override-b"}):
-        wrapper_a.provide()
-        wrapper_b.provide()
-
-    # Assert
-    dep_a.assert_not_called()
-    dep_b.assert_not_called()
-
-
-async def test_override_dict_with_async_dependency():
-    """
-    A dict override containing an async dependency should wrap the value as awaitable.
-
-    Given: a Provider for an async dependency,
-    When: it is overridden via a dict,
-    Then: awaiting provide should return the override value.
-    """
-    # Arrange
-    dep = AsyncMock(return_value="real")
-    depends = Provider(dep)
-
-    # Act & Assert
-    with overrides({dep: "overridden"}):
-        assert await depends.provide() == "overridden"
-
-
-def test_overrides_unwinds_entered_on_partial_failure():
-    """
-    If __enter__ fails partway through, already-entered overrides should be unwound.
+    If one of several overrides fails to enter, those already entered should be unwound.
 
     Given: two Providers where the second dep's lock raises on entry,
-    When: overrides.__enter__ fails on the second dep,
+    When: both are overridden in one with statement, and the second fails to enter,
     Then: the first dep's override should be cleaned up and provide restored.
     """
     # Arrange
@@ -253,7 +195,11 @@ def test_overrides_unwinds_entered_on_partial_failure():
     wrapper_b.lock = failing_lock
 
     # Act
-    with pytest.raises(RuntimeError), overrides({dep_a: "override-a", dep_b: "override-b"}):
+    with (
+        pytest.raises(RuntimeError),
+        override(dep_a).to("override-a"),
+        override(dep_b).to("override-b"),
+    ):
         ...
 
     # Assert
@@ -274,19 +220,7 @@ def test_override_raises_for_unregistered_dependency():
 
     # Act & Assert
     with pytest.raises(DependencyNotFoundError):
-        override(dep, "value")
-
-
-def test_overrides_raises_for_empty_mapping():
-    """
-    overrides() should raise if given an empty mapping.
-
-    Given: an empty dict,
-    When: overrides is called with it,
-    Then: it should raise ValueError.
-    """
-    with pytest.raises(EmptyOverridesError):
-        overrides({})
+        override(dep)
 
 
 def test_override_thread_isolation():
@@ -305,7 +239,7 @@ def test_override_thread_isolation():
     barrier = threading.Barrier(2)
 
     def run(name: str, value: str):
-        with override(dep, value):
+        with override(dep).to(value):
             barrier.wait()
             results[name] = depends.provide()
 
@@ -335,7 +269,7 @@ def test_override_can_be_reentered_while_held():
     # Arrange
     dep = Mock(return_value="real")
     depends = Provider(dep)
-    ctx = override(dep, "fake")
+    ctx = override(dep).to("fake")
 
     # Act & Assert
     with ctx:
@@ -343,27 +277,6 @@ def test_override_can_be_reentered_while_held():
             assert depends.provide() == "fake"
         assert depends.provide() == "fake"
     assert depends.provide() == "real"
-
-
-def test_overrides_can_be_reentered_while_held():
-    """
-    The same overrides object can be entered again while it's already held.
-
-    Given: an overrides context manager for two dependencies,
-    When: it is entered, entered again inside itself, and both are exited,
-    Then: both overrides apply throughout, and the real dependencies are restored at the end.
-    """
-    # Arrange
-    dep_a, dep_b = Mock(return_value="real_a"), Mock(return_value="real_b")
-    depends_a, depends_b = Provider(dep_a), Provider(dep_b)
-    ctx = overrides({dep_a: "fake_a", dep_b: "fake_b"})
-
-    # Act & Assert
-    with ctx:
-        with ctx:
-            assert (depends_a.provide(), depends_b.provide()) == ("fake_a", "fake_b")
-        assert (depends_a.provide(), depends_b.provide()) == ("fake_a", "fake_b")
-    assert (depends_a.provide(), depends_b.provide()) == ("real_a", "real_b")
 
 
 def test_override_exit_in_other_context_still_restores_provide():
@@ -377,7 +290,7 @@ def test_override_exit_in_other_context_still_restores_provide():
     # Arrange
     dep = Mock(return_value="real")
     depends = Provider(dep)
-    ctx = override(dep, "fake")
+    ctx = override(dep).to("fake")
     ctx.__enter__()
 
     # Act
