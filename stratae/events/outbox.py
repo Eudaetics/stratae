@@ -398,7 +398,7 @@ class OutboxProducer:
         """Record the route's event and publisher config, refusing a clash."""
         route = config.route or event.name
         known = self._routes.setdefault(route, (event, config.config))
-        if known[0] is not event or (known[1] is not config.config and known[1] != config.config):
+        if known[0] != event or (known[1] is not config.config and known[1] != config.config):
             raise ValueError(_ROUTE_TAKEN.format(route))
         return route
 

@@ -7,6 +7,7 @@ DirectBus:
 - Calling a factory-bound callable dispatches the constructed payload to a registered handler.
 - All handlers registered on a channel receive the payload.
 - Handlers on different channels are isolated from each other.
+- A handler bound to one event definition handles emits through an equal definition.
 - handle returns a Handler.
 - Async handlers are rejected with TypeError at registration, in both the
   direct and decorator forms of handle.
@@ -303,7 +304,7 @@ def test_channel_isolation(bus: DirectBus):
     """
     # Arrange
     task_event = PubSub(_TaskCreated)
-    order_event = PubSub(_TaskCreated)
+    order_event = PubSub(_TaskCreated, name="order")
     emit_task = bus.bind(task_event, factory=_TaskCreated)
     task_handler = Mock()
     order_handler = Mock()
@@ -316,6 +317,28 @@ def test_channel_isolation(bus: DirectBus):
     # Assert
     task_handler.assert_called_once_with(_TaskCreated(3))
     order_handler.assert_not_called()
+
+
+def test_equal_event_reaches_handler(bus: DirectBus):
+    """
+    A handler should receive emits through an equal, separately built event definition.
+
+    Given: A handler registered against one PubSub definition
+    When: A payload is emitted through an equal definition built separately
+    Then: The handler is called with the payload, and both definitions list it
+    """
+    # Arrange
+    handler = Mock()
+    handled_event = PubSub(_TaskCreated)
+    emitted_event = PubSub(_TaskCreated)
+    registered = bus.handle(handled_event, handler)
+
+    # Act
+    bus.emit(emitted_event, None, _TaskCreated(4))
+
+    # Assert
+    handler.assert_called_once_with(_TaskCreated(4))
+    assert bus.handlers(emitted_event) == (registered,)
 
 
 def test_handle_returns_handler(bus: DirectBus):
@@ -842,7 +865,7 @@ def test_nested_emission_produces_child_envelope(bus_with_envelope: DirectBus):
     """
     # Arrange
     outer_event = PubSub(_TaskCreated)
-    inner_event = PubSub(_TaskCreated)
+    inner_event = PubSub(_TaskCreated, name="inner")
     emit_outer = bus_with_envelope.bind(outer_event, factory=_TaskCreated)
     emit_inner = bus_with_envelope.bind(inner_event, factory=_TaskCreated)
     outer_envelopes: list[Envelope] = []

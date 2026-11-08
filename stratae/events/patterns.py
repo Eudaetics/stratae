@@ -7,14 +7,23 @@ An event pairs a payload schema with a dispatch pattern, independent of any bus.
 A `Request` without a `reply` type is a command, replying `None`. Without a schema, an event
 carries no payload and binds to a zero-argument callable.
 
-Events are immutable data. How an event is delivered belongs to each bus, which supports
-the patterns it has a dispatcher for. Buses type against
-{py:class}`EventType <stratae.events.protocols.EventType>`, which every pattern implements.
+Events are immutable data, compared by value. Two separately built events with the same
+pattern, name, payload type and reply type are equal and share a hash. A bus matches them as
+one event, so a handler registered through one receives emits through the other.
+
+How an event is delivered belongs to each bus, which supports the patterns it has a
+dispatcher for. Buses type against {py:class}`EventType <stratae.events.protocols.EventType>`,
+which every pattern implements.
 
 Subclassing a pattern means "this is the same pattern": a `class Command(Request)` is
 delivered exactly as a `Request` everywhere, unless a direct bus is given a dispatcher for it.
-Write a new pattern as its own class instead, using {py:class}`Immutable` for the same
-guarantee.
+A subclass is never equal to its base, so the two are still separate events.
+
+Write a new pattern as its own class instead. Declare it as `PubSub` is: a dataclass with
+`init=False, unsafe_hash=True, slots=True`, using {py:class}`Immutable` to refuse changes. It
+then compares by value, as buses expect. A pattern declared any other way still works, but
+only the same object matches it. Don't use `frozen=True`: buses need the fields to be plain
+attributes, as {py:class}`EventType <stratae.events.protocols.EventType>` explains.
 
 ````{example} Reusing one event definition across bus instances
 ```{code-block} python
@@ -57,6 +66,7 @@ None
 ````
 """
 
+from dataclasses import dataclass, field
 from typing import Any, Literal, NoReturn, overload
 
 _NAME_REQUIRED = "A payload-less {0} needs a name, e.g. {0}(name='heartbeat')."
@@ -89,8 +99,8 @@ class Immutable:
 
     def _assign(self, **fields: object) -> None:
         """Set fields, for use in `__init__`."""
-        for field, value in fields.items():
-            object.__setattr__(self, field, value)
+        for field_name, value in fields.items():
+            object.__setattr__(self, field_name, value)
 
     def __setattr__(self, name: str, value: object) -> NoReturn:
         """Refuse assignment: the object is immutable."""
@@ -101,23 +111,23 @@ class Immutable:
         raise AttributeError(_IMMUTABLE.format(type(self).__name__))
 
 
+@dataclass(init=False, unsafe_hash=True, slots=True)
 class Request[S, R, Signal: bool](Immutable):
     """
     Request/reply event: exactly one responder, whose `reply` the emitter receives.
 
-    Immutable once constructed. `Signal` is a type-only parameter marking a payload-less
-    event. `emit_returns` and `handler_returns` both hold the reply type: they carry it for
-    buses and adapters; read it as `reply`.
+    Immutable once constructed. Compares and hashes by its class, name, payload type and reply
+    type. `Signal` is a type-only parameter marking a payload-less event. `emit_returns` and
+    `handler_returns` both hold the reply type: they carry it for buses and adapters; read it
+    as `reply`.
     """
-
-    __slots__ = ("emit_returns", "handler_returns", "is_signal", "name", "schema")
 
     name: str
     schema: type[S]
-    is_signal: Signal
+    is_signal: Signal = field(compare=False, repr=False)
     emit_returns: type[R]
     """The reply type, as {py:class}`EventType <stratae.events.protocols.EventType>` needs it."""
-    handler_returns: type[R]
+    handler_returns: type[R] = field(compare=False, repr=False)
     """The reply type, as {py:class}`EventType <stratae.events.protocols.EventType>` needs it."""
 
     @overload
@@ -175,22 +185,21 @@ class Request[S, R, Signal: bool](Immutable):
         return self.emit_returns
 
 
+@dataclass(init=False, unsafe_hash=True, slots=True)
 class PubSub[S, Signal: bool](Immutable):
     """
     Fire-and-forget event: every handler runs, and their returns are ignored.
 
-    Immutable once constructed. `Signal` is a type-only parameter marking a payload-less
-    event.
+    Immutable once constructed. Compares and hashes by its class, name and payload type.
+    `Signal` is a type-only parameter marking a payload-less event.
     """
-
-    __slots__ = ("emit_returns", "handler_returns", "is_signal", "name", "schema")
 
     name: str
     schema: type[S]
-    is_signal: Signal
-    emit_returns: type[None]
+    is_signal: Signal = field(compare=False, repr=False)
+    emit_returns: type[None] = field(compare=False, repr=False)
     """`NoneType`: emitting a pub/sub event returns nothing."""
-    handler_returns: type[object]
+    handler_returns: type[object] = field(compare=False, repr=False)
     """`object`: a pub/sub handler may return anything, and it's ignored."""
 
     @overload

@@ -308,7 +308,7 @@ async def test_channel_isolation(bus: AsyncDirectBus):
     """
     # Arrange
     task_event = PubSub(_TaskCreated)
-    order_event = PubSub(_TaskCreated)
+    order_event = PubSub(_TaskCreated, name="order")
     emit_task = bus.bind(task_event, factory=_TaskCreated)
     task_handler = AsyncMock()
     order_handler = AsyncMock()
@@ -847,7 +847,7 @@ async def test_nested_emission_produces_child_envelope(bus_with_envelope: AsyncD
     """
     # Arrange
     outer_event = PubSub(_TaskCreated)
-    inner_event = PubSub(_TaskCreated)
+    inner_event = PubSub(_TaskCreated, name="inner")
     emit_outer = bus_with_envelope.bind(outer_event, factory=_TaskCreated)
     emit_inner = bus_with_envelope.bind(inner_event, factory=_TaskCreated)
     outer_envelopes: list[Envelope] = []
