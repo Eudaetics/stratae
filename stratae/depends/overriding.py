@@ -1,13 +1,17 @@
 """
 Context managers for temporarily replacing injected dependency values.
 
-{py:func}`override` replaces one provider's value and {py:func}`overrides` replaces several,
-restoring them on exit. Overrides are context-local, so concurrent tasks don't interfere.
+{py:func}`override` names a provider, and `.to(value)` gives the value to inject in its place.
+The value's type is checked against what the provider returns, or resolves to if it's async.
+Entering the override replaces the provider, and exiting restores it. Overrides are
+context-local, so concurrent tasks don't interfere. To replace several providers, enter
+several overrides in one `with` statement. If one fails to enter, those already entered are
+restored.
 
 ````{example} Swapping dependencies for test doubles
 ```{code-block} python
 from typing import Annotated
-from stratae.depends import Depends, inject, overrides
+from stratae.depends import Depends, inject, override
 
 class UserRepository:
     def __init__(self, users: dict[int, str]):
@@ -39,10 +43,10 @@ def notify_user(
 
 print(notify_user(1))
 
-with overrides({
-    get_user_repository: UserRepository({1: "test@example.com"}),
-    get_email_service: EmailService(sender="test@example.com"),
-}):
+with (
+    override(get_user_repository).to(UserRepository({1: "test@example.com"})),
+    override(get_email_service).to(EmailService(sender="test@example.com")),
+):
     print(notify_user(1))
 
 print(notify_user(1))
@@ -55,14 +59,11 @@ from=notifications@example.com to=jane@example.com subject='Welcome!'
 ````
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextvars import Token
-from typing import Any
+from typing import Any, overload
 
 from stratae.depends._provide import Provider
-from stratae.depends.exceptions import EmptyOverridesError
-
-_OverrideMap = dict[Callable[..., Any], Any]
 
 
 class _ReusableAwaitable:
@@ -77,15 +78,17 @@ class _ReusableAwaitable:
         return self.value
 
 
-class _Override:
+class _Override[T]:
+    """A provider's replacement value, applied while the context manager is entered."""
+
     __slots__ = ("dep", "tokens", "value")
 
-    def __init__(self, dep: Provider, value: Any):
+    def __init__(self, dep: Provider, value: T) -> None:
         self.dep = dep
         self.value = value
         self.tokens: list[Token[Any]] = []
 
-    def __enter__(self):
+    def __enter__(self) -> None:
         with self.dep.lock:
             if self.dep.override_count == 0:
                 self.dep.provide = self.dep.provide_override
@@ -106,51 +109,35 @@ class _Override:
                     self.dep.provide = self.dep.dependency
 
 
-class _Overrides:
-    __slots__ = ("_items",)
+class _Target[T]:
+    """A provider named by {py:func}`override`, waiting for its replacement value."""
 
-    def __init__(self, mapping: _OverrideMap) -> None:
-        self._items: list[_Override] = [
-            _Override(Provider.find(func), value) for func, value in mapping.items()
-        ]
+    __slots__ = ("_dep",)
 
-    def __enter__(self) -> None:
-        entered: list[_Override] = []
-        try:
-            for o in self._items:
-                o.__enter__()
-                entered.append(o)
-        except BaseException:
-            for o in reversed(entered):
-                o.__exit__()
-            raise
+    def __init__(self, dep: Provider) -> None:
+        self._dep = dep
 
-    def __exit__(self, *_: object) -> None:
-        for o in reversed(self._items):
-            o.__exit__()
+    def to(self, value: T) -> _Override[T]:
+        """
+        Give the value to inject in place of the provider.
+
+        :param value: The value to inject, of the type the provider returns, or resolves to
+            if it's async. It's used as-is, never called.
+        :returns: A reentrant context manager, not safe to share between concurrent tasks.
+        """
+        return _Override(self._dep, value)
 
 
-def override(func: Callable[..., Any], value: Any) -> _Override:
+@overload
+def override[T](func: Callable[..., Awaitable[T]]) -> _Target[T]: ...
+@overload
+def override[T](func: Callable[..., T]) -> _Target[T]: ...
+def override(func: Callable[..., Any]) -> _Target[Any]:
     """
-    Temporarily replace one dependency's value.
+    Name a provider to replace temporarily; `.to(value)` gives the replacement.
 
     :param func: A provider passed to {py:func}`Depends <stratae.depends.injection.Depends>`.
-    :param value: The value to inject. It's used as-is, never called.
-    :returns: A reentrant context manager, not safe to share between concurrent tasks.
+    :returns: An object whose `to` method takes the replacement value.
     :raises DependencyNotFoundError: If `func` was never passed to `Depends`.
     """
-    return _Override(Provider.find(func), value)
-
-
-def overrides(mapping: _OverrideMap) -> _Overrides:
-    """
-    Temporarily replace several dependencies' values.
-
-    :param mapping: Providers mapped to replacement values.
-    :returns: A context manager like {py:func}`override`'s, applying every override.
-    :raises EmptyOverridesError: If `mapping` is empty.
-    :raises DependencyNotFoundError: If any provider was never passed to `Depends`.
-    """
-    if not mapping:
-        raise EmptyOverridesError()
-    return _Overrides(mapping)
+    return _Target(Provider.find(func))

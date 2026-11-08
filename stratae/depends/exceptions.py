@@ -97,11 +97,3 @@ class DependencyNotFoundError(DependencyInjectionError, ValueError):
     def __init__(self, func: Callable[..., Any]) -> None:
         """:param func: The callable."""
         super().__init__(f"No Dependency found for {func}")
-
-
-class EmptyOverridesError(DependencyInjectionError, ValueError):
-    """Raised when {py:func}`overrides <stratae.depends.overrides>` is given no overrides."""
-
-    def __init__(self) -> None:
-        """Explain that at least one override is needed."""
-        super().__init__("overrides() requires at least one entry.")

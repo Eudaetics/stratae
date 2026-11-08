@@ -3,9 +3,8 @@ Dependency injection via annotated parameters and the `inject` decorator.
 
 Annotate a parameter with `Annotated[T, Depends(provider)]` and decorate the function
 with {py:func}`inject <stratae.depends.injection.inject>`; callers no longer pass it.
-{py:func}`override <stratae.depends.overriding.override>` and
-{py:func}`overrides <stratae.depends.overriding.overrides>` temporarily replace providers,
-e.g. with test mocks.
+{py:func}`override <stratae.depends.overriding.override>` temporarily replaces a provider,
+e.g. with a test mock.
 
 ````{example} Injecting a repository and swapping in a test mock
 ```{code-block} python
@@ -31,7 +30,7 @@ def greet(
 greet(user_id=1)
 
 mock_repo = UserRepository({1: "Test User"})
-with override(get_user_repository, mock_repo):
+with override(get_user_repository).to(mock_repo):
     greet(user_id=1)
 
 greet(user_id=1)
@@ -45,11 +44,10 @@ Hello, Jane Doe!
 """
 
 from .injection import Depends, inject
-from .overriding import override, overrides
+from .overriding import override
 
 __all__ = [
     "Depends",
     "inject",
     "override",
-    "overrides",
 ]

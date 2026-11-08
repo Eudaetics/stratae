@@ -27,7 +27,7 @@ def greeting(user: Annotated[User, Depends(get_current_user)]) -> str:
 
 print(greeting())
 
-with override(get_current_user, User(name="Jane")):
+with override(get_current_user).to(User(name="Jane")):
     print(greeting())
 
 print(greeting())

@@ -47,7 +47,7 @@ def test_decode_list_accepts_set_source():
     When: decode_list is called with that value.
     Then: A list with the same elements is returned.
     """
-    assert sorted(decode_list({1, 2, 3})) == [1, 2, 3]  # pyright: ignore[reportUnknownArgumentType]
+    assert sorted(decode_list({1, 2, 3})) == [1, 2, 3]
 
 
 def test_decode_list_accepts_frozenset_source():
@@ -58,4 +58,4 @@ def test_decode_list_accepts_frozenset_source():
     When: decode_list is called with that value.
     Then: A list with the same elements is returned.
     """
-    assert sorted(decode_list(frozenset({1, 2, 3}))) == [1, 2, 3]  # pyright: ignore[reportUnknownArgumentType]
+    assert sorted(decode_list(frozenset({1, 2, 3}))) == [1, 2, 3]

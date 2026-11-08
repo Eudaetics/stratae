@@ -163,6 +163,7 @@ reportOptionalMemberAccess = true
 reportOptionalCall = true
 reportOptionalIterable = true
 reportUntypedFunctionDecorator = true
+reportUnnecessaryTypeIgnoreComment = true
 
 # Python version
 pythonVersion = "3.12"
