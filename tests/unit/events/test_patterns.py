@@ -19,9 +19,16 @@ PubSub:
 Immutability:
 - Assigning to or deleting an event's attribute raises AttributeError.
 - A custom class using Immutable sets its fields with _assign and refuses assignment.
+
+Equality:
+- Separately built events with the same pattern, name, payload type and reply type are
+  equal and share a hash.
+- Changing the pattern, name, payload type or reply type makes events unequal, including a
+  subclass of a pattern.
+- An event's repr shows its name, payload type and, for a request, its reply type.
 """
 
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -298,6 +305,84 @@ def test_immutable_custom_class() -> None:
     assert point.x == 3
     with pytest.raises(AttributeError, match="_Point is immutable"):
         point.x = 4
+
+
+# endregion
+
+
+# region: Equality
+
+
+def test_equal_definitions_are_equal() -> None:
+    """
+    Separately built events with the same definition should be the same event.
+
+    Given: Two PubSub events, and two Request events, each pair built separately from the same
+        pattern, name, payload type and reply type
+    When: Each pair is compared and hashed
+    Then: They're equal, share a hash, and collapse to one key in a set
+    """
+    # Arrange
+    pubsub_a = PubSub(_OrderPlaced, name="a")
+    pubsub_b = PubSub(_OrderPlaced, name="a")
+    request_a = Request(_FindBook, reply=_BookFound)
+    request_b = Request(_FindBook, reply=_BookFound)
+
+    # Act / Assert
+    assert pubsub_a == pubsub_b
+    assert hash(pubsub_a) == hash(pubsub_b)
+    assert request_a == request_b
+    assert hash(request_a) == hash(request_b)
+    assert len({pubsub_a, pubsub_b, request_a, request_b}) == 2
+
+
+class _Command(Request[_OrderPlaced, None, Literal[False]]):
+    """A subclass of Request, which a bus may be given its own dispatcher for."""
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        pytest.param(PubSub(_OrderPlaced, name="a"), id="pattern"),
+        pytest.param(_Command(_OrderPlaced, name="a"), id="pattern-subclass"),
+        pytest.param(Request(_OrderPlaced, name="b"), id="name"),
+        pytest.param(Request(_FindBook, name="a"), id="payload-type"),
+        pytest.param(Request(_OrderPlaced, name="a", reply=_BookFound), id="reply-type"),
+    ],
+)
+def test_changed_definition_is_unequal(other: object) -> None:
+    """
+    Changing any part of an event's definition should make it a different event.
+
+    Given: A command Request named "a" carrying _OrderPlaced
+    When: It's compared with an event differing in pattern, name, payload type or reply type
+    Then: They're unequal
+    """
+    # Arrange
+    event = Request(_OrderPlaced, name="a")
+
+    # Act / Assert
+    assert event != other
+    assert other != event
+
+
+def test_repr_shows_definition() -> None:
+    """
+    An event's repr should show what defines it.
+
+    Given: A PubSub event and a Request event with a reply type
+    When: Their reprs are taken
+    Then: They show the pattern, name and payload type, and the request's reply type
+    """
+    # Act
+    pubsub = repr(PubSub(_OrderPlaced))
+    request = repr(Request(_FindBook, reply=_BookFound))
+
+    # Assert
+    assert pubsub == f"PubSub(name='_OrderPlaced', schema={_OrderPlaced!r})"
+    assert request == (
+        f"Request(name='_FindBook', schema={_FindBook!r}, emit_returns={_BookFound!r})"
+    )
 
 
 # endregion

@@ -17,6 +17,8 @@ OutboxProducer:
 - Binding or emitting a request event raises TypeError.
 - A route bound to another event or config raises ValueError; the same config object, or an
   equal one, binds again.
+- An equal event, built separately, binds an existing route; a different payload type under
+  the same name raises ValueError.
 
 InMemoryOutboxStore:
 - Records added outside a transaction are kept; inside one, only if it exits cleanly.
@@ -421,6 +423,33 @@ def test_route_clash_refused(outbox: OutboxProducer):
         outbox.bind(_order_placed, config=OutboxConfig("other-config", route="orders"))
     outbox.bind(_order_placed, config=config)
     outbox.bind(_order_placed, config=OutboxConfig("orders-config", route="orders"))
+
+
+def test_equal_event_binds_existing_route(outbox: OutboxProducer):
+    """
+    A route should accept an equal event built separately, and refuse a different one.
+
+    Given: An event bound to its default route
+    When: An equal definition built separately binds with the same config, and an event with
+          the same name but a different payload type binds the same route
+    Then: The equal definition is accepted and the route keeps one event; the different one
+          raises ValueError
+    """
+
+    # Arrange
+    class _OtherOrder:
+        pass
+
+    config = OutboxConfig("orders-config")
+    outbox.bind(PubSub(_Order), config=config)
+
+    # Act
+    outbox.bind(PubSub(_Order), config=config)
+
+    # Assert
+    assert dict(outbox.routes) == {"_Order": (_order_placed, "orders-config")}
+    with pytest.raises(ValueError, match="'_Order' is already bound"):
+        outbox.bind(PubSub(_OtherOrder, name="_Order"), config=config)
 
 
 # region: InMemoryOutboxStore
