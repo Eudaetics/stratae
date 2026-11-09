@@ -29,9 +29,6 @@ Repository = "https://github.com/Eudaetics/stratae"
 Issues = "https://github.com/Eudaetics/stratae/issues"
 
 [project.optional-dependencies]
-msgspec = [
-    "msgspec>=0.21.0"
-]
 rabbitmq = [
     "aiormq>=6.8.0"
 ]
@@ -57,6 +54,7 @@ dev = [
 ]
 test = [
     "aiosqlite>=0.20.0",
+    "msgspec>=0.21.0",
     "opentelemetry-instrumentation-asgi>=0.48b0",
     "opentelemetry-sdk>=1.27.0",
     "pytest>=8.4.1",
@@ -124,7 +122,6 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "fastapi: FastAPI integration smoke tests (requires fastapi, httpx2)",
     "starlette: Starlette integration smoke tests (requires starlette, httpx2)",
-    "msgspec: msgspec integration tests (requires msgspec)",
     "rabbitmq: RabbitMQ integration tests (requires aiormq, msgspec, and a live broker)",
 ]
 

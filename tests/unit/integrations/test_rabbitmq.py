@@ -8,6 +8,7 @@ RabbitMQConfig:
 - The exchange_type is stored on initialization, defaulting to None.
 
 RabbitMQPublisher:
+- Constructing a publisher without a serializer is a type error and raises TypeError.
 - Entering the context opens the connection and allocates a channel.
 - Exiting the context closes the connection.
 - Exiting without a connection closes nothing.
@@ -69,6 +70,7 @@ Connection health and reconnecting:
 """
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -100,7 +102,6 @@ from stratae.integrations.rabbitmq import (
     RabbitMQPublisher,
     RabbitMQReconnect,
 )
-from stratae.serde import encode, serialize
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -110,10 +111,9 @@ class _OrderPlaced:
         self.order_id = order_id
 
 
-@encode.register
-def encode_order_placed(obj: _OrderPlaced) -> dict[str, int]:
-    """Define the encoder for _OrderPlaced."""
-    return {"order_id": obj.order_id}
+def _encode(payload: object) -> bytes:
+    """Serialize a test payload's attributes as JSON."""
+    return json.dumps(vars(payload)).encode()
 
 
 _order_placed = PubSub(_OrderPlaced)
@@ -139,7 +139,7 @@ def connect_mock(mocker: MockerFixture, connection: AsyncMock) -> AsyncMock:
 @pytest.fixture
 def publisher(connect_mock: AsyncMock) -> RabbitMQPublisher:
     """Return a RabbitMQPublisher wired to the mocked connection."""
-    return RabbitMQPublisher(_URL)
+    return RabbitMQPublisher(_URL, serializer=_encode)
 
 
 def test_config_stores_exchange_and_routing_key():
@@ -328,7 +328,7 @@ async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, chann
 
     # Assert
     call = channel.basic_publish.await_args
-    assert call.args[0] == serialize(payload)
+    assert call.args[0] == _encode(payload)
     assert call.kwargs["exchange"] == "events"
     assert call.kwargs["routing_key"] == "order.placed"
 
@@ -357,7 +357,7 @@ async def test_emit_publishes_empty_body_for_signal_event(
 
 async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel: AsyncMock):
     """
-    ``emit`` should use the supplied serializer instead of the default serialize.
+    ``emit`` should use the supplied serializer instead of the publisher's.
 
     Given: A connected publisher and a custom serializer
     When: emit is awaited with the serializer
@@ -486,7 +486,7 @@ async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: Asyn
 
     # Assert
     call = channel.basic_publish.await_args
-    assert call.args[0] == serialize(_OrderPlaced(7))
+    assert call.args[0] == _encode(_OrderPlaced(7))
     assert call.kwargs["exchange"] == "events"
     assert call.kwargs["routing_key"] == "order.placed"
 
@@ -630,7 +630,9 @@ async def test_publish_middleware_wraps_hooks_inside_envelope(
     def before(event: Any, payload: Any) -> None:
         log.append("hook")
 
-    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record,)))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=Middleware(publish=(record,))
+    )
 
     # Act
     async with publisher:
@@ -665,7 +667,9 @@ async def test_publish_middleware_without_hooks(connect_mock: AsyncMock, channel
         log.append("publish")
 
     channel.basic_publish.side_effect = record_publish
-    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record,)))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=Middleware(publish=(record,))
+    )
 
     # Act
     async with publisher:
@@ -696,7 +700,9 @@ def test_publisher_refuses_non_manager_middleware():
     """
     # Act / Assert
     with pytest.raises(TypeError, match="RabbitMQPublisher can't enter"):
-        RabbitMQPublisher(_URL, middleware=Middleware(publish=(cast(Any, _NotAManager),)))
+        RabbitMQPublisher(
+            _URL, serializer=_encode, middleware=Middleware(publish=(cast(Any, _NotAManager),))
+        )
 
 
 def test_publisher_accepts_shared_middleware():
@@ -712,7 +718,7 @@ def test_publisher_accepts_shared_middleware():
     middleware = Middleware(publish=(_trace,), handle=(cast(Any, _NotAManager),))
 
     # Act
-    publisher = RabbitMQPublisher(_URL, middleware=middleware)
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=middleware)
 
     # Assert
     assert isinstance(publisher, RabbitMQPublisher)
@@ -734,7 +740,9 @@ async def test_publish_middleware_sees_config(connect_mock: AsyncMock, channel: 
         seen.append(call.config)
         yield
 
-    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record,)))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=Middleware(publish=(record,))
+    )
 
     # Act
     async with publisher:
@@ -815,7 +823,9 @@ async def test_middleware_and_hooks_see_given_envelope(connect_mock: AsyncMock, 
     def before(event: Any, payload: Any) -> None:
         seen.append(Envelope.current())
 
-    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record,)))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=Middleware(publish=(record,))
+    )
 
     # Act
     async with publisher:
@@ -849,8 +859,10 @@ async def test_middleware_headers_sent(connect_mock: AsyncMock, channel: AsyncMo
     config = RabbitMQConfig(
         "events", "order.placed", properties=Basic.Properties(headers={"custom": "v"})
     )
-    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(_tag_tenant,)))
-    plain = RabbitMQPublisher(_URL)
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=Middleware(publish=(_tag_tenant,))
+    )
+    plain = RabbitMQPublisher(_URL, serializer=_encode)
 
     # Act
     async with publisher:
@@ -881,7 +893,9 @@ async def test_emit_given_headers(connect_mock: AsyncMock, channel: AsyncMock):
         seen.append(dict(call.headers))
         yield
 
-    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(record, _tag_tenant)))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=Middleware(publish=(record, _tag_tenant))
+    )
 
     # Act
     async with publisher:
@@ -911,8 +925,8 @@ async def test_reserved_header_refused(connect_mock: AsyncMock, channel: AsyncMo
         call.headers[name] = "forged"
         yield
 
-    publisher = RabbitMQPublisher(_URL, middleware=Middleware(publish=(forge,)))
-    plain = RabbitMQPublisher(_URL)
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=Middleware(publish=(forge,)))
+    plain = RabbitMQPublisher(_URL, serializer=_encode)
     message = f"'{name}' is a header the bus sets itself"
 
     # Act / Assert
@@ -933,7 +947,9 @@ def test_topology_needs_named_queue(connect_mock: AsyncMock):
     Then: A ValueError should be raised
     """
     with pytest.raises(ValueError, match="named queue"):
-        RabbitMQPublisher(_URL, topology=[RabbitMQConsumeConfig(exchange="events")])
+        RabbitMQPublisher(
+            _URL, serializer=_encode, topology=[RabbitMQConsumeConfig(exchange="events")]
+        )
 
 
 async def test_entering_declares_topology(connect_mock: AsyncMock, channel: AsyncMock):
@@ -955,7 +971,9 @@ async def test_entering_declares_topology(connect_mock: AsyncMock, channel: Asyn
         exchange_durable=True,
         on_failure=RabbitMQFailurePolicy(retry_delays=(5,)),
     )
-    publisher = RabbitMQPublisher(_URL, topology=[jobs, RabbitMQConsumeConfig("audit")])
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, topology=[jobs, RabbitMQConsumeConfig("audit")]
+    )
 
     # Act
     async with publisher:
@@ -992,7 +1010,9 @@ async def test_failed_topology_declaration_disconnects(
     """
     # Arrange
     channel.queue_declare.side_effect = RuntimeError("inequivalent arg 'durable'")
-    publisher = RabbitMQPublisher(_URL, topology=[RabbitMQConsumeConfig("jobs")])
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, topology=[RabbitMQConsumeConfig("jobs")]
+    )
 
     # Act
     with pytest.raises(RuntimeError, match="inequivalent"):
@@ -1232,7 +1252,10 @@ async def test_publisher_reconnects_after_channel_loss(
     # Arrange
     channels = _new_channels(connection)
     publisher = RabbitMQPublisher(
-        _URL, topology=[RabbitMQConsumeConfig("jobs")], reconnect=RabbitMQReconnect(0.05, 0.05)
+        _URL,
+        serializer=_encode,
+        topology=[RabbitMQConsumeConfig("jobs")],
+        reconnect=RabbitMQReconnect(0.05, 0.05),
     )
 
     async with publisher:
@@ -1267,7 +1290,7 @@ async def test_failed_reconnect_attempt_retried(
     """
     # Arrange
     channels = _new_channels(connection)
-    publisher = RabbitMQPublisher(_URL, reconnect=_FAST)
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, reconnect=_FAST)
 
     async with publisher:
         connect_mock.side_effect = [OSError("refused"), connection]
@@ -1295,7 +1318,7 @@ async def test_exit_while_reconnecting_stops(connect_mock: AsyncMock, connection
     """
     # Arrange
     channels = _new_channels(connection)
-    publisher = RabbitMQPublisher(_URL, reconnect=_FAST)
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, reconnect=_FAST)
 
     attempted = asyncio.Event()
 
@@ -1329,7 +1352,7 @@ async def test_lost_channel_without_reconnect_closes(
           never reconnects
     """
     # Arrange
-    publisher = RabbitMQPublisher(_URL, reconnect=None)
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, reconnect=None)
 
     async with publisher:
         # Act
@@ -1366,3 +1389,16 @@ async def test_closing_on_purpose_does_not_reconnect(
     assert channel.closing.cancelled()
     assert publisher.state is ConnectionState.CLOSED
     connect_mock.assert_awaited_once()
+
+
+def test_publisher_requires_a_serializer():
+    """
+    A publisher built without a serializer should be refused.
+
+    Given: no serializer
+    When: a publisher is constructed
+    Then: it's a type error, and raises TypeError
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="serializer"):
+        RabbitMQPublisher(_URL)  # pyright: ignore[reportCallIssue]

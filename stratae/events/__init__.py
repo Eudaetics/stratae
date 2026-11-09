@@ -81,10 +81,12 @@ from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
     AnyEvent,
     Consumer,
+    Deserializer,
     EmitCallable,
     EventType,
     PayloadEvent,
     Producer,
+    Serializer,
     SignalEvent,
 )
 
@@ -96,6 +98,7 @@ __all__ = [
     "AnyEvent",
     "AsyncDirectBus",
     "Consumer",
+    "Deserializer",
     "DirectBus",
     "Dispatch",
     "EmitCallable",
@@ -113,6 +116,7 @@ __all__ = [
     "PubSub",
     "PublishCall",
     "Request",
+    "Serializer",
     "SignalEvent",
     "WithoutPayload",
     "abind",

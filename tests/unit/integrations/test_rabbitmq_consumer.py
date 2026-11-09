@@ -9,6 +9,7 @@ RabbitMQConsumeConfig:
 - Omitting both the queue and the exchange raises ValueError.
 
 RabbitMQConsumer:
+- Constructing a consumer without a deserializer is a type error and raises TypeError.
 - Entering the context opens the connection and starts consuming for
   registrations made beforehand.
 - Registrations made while connected start consuming immediately.
@@ -18,7 +19,7 @@ RabbitMQConsumer:
 - A failed close on exit still leaves the consumer disconnected.
 - handle registers directly or as a decorator, returning the Handler.
 - handle raises TypeError for an event that isn't PubSub.
-- Delivered messages are decoded with the default deserialize and the
+- Delivered messages are decoded with the consumer's deserializer and the
   message is acked after the handler returns.
 - Async handlers are awaited.
 - The consumer's deserializer is called as deserializer(body, type=schema).
@@ -113,6 +114,7 @@ Connection health and reconnecting:
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -148,7 +150,6 @@ from stratae.integrations.rabbitmq import (
     RabbitMQReconnect,
 )
 from stratae.lifecycle import AsyncScope, async_resource
-from stratae.serde import deserialize
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -186,9 +187,9 @@ class _OrderPlaced:
         self.order_id = order_id
 
 
-@deserialize.register(_OrderPlaced)
-def _(value: dict[str, Any]) -> _OrderPlaced:
-    return _OrderPlaced(**value)
+def _decode(data: bytes, /, *, type: type[Any]) -> Any:
+    """Build the payload type from a JSON object's fields."""
+    return type(**json.loads(data))
 
 
 _order_placed = PubSub(_OrderPlaced)
@@ -233,7 +234,7 @@ def connect_mock(mocker: MockerFixture, connection: AsyncMock) -> AsyncMock:
 @pytest.fixture
 def consumer(connect_mock: AsyncMock) -> RabbitMQConsumer:
     """Return a RabbitMQConsumer wired to the mocked connection."""
-    return RabbitMQConsumer(_URL)
+    return RabbitMQConsumer(_URL, deserializer=_decode)
 
 
 def test_consume_config_stores_queue():
@@ -443,7 +444,7 @@ def test_handle_refuses_non_pubsub_event(consumer: RabbitMQConsumer):
 
 async def test_message_decoded_and_acked(consumer: RabbitMQConsumer, channel: AsyncMock):
     """
-    A delivered message should be decoded with deserialize and acked.
+    A delivered message should be decoded with the consumer's deserializer and acked.
 
     Given: A connected consumer with a sync handler and a JSON message body
     When: The registered callback receives the message
@@ -888,7 +889,7 @@ async def test_prefetch_count_sets_channel_qos(connect_mock: AsyncMock, channel:
     Then: basic_qos should be awaited with the prefetch count
     """
     # Arrange
-    consumer = RabbitMQConsumer(_URL, prefetch_count=1)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, prefetch_count=1)
 
     # Act
     async with consumer:
@@ -1234,7 +1235,7 @@ async def test_exit_stops_waiting_at_drain_timeout(
     Then: The connection closes without the ack, and the stuck handler is logged
     """
     # Arrange
-    consumer = RabbitMQConsumer(_URL, drain_timeout=0.01)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, drain_timeout=0.01)
 
     async def handler(payload: _OrderPlaced) -> None:
         await asyncio.Event().wait()
@@ -1460,7 +1461,7 @@ async def test_handle_middleware_runs_before_ack(connect_mock: AsyncMock, channe
     def record_ack(*_: object) -> None:
         log.append("ack")
 
-    consumer = RabbitMQConsumer(_URL, middleware=Middleware(handle=(record,)))
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(record,)))
     consumer.handle(
         _order_placed,
         lambda order: log.append("handler"),
@@ -1496,7 +1497,7 @@ async def test_handle_middleware_refusing_nacks(
         raise _RateLimited()
         yield
 
-    consumer = RabbitMQConsumer(_URL, middleware=Middleware(handle=(refuse,)))
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(refuse,)))
     consumer.handle(_order_placed, received.append, config=_config)
     message = _message(b'{"order_id": 7}')
 
@@ -1531,7 +1532,7 @@ async def test_handle_middleware_sees_event(connect_mock: AsyncMock, channel: As
         configs.append(call.config)
         yield
 
-    consumer = RabbitMQConsumer(_URL, middleware=Middleware(handle=(record,)))
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(record,)))
     consumer.handle(_order_placed, lambda order: None, config=_config)
     message = _message(b'{"order_id": 7}')
 
@@ -1562,7 +1563,7 @@ async def test_handle_middleware_reads_text_headers(connect_mock: AsyncMock, cha
         seen.append(dict(call.headers))
         yield
 
-    consumer = RabbitMQConsumer(_URL, middleware=Middleware(handle=(record,)))
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(record,)))
     consumer.handle(_order_placed, lambda order: None, config=_config)
     correlation_id = str(uuid4())
     headers = {"x-tenant": "acme", ATTEMPTS_HEADER: 2, CORRELATION_ID_HEADER: correlation_id}
@@ -1610,7 +1611,9 @@ async def test_swallowed_cancellation_is_not_nacked(connect_mock: AsyncMock, cha
         started.set()
         await asyncio.Event().wait()
 
-    consumer = RabbitMQConsumer(_URL, middleware=Middleware(handle=(Suppressing,)))
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=_decode, middleware=Middleware(handle=(Suppressing,))
+    )
     consumer.handle(_order_placed, wait, config=_config)
     message = _message(b'{"order_id": 7}')
 
@@ -1642,7 +1645,7 @@ def test_consumer_accepts_shared_middleware():
     middleware = Middleware(publish=(cast(Any, _NotAManager),), handle=(_trace,))
 
     # Act
-    consumer = RabbitMQConsumer(_URL, middleware=middleware)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=middleware)
 
     # Assert
     assert isinstance(consumer, RabbitMQConsumer)
@@ -1658,7 +1661,9 @@ def test_consumer_refuses_non_manager_middleware():
     """
     # Act / Assert
     with pytest.raises(TypeError, match="RabbitMQConsumer can't enter"):
-        RabbitMQConsumer(_URL, middleware=Middleware(handle=(cast(Any, _NotAManager),)))
+        RabbitMQConsumer(
+            _URL, deserializer=_decode, middleware=Middleware(handle=(cast(Any, _NotAManager),))
+        )
 
 
 async def test_timeout_middleware_nacks(
@@ -1677,7 +1682,9 @@ async def test_timeout_middleware_nacks(
         await asyncio.Event().wait()
 
     consumer = RabbitMQConsumer(
-        _URL, middleware=Middleware(handle=(lambda call: asyncio.timeout(0.01),))
+        _URL,
+        deserializer=_decode,
+        middleware=Middleware(handle=(lambda call: asyncio.timeout(0.01),)),
     )
     consumer.handle(_order_placed, slow, config=_config)
     message = _message(b'{"order_id": 7}')
@@ -1715,7 +1722,9 @@ async def test_swallowed_timeout_nacks(
         except TimeoutError:
             pass  # swallowed on purpose: the message must still be settled
 
-    consumer = RabbitMQConsumer(_URL, middleware=Middleware(handle=(time_out,)))
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=_decode, middleware=Middleware(handle=(time_out,))
+    )
     consumer.handle(_order_placed, slow, config=_config)
     message = _message(b'{"order_id": 7}')
 
@@ -1768,7 +1777,7 @@ async def test_scope_caches_once_per_message(connect_mock: AsyncMock, channel: A
     async def handler(order: _OrderPlaced) -> None:
         seen.append((await get_resource(), await get_resource()))
 
-    consumer = RabbitMQConsumer(_URL, scope=scope)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, scope=scope)
     consumer.handle(_order_placed, handler, config=_config)
 
     # Act
@@ -1796,7 +1805,7 @@ async def test_scope_closes_before_ack(connect_mock: AsyncMock, channel: AsyncMo
     async def handler(order: _OrderPlaced) -> None:
         await get_resource()
 
-    consumer = RabbitMQConsumer(_URL, scope=scope)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, scope=scope)
     consumer.handle(_order_placed, handler, config=_config)
     message = _message(b'{"order_id": 7}')
 
@@ -1832,7 +1841,7 @@ async def test_failing_handler_closes_scope_with_error_then_nacks(
         await get_resource()
         raise ValueError("boom")
 
-    consumer = RabbitMQConsumer(_URL, scope=scope)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, scope=scope)
     consumer.handle(_order_placed, handler, config=_config)
     message = _message(b'{"order_id": 7}')
 
@@ -1868,7 +1877,7 @@ async def test_failed_scope_close_nacks(
     async def handler(order: _OrderPlaced) -> None:
         await get_resource()
 
-    consumer = RabbitMQConsumer(_URL, scope=scope)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, scope=scope)
     consumer.handle(_order_placed, handler, config=_config)
     message = _message(b'{"order_id": 7}')
 
@@ -1900,7 +1909,7 @@ async def test_cancelled_delivery_closes_scope_unacked(connect_mock: AsyncMock, 
         started.set()
         await asyncio.Event().wait()
 
-    consumer = RabbitMQConsumer(_URL, drain_timeout=0.01, scope=scope)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, drain_timeout=0.01, scope=scope)
     consumer.handle(_order_placed, wait, config=_config)
     await consumer.__aenter__()
     message = _message(b'{"order_id": 7}')
@@ -1944,7 +1953,9 @@ async def test_middleware_and_hooks_run_in_scope(connect_mock: AsyncMock, channe
     async def handler(order: _OrderPlaced) -> None:
         seen.append(("handler", await get_resource()))
 
-    consumer = RabbitMQConsumer(_URL, scope=scope, middleware=Middleware(handle=(record,)))
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=_decode, scope=scope, middleware=Middleware(handle=(record,))
+    )
     consumer.handle(_order_placed, handler, config=_config, hooks=Hooks(before=(before,)))
 
     # Act
@@ -1976,7 +1987,7 @@ async def test_undecodable_message_never_activates_scope(
             activations.append(self.name)
             await super().__aenter__()
 
-    consumer = RabbitMQConsumer(_URL, scope=RecordingScope("message"))
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, scope=RecordingScope("message"))
     consumer.handle(_order_placed, lambda order: None, config=_config)
     message = _message(b"not json")
 
@@ -2398,7 +2409,9 @@ async def test_consumer_resumes_registrations_after_channel_loss(
     """
     # Arrange
     channels = _new_channels(connection)
-    consumer = RabbitMQConsumer(_URL, prefetch_count=5, reconnect=RabbitMQReconnect(0.05, 0.05))
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=_decode, prefetch_count=5, reconnect=RabbitMQReconnect(0.05, 0.05)
+    )
     consumer.handle(_order_placed, lambda order: None, config=RabbitMQConsumeConfig("kept"))
     removed = consumer.handle(
         _order_placed, lambda order: None, config=RabbitMQConsumeConfig("removed")
@@ -2432,7 +2445,7 @@ async def test_lost_channel_without_reconnect_closes_consumer(
     Then: It's closed, its old connection is closed, and it never reconnects
     """
     # Arrange
-    consumer = RabbitMQConsumer(_URL, reconnect=None)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, reconnect=None)
 
     async with consumer:
         # Act
@@ -2460,7 +2473,7 @@ async def test_consumer_exit_while_reconnecting_stops(
     """
     # Arrange
     channels = _new_channels(connection)
-    consumer = RabbitMQConsumer(_URL, reconnect=_FAST)
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, reconnect=_FAST)
 
     attempted = asyncio.Event()
 
@@ -2480,3 +2493,16 @@ async def test_consumer_exit_while_reconnecting_stops(
 
     # Assert
     assert consumer.state is ConnectionState.CLOSED
+
+
+def test_consumer_requires_a_deserializer():
+    """
+    A consumer built without a deserializer should be refused.
+
+    Given: no deserializer
+    When: a consumer is constructed
+    Then: it's a type error, and raises TypeError
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="deserializer"):
+        RabbitMQConsumer(_URL)  # pyright: ignore[reportCallIssue]

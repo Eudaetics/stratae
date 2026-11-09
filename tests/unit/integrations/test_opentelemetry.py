@@ -31,6 +31,7 @@ Without an SDK or a known adapter:
 """
 
 import asyncio
+import json
 import sys
 from itertools import pairwise
 from typing import Any
@@ -54,7 +55,6 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConsumer,
     RabbitMQPublisher,
 )
-from stratae.serde import deserialize, encode
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -74,16 +74,14 @@ class _OutOfStock(LookupError):
         super().__init__("out of stock")
 
 
-@encode.register
-def _encode(order: _OrderPlaced) -> dict[str, int]:
-    """Encode an order for the default serializer."""
-    return {"order_id": order.order_id}
+def _encode(payload: object) -> bytes:
+    """Serialize a test payload's attributes as JSON."""
+    return json.dumps(vars(payload)).encode()
 
 
-@deserialize.register(_OrderPlaced)
-def _decode(value: dict[str, Any]) -> _OrderPlaced:
-    """Decode an order for the default deserializer."""
-    return _OrderPlaced(**value)
+def _decode(data: bytes, /, *, type: type[Any]) -> Any:
+    """Build the payload type from a JSON object's fields."""
+    return type(**json.loads(data))
 
 
 def _config() -> RabbitMQConfig:
@@ -323,7 +321,7 @@ async def test_publish_span(
         message's envelope ids, and the message's headers carry the span's context
     """
     # Arrange
-    publisher = RabbitMQPublisher(_URL, middleware=tracing(provider))
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=tracing(provider))
 
     # Act
     async with publisher:
@@ -370,7 +368,7 @@ async def test_publish_span_default_exchange(
     Then: The span is named after the routing key, or amq.default without one
     """
     # Arrange
-    publisher = RabbitMQPublisher(_URL, middleware=tracing(provider))
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=tracing(provider))
 
     # Act
     async with publisher:
@@ -395,7 +393,7 @@ async def test_republish_links_to_creation(
         message's headers still carry the write's context
     """
     # Arrange
-    publisher = RabbitMQPublisher(_URL, middleware=tracing(provider))
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=tracing(provider))
     created: dict[str, str] = {}
     with provider.get_tracer("test").start_as_current_span("write") as write:
         propagate.inject(created)
@@ -454,7 +452,7 @@ async def test_process_span(
         child, with the messaging attributes and the message's envelope ids
     """
     # Arrange
-    consumer = RabbitMQConsumer(_URL, middleware=tracing(provider))
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=tracing(provider))
     consumer.handle(_order_placed, lambda order: None, config=config)
     envelope = Envelope()
     headers: dict[str, Any] = envelope.to_headers()
@@ -496,7 +494,7 @@ async def test_failing_consumer_handler_recorded(
     def fail(order: _OrderPlaced) -> None:
         raise _OutOfStock()
 
-    consumer = RabbitMQConsumer(_URL, middleware=tracing(provider))
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=tracing(provider))
     consumer.handle(_order_placed, fail, config=RabbitMQConsumeConfig("orders"))
     message = _message({})
 
@@ -559,7 +557,9 @@ async def test_no_sdk_changes_nothing(connect_mock: AsyncMock, channel: AsyncMoc
     """
     # Arrange
     ran: list[int] = []
-    publisher = RabbitMQPublisher(_URL, middleware=tracing(NoOpTracerProvider()))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=tracing(NoOpTracerProvider())
+    )
     bus = DirectBus(middleware=tracing(NoOpTracerProvider()))
     bus.handle(_order_placed, lambda order: ran.append(order.order_id))
 

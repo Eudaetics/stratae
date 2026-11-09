@@ -224,7 +224,7 @@ async def _wait_for_state(
 
 async def test_msgspec_round_trip(broker: _Broker):
     """
-    A struct should round-trip through the broker with msgspec serde.
+    A struct should round-trip through the broker with msgspec's encode and decode.
 
     Given: A publisher and consumer passing msgspec's encode/decode directly
     When: A payload is published to the consumer's fanout exchange
@@ -1042,7 +1042,9 @@ async def test_conflicting_topology_raises_on_enter(broker: _Broker):
     queue = _unique("stratae-it-conflict")
     broker.queues.append(queue)
     await broker.channel.queue_declare(queue, durable=True, arguments={"x-max-length": 10})
-    publisher = RabbitMQPublisher(_URL, topology=[RabbitMQConsumeConfig(queue)])
+    publisher = RabbitMQPublisher(
+        _URL, serializer=msgspec.json.encode, topology=[RabbitMQConsumeConfig(queue)]
+    )
 
     # Act
     with pytest.raises(ChannelPreconditionFailed, match="x-max-length"):
@@ -1302,8 +1304,8 @@ async def test_exit_during_outage_returns_promptly(broker: _Broker, proxy: _Prox
     Then: Both exits return within a second, leaving both closed
     """
     # Arrange
-    consumer = RabbitMQConsumer(proxy.url, reconnect=_QUICK)
-    publisher = RabbitMQPublisher(proxy.url, reconnect=_QUICK)
+    consumer = RabbitMQConsumer(proxy.url, deserializer=msgspec.json.decode, reconnect=_QUICK)
+    publisher = RabbitMQPublisher(proxy.url, serializer=msgspec.json.encode, reconnect=_QUICK)
     await consumer.__aenter__()
     await publisher.__aenter__()
     await proxy.outage()

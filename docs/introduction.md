@@ -12,7 +12,7 @@ Stratae aims for easy, but optimizes for *simple*[^simple-made-easy]: components
 
 `stratae.events` is event definitions. Define pub/sub and request/reply messages independent of whatever bus eventually delivers them or whatever handler answers them. The same event definition works whether you bind it to an in-process `DirectBus` today or a distributed broker like RabbitMQ later. Growing from one to the other only requires updating to the new adapter's configurations, not rewriting the event definition, call sites, or the code inside the handler.
 
-A handful of supporting modules solve smaller, adjacent problems. `stratae.context` gives you scoped values usable directly as DI providers. `stratae.checks` runs declarative preconditions. `stratae.serde` handles encode/decode primitives. `stratae.integrations` is what makes that growth path real. RabbitMQ turns the same events into a distributed bus, FastAPI and Starlette scope lifecycles to actual requests, and msgspec speeds up serialization.
+A handful of supporting modules solve smaller, adjacent problems. `stratae.context` gives you scoped values usable directly as DI providers. `stratae.checks` runs declarative preconditions. `stratae.integrations` is what makes that growth path real. RabbitMQ turns the same events into a distributed bus. FastAPI and Starlette scope lifecycles to actual requests.
 
 ## Design philosophy
 

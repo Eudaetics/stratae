@@ -5,6 +5,9 @@ Structural protocols for the event system.
 {py:data}`AnyEvent`, {py:data}`PayloadEvent` and {py:data}`SignalEvent` abbreviate it.
 {py:class}`Producer` and {py:class}`Consumer` describe the emit and handle sides of a bus
 adapter. {py:class}`EmitCallable` describes a single emitter with a concrete return type.
+{py:class}`Serializer` and {py:class}`Deserializer` describe the codecs an adapter takes for
+payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
+one such pair.
 """
 
 from collections.abc import Callable
@@ -124,5 +127,41 @@ class Consumer(Protocol):
 
         :param config: The routing key for the handler.
         :param fn: The handler. If omitted, returns a decorator.
+        """
+        ...
+
+
+class Serializer[T](Protocol):
+    """
+    Structural protocol for a payload serializer: an object to bytes.
+
+    An adapter that sends payloads over a transport takes one, such as `msgspec.json.encode`.
+    """
+
+    def __call__(self, obj: T, /) -> bytes:
+        """
+        Serialize `obj` to bytes.
+
+        :param obj: The payload to serialize.
+        :returns: The serialized payload.
+        """
+        ...
+
+
+class Deserializer(Protocol):
+    """
+    Structural protocol for a type-directed deserializer: bytes and a target type to an object.
+
+    An adapter that receives payloads takes one, such as `msgspec.json.decode`. It's called
+    with the payload type of the event being handled.
+    """
+
+    def __call__[S](self, data: bytes, /, *, type: type[S]) -> S:
+        """
+        Deserialize `data` into an instance of `type`.
+
+        :param data: The raw bytes to decode.
+        :param type: The type to reconstruct.
+        :returns: The reconstructed `type` instance.
         """
         ...

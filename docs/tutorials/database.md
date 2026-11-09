@@ -298,10 +298,12 @@ committed
 
 <!--- skip: next -->
 ```{code-block} python
+import msgspec
 from stratae.integrations.rabbitmq import RabbitMQConsumer
 
 consumer = RabbitMQConsumer(
     "amqp://guest:guest@localhost/",
+    deserializer=msgspec.json.decode,
     scope=work,
     prefetch_count=10,
 )
