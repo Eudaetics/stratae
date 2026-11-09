@@ -193,7 +193,7 @@ def test_shared_call_reading_storage_emptied_by_deactivation_raises(
     def get_value(key: str) -> object:
         return object()
 
-    var = scope.activation_var()
+    var = scope._var  # pyright: ignore[reportPrivateUsage]
     assert isinstance(var, SharedVar)
     activation = scope.activate()
     get_value("k")

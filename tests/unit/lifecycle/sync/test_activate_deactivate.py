@@ -242,7 +242,7 @@ def test_shared_scope_activation_is_exclusive_across_threads():
     """
     # Arrange
     scope = Scope("application", "shared")
-    var = scope.activation_var()
+    var = scope._var  # pyright: ignore[reportPrivateUsage]
     assert isinstance(var, SharedVar)
     activated = threading.Event()
 

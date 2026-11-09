@@ -1,5 +1,5 @@
 """
-Unit tests for BaseScope.is_active/is_shared/activation_var, exercised via Scope.
+Unit tests for BaseScope.is_active, and the activation holder a scope's SlotStore keeps.
 
 These are inherited unchanged by AsyncScope, so testing them through Scope covers both -
 there is no separate async test module for this.
@@ -7,7 +7,7 @@ there is no separate async test module for this.
 
 from contextvars import ContextVar
 
-from stratae.lifecycle._slots import SharedVar
+from stratae.lifecycle._slots import SharedVar, SlotStore
 from stratae.lifecycle.scope import Scope
 
 
@@ -63,61 +63,33 @@ def test_is_active_false_after_deactivation():
     assert not scope.is_active()
 
 
-def test_is_shared_true_for_shared_isolation():
+def test_store_holds_shared_var_for_shared_isolation():
     """
-    is_shared returns True for a shared-isolation scope.
+    A shared scope's slot store holds its activation in a SharedVar.
 
-    Given: A Scope constructed with isolation="shared",
-    When: is_shared is called,
-    Then: it returns True.
-    """
-    # Arrange
-    scope = Scope("application", "shared")
-
-    # Act & Assert
-    assert scope.is_shared()
-
-
-def test_is_shared_false_for_context_isolation():
-    """
-    is_shared returns False for a context-isolation scope.
-
-    Given: A Scope constructed with isolation="context",
-    When: is_shared is called,
-    Then: it returns False.
+    Given: A slot store for a shared scope,
+    When: Its activation holder is read,
+    Then: it is a SharedVar, with the lock that guards activation.
     """
     # Arrange
-    scope = Scope("request", "context")
+    store = SlotStore("application", shared=True, dense=True, threads=False)
 
     # Act & Assert
-    assert not scope.is_shared()
+    assert isinstance(store.var, SharedVar)
+    assert store.lock is store.var.lock
 
 
-def test_activation_var_is_shared_var_for_shared_isolation():
+def test_store_holds_context_var_for_context_isolation():
     """
-    activation_var returns a SharedVar for a shared-isolation scope.
+    A context scope's slot store holds its activation in a ContextVar.
 
-    Given: A Scope constructed with isolation="shared",
-    When: activation_var is called,
-    Then: it returns a SharedVar.
+    Given: A slot store for a context scope,
+    When: Its activation holder is read,
+    Then: it is a ContextVar, with no lock.
     """
     # Arrange
-    scope = Scope("application", "shared")
+    store = SlotStore("request", shared=False, dense=True, threads=False)
 
     # Act & Assert
-    assert isinstance(scope.activation_var(), SharedVar)
-
-
-def test_activation_var_is_context_var_for_context_isolation():
-    """
-    activation_var returns a ContextVar for a context-isolation scope.
-
-    Given: A Scope constructed with isolation="context",
-    When: activation_var is called,
-    Then: it returns a ContextVar.
-    """
-    # Arrange
-    scope = Scope("request", "context")
-
-    # Act & Assert
-    assert isinstance(scope.activation_var(), ContextVar)
+    assert isinstance(store.var, ContextVar)
+    assert store.lock is None

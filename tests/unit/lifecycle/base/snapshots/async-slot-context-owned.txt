@@ -3,7 +3,7 @@ async def wrapper():
         __slots__ = __var__.get()
         __entry__ = __slots__[4]
     except LookupError:
-        __slots__ = __scope__.get_slots()
+        __slots__ = __store__.get()
         __entry__ = __slots__[4]
     if __entry__.__class__ is not __Owned__:
         __pk__ = __id__(__slots__)
@@ -13,7 +13,7 @@ async def wrapper():
                 break
             await __wait_claim__(__claims__, __pk__, __claim__)
             if not __slots__:
-                __ended__(__scope__)
+                __ended__(__store__)
             __entry__ = __slots__[4]
             if __entry__.__class__ is __Owned__:
                 __value__ = __entry__.value

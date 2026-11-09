@@ -3,7 +3,7 @@ async def wrapper(a, b):
         __slots__ = __var__.get()
         __entry__ = __slots__[4]
     except LookupError:
-        __slots__ = __scope__.get_slots()
+        __slots__ = __store__.get()
         __entry__ = __slots__[4]
     __ck__ = (a, b, )
     if __entry__.__class__ is not __Owned__:
@@ -20,7 +20,7 @@ async def wrapper(a, b):
             break
         await __wait_claim__(__claims__, __pk__, __claim__)
         if not __slots__:
-            __ended__(__scope__)
+            __ended__(__store__)
         if __ck__ in __cache__:
             return __cache__[__ck__]
     __claims__[__pk__] = __task__()

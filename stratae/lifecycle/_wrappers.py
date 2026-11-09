@@ -15,7 +15,6 @@ from functools import wraps
 from inspect import Parameter
 from types import AsyncGeneratorType, GeneratorType
 from typing import (
-    TYPE_CHECKING,
     Any,
     Literal,
     NoReturn,
@@ -32,16 +31,13 @@ from stratae.lifecycle._inflight import (
     watch_task_claim,
     watch_thread_claim,
 )
-from stratae.lifecycle._slots import UNSET
+from stratae.lifecycle._slots import UNSET, SlotStore
 from stratae.lifecycle._stack import enter_async_generator, enter_generator
 from stratae.lifecycle.exceptions import (
     ActivationEndedError,
     AsyncGeneratorInSyncScopeError,
     UnreadableSignatureError,
 )
-
-if TYPE_CHECKING:
-    from stratae.lifecycle.scope import AsyncScope, BaseScope, Scope
 
 
 class Cached[**P, T, U](Protocol):
@@ -90,13 +86,13 @@ class _SlotCode:
 
         return {"__Owned__": Owned}
 
-    def write_read(self, writer: Writer, target: str, scope: "BaseScope | None" = None) -> None:
-        """Write a read of this slot, resolving __slots__ first when `scope` is given."""
+    def write_read(self, writer: Writer, target: str, store: SlotStore | None = None) -> None:
+        """Write a read of this slot, resolving __slots__ first when `store` is given."""
         read = f"{'__entry__' if self.owned else target} = __slots__[{self.index}]"
-        if scope is None:
+        if store is None:
             writer.write(read)
         else:
-            _write_resolve_first_read(writer, scope, read)
+            _write_resolve_first_read(writer, store, read)
 
     def write_branch(
         self,
@@ -136,7 +132,7 @@ class _SlotCode:
         return f"__slots__[{self.index}] = {value}"
 
 
-def _read_params(func: Callable[..., Any], scope: "BaseScope") -> list[Parameter]:
+def _read_params(func: Callable[..., Any], store: SlotStore) -> list[Parameter]:
     """
     Return `func`'s parameters, which its wrapper mirrors.
 
@@ -145,13 +141,13 @@ def _read_params(func: Callable[..., Any], scope: "BaseScope") -> list[Parameter
     try:
         return list(read_signature(func).parameters.values())
     except ValueError:
-        raise UnreadableSignatureError(func, scope.name) from None
+        raise UnreadableSignatureError(func, store.name) from None
 
 
-def _allocate_slot(scope: "BaseScope") -> _SlotCode:
+def _allocate_slot(store: SlotStore) -> _SlotCode:
     """Allocate a slot, owned if it's reused in a context scope."""
-    index, reused = scope.allocate_slot()
-    return _SlotCode(index, reused and not scope.is_shared())
+    index, reused = store.allocate()
+    return _SlotCode(index, reused and not store.shared)
 
 
 def _is_slot_eligible(
@@ -243,23 +239,23 @@ def _write_shared_cache_check(writer: Writer) -> None:
         writer.write("pass")
 
 
-def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> None:
+def _write_resolve_first_read(writer: Writer, store: SlotStore, read: str) -> None:
     """
     Write the resolution of __slots__ and the first slot read.
 
     No explicit active check is paid. A shared scope reads its SharedVar's storage directly;
     an inactive scope's UNSET raises TypeError on subscript. A context scope's `get()` raises
     LookupError when inactive. An ended activation's emptied storage raises IndexError or
-    KeyError. Every miss falls back to get_slots(), which raises the right error.
+    KeyError. Every miss falls back to the store's `get()`, which raises the right error.
     """
-    if scope.is_shared():
+    if store.shared:
         writer.write("__slots__ = __var__.storage")
         writer.write("try:")
         with writer.block():
             writer.write(read)
         writer.write("except (TypeError, LookupError):")
         with writer.block():
-            writer.write("__slots__ = __scope__.get_slots()")
+            writer.write("__slots__ = __store__.get()")
             writer.write(read)
         return
     writer.write("try:")
@@ -268,14 +264,14 @@ def _write_resolve_first_read(writer: Writer, scope: "BaseScope", read: str) -> 
         writer.write(read)
     writer.write("except LookupError:")
     with writer.block():
-        writer.write("__slots__ = __scope__.get_slots()")
+        writer.write("__slots__ = __store__.get()")
         writer.write(read)
 
 
 type ClaimStyle = Literal["locked", "task", "thread"] | None
 
 
-def _claim_style(scope: "BaseScope", is_async: bool) -> ClaimStyle:
+def _claim_style(store: SlotStore, is_async: bool) -> ClaimStyle:
     """
     How a wrapper ensures overlapping callers compute each entry once.
 
@@ -285,30 +281,30 @@ def _claim_style(scope: "BaseScope", is_async: bool) -> ClaimStyle:
     in a per-wrapper dict keyed by activation. `None`: context scope, sync wrapper; one
     thread uses an activation at a time, so it skips claiming.
     """
-    if scope.is_shared():
+    if store.shared:
         return "locked"
-    if scope.threads:
+    if store.threads:
         return "thread"
     return "task" if is_async else None
 
 
-def _raise_ended(scope: "BaseScope") -> NoReturn:
+def _raise_ended(store: SlotStore) -> NoReturn:
     """Raise for a claim waiter whose activation ended while it was waiting."""
-    raise ActivationEndedError(scope.name)
+    raise ActivationEndedError(store.name)
 
 
 def _build_namespace(
-    func: Callable[..., Any], scope: "BaseScope", slot: _SlotCode, is_async: bool = False
+    func: Callable[..., Any], store: SlotStore, slot: _SlotCode, is_async: bool = False
 ) -> dict[str, Any]:
     """Build the namespace bindings every codegen'd wrapper compiles against."""
     namespace: dict[str, Any] = {
         "__func__": func,
-        "__scope__": scope,
+        "__store__": store,
         "__UNSET__": UNSET,
-        "__var__": scope.activation_var(),
+        "__var__": store.var,
         **slot.namespace(),
     }
-    style = _claim_style(scope, is_async)
+    style = _claim_style(store, is_async)
     if style == "locked" or style == "thread":
         # A thread lock even for async wrappers: it never guards an await.
         lock = threading.Lock()
@@ -337,14 +333,14 @@ def _write_new_cache(writer: Writer, slot: _SlotCode) -> None:
     writer.write(slot.write("__cache__"))
 
 
-def _write_slot_store(writer: Writer, slot: _SlotCode, scope: "BaseScope") -> None:
+def _write_slot_store(writer: Writer, slot: _SlotCode, store: SlotStore) -> None:
     """
     Write the store of __value__ into a slot-eligible function's slot.
 
     An activation that ended mid-computation must not be refilled. An emptied list raises
     IndexError for free; an emptied SlotDict wouldn't, so sparse stores check first.
     """
-    if scope.storage == "dense":
+    if store.dense:
         writer.write("try:")
         with writer.block():
             writer.write(slot.write("__value__"))
@@ -404,7 +400,7 @@ def _write_claimed_compute(
         writer.write("await __done__" if is_async else "__done__.wait()")
         writer.write("if not __slots__:")
         with writer.block():
-            writer.write("__ended__(__scope__)")
+            writer.write("__ended__(__store__)")
     writer.write("try:")
     with writer.block():
         write_compute()
@@ -436,7 +432,7 @@ def _write_task_claimed_compute(
         writer.write(f"await __wait_claim__(__claims__, {key}, __claim__)")
         writer.write("if not __slots__:")
         with writer.block():
-            writer.write("__ended__(__scope__)")
+            writer.write("__ended__(__store__)")
         write_recheck()
     writer.write(f"__claims__[{key}] = __task__()")
     writer.write("try:")
@@ -454,7 +450,7 @@ def _write_task_claimed_compute(
 def _write_claimed_slot_miss(
     writer: Writer,
     slot: _SlotCode,
-    scope: "BaseScope",
+    store: SlotStore,
     style: ClaimStyle,
     is_async: bool,
     write_compute: Callable[[], None],
@@ -471,7 +467,7 @@ def _write_claimed_slot_miss(
         slot.write_branch(writer, "__value__", write_hit=lambda: writer.write("return __value__"))
 
     def write_store() -> None:
-        _write_slot_store(writer, slot, scope)
+        _write_slot_store(writer, slot, store)
 
     if style == "task":
         writer.write("__pk__ = __id__(__slots__)")
@@ -487,7 +483,7 @@ def _write_claimed_slot_miss(
 def _write_keyed_body(
     writer: Writer,
     slot: _SlotCode,
-    scope: "BaseScope",
+    store: SlotStore,
     cache_key: Callable[..., Hashable] | None,
     params: list[Parameter],
     write_compute: Callable[[], None],
@@ -500,9 +496,9 @@ def _write_keyed_body(
     `"task"` wrapper, the dict's lazy creation happens under the lock, since two threads
     could otherwise each build one and lose inserts.
     """
-    style = _claim_style(scope, is_async)
+    style = _claim_style(store, is_async)
     if style is None:
-        slot.write_read(writer, "__cache__", scope)
+        slot.write_read(writer, "__cache__", store)
         slot.write_branch(writer, "__cache__", write_miss=lambda: _write_new_cache(writer, slot))
         _write_key(writer, cache_key, params)
         _write_cache_check(writer)
@@ -510,7 +506,7 @@ def _write_keyed_body(
         writer.write("__cache__[__ck__] = __value__")
         writer.write("return __value__")
         return
-    slot.write_read(writer, "__cache__", scope)
+    slot.write_read(writer, "__cache__", store)
     _write_key(writer, cache_key, params)
     write_check = _write_shared_cache_check if style == "locked" else _write_cache_check
     slot.write_branch(
@@ -548,21 +544,21 @@ def _write_keyed_body(
 def _write_slot_body(
     writer: Writer,
     slot: _SlotCode,
-    scope: "BaseScope",
+    store: SlotStore,
     write_compute: Callable[[], None],
     is_async: bool = False,
 ) -> None:
     """Write the body of a slot-eligible wrapper; write_compute fills __value__."""
-    style = _claim_style(scope, is_async)
+    style = _claim_style(store, is_async)
 
     def write_miss() -> None:
         if style is not None:
-            _write_claimed_slot_miss(writer, slot, scope, style, is_async, write_compute)
+            _write_claimed_slot_miss(writer, slot, store, style, is_async, write_compute)
         else:
             write_compute()
-            _write_slot_store(writer, slot, scope)
+            _write_slot_store(writer, slot, store)
 
-    slot.write_read(writer, "__value__", scope)
+    slot.write_read(writer, "__value__", store)
     slot.write_branch(writer, "__value__", write_miss=write_miss)
     writer.write("return __value__")
 
@@ -607,7 +603,7 @@ type _WriteValue = Callable[[Writer, str], None]
 
 def _create_wrapper(
     func: Callable[..., Any],
-    scope: "BaseScope",
+    store: SlotStore,
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
     is_async: bool,
@@ -623,8 +619,8 @@ def _create_wrapper(
     :param write_value: Writes the miss, from the call's source.
     :param bindings: Extra namespace bindings `write_value`'s code needs.
     """
-    params = _read_params(func, scope)
-    slot = _allocate_slot(scope)
+    params = _read_params(func, store)
+    slot = _allocate_slot(store)
     call = f"__func__({_render_forward_arguments(params)})"
 
     writer = Writer()
@@ -635,17 +631,17 @@ def _create_wrapper(
             write_value(writer, call)
 
         if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, scope, write_compute, is_async)
+            _write_slot_body(writer, slot, store, write_compute, is_async)
         else:
-            _write_keyed_body(writer, slot, scope, cache_key, params, write_compute, is_async)
+            _write_keyed_body(writer, slot, store, cache_key, params, write_compute, is_async)
 
-    namespace = _build_namespace(func, scope, slot, is_async=is_async)
+    namespace = _build_namespace(func, store, slot, is_async=is_async)
     if bindings is not None:
         namespace.update(bindings)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
-    weakref.finalize(wrapper, scope.release_slot, slot.index)
+    weakref.finalize(wrapper, store.release, slot.index)
     return wrapper
 
 
@@ -659,7 +655,7 @@ def _write_await(writer: Writer, call: str) -> None:
 
 def create_sync_wrapper[**P, T](
     func: Callable[P, T],
-    scope: "Scope | AsyncScope",
+    store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Cached[P, T, T]:
@@ -667,21 +663,20 @@ def create_sync_wrapper[**P, T](
     Create a sync wrapper that caches `func`'s result per scope activation.
 
     :param func: The function to cache.
-    :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>` or
-        {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param store: The owning scope's slot storage.
     :param cache_key: Derives a hashable key from the arguments.
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
         Cached[P, T, T],
-        _create_wrapper(func, scope, cache_key, ignore_params, False, _write_call),
+        _create_wrapper(func, store, cache_key, ignore_params, False, _write_call),
     )
 
 
 def create_async_wrapper[**P, T](
     func: Callable[P, Awaitable[T]],
-    scope: "AsyncScope",
+    store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Cached[P, Awaitable[T], Awaitable[T]]:
@@ -689,14 +684,15 @@ def create_async_wrapper[**P, T](
     Create an async wrapper that caches `func`'s result per scope activation.
 
     :param func: The async function to cache.
-    :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param store: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`'s
+        slot storage.
     :param cache_key: Derives a hashable key from the arguments.
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
         Cached[P, Awaitable[T], Awaitable[T]],
-        _create_wrapper(func, scope, cache_key, ignore_params, True, _write_await),
+        _create_wrapper(func, store, cache_key, ignore_params, True, _write_await),
     )
 
 
@@ -734,7 +730,7 @@ def _write_check_async(writer: Writer, call: str) -> None:
 
 def create_generator_wrapper[**P, T](
     func: Callable[P, Generator[T, Any, Any]],
-    scope: "Scope | AsyncScope",
+    store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Cached[P, T, Generator[T, Any, Any]]:
@@ -744,8 +740,7 @@ def create_generator_wrapper[**P, T](
     The generator is closed when the scope's activation ends.
 
     :param func: The generator function.
-    :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>` or
-        {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param store: The owning scope's slot storage.
     :param cache_key: Derives a hashable key from the arguments.
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
@@ -754,7 +749,7 @@ def create_generator_wrapper[**P, T](
         Cached[P, T, Generator[T, Any, Any]],
         _create_wrapper(
             func,
-            scope,
+            store,
             cache_key,
             ignore_params,
             False,
@@ -766,7 +761,7 @@ def create_generator_wrapper[**P, T](
 
 def create_async_generator_wrapper[**P, T](
     func: Callable[P, AsyncGenerator[T, Any]],
-    scope: "AsyncScope",
+    store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
 ) -> Cached[P, Awaitable[T], AsyncGenerator[T, Any]]:
@@ -776,7 +771,8 @@ def create_async_generator_wrapper[**P, T](
     The generator is closed when the scope's activation ends.
 
     :param func: The async generator function.
-    :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param store: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`'s
+        slot storage.
     :param cache_key: Derives a hashable key from the arguments.
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: An async wrapper matching `func`'s signature, with `func` as its `uncached`
@@ -786,7 +782,7 @@ def create_async_generator_wrapper[**P, T](
         Cached[P, Awaitable[T], AsyncGenerator[T, Any]],
         _create_wrapper(
             func,
-            scope,
+            store,
             cache_key,
             ignore_params,
             True,
@@ -798,7 +794,7 @@ def create_async_generator_wrapper[**P, T](
 
 def create_checked_wrapper(
     func: Callable[..., Any],
-    scope: "BaseScope",
+    store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
     *,
@@ -812,7 +808,7 @@ def create_checked_wrapper(
     anything else is cached as it is.
 
     :param func: The decorated function.
-    :param scope: The owning scope.
+    :param store: The owning scope's slot storage.
     :param cache_key: Derives a hashable key from the arguments.
     :param ignore_params: Cache one value per activation regardless of arguments.
     :param is_async: Whether the wrapper is async, so it can enter an async generator. A sync
@@ -823,7 +819,7 @@ def create_checked_wrapper(
     """
 
     def refuse_async() -> NoReturn:
-        raise AsyncGeneratorInSyncScopeError(func, scope.name)
+        raise AsyncGeneratorInSyncScopeError(func, store.name)
 
     bindings: dict[str, Any] = {
         "__Generator__": GeneratorType,
@@ -838,5 +834,5 @@ def create_checked_wrapper(
         write_value = _write_check_sync
     return cast(
         Cached[..., Any, Any],
-        _create_wrapper(func, scope, cache_key, ignore_params, is_async, write_value, bindings),
+        _create_wrapper(func, store, cache_key, ignore_params, is_async, write_value, bindings),
     )

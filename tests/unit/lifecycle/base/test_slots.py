@@ -1,59 +1,65 @@
 """
-Unit tests for BaseScope.allocate_slot/release_slot/get_slots.
+Unit tests for SlotStore.allocate/release/get, through a Scope's store.
 
-These are inherited unchanged by AsyncScope, so testing them through Scope covers both -
-there is no separate async test module for this.
+AsyncScope builds its store the same way, so testing through Scope covers both - there is no
+separate async test module for this.
 
-Slots 0 and 1 are reserved on every scope (the exit stack and the live-dependent count),
-so the first slot allocate_slot hands out is always 2.
+Slots 0-3 are reserved on every scope (the entered resources, the live-dependent count, the
+reset token and the parent's storage), so the first slot SlotStore.allocate hands out is
+always 4.
 """
 
 import re
 
 import pytest
 
-from stratae.lifecycle._slots import UNSET, SlotDict
+from stratae.lifecycle._slots import UNSET, SlotDict, SlotStore
 from stratae.lifecycle.exceptions import ScopeInactiveError
 from stratae.lifecycle.scope import Scope
 
 
-def test_allocate_slot_sequential_dense():
+def _store(scope: Scope) -> SlotStore:
+    """Return the scope's slot store."""
+    return scope._slots  # pyright: ignore[reportPrivateUsage]
+
+
+def test_allocate_sequential_dense():
     """
-    allocate_slot hands out sequential ints for a dense-backed scope, skipping reserved slots 0-3.
+    Allocate hands out sequential ints for a dense-backed scope, skipping reserved slots 0-3.
 
     Given: A dense-backed scope with no functions registered yet,
-    When: allocate_slot is called repeatedly,
-    Then: it returns 2, 3, 4, ..., none of them reused.
+    When: SlotStore.allocate is called repeatedly,
+    Then: it returns 4, 5, 6, ..., none of them reused.
     """
     # Arrange
     scope = Scope("application", "shared")
 
     # Act & Assert
-    assert scope.allocate_slot() == (4, False)
-    assert scope.allocate_slot() == (5, False)
-    assert scope.allocate_slot() == (6, False)
+    assert _store(scope).allocate() == (4, False)
+    assert _store(scope).allocate() == (5, False)
+    assert _store(scope).allocate() == (6, False)
 
 
-def test_allocate_slot_sequential_sparse():
+def test_allocate_sequential_sparse():
     """
-    allocate_slot hands out sequential ints for a sparse-backed scope, skipping reserved slots 0-3.
+    Allocate hands out sequential ints for a sparse-backed scope, skipping reserved slots 0-3.
 
     Given: A sparse-backed scope with no functions registered yet,
-    When: allocate_slot is called repeatedly,
-    Then: it returns 2, 3, 4, ..., none of them reused.
+    When: SlotStore.allocate is called repeatedly,
+    Then: it returns 4, 5, 6, ..., none of them reused.
     """
     # Arrange
     scope = Scope("application", "shared", "sparse")
 
     # Act & Assert
-    assert scope.allocate_slot() == (4, False)
-    assert scope.allocate_slot() == (5, False)
-    assert scope.allocate_slot() == (6, False)
+    assert _store(scope).allocate() == (4, False)
+    assert _store(scope).allocate() == (5, False)
+    assert _store(scope).allocate() == (6, False)
 
 
-def test_allocate_slot_reuses_released_slot_dense():
+def test_allocate_reuses_released_slot_dense():
     """
-    allocate_slot draws from the free-slot pool before growing a dense scope's template.
+    SlotStore.allocate draws from the free-slot pool before growing a dense scope's template.
 
     Given: A dense scope with two slots already allocated,
     When: The first slot is released and a third allocation is requested,
@@ -62,12 +68,12 @@ def test_allocate_slot_reuses_released_slot_dense():
     """
     # Arrange
     scope = Scope("application", "shared")
-    slot_a, _ = scope.allocate_slot()
-    slot_b, _ = scope.allocate_slot()
+    slot_a, _ = _store(scope).allocate()
+    slot_b, _ = _store(scope).allocate()
 
     # Act
-    scope.release_slot(slot_a)
-    slot_c, reused = scope.allocate_slot()
+    _store(scope).release(slot_a)
+    slot_c, reused = _store(scope).allocate()
 
     # Assert
     assert slot_c == slot_a
@@ -75,9 +81,9 @@ def test_allocate_slot_reuses_released_slot_dense():
     assert reused
 
 
-def test_allocate_slot_reuses_released_slot_sparse():
+def test_allocate_reuses_released_slot_sparse():
     """
-    allocate_slot draws from the free-slot pool for sparse-backed scopes too.
+    SlotStore.allocate draws from the free-slot pool for sparse-backed scopes too.
 
     Given: A sparse-backed scope with two keys already allocated,
     When: The first key is released and a third allocation is requested,
@@ -86,12 +92,12 @@ def test_allocate_slot_reuses_released_slot_sparse():
     """
     # Arrange
     scope = Scope("application", "shared", "sparse")
-    key_a, _ = scope.allocate_slot()
-    key_b, _ = scope.allocate_slot()
+    key_a, _ = _store(scope).allocate()
+    key_b, _ = _store(scope).allocate()
 
     # Act
-    scope.release_slot(key_a)
-    key_c, reused = scope.allocate_slot()
+    _store(scope).release(key_a)
+    key_c, reused = _store(scope).allocate()
 
     # Assert
     assert key_c == key_a
@@ -99,9 +105,9 @@ def test_allocate_slot_reuses_released_slot_sparse():
     assert reused
 
 
-def test_allocate_slot_dense_grows_template():
+def test_allocate_dense_grows_template():
     """
-    allocate_slot grows the dense template by one entry per new slot.
+    SlotStore.allocate grows the dense template by one entry per new slot.
 
     Given: A fresh dense scope, whose template reserves slots 0-3,
     When: A new slot is allocated,
@@ -109,18 +115,18 @@ def test_allocate_slot_dense_grows_template():
     """
     # Arrange
     scope = Scope("application", "shared")
-    assert len(scope._template) == 4  # pyright: ignore[reportPrivateUsage]
+    assert len(_store(scope).template) == 4
 
     # Act
-    scope.allocate_slot()
+    _store(scope).allocate()
 
     # Assert
-    assert len(scope._template) == 5  # pyright: ignore[reportPrivateUsage]
+    assert len(_store(scope).template) == 5
 
 
-def test_allocate_slot_dense_grows_live_active_slots():
+def test_allocate_dense_grows_live_active_slots():
     """
-    allocate_slot appends to the live, active slot list too, not just the template.
+    SlotStore.allocate appends to the live, active slot list too, not just the template.
 
     Given: A dense scope active with one slot already allocated,
     When: A second slot is allocated while the scope is still active,
@@ -128,17 +134,17 @@ def test_allocate_slot_dense_grows_live_active_slots():
     """
     # Arrange
     scope = Scope("application", "shared")
-    scope.allocate_slot()
+    _store(scope).allocate()
     scope.activate()
 
     # Act
-    scope.allocate_slot()
+    _store(scope).allocate()
 
     # Assert
-    assert len(scope.get_slots()) == 6
+    assert len(_store(scope).get()) == 6
 
 
-def test_release_slot_deletes_unwritten_sparse_key():
+def test_release_deletes_unwritten_sparse_key():
     """
     Releasing a sparse slot that was never written must not insert a phantom entry.
 
@@ -150,21 +156,21 @@ def test_release_slot_deletes_unwritten_sparse_key():
     # Arrange
     scope = Scope("application", "shared", "sparse")
     scope.activate()
-    key, _ = scope.allocate_slot()
+    key, _ = _store(scope).allocate()
 
     # Act
-    scope.release_slot(key)
+    _store(scope).release(key)
 
     # Assert
-    assert len(scope.get_slots()) == 4
+    assert len(_store(scope).get()) == 4
 
 
-def test_get_slots_raises_when_inactive():
+def test_get_raises_when_inactive():
     """
-    get_slots raises when the scope has no active activation.
+    SlotStore.get raises when the scope has no active activation.
 
     Given: A Scope that has never been activated,
-    When: get_slots is called,
+    When: SlotStore.get is called,
     Then: A ScopeInactiveError is raised.
     """
     # Arrange
@@ -172,15 +178,15 @@ def test_get_slots_raises_when_inactive():
 
     # Act & Assert
     with pytest.raises(ScopeInactiveError, match=re.escape("Scope 'request' is not active.")):
-        scope.get_slots()
+        _store(scope).get()
 
 
-def test_get_slots_returns_live_storage_when_active():
+def test_get_returns_live_storage_when_active():
     """
-    get_slots returns the live slot storage set up by activate().
+    SlotStore.get returns the live slot storage set up by activate().
 
     Given: An activated Scope,
-    When: get_slots is called,
+    When: SlotStore.get is called,
     Then: It returns the same storage object activate() installed.
     """
     # Arrange
@@ -190,15 +196,15 @@ def test_get_slots_returns_live_storage_when_active():
     activation = scope.activate()
 
     # Assert
-    assert scope.get_slots() is activation.slots
+    assert _store(scope).get() is activation.slots
 
 
-def test_get_slots_sparse_returns_slotdict():
+def test_get_sparse_returns_slotdict():
     """
     A sparse scope's live storage is backed by a SlotDict.
 
     Given: An activated sparse scope,
-    When: get_slots is called,
+    When: SlotStore.get is called,
     Then: The returned storage is a SlotDict whose unwritten slots read as UNSET.
     """
     # Arrange
@@ -206,7 +212,7 @@ def test_get_slots_sparse_returns_slotdict():
     scope.activate()
 
     # Act
-    slots = scope.get_slots()
+    slots = _store(scope).get()
 
     # Assert
     assert isinstance(slots, SlotDict)
