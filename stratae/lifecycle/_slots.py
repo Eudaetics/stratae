@@ -102,7 +102,7 @@ class SlotStore:
 
     var: ScopeVar
     """The activation holder: a `ContextVar`, or a `SharedVar` for a shared scope."""
-    lock: threading.Lock | None
+    lock: "threading.Lock | None"
     """A shared scope's activation lock; `None` for a context scope."""
 
     def __init__(self, name: str, *, shared: bool, dense: bool, threads: bool) -> None:
