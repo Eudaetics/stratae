@@ -2,11 +2,11 @@
 In-process event buses that dispatch straight to registered handlers, with no broker.
 
 {py:class}`DirectBus` dispatches synchronously and rejects async handlers.
-{py:class}`AsyncDirectBus` accepts both, running
-{py:class}`PubSub <stratae.events.patterns.PubSub>` handlers concurrently. Register handlers
-with `handle`, keyed by event, and create emitters with `bind`. A
-{py:class}`Request <stratae.events.patterns.Request>` event needs exactly one responder, which
-`handlers` can confirm before anything emits it.
+{py:class}`AsyncDirectBus` accepts both. It runs each
+{py:class}`PubSub <stratae.events.patterns.PubSub>` handler in its own copy of the context,
+and several async handlers concurrently. Register handlers with `handle`, keyed by event,
+and create emitters with `bind`. A {py:class}`Request <stratae.events.patterns.Request>`
+event needs exactly one responder, which `handlers` can confirm before anything emits it.
 
 Each bus delivers the patterns it has a dispatcher for, found by the event's class, so a
 subclass of a supported pattern is delivered as that pattern. Add or replace a pattern with
@@ -467,9 +467,11 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
     """
     In-process, asynchronous event bus.
 
-    Accepts sync and async handlers. {py:class}`PubSub <stratae.events.patterns.PubSub>`
-    events fan out concurrently. {py:class}`Request <stratae.events.patterns.Request>` events
-    resolve to their one responder's reply.
+    Accepts sync and async handlers. A {py:class}`PubSub <stratae.events.patterns.PubSub>`
+    event's handlers each run in their own copy of the context, so context variables one sets
+    reach neither the others nor the emitter. Several async handlers run concurrently.
+    {py:class}`Request <stratae.events.patterns.Request>` events resolve to their one
+    responder's reply.
 
     :param use_envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>`
         for each emission.

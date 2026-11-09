@@ -9,7 +9,8 @@ dispatcher for, and their subclasses.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Collection, Iterable
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
+from contextvars import Context, copy_context
 from functools import singledispatch
 from typing import Any
 
@@ -84,23 +85,116 @@ def fan_out[S](
         raise HandlerErrors(exceptions)
 
 
-async def fan_out_async[S](
-    _event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, Any]], payload: S
+class _InContext:
+    """
+    Await a coroutine with each of its steps run in `context`, as a task would.
+
+    It gives one handler its own copy of the context without a task's cost. The coroutine runs
+    in the awaiting task, so cancelling that task cancels it.
+    """
+
+    __slots__ = ("_context", "_coro")
+
+    def __init__(self, coro: Coroutine[Any, Any, Any], context: Context) -> None:
+        self._coro = coro
+        self._context = context
+
+    def __await__(self) -> Generator[Any, Any, Any]:
+        run, coro = self._context.run, self._coro
+        value: Any = None
+        error: BaseException | None = None
+        while True:
+            try:
+                step = run(coro.send, value) if error is None else run(coro.throw, error)
+            except StopIteration as stop:
+                return stop.value
+            try:
+                value, error = (yield step), None
+            except GeneratorExit:
+                run(coro.close)
+                raise
+            except BaseException as exc:
+                value, error = None, exc
+
+
+_HANDLER_FAILURES = (Exception, asyncio.CancelledError)
+"""
+What a handler raises that's collected with the other handlers' failures.
+
+Anything else, such as `KeyboardInterrupt`, propagates at once.
+"""
+
+
+def _run_sync_handlers(
+    handlers: Iterable[Handler[[Any], Any, Any]], payload: Any, failures: list[BaseException]
+) -> None:
+    """Call each sync handler in its own copy of the context, collecting its failure."""
+    for handler in handlers:
+        try:
+            copy_context().run(handler, payload)
+        except _HANDLER_FAILURES as failure:
+            failures.append(failure)
+
+
+async def _await_lone_handler(
+    handler: Handler[[Any], Any, Any], payload: Any, failures: list[BaseException]
 ) -> None:
     """
-    Run every handler concurrently, raising their failures together.
+    Await one async handler in its own copy of the context, collecting its failure.
 
-    :raises BaseHandlerErrors: If any handler raises. {py:exc}`HandlerErrors
-        <stratae.events.exceptions.HandlerErrors>` unless one raised a `BaseException` such as
-        `CancelledError`.
+    A `CancelledError` while the emitting task is being cancelled is the emit's own
+    cancellation, so it propagates rather than being collected.
     """
-    results = await asyncio.gather(
-        *(invoke(handler, payload) for handler in handlers),
-        return_exceptions=True,
-    )
-    failures = [result for result in results if isinstance(result, BaseException)]
+    try:
+        await _InContext(handler(payload), copy_context())
+    except _HANDLER_FAILURES as failure:
+        task = asyncio.current_task()
+        if isinstance(failure, asyncio.CancelledError) and task is not None and task.cancelling():
+            raise
+        failures.append(failure)
+
+
+async def _await_handlers(
+    handlers: list[Handler[[Any], Any, Any]], payload: Any, failures: list[BaseException]
+) -> None:
+    """Await async handlers, a lone one in place and several concurrently as tasks."""
+    if len(handlers) == 1:
+        await _await_lone_handler(handlers[0], payload, failures)
+    elif handlers:
+        results = await asyncio.gather(
+            *(handler(payload) for handler in handlers), return_exceptions=True
+        )
+        failures.extend(result for result in results if isinstance(result, BaseException))
+
+
+def _raise_failures(failures: list[BaseException]) -> None:
+    """Raise the handlers' failures together, if there are any."""
     errors = [failure for failure in failures if isinstance(failure, Exception)]
     if len(errors) < len(failures):
         raise BaseHandlerErrors(failures)
     if errors:
         raise HandlerErrors(errors)
+
+
+async def fan_out_async[S](
+    _event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, Any]], payload: S
+) -> None:
+    """
+    Run every handler in its own copy of the context, raising their failures together.
+
+    Context variables a handler sets don't reach the other handlers or the emitter. Sync
+    handlers run first, one at a time. A lone async handler is awaited in place. Several run
+    concurrently, each as a task.
+
+    :raises BaseHandlerErrors: If any handler raises. {py:exc}`HandlerErrors
+        <stratae.events.exceptions.HandlerErrors>` unless one raised a `BaseException` such as
+        `CancelledError`.
+    """
+    failures: list[BaseException] = []
+    sync: list[Handler[[S], Any, Any]] = []
+    pending: list[Handler[[S], Any, Any]] = []
+    for handler in tuple(handlers):
+        (pending if handler.is_async else sync).append(handler)
+    _run_sync_handlers(sync, payload, failures)
+    await _await_handlers(pending, payload, failures)
+    _raise_failures(failures)
