@@ -90,6 +90,7 @@ scheduled shipment for order 1
 ````
 """
 
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection
 from contextlib import nullcontext
@@ -106,7 +107,7 @@ from stratae.events._dispatch import (
 )
 from stratae.events.binding import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope
-from stratae.events.handler import Handler
+from stratae.events.handler import Handler, Handlers
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import MessageHeaders, Middleware
 from stratae.events.patterns import NoPayload, PubSub, Request
@@ -115,8 +116,11 @@ from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEv
 
 _AnyEvent = AnyEvent
 
-type _Route = tuple[Callable[..., Any], set[Handler[Any, _AnyEvent, Any]]]
-"""An event's dispatcher and its live set of handlers."""
+type _Route = tuple[Callable[..., Any], Handlers[Handler[Any, _AnyEvent, Any]]]
+"""An event's dispatcher and its handlers, both replaced as a pair when a handler changes."""
+
+_NO_HANDLERS: Handlers[Handler[Any, _AnyEvent, Any]] = Handlers()
+"""The handlers of an event nothing handles."""
 
 _UNSUPPORTED_PATTERN = (
     "{bus} has no dispatcher for {pattern} events; register one with dispatchers="
@@ -159,7 +163,10 @@ class Dispatch:
 
     The dispatcher is called with the event, its handlers and the payload, and returns what
     emitting the event returns, or an awaitable resolving to it on an
-    {py:class}`AsyncDirectBus`. Write it generic in the pattern's type parameters, e.g.
+    {py:class}`AsyncDirectBus`. The handlers are a
+    {py:class}`Handlers <stratae.events.handler.Handlers>` tuple, which doesn't change while
+    the dispatcher runs, so it can be run as given. A dispatcher may take any collection of
+    handlers in its place. Write it generic in the pattern's type parameters, e.g.
     `def gather[S, R](event: Gather[S, R], handlers: Collection[Handler[[S], Any, R]],
     payload: S) -> list[R]`, so its body is checked. A dispatcher whose first parameter
     doesn't accept `pattern` is a type error. That its declared return matches what the
@@ -171,7 +178,7 @@ class Dispatch:
     def __init__[P: AnyEvent](
         self,
         pattern: type[P],
-        dispatcher: Callable[[P, Collection[Handler[Any, Any, Any]], Any], Any],
+        dispatcher: Callable[[P, Handlers[Handler[Any, Any, Any]], Any], Any],
     ) -> None:
         """
         Pair a pattern with its dispatcher.
@@ -221,6 +228,7 @@ class BaseDirectBus(ABC):
         """
         middleware.require(type(self).__name__, asynchronous=self._asynchronous)
         self._routes: dict[_AnyEvent, _Route] = {}
+        self._registering = threading.Lock()
         pairs = (*self._defaults, *dispatchers)
         self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
@@ -251,7 +259,7 @@ class BaseDirectBus(ABC):
         """
         route = self._routes.get(event)
         if route is None:
-            route = self._routes[event] = (self._resolve(event), set())
+            route = self._routes.setdefault(event, (self._resolve(event), _NO_HANDLERS))
         return route
 
     def _check_hooks(self, event: _AnyEvent, hooks: Hooks[Any, Any]) -> None:
@@ -262,15 +270,17 @@ class BaseDirectBus(ABC):
     def _register(
         self, config: _AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
     ) -> Handler[Any, _AnyEvent, Any]:
-        """Wrap fn and its hooks as a Handler, and store it in the registry under config."""
-        handlers = self._route(config)[1]
+        """Wrap fn and its hooks as a Handler, and add it to the event's handlers."""
+        self._route(config)
         if hooks is not None:
             self._check_hooks(config, hooks)
         call, is_async = wrap_handler(
             config, None, fn, hooks, self._middleware.handle, self._asynchronous
         )
         handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, is_async)
-        handlers.add(handler)
+        with self._registering:
+            dispatcher, handlers = self._routes[config]
+            self._routes[config] = (dispatcher, handlers.adding(handler))
         return handler
 
     def _emit(self, event: _AnyEvent, payload: Any, hooks: Hooks[Any, Any] | None) -> Any:
@@ -282,7 +292,7 @@ class BaseDirectBus(ABC):
         emitting events made on the fly doesn't grow the registry.
         """
         route = self._routes.get(event)
-        dispatcher, handlers = route if route is not None else (self._resolve(event), ())
+        dispatcher, handlers = route if route is not None else (self._resolve(event), _NO_HANDLERS)
         if hooks is not None:
             self._check_hooks(event, hooks)
         elif self._plain:
@@ -307,11 +317,13 @@ class BaseDirectBus(ABC):
         :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
             One this bus doesn't have is ignored.
         """
-        route = self._routes.get(handler.config)
-        if route is not None:
-            route[1].discard(handler)
+        with self._registering:
+            route = self._routes.get(handler.config)
+            if route is not None:
+                dispatcher, handlers = route
+                self._routes[handler.config] = (dispatcher, handlers.removing(handler))
 
-    def handlers(self, event: _AnyEvent) -> tuple[Handler[Any, _AnyEvent, Any], ...]:
+    def handlers(self, event: _AnyEvent) -> Handlers[Handler[Any, _AnyEvent, Any]]:
         """
         Return the handlers registered for an event, in no particular order.
 
@@ -319,11 +331,11 @@ class BaseDirectBus(ABC):
         responder before anything emits it.
 
         :param event: The event to look up.
-        :returns: A snapshot of the event's handlers, empty if it has none. Later calls to
-            `handle` or `remove` don't change it.
+        :returns: The event's {py:class}`Handlers <stratae.events.handler.Handlers>`, empty if
+            it has none. Later calls to `handle` or `remove` don't change it.
         """
         route = self._routes.get(event)
-        return () if route is None else tuple(route[1])
+        return _NO_HANDLERS if route is None else route[1]
 
 
 class DirectBus(BaseDirectBus, BindMixin[None]):

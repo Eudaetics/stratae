@@ -74,7 +74,7 @@ from .envelope import (
     TIMESTAMP_HEADER,
     Envelope,
 )
-from .handler import Handler, WithoutPayload
+from .handler import Handler, Handlers, WithoutPayload
 from .hooks import Hooks
 from .middleware import HandleCall, MessageHeaders, Middleware, PublishCall
 from .patterns import Immutable, NoPayload, PubSub, Request
@@ -106,6 +106,7 @@ __all__ = [
     "EventType",
     "HandleCall",
     "Handler",
+    "Handlers",
     "Hooks",
     "Immutable",
     "MessageHeaders",

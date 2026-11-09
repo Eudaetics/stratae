@@ -20,7 +20,7 @@ from stratae.events.exceptions import (
     MultipleRespondersError,
     NoResponderError,
 )
-from stratae.events.handler import Handler, invoke
+from stratae.events.handler import Handler, Handlers, invoke
 from stratae.events.patterns import PubSub, Request
 from stratae.events.protocols import AnyEvent
 
@@ -72,11 +72,11 @@ def dispatch_request_async[S, R](
 
 
 def fan_out[S](
-    _event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, object]], payload: S
+    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, object]], payload: S
 ) -> None:
     """Call every handler in turn, raising their failures together as `HandlerErrors`."""
     exceptions: list[Exception] = []
-    for handler in tuple(handlers):
+    for handler in handlers:
         try:
             handler(payload)
         except Exception as exc:
@@ -155,7 +155,7 @@ async def _await_lone_handler(
 
 
 async def _await_handlers(
-    handlers: list[Handler[[Any], Any, Any]], payload: Any, failures: list[BaseException]
+    handlers: tuple[Handler[[Any], Any, Any], ...], payload: Any, failures: list[BaseException]
 ) -> None:
     """Await async handlers, a lone one in place and several concurrently as tasks."""
     if len(handlers) == 1:
@@ -177,7 +177,7 @@ def _raise_failures(failures: list[BaseException]) -> None:
 
 
 async def fan_out_async[S](
-    _event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, Any]], payload: S
+    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, Any]], payload: S
 ) -> None:
     """
     Run every handler in its own copy of the context, raising their failures together.
@@ -191,10 +191,6 @@ async def fan_out_async[S](
         `CancelledError`.
     """
     failures: list[BaseException] = []
-    sync: list[Handler[[S], Any, Any]] = []
-    pending: list[Handler[[S], Any, Any]] = []
-    for handler in tuple(handlers):
-        (pending if handler.is_async else sync).append(handler)
-    _run_sync_handlers(sync, payload, failures)
-    await _await_handlers(pending, payload, failures)
+    _run_sync_handlers(handlers.sync, payload, failures)
+    await _await_handlers(handlers.asynchronous, payload, failures)
     _raise_failures(failures)

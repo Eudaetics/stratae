@@ -3,8 +3,10 @@ Wrap event handler callables with async detection and identity semantics.
 
 {py:class}`Handler` pairs a callable with its routing config and records whether it's async.
 Each registration returns a distinct `Handler`, which is the token `remove` takes back.
-{py:class}`WithoutPayload` adapts a payload-less event's handler, so an adapter can call every
-handler with one argument, and {py:func}`invoke` calls one, sync or async, from async code.
+{py:class}`Handlers` holds an event's handlers as an immutable tuple, which a bus replaces
+when a handler is added or removed. {py:class}`WithoutPayload` adapts a payload-less event's
+handler, so an adapter can call every handler with one argument, and {py:func}`invoke` calls
+one, sync or async, from async code.
 
 ````{example} Using a returned Handler to unregister it later
 ```{code-block} python
@@ -35,8 +37,8 @@ log: first
 
 """
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Iterable
+from typing import Any, Self
 
 from stratae._callables import is_async_callable
 
@@ -68,6 +70,42 @@ class Handler[**P, HandlerConfig, R]:
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call the handler. An async handler returns an unawaited coroutine."""
         return self.call(*args, **kwargs)
+
+
+class Handlers[H: Handler[Any, Any, Any]](tuple[H, ...]):
+    """
+    An event's registered handlers, as an immutable tuple.
+
+    A bus never changes it. Registering or removing a handler makes a new one, so a dispatcher
+    can run the handlers it was given while others register. The sync and async handlers are
+    also kept apart, once, for dispatchers that run them differently.
+    """
+
+    sync: tuple[H, ...]
+    """The handlers that aren't async."""
+    asynchronous: tuple[H, ...]
+    """The async handlers."""
+
+    def __new__(cls, handlers: Iterable[H] = ()) -> Self:
+        """
+        Hold `handlers`, keeping the sync and async ones apart.
+
+        :param handlers: The registered handlers.
+        """
+        instance = super().__new__(cls, handlers)
+        instance.sync = tuple(handler for handler in instance if not handler.is_async)
+        instance.asynchronous = tuple(handler for handler in instance if handler.is_async)
+        return instance
+
+    def adding(self, handler: H) -> Self:
+        """Return these handlers with `handler` added."""
+        return type(self)((*self, handler))
+
+    def removing(self, handler: H) -> Self:
+        """Return these handlers without `handler`, or these same handlers if it isn't one."""
+        if handler not in self:
+            return self
+        return type(self)(registered for registered in self if registered is not handler)
 
 
 class WithoutPayload:
