@@ -104,7 +104,7 @@ from stratae.integrations.rabbitmq import (
     RabbitMQPublisher,
     RabbitMQReconnect,
 )
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 pytestmark = pytest.mark.rabbitmq
 
@@ -641,7 +641,6 @@ async def test_cancelled_scoped_delivery_is_redelivered(broker: _Broker):
     events = _Log[str]()
 
     @scope.cache()
-    @async_resource
     async def get_transaction() -> AsyncGenerator[None, None]:
         await asyncio.sleep(0)
         try:

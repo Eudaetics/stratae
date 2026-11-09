@@ -5,7 +5,6 @@ import time
 from collections.abc import Callable
 
 from stratae.lifecycle.exceptions import CacheCycleError
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
 
 
@@ -118,7 +117,6 @@ def test_shared_scope_resource_entered_once_under_thread_contention(scope: Scope
     start = threading.Barrier(thread_count)
 
     @scope.cache()
-    @resource
     def get_resource():
         nonlocal enter_count, cleanup_count
         enter_count += 1

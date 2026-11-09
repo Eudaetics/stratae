@@ -13,7 +13,6 @@ import pytest
 
 from stratae.lifecycle._slots import SharedVar, SlotStorage
 from stratae.lifecycle.exceptions import ScopeActivationError
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
 
 
@@ -207,7 +206,6 @@ def test_deactivate_child_with_resource_cleans_up_exit_stack(storage: str):
     mock = Mock()
 
     @child.cache()
-    @resource
     def get_resource():
         try:
             yield object()

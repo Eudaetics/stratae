@@ -9,7 +9,6 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.lifecycle.exceptions import LifecycleConfigurationError
-from stratae.lifecycle.resource import async_resource, resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -46,7 +45,6 @@ def callable_factory(
         return SimpleObject(calc(x, y, z))
 
     @scope.cache(**(config or {}))
-    @async_resource
     async def get_object_cm_async(x: int | SimpleObject = 0, y: int = 0, z: int | SimpleObject = 0):
         call_counter()
         await asyncio.sleep(0)
@@ -60,7 +58,6 @@ def callable_factory(
         return SimpleObject(calc(x, y, z))
 
     @scope.cache(**(config or {}))
-    @resource
     def get_object_cm_sync(x: int | SimpleObject = 0, y: int = 0, z: int | SimpleObject = 0):
         call_counter()
         yield SimpleObject(calc(x, y, z))

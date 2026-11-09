@@ -1,52 +1,51 @@
 """
 Decorator objects returned by `Scope.cache` and `AsyncScope.cache`.
 
-A function may be cached in only one scope, so its cache always has one fixed home.
+A function may be cached in only one scope, so its cache always has one fixed home. How it's
+wrapped is chosen once, when it's decorated. A generator function, sync or async, has its
+generator entered and the yielded value cached. A function whose decorator hides a generator
+function checks what each miss returns. Any other function has its return value cached.
 """
 
-from collections.abc import Awaitable, Callable, Hashable
-from contextlib import AbstractAsyncContextManager, AbstractContextManager
-from inspect import unwrap
-from typing import TYPE_CHECKING, Any, TypeGuard, cast, overload
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hashable
+from inspect import isasyncgenfunction, isgeneratorfunction, unwrap
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from stratae._callables import is_async_callable
 from stratae.lifecycle._wrappers import (
     Cached,
+    create_async_generator_wrapper,
     create_async_wrapper,
-    create_asynccm_wrapper,
+    create_checked_wrapper,
+    create_generator_wrapper,
     create_sync_in_async_wrapper,
     create_sync_wrapper,
-    create_synccm_wrapper,
 )
 from stratae.lifecycle.exceptions import (
     AlreadyCachedError,
+    AsyncGeneratorInSyncScopeError,
     UncacheableError,
 )
-from stratae.lifecycle.resource import AUTO_ENTER_ASYNC, AUTO_ENTER_SYNC
 
 if TYPE_CHECKING:
     from stratae.lifecycle.scope import AsyncScope, BaseScope, Scope
 
 
-def _is_awaitable[**P, T](
-    f: Callable[P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T],
-) -> TypeGuard[Callable[P, Awaitable[T]]]:
-    """Narrow func to its async form."""
-    return is_async_callable(f)
+def _hidden_generator(func: Callable[..., Any]) -> Literal["sync", "async"] | None:
+    """
+    Return the kind of generator function a decorator over `func` hides, if any.
 
-
-def _is_auto_sync_cm[**P, T](
-    f: Callable[P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T],
-) -> TypeGuard[Callable[P, AbstractContextManager[T]]]:
-    """Narrow func to a sync resource."""
-    return getattr(unwrap(f), "__auto_enter__", None) == AUTO_ENTER_SYNC
-
-
-def _is_auto_async_cm[**P, T, U](
-    f: Callable[P, U | Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[U]],
-) -> TypeGuard[Callable[P, AbstractAsyncContextManager[U]]]:
-    """Narrow func to an async resource."""
-    return getattr(unwrap(f), "__auto_enter__", None) == AUTO_ENTER_ASYNC
+    Found through `__wrapped__`, which `functools.wraps` sets. A decorator that doesn't set it
+    hides nothing this can see, so its function is cached like any other.
+    """
+    inner = unwrap(func)
+    if inner is func:
+        return None
+    if isasyncgenfunction(inner):
+        return "async"
+    if isgeneratorfunction(inner):
+        return "sync"
+    return None
 
 
 def _mark_as_scoped(func: Callable[..., Any], scope: "BaseScope") -> None:
@@ -89,37 +88,33 @@ class CacheDecorator:
 
     @overload
     def __call__[**P, T](
-        self, func: Callable[P, AbstractContextManager[T]]
-    ) -> Cached[P, T, AbstractContextManager[T]]: ...
+        self, func: Callable[P, Generator[T, Any, Any]]
+    ) -> Cached[P, T, Generator[T, Any, Any]]: ...
 
     @overload
     def __call__[**P, T](self, func: Callable[P, T]) -> Cached[P, T, T]: ...
 
-    def __call__[**P, T](
-        self,
-        func: Callable[P, T | AbstractContextManager[T]],
-    ) -> Cached[P, T, T | AbstractContextManager[T]]:
+    def __call__(self, func: Callable[..., Any]) -> Cached[..., Any, Any]:
         """
         Wrap `func` so its result is cached per scope activation.
 
-        :param func: The function, or a {py:func}`resource <stratae.lifecycle.resource.resource>`
-            to enter.
+        :param func: The function. A generator function's generator is entered, its yielded
+            value cached, and it's closed when the activation ends.
         :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
+        :raises AsyncGeneratorInSyncScopeError: If `func` is, or a decorator hides, an async
+            generator function.
         :raises LifecycleConfigurationError: If `func` is already cached in a scope.
         """
-        _mark_as_scoped(func, self._scope)
-
-        def add_scope_to_func(
-            f: Callable[P, T | AbstractContextManager[T]],
-        ) -> Cached[P, T, T | AbstractContextManager[T]]:
-            if _is_auto_sync_cm(f):
-                return create_synccm_wrapper(f, self._scope, self._cache_key, self._ignore_params)
-            return cast(
-                Cached[P, T, T | AbstractContextManager[T]],
-                create_sync_wrapper(f, self._scope, self._cache_key, self._ignore_params),
-            )
-
-        return add_scope_to_func(func)
+        scope, cache_key, ignore_params = self._scope, self._cache_key, self._ignore_params
+        hidden = None if isgeneratorfunction(func) else _hidden_generator(func)
+        if isasyncgenfunction(func) or hidden == "async":
+            raise AsyncGeneratorInSyncScopeError(func, scope.name)
+        _mark_as_scoped(func, scope)
+        if isgeneratorfunction(func):
+            return create_generator_wrapper(func, scope, cache_key, ignore_params)
+        if hidden == "sync":
+            return create_checked_wrapper(func, scope, cache_key, ignore_params, is_async=False)
+        return create_sync_wrapper(func, scope, cache_key, ignore_params)
 
 
 class AsyncCacheDecorator:
@@ -146,13 +141,13 @@ class AsyncCacheDecorator:
 
     @overload
     def __call__[**P, T](
-        self, func: Callable[P, AbstractContextManager[T]]
-    ) -> Cached[P, T, AbstractContextManager[T]]: ...
+        self, func: Callable[P, AsyncGenerator[T, Any]]
+    ) -> Cached[P, Awaitable[T], AsyncGenerator[T, Any]]: ...
 
     @overload
     def __call__[**P, T](
-        self, func: Callable[P, AbstractAsyncContextManager[T]]
-    ) -> Cached[P, Awaitable[T], AbstractAsyncContextManager[T]]: ...
+        self, func: Callable[P, Generator[T, Any, Any]]
+    ) -> Cached[P, T, Generator[T, Any, Any]]: ...
 
     @overload
     def __call__[**P, T](
@@ -162,47 +157,28 @@ class AsyncCacheDecorator:
     @overload
     def __call__[**P, T](self, func: Callable[P, T]) -> Cached[P, T, T]: ...
 
-    def __call__[**P, T](
-        self,
-        func: Callable[
-            P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T
-        ],
-    ) -> Cached[
-        P,
-        Awaitable[T] | T,
-        Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T,
-    ]:
+    def __call__(self, func: Callable[..., Any]) -> Cached[..., Any, Any]:
         """
         Wrap `func` so its result is cached per scope activation.
 
-        :param func: A sync or async function, or a resource of either kind to enter.
+        :param func: A sync or async function. A generator function's generator, sync or
+            async, is entered, its yielded value cached, and it's closed when the activation
+            ends.
         :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
-            Async unless `func` is a plain sync function.
+            Async if `func` is async or an async generator function, or a decorator hides one.
         :raises LifecycleConfigurationError: If `func` is already cached in a scope.
         """
-        _mark_as_scoped(func, self._scope)
-
-        def add_scope_to_func(
-            f: Callable[
-                P, Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T
-            ],
-        ) -> Cached[
-            P,
-            Awaitable[T] | T,
-            Awaitable[T] | AbstractAsyncContextManager[T] | AbstractContextManager[T] | T,
-        ]:
-            if _is_auto_async_cm(f):
-                return create_asynccm_wrapper(f, self._scope, self._cache_key, self._ignore_params)
-            elif _is_auto_sync_cm(f):
-                return create_synccm_wrapper(f, self._scope, self._cache_key, self._ignore_params)
-            elif _is_awaitable(f):
-                return create_async_wrapper(f, self._scope, self._cache_key, self._ignore_params)
-            else:
-                return create_sync_in_async_wrapper(
-                    cast(Callable[P, T], f),
-                    self._scope,
-                    self._cache_key,
-                    self._ignore_params,
-                )
-
-        return add_scope_to_func(func)
+        scope, cache_key, ignore_params = self._scope, self._cache_key, self._ignore_params
+        _mark_as_scoped(func, scope)
+        if isasyncgenfunction(func):
+            return create_async_generator_wrapper(func, scope, cache_key, ignore_params)
+        if isgeneratorfunction(func):
+            return create_generator_wrapper(func, scope, cache_key, ignore_params)
+        if is_async_callable(func):
+            return create_async_wrapper(func, scope, cache_key, ignore_params)
+        hidden = _hidden_generator(func)
+        if hidden is not None:
+            return create_checked_wrapper(
+                func, scope, cache_key, ignore_params, is_async=hidden == "async"
+            )
+        return create_sync_in_async_wrapper(func, scope, cache_key, ignore_params)

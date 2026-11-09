@@ -43,11 +43,11 @@ Welcome, anonymous!
 
 ### Lifecycle
 
-Manage hierarchical, scoped contexts for caching and cleanup. `Scope`/`AsyncScope` describe the blocks and configuration directly - no separate container to build. Use `resource`/`async_resource` for cached resources that need teardown.
+Manage hierarchical, scoped contexts for caching and cleanup. `Scope`/`AsyncScope` describe the blocks and configuration directly - no separate container to build. A cached generator function is a resource: its yielded value is cached, and the code after its `yield` runs when the scope ends.
 
 ````{example} Committing a transaction, or rolling back if the scope raises
 ```{code-block} python
-from stratae.lifecycle import Scope, resource
+from stratae.lifecycle import Scope
 
 class Connection:
     def commit(self):
@@ -62,7 +62,6 @@ class Connection:
 request = Scope("request")
 
 @request.cache()
-@resource
 def get_transaction():
     conn = Connection()
     try:

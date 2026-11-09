@@ -17,14 +17,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from stratae.depends import Depends, inject
 from stratae.integrations.fastapi import scoped_route
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 application = AsyncScope("application", isolation="shared")
 request = AsyncScope("request", requires=application)
 transaction = AsyncScope("transaction", requires=request)
 
 @application.cache()
-@async_resource
 async def get_connection():
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE products (id TEXT PRIMARY KEY, name TEXT)")
@@ -35,7 +34,6 @@ async def get_connection():
         conn.close()
 
 @request.cache()
-@async_resource
 async def get_cursor():
     cur = (await get_connection()).cursor()
     try:
@@ -44,7 +42,6 @@ async def get_cursor():
         cur.close()
 
 @transaction.cache()
-@async_resource
 async def get_transaction():
     conn = await get_connection()
     try:
@@ -114,14 +111,13 @@ from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.testclient import TestClient
 from stratae.depends import Depends, inject
 from stratae.integrations.fastapi import scoped_websocket
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 application = AsyncScope("application", isolation="shared")
 connection = AsyncScope("connection", requires=application)
 message = AsyncScope("message", requires=connection)
 
 @application.cache()
-@async_resource
 async def get_database():
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE notes (body TEXT)")
@@ -131,7 +127,6 @@ async def get_database():
         conn.close()
 
 @connection.cache()
-@async_resource
 async def get_cursor():
     cur = (await get_database()).cursor()
     try:
@@ -140,7 +135,6 @@ async def get_cursor():
         cur.close()
 
 @message.cache()
-@async_resource
 async def get_transaction():
     conn = await get_database()
     try:

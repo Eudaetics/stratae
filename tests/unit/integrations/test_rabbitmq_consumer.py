@@ -149,7 +149,7 @@ from stratae.integrations.rabbitmq import (
     RabbitMQFailurePolicy,
     RabbitMQReconnect,
 )
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -1744,7 +1744,6 @@ def _scoped_resource(events: list[str], *, fail_close: bool = False) -> tuple[As
     opened = count(1)
 
     @scope.cache()
-    @async_resource
     async def get_resource() -> AsyncGenerator[int, None]:
         await asyncio.sleep(0)
         n = next(opened)

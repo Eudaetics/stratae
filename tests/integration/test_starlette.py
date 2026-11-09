@@ -19,7 +19,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.testclient import TestClient
 
 from stratae.integrations.starlette import scoped_route
-from stratae.lifecycle import AsyncScope, async_resource, resource
+from stratae.lifecycle import AsyncScope
 from stratae.lifecycle.exceptions import ScopeInactiveError
 
 pytestmark = pytest.mark.starlette
@@ -97,7 +97,6 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
     """Build a Starlette app whose routes activate the request scope via scoped_route."""
 
     @async_request_scope.cache()
-    @async_resource
     async def get_transaction():
         await asyncio.sleep(0)
         events.append("open")
@@ -181,7 +180,6 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
         return StreamingResponse(body())
 
     @async_request_scope.cache()
-    @async_resource
     async def get_swallowing_transaction():
         await asyncio.sleep(0)
         events.append("open")
@@ -548,7 +546,6 @@ def transaction_app(
     transaction_scope = AsyncScope("transaction", requires=request_scope)
 
     @request_scope.cache()
-    @async_resource
     async def get_connection():
         await asyncio.sleep(0)
         events.append("connection-open")
@@ -563,7 +560,6 @@ def transaction_app(
         events.append("commit")
 
     @transaction_scope.cache()
-    @async_resource
     async def get_transaction():
         await get_connection()
         events.append("begin")
@@ -757,7 +753,6 @@ def sync_app(events: list[str], record_response_start: Callable[..., Any]) -> An
     transaction_scope = AsyncScope("transaction", requires=request_scope)
 
     @request_scope.cache()
-    @resource
     def get_connection():
         events.append("connection-open")
         try:
@@ -769,7 +764,6 @@ def sync_app(events: list[str], record_response_start: Callable[..., Any]) -> An
             events.append("connection-close")
 
     @transaction_scope.cache()
-    @resource
     def get_transaction():
         get_connection()
         events.append("begin")

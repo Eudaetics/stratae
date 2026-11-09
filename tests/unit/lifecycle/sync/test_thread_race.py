@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 
 from stratae.lifecycle.exceptions import CacheCycleError, ScopeInactiveError
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope, StorageType
 
 
@@ -116,7 +115,6 @@ def test_threaded_resource_entered_once_under_thread_contention(threaded_scope: 
     cleanup_count = 0
 
     @threaded_scope.cache()
-    @resource
     def get_resource():
         nonlocal enter_count, cleanup_count
         enter_count += 1

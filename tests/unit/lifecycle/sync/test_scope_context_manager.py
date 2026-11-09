@@ -8,7 +8,6 @@ from contextvars import copy_context
 import pytest
 
 from stratae.lifecycle.exceptions import ScopeActivationError
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
 
 
@@ -42,7 +41,6 @@ def test_with_scope_closes_entered_resources():
     events: list[str] = []
 
     @scope.cache()
-    @resource
     def get_value() -> Generator[int, None, None]:
         yield 1
         events.append("closed")
@@ -124,7 +122,6 @@ def test_deactivate_returns_whether_exception_was_suppressed():
     scope = Scope("request")
 
     @scope.cache()
-    @resource
     def get_value() -> Generator[int, None, None]:
         with suppress(ValueError):
             yield 1

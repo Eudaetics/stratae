@@ -12,7 +12,7 @@ requires_314 = pytest.mark.skipif(
 _SOURCES = {
     "sync": "@scope.cache()\ndef get(user: Later) -> Later:\n    return 1\n",
     "async": "@scope.cache()\nasync def get(user: Later) -> Later:\n    return 1\n",
-    "resource": "@scope.cache()\n@resource\ndef get(user: Later):\n    yield 1\n",
+    "generator": "@scope.cache()\ndef get(user: Later):\n    yield 1\n",
 }
 
 
@@ -29,7 +29,7 @@ def test_cache_allows_annotations_defined_later(kind: str):
     # Arrange
     namespace: dict[str, Any] = {}
     source = (
-        "from stratae.lifecycle import AsyncScope, resource\n"
+        "from stratae.lifecycle import AsyncScope\n"
         "scope = AsyncScope('request')\n" + _SOURCES[kind] + "class Later: ...\n"
     )
 

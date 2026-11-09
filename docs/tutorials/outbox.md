@@ -27,7 +27,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import StaticPool
 
 from stratae.events.outbox import OutboxRecord
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 class Base(DeclarativeBase):
     pass
@@ -86,7 +86,6 @@ application = AsyncScope("application", isolation="shared")
 work = AsyncScope("work", requires=application)
 
 @application.cache()
-@async_resource
 async def get_engine() -> AsyncIterator[AsyncEngine]:
     # In-memory SQLite for the example; a real service passes its database URL.
     engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
@@ -102,7 +101,6 @@ async def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(await get_engine(), expire_on_commit=False)
 
 @work.cache()
-@async_resource
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with (await get_sessionmaker())() as session:
         try:

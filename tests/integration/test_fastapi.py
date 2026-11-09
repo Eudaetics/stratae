@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from stratae.depends import Depends, inject
 from stratae.integrations.fastapi import scoped_route
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 from stratae.lifecycle.exceptions import ScopeInactiveError
 
 pytestmark = pytest.mark.fastapi
@@ -93,7 +93,6 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
     """Build a FastAPI app whose request scope is activated via scoped_route."""
 
     @async_request_scope.cache()
-    @async_resource
     async def get_transaction():
         await asyncio.sleep(0)
         events.append("open")
@@ -187,7 +186,6 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
         return StreamingResponse(body())
 
     @async_request_scope.cache()
-    @async_resource
     async def get_swallowing_transaction():
         await asyncio.sleep(0)
         events.append("open")
@@ -550,7 +548,6 @@ def transaction_app(
     transaction_scope = AsyncScope("transaction", requires=request_scope)
 
     @request_scope.cache()
-    @async_resource
     async def get_connection():
         await asyncio.sleep(0)
         events.append("connection-open")
@@ -565,7 +562,6 @@ def transaction_app(
         events.append("commit")
 
     @transaction_scope.cache()
-    @async_resource
     async def get_transaction():
         await get_connection()
         events.append("begin")

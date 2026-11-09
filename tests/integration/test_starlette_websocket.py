@@ -32,7 +32,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from stratae.integrations.starlette import scoped_websocket_route
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 pytestmark = pytest.mark.starlette
 
@@ -55,7 +55,6 @@ def app(async_request_scope: AsyncScope, events: list[str], suspended: asyncio.E
     """Build a Starlette app whose WebSocket routes activate a scope per connection."""
 
     @async_request_scope.cache()
-    @async_resource
     async def get_session():
         await asyncio.sleep(0)
         events.append("open")

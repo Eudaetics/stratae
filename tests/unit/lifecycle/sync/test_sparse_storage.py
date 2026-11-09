@@ -6,7 +6,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
 
 
@@ -48,7 +47,6 @@ def callable_factory(
         return SimpleObject(x)
 
     @scope.cache(ignore_params=ignore_params)
-    @resource
     def get_object_cm_sync(x: int = 0):
         call_counter()
         yield SimpleObject(x)
@@ -200,7 +198,6 @@ def test_sparse_storage_exit_stack_cleaned_up(scope_fixture: str, request: pytes
     mock = Mock()
 
     @scope.cache()
-    @resource
     def test_resource():
         try:
             yield

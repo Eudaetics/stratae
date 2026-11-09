@@ -18,7 +18,6 @@ from typing import Any
 import pytest
 
 from stratae.lifecycle.exceptions import ScopeInactiveError
-from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -153,7 +152,6 @@ async def test_concurrent_resource_management(async_context_scope: AsyncScope):
     lock = asyncio.Lock()
 
     @async_context_scope.cache()
-    @async_resource
     async def resource_generator():
         """Simulate a resource with setup and teardown."""
         nonlocal init_count, cleanup
@@ -223,7 +221,6 @@ async def test_concurrent_resource_management_nested_scopes(
     app_cleanup: list[asyncio.Task[Any]] = []
 
     @application.cache()
-    @async_resource
     async def app_resource_generator():
         """Simulate a resource with setup and teardown."""
         nonlocal app_count, app_cleanup
@@ -238,7 +235,6 @@ async def test_concurrent_resource_management_nested_scopes(
                 app_cleanup.append(task)
 
     @session.cache()
-    @async_resource
     async def resource_generator():
         """Simulate a resource with setup and teardown."""
         nonlocal init_count, cleanup
@@ -309,7 +305,6 @@ async def test_concurrent_first_calls_within_one_activation_enter_resource_once(
     enter_count = 0
 
     @async_context_scope.cache()
-    @async_resource
     async def get_connection():
         nonlocal enter_count
         enter_count += 1
@@ -339,7 +334,6 @@ async def test_third_concurrent_first_call_waits_on_watched_claim(
     enter_count = 0
 
     @async_context_scope.cache()
-    @async_resource
     async def get_connection():
         nonlocal enter_count
         enter_count += 1

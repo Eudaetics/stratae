@@ -1,4 +1,4 @@
-"""Test suite for synchronous generator (@resource) registration and cleanup via Scope.cache."""
+"""Test suite for caching sync generator functions: registration and cleanup."""
 
 import re
 from unittest.mock import Mock
@@ -6,7 +6,6 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.lifecycle.exceptions import ScopeInactiveError
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
 
 
@@ -60,7 +59,6 @@ def test_generator_sync(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def sample_generator():
         try:
             yield SimpleObject()
@@ -94,7 +92,6 @@ def test_decorate_generator_inactive_scope(scope: Scope):
 
     # Arrange
     @scope.cache()
-    @resource
     def sample_generator():
         yield "test"
 
@@ -117,7 +114,6 @@ def test_decorate_generator_sync_exception_cleanup(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def sample_generator():
         try:
             yield SimpleObject()
@@ -151,7 +147,6 @@ def test_decorator_generator_sync_exception_handling(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def sample_generator():
         try:
             yield SimpleObject()
@@ -194,7 +189,6 @@ def test_multiple_generators_sync(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def generator_one():
         try:
             yield SimpleObject()
@@ -202,7 +196,6 @@ def test_multiple_generators_sync(scope: Scope):
             mock_cleanup_1()
 
     @scope.cache()
-    @resource
     def generator_two():
         try:
             yield SimpleObject()
@@ -210,7 +203,6 @@ def test_multiple_generators_sync(scope: Scope):
             mock_cleanup_2()
 
     @scope.cache()
-    @resource
     def generator_three():
         try:
             yield SimpleObject()
@@ -246,7 +238,6 @@ def test_generator_sync_exception_group(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def generator_one():
         try:
             yield SimpleObject()
@@ -254,7 +245,6 @@ def test_generator_sync_exception_group(scope: Scope):
             mock_cleanup_1()
 
     @scope.cache()
-    @resource
     def generator_two():
         try:
             yield SimpleObject()
@@ -262,7 +252,6 @@ def test_generator_sync_exception_group(scope: Scope):
             mock_cleanup_2()
 
     @scope.cache()
-    @resource
     def generator_three():
         try:
             yield SimpleObject()
@@ -315,7 +304,6 @@ def test_generator_sees_exception_raised_in_caller_block(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def sample_generator():
         try:
             yield SimpleObject()
@@ -353,7 +341,6 @@ def test_generator_can_suppress_exception_raised_in_caller_block(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def sample_generator():
         try:
             yield SimpleObject()
@@ -386,7 +373,6 @@ def test_multiple_generators_each_raise_from_callers_exception(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def resource_a():
         try:
             yield SimpleObject()
@@ -394,7 +380,6 @@ def test_multiple_generators_each_raise_from_callers_exception(scope: Scope):
             raise _AFailure() from None
 
     @scope.cache()
-    @resource
     def resource_b():
         try:
             yield SimpleObject()
@@ -443,7 +428,6 @@ def test_resource_reraising_callers_exception_groups_it_once(scope: Scope):
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def resource_a():
         try:
             yield SimpleObject()
@@ -451,7 +435,6 @@ def test_resource_reraising_callers_exception_groups_it_once(scope: Scope):
             raise caller_failure from None
 
     @scope.cache()
-    @resource
     def resource_b():
         try:
             yield SimpleObject()
@@ -498,7 +481,6 @@ def test_resource_swallowing_exception_hides_it_from_earlier_resources(scope: Sc
     class SimpleObject: ...
 
     @scope.cache()
-    @resource
     def resource_a():
         try:
             yield SimpleObject()
@@ -508,7 +490,6 @@ def test_resource_swallowing_exception_hides_it_from_earlier_resources(scope: Sc
             raise
 
     @scope.cache()
-    @resource
     def resource_b():
         try:
             yield SimpleObject()
@@ -547,7 +528,6 @@ def test_cleanup_raising_non_exception_still_closes_earlier_resources(scope: Sco
     closed: list[str] = []
 
     @scope.cache()
-    @resource
     def first():
         try:
             yield "first"
@@ -555,7 +535,6 @@ def test_cleanup_raising_non_exception_still_closes_earlier_resources(scope: Sco
             closed.append("first")
 
     @scope.cache()
-    @resource
     def second():
         yield "second"
         raise _Interrupt()
@@ -585,7 +564,6 @@ def test_non_exception_cleanup_failures_are_grouped_with_exceptions(scope: Scope
 
     # Arrange
     @scope.cache()
-    @resource
     def first():
         try:
             yield "first"
@@ -593,7 +571,6 @@ def test_non_exception_cleanup_failures_are_grouped_with_exceptions(scope: Scope
             raise _FirstFailure()
 
     @scope.cache()
-    @resource
     def second():
         yield "second"
         raise _Interrupt()

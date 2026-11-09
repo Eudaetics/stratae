@@ -1,17 +1,19 @@
 """
-Codegen'd wrappers for scope-cached functions and context managers.
+Codegen'd wrappers for scope-cached functions and generator functions.
 
 Generated wrappers match the original signature exactly, and a function whose result
-doesn't vary by argument reads one slot instead of a keyed dict.
+doesn't vary by argument reads one slot instead of a keyed dict. A generator function's
+generator is driven directly: entered on a miss, and closed when the activation ends. A
+function whose decorator hides a generator function checks what each miss returns.
 """
 
 import threading
 import weakref
 from asyncio import current_task
-from collections.abc import Awaitable, Callable, Hashable
-from contextlib import AbstractAsyncContextManager, AbstractContextManager
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hashable
 from functools import wraps
-from inspect import Parameter, isasyncgenfunction, isgeneratorfunction
+from inspect import Parameter
+from types import AsyncGeneratorType, GeneratorType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -32,16 +34,11 @@ from stratae.lifecycle._inflight import (
     watch_thread_claim,
 )
 from stratae.lifecycle._slots import UNSET
-from stratae.lifecycle._stack import (
-    enter_async_context,
-    enter_async_generator,
-    enter_context,
-    enter_generator,
-)
+from stratae.lifecycle._stack import enter_async_generator, enter_generator
 from stratae.lifecycle.exceptions import (
     ActivationEndedError,
+    AsyncGeneratorInSyncScopeError,
 )
-from stratae.lifecycle.resource import resource_generator
 
 if TYPE_CHECKING:
     from stratae.lifecycle.scope import AsyncScope, BaseScope, Scope
@@ -709,40 +706,44 @@ def create_async_wrapper[**P, T](
     return wrapper
 
 
-def _create_cm_wrapper_impl(
+type _WriteValue = Callable[[Writer, str], None]
+"""Writes `__value__` on a miss, given the source of the call to the cached function."""
+
+
+def _create_entering_wrapper_impl(
     func: Callable[..., Any],
     scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
     is_async: bool,
-    enter: Callable[..., Any],
-    target: Callable[..., Any] | None = None,
+    write_value: _WriteValue,
+    bindings: dict[str, Any],
 ) -> Callable[..., Any]:
     """
-    Build the wrapper shared by the sync and async context-manager decorators.
+    Build a wrapper whose miss may enter a generator, registering it in the activation.
 
-    `enter` registers the made object in the activation and returns its value. `target`,
-    when given, is called in place of `func` to make that object.
+    :param is_async: Whether the wrapper is `async def`, so its miss can await.
+    :param write_value: Writes the miss, from the call's source.
+    :param bindings: Extra namespace bindings `write_value`'s code needs.
     """
     params = list(read_signature(func).parameters.values())
     slot = _allocate_slot(scope)
+    call = f"__func__({_render_forward_arguments(params)})"
 
     writer = Writer()
-    def_kw = "async def" if is_async else "def"
-
-    def write_enter() -> None:
-        writer.write(f"__ctx__ = __func__({_render_forward_arguments(params)})")
-        writer.write(f"__value__ = {'await ' if is_async else ''}__enter__(__slots__, __ctx__)")
-
-    writer.write(f"{def_kw} wrapper({render_parameters(params)}):")
+    writer.write(f"{'async def' if is_async else 'def'} wrapper({render_parameters(params)}):")
     with writer.block():
-        if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, scope, write_enter, is_async)
-        else:
-            _write_keyed_body(writer, slot, scope, cache_key, params, write_enter, is_async)
 
-    namespace = _build_namespace(target or func, scope, slot, is_async=is_async)
-    namespace["__enter__"] = enter
+        def write_compute() -> None:
+            write_value(writer, call)
+
+        if _is_slot_eligible(params, cache_key, ignore_params):
+            _write_slot_body(writer, slot, scope, write_compute, is_async)
+        else:
+            _write_keyed_body(writer, slot, scope, cache_key, params, write_compute, is_async)
+
+    namespace = _build_namespace(func, scope, slot, is_async=is_async)
+    namespace.update(bindings)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
@@ -750,61 +751,145 @@ def _create_cm_wrapper_impl(
     return wrapper
 
 
-def create_synccm_wrapper[**P, T](
-    func: Callable[P, AbstractContextManager[T]],
+def _write_enter_generator(writer: Writer, call: str) -> None:
+    writer.write(f"__value__ = __enter_generator__(__slots__, {call})")
+
+
+def _write_enter_async_generator(writer: Writer, call: str) -> None:
+    writer.write(f"__value__ = await __enter_async_generator__(__slots__, {call})")
+
+
+def _write_check_sync(writer: Writer, call: str) -> None:
+    """Enter a returned generator, refuse a returned async generator, and keep anything else."""
+    writer.write(f"__value__ = {call}")
+    writer.write("__kind__ = __value__.__class__")
+    writer.write("if __kind__ is __Generator__:")
+    with writer.block():
+        writer.write("__value__ = __enter_generator__(__slots__, __value__)")
+    writer.write("elif __kind__ is __AsyncGenerator__:")
+    with writer.block():
+        writer.write("__refuse_async__()")
+
+
+def _write_check_async(writer: Writer, call: str) -> None:
+    """Enter a returned generator of either kind, and keep anything else."""
+    writer.write(f"__value__ = {call}")
+    writer.write("__kind__ = __value__.__class__")
+    writer.write("if __kind__ is __AsyncGenerator__:")
+    with writer.block():
+        writer.write("__value__ = await __enter_async_generator__(__slots__, __value__)")
+    writer.write("elif __kind__ is __Generator__:")
+    with writer.block():
+        writer.write("__value__ = __enter_generator__(__slots__, __value__)")
+
+
+def create_generator_wrapper[**P, T](
+    func: Callable[P, Generator[T, Any, Any]],
     scope: "Scope | AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[P, T, AbstractContextManager[T]]:
+) -> Cached[P, T, Generator[T, Any, Any]]:
     """
-    Create a wrapper that enters a sync context manager and caches its yielded value.
+    Create a wrapper that enters a generator function's generator and caches its yielded value.
 
-    The context manager is exited when the scope's activation ends. A function returned
-    directly by `resource` has its generator driven in place of the context manager.
+    The generator is closed when the scope's activation ends.
 
-    :param func: The `resource`-tagged function to wrap.
+    :param func: The generator function.
     :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>` or
         {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
     :param cache_key: Derives a hashable key from the arguments.
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
-    generator = resource_generator(func)
-    if generator is not None and isgeneratorfunction(generator):
-        enter: Callable[..., Any] = enter_generator
-    else:
-        generator, enter = None, enter_context
     return cast(
-        Cached[P, T, AbstractContextManager[T]],
-        _create_cm_wrapper_impl(func, scope, cache_key, ignore_params, False, enter, generator),
+        Cached[P, T, Generator[T, Any, Any]],
+        _create_entering_wrapper_impl(
+            func,
+            scope,
+            cache_key,
+            ignore_params,
+            False,
+            _write_enter_generator,
+            {"__enter_generator__": enter_generator},
+        ),
     )
 
 
-def create_asynccm_wrapper[**P, T](
-    func: Callable[P, AbstractAsyncContextManager[T]],
+def create_async_generator_wrapper[**P, T](
+    func: Callable[P, AsyncGenerator[T, Any]],
     scope: "AsyncScope",
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[P, Awaitable[T], AbstractAsyncContextManager[T]]:
+) -> Cached[P, Awaitable[T], AsyncGenerator[T, Any]]:
     """
-    Create a wrapper that enters an async context manager and caches its yielded value.
+    Create an async wrapper that enters an async generator and caches its yielded value.
 
-    The context manager is exited when the scope's activation ends. A function returned
-    directly by `async_resource` has its generator driven in place of the context manager.
+    The generator is closed when the scope's activation ends.
 
-    :param func: The `async_resource`-tagged function to wrap.
+    :param func: The async generator function.
     :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
     :param cache_key: Derives a hashable key from the arguments.
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: An async wrapper matching `func`'s signature, with `func` as its `uncached`
         attribute.
     """
-    generator = resource_generator(func)
-    if generator is not None and isasyncgenfunction(generator):
-        enter: Callable[..., Any] = enter_async_generator
-    else:
-        generator, enter = None, enter_async_context
     return cast(
-        Cached[P, Awaitable[T], AbstractAsyncContextManager[T]],
-        _create_cm_wrapper_impl(func, scope, cache_key, ignore_params, True, enter, generator),
+        Cached[P, Awaitable[T], AsyncGenerator[T, Any]],
+        _create_entering_wrapper_impl(
+            func,
+            scope,
+            cache_key,
+            ignore_params,
+            True,
+            _write_enter_async_generator,
+            {"__enter_async_generator__": enter_async_generator},
+        ),
+    )
+
+
+def create_checked_wrapper(
+    func: Callable[..., Any],
+    scope: "BaseScope",
+    cache_key: Callable[..., Hashable] | None = None,
+    ignore_params: bool = False,
+    *,
+    is_async: bool,
+) -> Cached[..., Any, Any]:
+    """
+    Create a wrapper for a function whose decorator hides a generator function.
+
+    The function may still return a generator, or the decorator may have turned it into
+    something else. Each miss checks: a generator is entered and its yielded value cached,
+    anything else is cached as it is.
+
+    :param func: The decorated function.
+    :param scope: The owning scope.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :param is_async: Whether the wrapper is async, so it can enter an async generator. A sync
+        wrapper refuses one with
+        {py:exc}`AsyncGeneratorInSyncScopeError
+        <stratae.lifecycle.exceptions.AsyncGeneratorInSyncScopeError>`.
+    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
+    """
+
+    def refuse_async() -> NoReturn:
+        raise AsyncGeneratorInSyncScopeError(func, scope.name)
+
+    bindings: dict[str, Any] = {
+        "__Generator__": GeneratorType,
+        "__AsyncGenerator__": AsyncGeneratorType,
+        "__enter_generator__": enter_generator,
+    }
+    if is_async:
+        bindings["__enter_async_generator__"] = enter_async_generator
+        write_value = _write_check_async
+    else:
+        bindings["__refuse_async__"] = refuse_async
+        write_value = _write_check_sync
+    return cast(
+        Cached[..., Any, Any],
+        _create_entering_wrapper_impl(
+            func, scope, cache_key, ignore_params, is_async, write_value, bindings
+        ),
     )

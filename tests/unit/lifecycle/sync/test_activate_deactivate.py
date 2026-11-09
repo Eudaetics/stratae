@@ -8,7 +8,6 @@ import pytest
 
 from stratae.lifecycle._slots import SharedVar
 from stratae.lifecycle.exceptions import ScopeActivationError
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
 
 
@@ -206,7 +205,6 @@ def test_exception_raised_while_handling_another_propagates_unchanged_through_re
     seen: list[BaseException] = []
 
     @scope.cache()
-    @resource
     def get_connection():
         try:
             yield object()

@@ -1,20 +1,22 @@
 """
-Test suite for how an async scope cache enters and exits async resources.
+Test suite for how an async scope cache enters and exits generator functions.
 
-A function returned directly by `async_resource` has its generator driven by the scope,
-skipping `contextlib.asynccontextmanager`. A resource wrapped by another decorator is still
-entered through its context manager. These tests check the two behave the same.
+A cached async generator function has its generator driven by the scope, as
+`contextlib.asynccontextmanager` would drive it. A decorator that hides a generator function
+is seen through when it records what it wraps, as `functools.wraps` does. These tests check
+the driving matches contextlib, and the decorated path matches the plain one.
 """
 
 import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from functools import wraps
 from typing import Any, cast
 
 import pytest
 
+from stratae.lifecycle._stack import enter_async_generator, exit_async_generator
 from stratae.lifecycle.exceptions import ScopeInactiveError
-from stratae.lifecycle.resource import async_resource, resource
 from stratae.lifecycle.scope import AsyncScope
 
 type Body = Callable[[list[str]], AsyncGenerator[Any, None]]
@@ -159,22 +161,53 @@ async def _outcome(run: Callable[[list[str]], Awaitable[Any]]) -> tuple[Any, ...
 
 @pytest.mark.parametrize("exc_name", EXCEPTIONS)
 @pytest.mark.parametrize("body_name", BODIES)
-async def test_driven_resource_matches_asynccontextmanager(body_name: str, exc_name: str):
+async def test_driven_generator_matches_asynccontextmanager(body_name: str, exc_name: str):
     """
-    Test that a driven async resource generator behaves as its context manager would.
+    Test that a scope drives an async generator as `contextlib.asynccontextmanager` would.
+
+    Given: An async generator body, and an exception (or none) raised while its value is used,
+    When: It's entered and exited the way a scope does, and separately with
+        asynccontextmanager,
+    Then: Both should return or raise the same thing and record the same events.
+    """
+    # Arrange
+    body, make_exc = BODIES[body_name](), EXCEPTIONS[exc_name]
+
+    async def driven(events: list[str]) -> str:
+        generator = body(events)
+        events.append(await enter_async_generator([[]], generator))
+        error = None if make_exc is None else make_exc()
+        suppressed = await exit_async_generator(generator, error)
+        if error is None or suppressed:
+            return "done"
+        raise error
+
+    async def reference(events: list[str]) -> str:
+        async with asynccontextmanager(body)(events) as value:
+            events.append(value)
+            if make_exc is not None:
+                raise make_exc()
+        return "done"
+
+    # Act & Assert
+    assert await _outcome(driven) == await _outcome(reference)
+
+
+@pytest.mark.parametrize("exc_name", EXCEPTIONS)
+@pytest.mark.parametrize("body_name", BODIES)
+async def test_decorated_async_generator_matches_plain(body_name: str, exc_name: str):
+    """
+    Test that an async generator behind a decorator is cached as it would be without one.
 
     Given: An async generator body, and an exception (or none) raised in the block using it,
-    When: It's cached as a resource, once driven directly and once through a decorator that
-        makes the scope enter its context manager,
+    When: It's cached plainly, and separately behind a sync `functools.wraps` decorator,
     Then: Both should return or raise the same thing and record the same events.
     """
     # Arrange
     make_exc = EXCEPTIONS[exc_name]
-    driven, decorated = AsyncScope("driven"), AsyncScope("decorated")
-    via_generator = driven.cache(ignore_params=True)(async_resource(BODIES[body_name]()))
-    via_contextmanager = decorated.cache(ignore_params=True)(
-        _passthrough(async_resource(BODIES[body_name]()))
-    )
+    plain, decorated = AsyncScope("plain"), AsyncScope("decorated")
+    via_plain = plain.cache(ignore_params=True)(BODIES[body_name]())
+    via_decorator = decorated.cache(ignore_params=True)(_passthrough(BODIES[body_name]()))
 
     def run(
         scope: AsyncScope, cached: Callable[[list[str]], Awaitable[Any]]
@@ -189,15 +222,15 @@ async def test_driven_resource_matches_asynccontextmanager(body_name: str, exc_n
         return scenario
 
     # Act & Assert
-    driven_outcome = await _outcome(run(driven, via_generator))
-    assert driven_outcome == await _outcome(run(decorated, via_contextmanager))
+    plain_outcome = await _outcome(run(plain, via_plain))
+    assert plain_outcome == await _outcome(run(decorated, via_decorator))
 
 
-async def test_decorated_async_resource_still_runs_its_decorator():
+async def test_decorated_async_generator_still_runs_its_decorator():
     """
-    Test that an async resource wrapped by another decorator is entered through it.
+    Test that an async generator wrapped by another decorator is entered through it.
 
-    Given: An async resource wrapped by a `functools.wraps` decorator, then cached,
+    Given: An async generator function wrapped by a `functools.wraps` decorator, then cached,
     When: It's called in an active scope,
     Then: The decorator should run, and the resource should still be exited on deactivation.
     """
@@ -210,7 +243,7 @@ async def test_decorated_async_resource_still_runs_its_decorator():
         yield "value"
         events.append("exit")
 
-    get_value = scope.cache()(_passthrough(async_resource(generator), events))
+    get_value = scope.cache()(_passthrough(generator, events))
 
     # Act
     async with scope:
@@ -240,8 +273,7 @@ async def test_async_entry_finishing_after_deactivation_is_exited(decorate: bool
         yield "value"
         events.append("exit")
 
-    func = async_resource(generator)
-    cached = scope.cache()(_passthrough(func) if decorate else func)
+    cached = scope.cache()(_passthrough(generator) if decorate else generator)
 
     # Act & Assert
     with pytest.raises(ScopeInactiveError, match="activation has ended"):
@@ -249,13 +281,13 @@ async def test_async_entry_finishing_after_deactivation_is_exited(decorate: bool
     assert events == ["exit"]
 
 
-async def test_async_scope_exits_decorated_sync_resource():
+async def test_async_scope_exits_decorated_sync_generator():
     """
-    Test that an async scope exits a sync resource entered through its context manager.
+    Test that an async scope enters and exits a sync generator behind a decorator.
 
-    Given: An AsyncScope and a sync resource wrapped by another decorator,
+    Given: An AsyncScope and a sync generator function wrapped by another decorator,
     When: It's cached and called, then the scope deactivates,
-    Then: Its context manager should be exited.
+    Then: Its value should be returned without awaiting, and the generator closed.
     """
     # Arrange
     events: list[str] = []
@@ -265,7 +297,7 @@ async def test_async_scope_exits_decorated_sync_resource():
         yield "value"
         events.append("exit")
 
-    get_value = scope.cache()(_passthrough(resource(generator)))
+    get_value = scope.cache()(_passthrough(generator))
 
     # Act
     async with scope:
@@ -273,4 +305,70 @@ async def test_async_scope_exits_decorated_sync_resource():
 
     # Assert
     assert value == "value"
+    assert events == ["exit"]
+
+
+async def test_decorator_hiding_async_generator_returning_another_value_has_it_cached():
+    """
+    Test that a decorator turning a hidden async generator into another value has it cached.
+
+    Given: An async generator function behind a sync `functools.wraps` decorator that returns
+        something else,
+    When: It's cached in an AsyncScope and awaited twice,
+    Then: The returned value should be cached as it is.
+    """
+
+    # Arrange
+    async def generator():
+        await asyncio.sleep(0)
+        yield "value"
+
+    @wraps(generator)
+    def summary() -> Any:
+        return "summary"
+
+    scope = AsyncScope("request")
+    cached = scope.cache()(summary)
+
+    # Act
+    async with scope:
+        first, second = await cached(), await cached()
+
+    # Assert
+    assert first == second == "summary"
+
+
+async def test_decorator_hiding_async_generator_returning_sync_generator_enters_it():
+    """
+    Test that a sync generator returned by a decorator hiding an async one is entered.
+
+    Given: An async generator function behind a sync `functools.wraps` decorator that returns
+        a sync generator instead,
+    When: It's cached in an AsyncScope, awaited, and the scope deactivates,
+    Then: The sync generator should be entered, and closed.
+    """
+    # Arrange
+    events: list[str] = []
+
+    async def generator():
+        await asyncio.sleep(0)
+        yield "value"
+
+    def other():
+        yield "other"
+        events.append("exit")
+
+    @wraps(generator)
+    def swap() -> Any:
+        return other()
+
+    scope = AsyncScope("request")
+    cached = scope.cache()(swap)
+
+    # Act
+    async with scope:
+        value = await cached()
+
+    # Assert
+    assert value == "other"
     assert events == ["exit"]
