@@ -10,7 +10,7 @@ from functools import wraps
 from inspect import Parameter, Signature, isclass, markcoroutinefunction
 from typing import Any
 
-from stratae.codegen import Writer, read_signature, render_parameters, wrapper_filename
+from stratae.codegen import Writer, compile_wrapper, read_signature, render_parameters
 from stratae.depends._provide import Provider
 
 
@@ -76,11 +76,9 @@ def _finalize(
         "__func__": func,
         **{f"__dep_{name}__": dep for name, dep in resolved_deps.items()},
     }
-    exec(compile(writer.render(), wrapper_filename(func), "exec"), namespace)  # noqa: S102
-
+    wrapper = compile_wrapper(writer.render(), func, namespace)
     metadata_source: Callable[..., Any] = _get_source(func)
 
-    wrapper = namespace["wrapper"]
     wraps(func)(wrapper)
     wrapper.__signature__ = kept
     wrapper.__defaults__ = metadata_source.__defaults__

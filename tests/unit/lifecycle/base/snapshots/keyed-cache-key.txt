@@ -1,0 +1,16 @@
+def wrapper(a, b, *args, c, d, **kw):
+    try:
+        __slots__ = __var__.get()
+        __cache__ = __slots__[4]
+    except LookupError:
+        __slots__ = __scope__.get_slots()
+        __cache__ = __slots__[4]
+    if __cache__ is __UNSET__:
+        __cache__ = {}
+        __slots__[4] = __cache__
+    __ck__ = __cache_key__(a, b, *args, c=c, d=d, **kw)
+    if __ck__ in __cache__:
+        return __cache__[__ck__]
+    __value__ = __func__(a, b, *args, c=c, d=d, **kw)
+    __cache__[__ck__] = __value__
+    return __value__

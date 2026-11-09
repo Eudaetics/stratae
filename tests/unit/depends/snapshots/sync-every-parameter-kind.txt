@@ -1,0 +1,2 @@
+def wrapper(a, /, b, *args, c, **kw):
+    return __func__(a, b, __dep_value__.provide(), *args, c=c, d=__dep_d__.provide(), **kw)

@@ -1,0 +1,37 @@
+def wrapper():
+    __slots__ = __var__.storage
+    try:
+        __value__ = __slots__[4]
+    except (TypeError, LookupError):
+        __slots__ = __scope__.get_slots()
+        __value__ = __slots__[4]
+    if __value__ is __UNSET__:
+        while True:
+            __acquire__()
+            try:
+                __value__ = __slots__[4]
+                if __value__ is not __UNSET__:
+                    return __value__
+                __pending__ = __inflight__.get(None)
+                if __pending__ is None:
+                    __inflight__[None] = __claimant__()
+                    break
+                __done__ = __watch__(__inflight__, None, __pending__)
+            finally:
+                __release__()
+            __done__.wait()
+            if not __slots__:
+                __ended__(__scope__)
+        try:
+            __value__ = __func__()
+            if __slots__:
+                __slots__[4] = __value__
+        finally:
+            __acquire__()
+            try:
+                __claim__ = __inflight__.pop(None)
+                if __claim__.__class__ is __Pending__:
+                    __claim__.release()
+            finally:
+                __release__()
+    return __value__

@@ -1,0 +1,43 @@
+def wrapper(a, b, *args, c, d, **kw):
+    try:
+        __slots__ = __var__.get()
+        __cache__ = __slots__[4]
+    except LookupError:
+        __slots__ = __scope__.get_slots()
+        __cache__ = __slots__[4]
+    __ck__ = (a, b, *args, c, d, frozenset(kw.items()), )
+    if __cache__ is not __UNSET__:
+        if __ck__ in __cache__:
+            return __cache__[__ck__]
+    __pk__ = (__id__(__slots__), __ck__)
+    while True:
+        __acquire__()
+        try:
+            __cache__ = __slots__[4]
+            if __cache__ is __UNSET__:
+                __cache__ = {}
+                __slots__[4] = __cache__
+            if __ck__ in __cache__:
+                return __cache__[__ck__]
+            __pending__ = __inflight__.get(__pk__)
+            if __pending__ is None:
+                __inflight__[__pk__] = __claimant__()
+                break
+            __done__ = __watch__(__inflight__, __pk__, __pending__)
+        finally:
+            __release__()
+        __done__.wait()
+        if not __slots__:
+            __ended__(__scope__)
+    try:
+        __value__ = __func__(a, b, *args, c=c, d=d, **kw)
+        __cache__[__ck__] = __value__
+    finally:
+        __acquire__()
+        try:
+            __claim__ = __inflight__.pop(__pk__)
+            if __claim__.__class__ is __Pending__:
+                __claim__.release()
+        finally:
+            __release__()
+    return __value__

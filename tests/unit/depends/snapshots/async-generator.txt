@@ -1,0 +1,22 @@
+async def wrapper():
+    __gen__ = __func__(await __dep_value__.provide())
+    try:
+        __value__ = await __gen__.__anext__()
+    except StopAsyncIteration:
+        return
+    while True:
+        try:
+            __sent__ = yield __value__
+        except GeneratorExit:
+            await __gen__.aclose()
+            raise
+        except BaseException as __exc__:
+            try:
+                __value__ = await __gen__.athrow(__exc__)
+            except StopAsyncIteration:
+                return
+        else:
+            try:
+                __value__ = await __gen__.asend(__sent__)
+            except StopAsyncIteration:
+                return

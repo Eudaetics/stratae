@@ -1,0 +1,14 @@
+def wrapper():
+    try:
+        __slots__ = __var__.get()
+        __entry__ = __slots__[4]
+    except LookupError:
+        __slots__ = __scope__.get_slots()
+        __entry__ = __slots__[4]
+    if __entry__.__class__ is not __Owned__:
+        __value__ = __func__()
+        if __slots__:
+            __slots__[4] = __Owned__(__value__)
+    else:
+        __value__ = __entry__.value
+    return __value__

@@ -23,8 +23,7 @@ from typing import (
     cast,
 )
 
-from stratae.codegen import Writer, read_signature, render_parameters
-from stratae.codegen.util import wrapper_filename
+from stratae.codegen import Writer, compile_wrapper, read_signature, render_parameters
 from stratae.lifecycle._inflight import (
     AsyncPending,
     Pending,
@@ -594,9 +593,7 @@ def _finalize(
     writer: Writer, func: Callable[..., Any], params: list[Parameter], namespace: dict[str, Any]
 ) -> Callable[..., Any]:
     """Compile the wrapper source and restore its metadata and defaults."""
-    exec(compile(writer.render(), wrapper_filename(func), "exec"), namespace)  # noqa: S102
-
-    wrapper = namespace["wrapper"]
+    wrapper = compile_wrapper(writer.render(), func, namespace)
     wraps(func)(wrapper)
     wrapper.__defaults__ = _aggregate_defaults(params)
     wrapper.__kwdefaults__ = _aggregate_kwdefaults(params)

@@ -1,0 +1,36 @@
+async def wrapper():
+    try:
+        __slots__ = __var__.get()
+        __value__ = __slots__[4]
+    except LookupError:
+        __slots__ = __scope__.get_slots()
+        __value__ = __slots__[4]
+    if __value__ is __UNSET__:
+        __pk__ = __id__(__slots__)
+        while True:
+            __claim__ = __claims__.get(__pk__)
+            if __claim__ is None:
+                break
+            await __wait_claim__(__claims__, __pk__, __claim__)
+            if not __slots__:
+                __ended__(__scope__)
+            __value__ = __slots__[4]
+            if __value__ is not __UNSET__:
+                return __value__
+        __claims__[__pk__] = __task__()
+        try:
+            __value__ = __func__()
+            __kind__ = __value__.__class__
+            if __kind__ is __AsyncGenerator__:
+                __value__ = await __enter_async_generator__(__slots__, __value__)
+            elif __kind__ is __Generator__:
+                __value__ = __enter_generator__(__slots__, __value__)
+            try:
+                __slots__[4] = __value__
+            except IndexError:
+                pass
+        finally:
+            __claim__ = __claims__.pop(__pk__)
+            if __claim__.__class__ is __Watched__:
+                __claim__.done.set()
+    return __value__

@@ -1,0 +1,2 @@
+def wrapper():
+    return __func__(__dep_value__.provide())
