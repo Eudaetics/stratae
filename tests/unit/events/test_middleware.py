@@ -34,6 +34,10 @@ run_middleware:
 - An exit that re-raises the call's own error leaves it as is.
 - A middleware returning something other than a sync context manager raises TypeError; an
   async def middleware's coroutine is closed.
+- A middleware returning something that isn't a context manager is refused on every call, not
+  only the first.
+- Middleware returning a new context manager class on every call keeps working, and the bus
+  remembers a bounded number of classes.
 - A sync context manager with an async __enter__ or __exit__ raises TypeError, closing the
   coroutine, whether the call succeeded or failed.
 
@@ -65,6 +69,7 @@ from typing import Any, cast
 import pytest
 
 from stratae.events import HandleCall, Hooks, Middleware, PublishCall, PubSub
+from stratae.events import middleware as middleware_module
 from stratae.events.exceptions import MiddlewareError
 from stratae.events.middleware import MessageHeaders, run_middleware, run_middleware_async
 
@@ -717,6 +722,63 @@ def test_non_manager_middleware_raises() -> None:
     # Assert
     assert calls == []
     assert log[-1].startswith("outer out None TypeError(")
+
+
+def test_non_manager_middleware_raises_on_every_call() -> None:
+    """
+    A middleware returning something that isn't a context manager should be refused every time.
+
+    Given: A middleware returning a plain object
+    When: run_middleware runs two calls through it
+    Then: Both raise TypeError, and neither call runs
+    """
+    # Arrange
+    calls: list[str] = []
+
+    def plain(call: PublishCall) -> object:
+        return object()
+
+    # Act
+    for _ in range(2):
+        with pytest.raises(TypeError, match="a sync bus can't enter"):
+            _run((plain,), calls.append, "call")
+
+    # Assert
+    assert calls == []
+
+
+def test_new_manager_class_per_call_keeps_working() -> None:
+    """
+    Middleware returning a new context manager class on every call should keep working.
+
+    Given: A middleware that builds a new context manager class each time it's called
+    When: More calls run through it than the bus remembers classes for
+    Then: Every call runs inside it, and the remembered classes stay within the bound
+    """
+    # Arrange
+    calls: list[int] = []
+    entered: list[int] = []
+
+    def fresh(call: PublishCall) -> object:
+        class Fresh:
+            def __enter__(self) -> None:
+                entered.append(len(entered))
+
+            def __exit__(self, *exc: object) -> None: ...
+
+        return Fresh()
+
+    count = middleware_module._ENTRIES_LIMIT + 10  # pyright: ignore[reportPrivateUsage]
+
+    # Act
+    for index in range(count):
+        _run((fresh,), calls.append, index)
+
+    # Assert
+    assert calls == list(range(count))
+    assert len(entered) == count
+    limit = middleware_module._ENTRIES_LIMIT  # pyright: ignore[reportPrivateUsage]
+    assert len(middleware_module._SYNC_ENTRIES) <= limit  # pyright: ignore[reportPrivateUsage]
 
 
 def test_async_def_middleware_is_closed_on_sync_path() -> None:

@@ -326,6 +326,18 @@ class HandleCall(_Call):
         """
 
 
+_UNKNOWN: Any = object()
+
+_ENTRIES_LIMIT = 256
+"""How many context manager types each bus kind remembers the entry of; beyond it, it checks."""
+
+_SYNC_ENTRIES: dict[type, bool | None] = {}
+"""How a sync bus enters each context manager type it has seen, so it checks each type once."""
+
+_ASYNC_ENTRIES: dict[type, bool | None] = {}
+"""How an async bus enters each context manager type it has seen."""
+
+
 def _entry(kind: type, asynchronous: bool) -> bool | None:
     """
     Return how a bus enters a context manager of type `kind`.
@@ -350,7 +362,13 @@ def _manager(
     """
     manager = middleware(call)
     kind = _type_of(manager)
-    entry = _entry(kind, asynchronous)
+    entries = _ASYNC_ENTRIES if asynchronous else _SYNC_ENTRIES
+    entry = entries.get(kind, _UNKNOWN)
+    if entry is _UNKNOWN:
+        entry = _entry(kind, asynchronous)
+        # Bounded, so middleware that makes a new class per call can't grow it forever.
+        if len(entries) < _ENTRIES_LIMIT:
+            entries[kind] = entry
     if entry is None:
         if manager.__class__ is CoroutineType:
             manager.close()  # an async def middleware's, closed so it isn't left unawaited

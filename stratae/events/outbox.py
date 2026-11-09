@@ -86,6 +86,7 @@ from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from inspect import isawaitable
 from types import MappingProxyType
 from typing import (
@@ -354,9 +355,10 @@ class OutboxProducer:
         :raises ValueError: If the route is taken by another binding.
         """
         _require_pubsub(event)
-        self._register(event, config)
+        # Registered once here, so the bound callable writes without registering again.
+        emit = partial(self._emit_routed, self._register(event, config))
         return abind(
-            event, self.emit, factory=factory, config=config, serializer=serializer, hooks=hooks
+            event, emit, factory=factory, config=config, serializer=serializer, hooks=hooks
         )
 
     async def emit[S, R](
@@ -382,6 +384,21 @@ class OutboxProducer:
         """
         _require_pubsub(event)
         route = self._register(event, config)
+        return await self._emit_routed(
+            route, event, config, payload, serializer=serializer, hooks=hooks
+        )
+
+    async def _emit_routed[S, R](
+        self,
+        route: str,
+        event: EventType[S, R, Any, Any],
+        config: OutboxConfig[Any],
+        payload: S,
+        *,
+        serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, R] | None = None,
+    ) -> R:
+        """Write a payload to the outbox under a route that's already registered."""
         headers = MessageHeaders()
         with Envelope.scope() as envelope:
             args = (event, config, payload, serializer, envelope, route, headers)
