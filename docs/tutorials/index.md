@@ -6,7 +6,6 @@
 getting-started
 context
 checks
-serde
 database
 outbox
 integrations/index
@@ -106,7 +105,6 @@ Standalone, no dependency on the core three or on each other:
 
 - [Context](context.md) carries per-task state through a call stack without passing it explicitly. It's often used as a Dependency Injection provider itself, e.g. injecting the current user or tenant from a context-backed value.
 - [Checks](checks.md) runs a set of preconditions and raises if they don't hold. It's a natural fit for a Dependency Injection provider that exists only for its side effect (raising), not a return value. However, checks are useful well beyond that.
-- [Serde](serde.md) turns arbitrary objects into bytes and back. Particularly useful alongside Events integrations, where a payload has to cross a process boundary such as over RabbitMQ.
 
 ## Recipes
 
@@ -120,9 +118,8 @@ Standalone, no dependency on the core three or on each other:
 - [FastAPI](../apidocs/stratae.integrations/stratae.integrations.fastapi) — `scoped_route` builds an `APIRoute` subclass that activates an `AsyncScope` around each request.
 - [Starlette](../apidocs/stratae.integrations/stratae.integrations.starlette) — the same `scoped_route` pattern, built on Starlette's `Route`.
 - [ASGI](../apidocs/stratae.integrations/stratae.integrations.asgi) — `EnvelopeMiddleware` gives each request its own `Envelope`, so the events it emits share one correlation id. It works with any ASGI app.
-- [RabbitMQ](../apidocs/stratae.integrations/stratae.integrations.rabbitmq) implements `stratae.events`' bus protocols over AMQP.
+- [RabbitMQ](../apidocs/stratae.integrations/stratae.integrations.rabbitmq) implements `stratae.events`' bus protocols over AMQP. It takes a serializer and a deserializer, such as msgspec's `json.encode` and `json.decode`.
 - [OpenTelemetry](../apidocs/stratae.integrations/stratae.integrations.opentelemetry) — `tracing` is bus middleware that traces each emit and handler call. One trace follows an event from its request, through the broker or the outbox, into its handler.
-- [msgspec](../apidocs/stratae.integrations/stratae.integrations.msgspec) registers a fast path onto `stratae.serde.serialize` for `msgspec.Struct` payloads.
 
 ## Looking for something specific?
 

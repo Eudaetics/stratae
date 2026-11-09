@@ -64,6 +64,7 @@ then orders.dead-letter
 <!--- skip: next -->
 ```{code-block} python
 import asyncio
+import msgspec
 from stratae.events import PubSub
 from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
@@ -71,23 +72,15 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConsumer,
     RabbitMQPublisher,
 )
-from stratae.serde import deserialize, encode
 
-class OrderPlaced:
-    def __init__(self, order_id: int) -> None:
-        self.order_id = order_id
-
-@encode.register
-def encode_order_placed(order: OrderPlaced) -> dict[str, int]:
-    return {"order_id": order.order_id}
-
-@deserialize.register(OrderPlaced)
-def decode_order_placed(value: dict[str, int]) -> OrderPlaced:
-    return OrderPlaced(**value)
+class OrderPlaced(msgspec.Struct):
+    order_id: int
 
 order_placed_event = PubSub(OrderPlaced)
 
-consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
+consumer = RabbitMQConsumer(
+    "amqp://guest:guest@localhost/", deserializer=msgspec.json.decode
+)
 
 @consumer.handle(
     order_placed_event,
@@ -104,7 +97,9 @@ def on_order_placed(order: OrderPlaced) -> None:
 async def main() -> None:
     async with (
         consumer,  # declares the queue before anything is published
-        RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher,
+        RabbitMQPublisher(
+            "amqp://guest:guest@localhost/", serializer=msgspec.json.encode
+        ) as publisher,
     ):
         place_order = publisher.bind(
             order_placed_event,
@@ -150,11 +145,13 @@ from stratae.events import (
     MESSAGE_ID_HEADER,
     TIMESTAMP_HEADER,
     AnyEvent,
+    Deserializer,
     Envelope,
     EventType,
     Handler,
     NoPayload,
     PubSub,
+    Serializer,
 )
 from stratae.events.binding import AsyncBindMixin
 from stratae.events.envelope import ENVELOPE_HEADERS
@@ -164,7 +161,6 @@ from stratae.events.hooks import Hooks
 from stratae.events.middleware import MessageHeaders, Middleware
 from stratae.events.pipeline import receiving, run_emit_async, wrap_handler
 from stratae.lifecycle import AsyncScope
-from stratae.serde import Deserializer, Serializer, deserialize, serialize
 
 if TYPE_CHECKING:
     from aiormq.abc import AbstractChannel, AbstractConnection, DeliveredMessage
@@ -505,7 +501,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
     def __init__(
         self,
         url: str,
-        serializer: Serializer[object] = serialize,
+        serializer: Serializer[object],
         *,
         topology: Iterable[RabbitMQConsumeConfig] = (),
         reconnect: RabbitMQReconnect | None = RabbitMQReconnect(),
@@ -515,8 +511,8 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         Create a publisher.
 
         :param url: AMQP connection URL, e.g. `"amqp://guest:guest@localhost/"`.
-        :param serializer: Default payload serializer. Defaults to
-            {py:func}`stratae.serde.serialize`.
+        :param serializer: Default payload serializer, such as `msgspec.json.encode`. A
+            binding's own serializer overrides it.
         :param topology: Consume configs whose queues, exchanges, bindings and failure queues
             are declared on entering the context, before anything is published. Each needs a
             named `queue`. They're declared again after each reconnect.
@@ -923,8 +919,7 @@ class RabbitMQConsumer:
     Async RabbitMQ consumer for pub/sub events.
 
     Each registration is its own AMQP consumer, so handlers on one queue compete. Use an
-    `exchange` config to fan out. Bodies are decoded with `deserializer(body, type=schema)`,
-    defaulting to {py:obj}`stratae.serde.deserialize`.
+    `exchange` config to fan out. Bodies are decoded with `deserializer(body, type=schema)`.
 
     A message is acked once its handler, its hooks and its middleware return, and its scope, if
     any, has closed. If decoding, the handler, a `before` hook, a middleware or closing the
@@ -947,7 +942,7 @@ class RabbitMQConsumer:
     def __init__(
         self,
         url: str,
-        deserializer: Deserializer = deserialize,
+        deserializer: Deserializer,
         prefetch_count: int | None = None,
         drain_timeout: float | None = 30.0,
         *,
@@ -959,8 +954,8 @@ class RabbitMQConsumer:
         Create a consumer.
 
         :param url: AMQP connection URL, e.g. `"amqp://guest:guest@localhost/"`.
-        :param deserializer: Default body decoder. Defaults to
-            {py:obj}`stratae.serde.deserialize`.
+        :param deserializer: Default body decoder, such as `msgspec.json.decode`. A
+            registration's own deserializer overrides it.
         :param prefetch_count: Unacked messages delivered ahead; `None` for no limit.
         :param drain_timeout: Seconds exiting waits for running handlers before closing;
             `None` to wait for them indefinitely.

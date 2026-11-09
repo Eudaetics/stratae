@@ -72,7 +72,7 @@ No framework required. Every piece is a plain callable. It drops into a script, 
 :::
 
 :::{grid-item-card}
-:link: tutorials/serde.html
+:link: tutorials/getting-started.html
 
 {octicon}`unlock;1.2em` **No Lock-In**
 ^^^

@@ -93,7 +93,7 @@ jobs:
           enable-cache: true
 
       - name: Install
-        run: uv sync --group test --extra msgspec --extra rabbitmq --extra opentelemetry --extra starlette
+        run: uv sync --group test --extra rabbitmq --extra opentelemetry --extra starlette
 
       - name: Integration test
         run: uv run pytest -m rabbitmq --no-cov

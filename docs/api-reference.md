@@ -186,58 +186,15 @@ access denied: not an admin
 
 {doc}`Full reference <apidocs/stratae.checks/stratae.checks>`
 
-### Serde
-
-Serialization and deserialization tools for encoding/decoding data: `encode`, `serialize`, and `deserialize`.
-
-````{example} Round-tripping a dataclass through serialize/deserialize
-```{code-block} python
-from dataclasses import asdict, dataclass
-from uuid import UUID, uuid4
-from stratae.serde import serialize, deserialize, encode
-
-@dataclass
-class Widget:
-    id: UUID
-    name: str
-
-    def __post_init__(self):
-        if isinstance(self.id, str):
-            self.id = UUID(self.id)
-
-@encode.register
-def encode_widget(obj: Widget) -> dict:
-    return asdict(obj)
-
-@deserialize.register(Widget)
-def decode_widget(value: dict) -> Widget:
-    return Widget(**value)
-
-widget = Widget(id=uuid4(), name="sprocket")
-data = serialize(widget)
-print(data)
-
-restored = deserialize(data, type=Widget)
-print(restored.name)
-```
-```{output}
-b'{"id": "05483b1e-b51a-4a28-a992-59dc75499b1f", "name": "sprocket"}'
-sprocket
-```
-````
-
-{doc}`Full reference <apidocs/stratae.serde/stratae.serde>`
-
 ### Integrations
 
-Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. msgspec enables a faster serialize path. RabbitMQ gets async publish and consume adapters. OpenTelemetry traces emits and handlers across them.
+Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. RabbitMQ gets async publish and consume adapters. OpenTelemetry traces emits and handlers across them.
 
 ````{example} Publishing a msgspec.Struct event to RabbitMQ, then consuming it back
 <!--- skip: next -->
 ```{code-block} python
 import asyncio
 import msgspec
-import stratae.integrations.msgspec  # noqa: F401
 from stratae.events import PubSub
 from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
@@ -251,7 +208,9 @@ class OrderPlaced(msgspec.Struct):
 
 order_placed_event = PubSub(OrderPlaced)
 
-consumer = RabbitMQConsumer("amqp://guest:guest@localhost/")
+consumer = RabbitMQConsumer(
+    "amqp://guest:guest@localhost/", deserializer=msgspec.json.decode
+)
 
 @consumer.handle(
     order_placed_event,
@@ -268,7 +227,9 @@ def on_order_placed(order: OrderPlaced) -> None:
 async def main() -> None:
     async with (
         consumer,
-        RabbitMQPublisher("amqp://guest:guest@localhost/") as publisher,
+        RabbitMQPublisher(
+            "amqp://guest:guest@localhost/", serializer=msgspec.json.encode
+        ) as publisher,
     ):
         place_order = publisher.bind(
             order_placed_event,
@@ -296,6 +257,5 @@ lifecycle <apidocs/stratae.lifecycle/stratae.lifecycle>
 events <apidocs/stratae.events/stratae.events>
 checks <apidocs/stratae.checks/stratae.checks>
 context <apidocs/stratae.context/stratae.context>
-serde <apidocs/stratae.serde/stratae.serde>
 integrations <apidocs/stratae.integrations/stratae.integrations>
 ```

@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -1874,9 +1874,6 @@ fastapi = [
     { name = "fastapi" },
     { name = "httpx2" },
 ]
-msgspec = [
-    { name = "msgspec" },
-]
 opentelemetry = [
     { name = "opentelemetry-api" },
 ]
@@ -1907,6 +1904,7 @@ docs = [
 ]
 test = [
     { name = "aiosqlite" },
+    { name = "msgspec" },
     { name = "opentelemetry-instrumentation-asgi" },
     { name = "opentelemetry-sdk" },
     { name = "pytest" },
@@ -1923,11 +1921,10 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'fastapi'", specifier = ">=0.115.0" },
     { name = "httpx2", marker = "extra == 'fastapi'", specifier = ">=2.0.0" },
     { name = "httpx2", marker = "extra == 'starlette'", specifier = ">=2.0.0" },
-    { name = "msgspec", marker = "extra == 'msgspec'", specifier = ">=0.21.0" },
     { name = "opentelemetry-api", marker = "extra == 'opentelemetry'", specifier = ">=1.27.0" },
     { name = "starlette", marker = "extra == 'starlette'", specifier = ">=1.2.0" },
 ]
-provides-extras = ["msgspec", "rabbitmq", "fastapi", "starlette", "opentelemetry"]
+provides-extras = ["rabbitmq", "fastapi", "starlette", "opentelemetry"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1947,6 +1944,7 @@ docs = [
 ]
 test = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "msgspec", specifier = ">=0.21.0" },
     { name = "opentelemetry-instrumentation-asgi", specifier = ">=0.48b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.27.0" },
     { name = "pytest", specifier = ">=8.4.1" },
