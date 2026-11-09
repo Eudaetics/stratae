@@ -23,6 +23,14 @@ AsyncDirectBus:
 - A handler's CancelledError is re-raised in a BaseExceptionGroup, not swallowed.
 - A schema-less PubSub event's sync and async handlers are called with no arguments.
 
+AsyncDirectBus (fan-out):
+- Context variables a sync or lone async handler sets reach neither the other handlers nor
+  the emitter, and a lone async handler keeps its own across a suspension.
+- Several async handlers run concurrently, each in its own context.
+- A lone async handler's CancelledError is grouped with a sync handler's failure.
+- Cancelling an emit cancels its lone async handler and raises CancelledError, ungrouped.
+- Closing an emit closes its suspended lone async handler.
+
 AsyncDirectBus (request events):
 - emit awaits and returns an async responder's reply.
 - emit returns a sync responder's reply.
@@ -63,6 +71,7 @@ AsyncDirectBus (with envelope):
 import asyncio
 from collections.abc import Awaitable, Collection, Generator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, Mock
 
@@ -145,6 +154,8 @@ async def _gather_replies[S, R](
 
 
 _quotes = _Gather(_BookQuery, reply=int)
+
+_marker: ContextVar[str] = ContextVar("_marker", default="unset")
 
 
 @pytest.fixture
@@ -555,6 +566,162 @@ async def test_handler_cancelled_error_is_not_swallowed(bus: AsyncDirectBus):
     assert not isinstance(exc_info.value, ExceptionGroup)
     assert {type(exc) for exc in exc_info.value.exceptions} == {asyncio.CancelledError, ValueError}
     assert error in exc_info.value.exceptions
+
+
+async def test_handler_context_changes_stay_with_handler(bus: AsyncDirectBus):
+    """
+    Context variables a handler sets should reach neither the other handlers nor the emitter.
+
+    Given: Two sync handlers and one async handler, each reading a context variable and then
+        setting it, the async one suspending before reading it again
+    When: An event is emitted
+    Then: Every handler first read the unset value, the async handler read its own value
+        after suspending, and the emitter still reads the unset value
+    """
+    # Arrange
+    before: list[str] = []
+    after: list[str] = []
+
+    def sync_handler(task: _TaskCreated) -> None:
+        before.append(_marker.get())
+        _marker.set("sync")
+
+    async def async_handler(task: _TaskCreated) -> None:
+        before.append(_marker.get())
+        _marker.set("async")
+        await asyncio.sleep(0)
+        after.append(_marker.get())
+
+    bus.handle(_task_created, sync_handler)
+    bus.handle(_task_created, sync_handler)
+    bus.handle(_task_created, async_handler)
+
+    # Act
+    await bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert before == ["unset", "unset", "unset"]
+    assert after == ["async"]
+    assert _marker.get() == "unset"
+
+
+async def test_several_async_handlers_run_concurrently_in_own_contexts(bus: AsyncDirectBus):
+    """
+    Several async handlers should run concurrently, each in its own context.
+
+    Given: Two async handlers that each set a context variable, then wait for the other at a
+        barrier
+    When: An event is emitted
+    Then: Both pass the barrier, each first read the unset value, and the emitter still
+        reads the unset value
+    """
+    # Arrange
+    both = asyncio.Barrier(2)
+    before: list[str] = []
+
+    async def handler(task: _TaskCreated) -> None:
+        before.append(_marker.get())
+        _marker.set("handler")
+        await asyncio.wait_for(both.wait(), 1)
+
+    bus.handle(_task_created, handler)
+    bus.handle(_task_created, handler)
+
+    # Act
+    await bus.emit(_task_created, None, _TaskCreated(2))
+
+    # Assert
+    assert before == ["unset", "unset"]
+    assert _marker.get() == "unset"
+
+
+async def test_lone_async_handler_cancelled_error_is_grouped(bus: AsyncDirectBus):
+    """
+    A lone async handler's own CancelledError should be grouped with the other failures.
+
+    Given: A sync handler raising ValueError, and one async handler raising CancelledError
+    When: An event is emitted
+    Then: A BaseExceptionGroup holding both is raised
+    """
+    # Arrange
+    error = ValueError("failed")
+    bus.handle(_task_created, Mock(side_effect=error))
+    bus.handle(_task_created, AsyncMock(side_effect=asyncio.CancelledError()))
+
+    # Act / Assert
+    with pytest.raises(BaseExceptionGroup) as exc_info:
+        await bus.emit(_task_created, None, _TaskCreated(3))
+
+    assert not isinstance(exc_info.value, ExceptionGroup)
+    assert {type(exc) for exc in exc_info.value.exceptions} == {asyncio.CancelledError, ValueError}
+
+
+async def test_cancelling_emit_cancels_lone_async_handler(bus: AsyncDirectBus):
+    """
+    Cancelling an emit should cancel its lone async handler and raise CancelledError.
+
+    Given: One async handler waiting forever
+    When: The task emitting the event is cancelled while the handler waits
+    Then: The handler sees the cancellation, and the emit raises a plain CancelledError
+    """
+    # Arrange
+    started = asyncio.Event()
+    seen: list[str] = []
+
+    async def handler(task: _TaskCreated) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            seen.append("cancelled")
+            raise
+
+    bus.handle(_task_created, handler)
+    emitting = asyncio.create_task(bus.emit(_task_created, None, _TaskCreated(4)))
+    await started.wait()
+
+    # Act
+    emitting.cancel()
+
+    # Assert
+    with pytest.raises(asyncio.CancelledError):
+        await emitting
+    assert seen == ["cancelled"]
+
+
+class _Suspend:
+    """An awaitable that suspends its awaiter once, without an event loop."""
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
+
+
+def test_closing_emit_closes_lone_async_handler(bus: AsyncDirectBus):
+    """
+    Closing an emit should close its suspended lone async handler.
+
+    Given: One async handler waiting forever, which records when it's closed
+    When: The emit is run to the handler's suspension, then closed
+    Then: The handler was closed
+    """
+    # Arrange
+    closed: list[int] = []
+
+    async def handler(task: _TaskCreated) -> None:
+        try:
+            await _Suspend()
+        finally:
+            closed.append(task.task_id)
+
+    bus.handle(_task_created, handler)
+    emit = bus.emit(_task_created, None, _TaskCreated(5))
+
+    # Act
+    emit.send(None)
+    emit.close()
+
+    # Assert
+    assert closed == [5]
 
 
 async def test_signal_pubsub_calls_sync_handler_with_no_arguments(bus: AsyncDirectBus):
