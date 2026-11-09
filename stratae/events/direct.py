@@ -225,6 +225,7 @@ class BaseDirectBus(ABC):
         self._use_envelope = use_envelope
         # Chosen once: with no middleware and no envelope, an emit without hooks can call its
         # dispatcher directly. Handle middleware needs the emit's headers, even if none are set.
+        # Without handle middleware, nothing reads them, so `_run` delivers without them.
         self._plain = not middleware.publish and not middleware.handle and not use_envelope
 
     def _check_event(self, event: _AnyEvent) -> None:
@@ -437,19 +438,11 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
         publish, headers = self._middleware.publish, MessageHeaders()
         with Envelope.scope() if self._use_envelope else nullcontext():
-            return run_emit(
-                hooks,
-                publish,
-                event,
-                None,
-                payload,
-                headers,
-                self._receive,
-                headers,
-                dispatcher,
-                event,
-                payload,
-            )
+            if self._middleware.handle:
+                call, args = self._receive, (headers, dispatcher, event, payload)
+            else:
+                call, args = self._deliver, (dispatcher, event, payload)
+            return run_emit(hooks, publish, event, None, payload, headers, call, *args)
 
     def _receive(
         self,
@@ -602,19 +595,11 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
         publish, headers = self._middleware.publish, MessageHeaders()
         with Envelope.scope() if self._use_envelope else nullcontext():
-            return await run_emit_async(
-                hooks,
-                publish,
-                event,
-                None,
-                payload,
-                headers,
-                self._receive,
-                headers,
-                dispatcher,
-                event,
-                payload,
-            )
+            if self._middleware.handle:
+                call, args = self._receive, (headers, dispatcher, event, payload)
+            else:
+                call, args = self._deliver, (dispatcher, event, payload)
+            return await run_emit_async(hooks, publish, event, None, payload, headers, call, *args)
 
     async def _receive(
         self,
