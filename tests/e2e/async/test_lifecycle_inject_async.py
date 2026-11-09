@@ -9,7 +9,7 @@ import pytest
 
 from stratae.context import Context
 from stratae.depends import Depends, inject
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 
 class _SimulatedException(ValueError):
@@ -51,7 +51,6 @@ async def test_lifecycle_inject_async_gen(async_application_scope: AsyncScope):
 
     @async_application_scope.cache()
     @inject
-    @async_resource
     async def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         await asyncio.sleep(0)
         try:
@@ -93,7 +92,6 @@ async def test_lifecycle_inject_nested_async_gen(
 
     @async_application_scope.cache()
     @inject
-    @async_resource
     async def get_app_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         await asyncio.sleep(0)
         try:
@@ -104,7 +102,6 @@ async def test_lifecycle_inject_nested_async_gen(
 
     @async_request_scope.cache()
     @inject
-    @async_resource
     async def get_request_resource(
         resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())],
     ):
@@ -178,7 +175,6 @@ async def test_lifecycle_inject_async_gen_with_exception(async_application_scope
 
     @async_application_scope.cache()
     @inject
-    @async_resource
     async def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         await asyncio.sleep(0)
         try:
@@ -218,7 +214,6 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(
 
     @async_application_scope.cache()
     @inject
-    @async_resource
     async def get_one(
         db: Annotated[SimpleObject, Depends(SimpleObject)],
     ) -> AsyncGenerator[SimpleObject, None]:
@@ -232,7 +227,6 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(
 
     @async_application_scope.cache()
     @inject
-    @async_resource
     async def get_two(
         db: Annotated[SimpleObject, Depends(SimpleObject)],
     ) -> AsyncGenerator[SimpleObject, None]:

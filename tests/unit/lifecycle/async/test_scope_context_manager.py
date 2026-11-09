@@ -9,7 +9,6 @@ from contextvars import copy_context
 import pytest
 
 from stratae.lifecycle.exceptions import ScopeActivationError
-from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -43,7 +42,6 @@ async def test_async_with_scope_closes_entered_resources():
     events: list[str] = []
 
     @scope.cache()
-    @async_resource
     async def get_value() -> AsyncGenerator[int, None]:
         await asyncio.sleep(0)
         yield 1
@@ -125,7 +123,6 @@ async def test_deactivate_returns_whether_exception_was_suppressed():
     scope = AsyncScope("request")
 
     @scope.cache()
-    @async_resource
     async def get_value() -> AsyncGenerator[int, None]:
         await asyncio.sleep(0)
         with suppress(ValueError):

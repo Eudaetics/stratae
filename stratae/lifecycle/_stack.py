@@ -1,15 +1,13 @@
 """
 Entry and exit of the resources entered in a scope activation.
 
-An activation's slot 0 holds a list of its entered resources: context managers, and
-resource generators driven directly, each paired with whether its exit is awaited.
+An activation's slot 0 holds a list of its entered resources: the generators that cached
+generator functions returned, driven directly, each paired with whether it's async.
 Deactivation empties the activation's storage before closing them, so an entry finishing
 after that sees the emptied storage, exits at once, and raises.
 """
 
 from collections.abc import AsyncGenerator, Generator
-from contextlib import AbstractAsyncContextManager, AbstractContextManager
-from types import AsyncGeneratorType, GeneratorType, TracebackType
 from typing import Any
 
 from stratae.lifecycle._slots import SlotStorage
@@ -70,7 +68,7 @@ def _closed_error() -> EndedDuringEntryError:
     return EndedDuringEntryError()
 
 
-def _exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) -> bool:
+def exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) -> bool:
     """
     Finish a resource generator as `contextlib.contextmanager`'s `__exit__` would.
 
@@ -111,7 +109,7 @@ def _exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) 
         gen.close()
 
 
-async def _exit_async_generator(gen: AsyncGenerator[Any, None], exc: BaseException | None) -> bool:
+async def exit_async_generator(gen: AsyncGenerator[Any, None], exc: BaseException | None) -> bool:
     """
     Finish a resource async generator as `contextlib.asynccontextmanager`'s `__aexit__` would.
 
@@ -150,36 +148,6 @@ async def _exit_async_generator(gen: AsyncGenerator[Any, None], exc: BaseExcepti
         await gen.aclose()
 
 
-def _exc_info(
-    exc: BaseException | None,
-) -> tuple[type[BaseException] | None, BaseException | None, TracebackType | None]:
-    """Return the `__exit__` arguments for `exc`."""
-    if exc is None:
-        return None, None, None
-    return type(exc), exc, exc.__traceback__
-
-
-def _exit_sync(ctx: Any, exc: BaseException | None) -> bool:
-    """Exit a sync resource: a driven generator, or a context manager."""
-    if ctx.__class__ is GeneratorType:
-        return _exit_generator(ctx, exc)
-    return ctx.__exit__(*_exc_info(exc))
-
-
-def enter_context[T](slots: SlotStorage, ctx: AbstractContextManager[T]) -> T:
-    """
-    Enter a sync context manager, registering it in the activation `slots`.
-
-    :raises ScopeInactiveError: If the activation ended during entry; `ctx` is exited at once.
-    """
-    result = ctx.__enter__()
-    if not slots:
-        ctx.__exit__(None, None, None)
-        raise _closed_error()
-    slots[0].append((False, ctx))
-    return result
-
-
 def enter_generator[T](slots: SlotStorage, gen: Generator[T, None, None]) -> T:
     """
     Advance a resource generator to its yielded value, registering it in the activation.
@@ -193,23 +161,9 @@ def enter_generator[T](slots: SlotStorage, gen: Generator[T, None, None]) -> T:
     except StopIteration:
         raise ResourceDidNotYieldError() from None
     if not slots:
-        _exit_generator(gen, None)
+        exit_generator(gen, None)
         raise _closed_error()
     slots[0].append((False, gen))
-    return result
-
-
-async def enter_async_context[T](slots: SlotStorage, ctx: AbstractAsyncContextManager[T]) -> T:
-    """
-    Enter an async context manager, registering it in the activation `slots`.
-
-    :raises ScopeInactiveError: If the activation ended during entry; `ctx` is exited at once.
-    """
-    result = await ctx.__aenter__()
-    if not slots:
-        await ctx.__aexit__(None, None, None)
-        raise _closed_error()
-    slots[0].append((True, ctx))
     return result
 
 
@@ -226,7 +180,7 @@ async def enter_async_generator[T](slots: SlotStorage, gen: AsyncGenerator[T, No
     except StopAsyncIteration:
         raise ResourceDidNotYieldError() from None
     if not slots:
-        await _exit_async_generator(gen, None)
+        await exit_async_generator(gen, None)
         raise _closed_error()
     slots[0].append((True, gen))
     return result
@@ -243,9 +197,9 @@ def close(contexts: Contexts, exc: BaseException | None = None) -> bool:
     received = exc
     pending: list[BaseException] | None = None
     while contexts:
-        ctx = contexts.pop()[1]
+        gen = contexts.pop()[1]
         try:
-            suppressed = _exit_sync(ctx, exc)
+            suppressed = exit_generator(gen, exc)
         except BaseException as new_exc:
             outcome = new_exc
         else:
@@ -267,14 +221,12 @@ async def aclose(contexts: Contexts, exc: BaseException | None = None) -> bool:
     received = exc
     pending: list[BaseException] | None = None
     while contexts:
-        is_async, ctx = contexts.pop()
+        is_async, gen = contexts.pop()
         try:
-            if not is_async:
-                suppressed = _exit_sync(ctx, exc)
-            elif ctx.__class__ is AsyncGeneratorType:
-                suppressed = await _exit_async_generator(ctx, exc)
+            if is_async:
+                suppressed = await exit_async_generator(gen, exc)
             else:
-                suppressed = await ctx.__aexit__(*_exc_info(exc))
+                suppressed = exit_generator(gen, exc)
         except BaseException as new_exc:
             outcome = new_exc
         else:

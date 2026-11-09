@@ -3,7 +3,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -120,7 +119,6 @@ async def test_resource_registered_during_live_activation_is_entered_and_cleaned
 
     def register() -> None:
         @async_context_scope.cache()
-        @async_resource
         async def get_connection():
             await asyncio.sleep(0)
             events.append("open")

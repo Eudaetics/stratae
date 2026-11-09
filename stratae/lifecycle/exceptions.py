@@ -96,6 +96,22 @@ class UncacheableError(LifecycleConfigurationError):
         )
 
 
+class AsyncGeneratorInSyncScopeError(LifecycleConfigurationError, TypeError):
+    """Raised when a sync scope is asked to cache an async generator, which it can't await."""
+
+    def __init__(self, func: Callable[..., Any], scope: str) -> None:
+        """
+        Name the function and the sync scope.
+
+        :param func: The cached function.
+        :param scope: The scope's name.
+        """
+        super().__init__(
+            f"Cannot cache {func!r} in sync scope {scope!r}: it gives an async generator, "
+            "which a sync scope can't enter. Cache it in an AsyncScope."
+        )
+
+
 class CacheKeyConflictError(LifecycleConfigurationError):
     """Raised when a cache decorator is given both `cache_key` and `ignore_params`."""
 

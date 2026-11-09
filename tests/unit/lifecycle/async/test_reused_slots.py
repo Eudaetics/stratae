@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import pytest
 
-from stratae.lifecycle import AsyncScope, async_resource, resource
+from stratae.lifecycle import AsyncScope
 from stratae.lifecycle.scope import IsolationType, StorageType
 
 type Kind = Literal["sync", "async", "sync_resource", "async_resource"]
@@ -37,14 +37,12 @@ def _make_cached(
         return cache(compute_async)
     if kind == "sync_resource":
 
-        @resource
         def compute_sync_resource(key: str):
             calls.append(value)
             yield value
 
         return cache(compute_sync_resource)
 
-    @async_resource
     async def compute_async_resource(key: str):
         await asyncio.sleep(0)
         calls.append(value)

@@ -1,9 +1,9 @@
 """Tests for AsyncScope.cache's `.uncached` escape hatch to call the original function directly."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from unittest.mock import Mock
 
-from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -131,20 +131,18 @@ async def test_uncached_async_function_inside_scope(async_scope: AsyncScope):
 
 async def test_uncached_async_resource_outside_scope(async_scope: AsyncScope):
     """
-    `.uncached` for an `async_resource`-tagged function is the plain, unentered CM.
+    `.uncached` for a cached async generator function is the generator function itself.
 
-    Given: An `async_resource`-tagged generator function cached in a scope,
-    When: `.uncached` is called and entered as an async context manager without the
-          scope being active,
-    Then: The resource is entered and cleaned up for that call alone, exactly like
-          using the undecorated `@async_resource` function directly.
+    Given: An async generator function cached in a scope,
+    When: `.uncached` is wrapped with `asynccontextmanager` and entered without the scope
+          being active,
+    Then: The resource is entered and cleaned up for that call alone.
     """
     # Arrange
     call_counter = Mock()
     cleanup_counter = Mock()
 
     @async_scope.cache()
-    @async_resource
     async def get_object():
         await asyncio.sleep(0)
         call_counter()
@@ -154,7 +152,7 @@ async def test_uncached_async_resource_outside_scope(async_scope: AsyncScope):
             cleanup_counter()
 
     # Act
-    async with get_object.uncached() as obj1:
+    async with asynccontextmanager(get_object.uncached)() as obj1:
         assert obj1.value == 1
         cleanup_counter.assert_not_called()
 
@@ -167,7 +165,7 @@ async def test_uncached_async_resource_inside_scope(async_scope: AsyncScope):
     """
     `.uncached` for an async resource bypasses the scope's cache/exit stack when active.
 
-    Given: An `async_resource`-tagged function cached in an active scope,
+    Given: An async generator function cached in an active scope,
     When: The cached call enters and caches the resource for the scope's lifetime,
           then `.uncached` is entered and exited as its own async context manager,
     Then: `.uncached`'s resource is a distinct instance, cleaned up at its own
@@ -178,7 +176,6 @@ async def test_uncached_async_resource_inside_scope(async_scope: AsyncScope):
     cleanup_counter = Mock()
 
     @async_scope.cache()
-    @async_resource
     async def get_object():
         await asyncio.sleep(0)
         call_counter()
@@ -193,7 +190,7 @@ async def test_uncached_async_resource_inside_scope(async_scope: AsyncScope):
         assert call_counter.call_count == 1
         cleanup_counter.assert_not_called()
 
-        async with get_object.uncached() as uncached:
+        async with asynccontextmanager(get_object.uncached)() as uncached:
             assert uncached is not cached
             assert call_counter.call_count == 2
             cleanup_counter.assert_not_called()

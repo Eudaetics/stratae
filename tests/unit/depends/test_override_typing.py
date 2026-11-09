@@ -27,7 +27,6 @@ import pytest
 from stratae.context import Context
 from stratae.depends import Depends, override
 from stratae.lifecycle import AsyncScope, Scope
-from stratae.lifecycle.resource import async_resource, resource
 
 
 class _Repo:
@@ -57,13 +56,11 @@ _request = AsyncScope("override_typing_request")
 
 
 @_app.cache()
-@resource
 def _get_session() -> Generator[_Session]:
     yield _Session()
 
 
 @_request.cache()
-@async_resource
 async def _get_session_async() -> AsyncGenerator[_Session]:
     await asyncio.sleep(0)
     yield _Session()

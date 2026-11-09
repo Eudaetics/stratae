@@ -29,7 +29,7 @@ from fastapi import APIRouter, FastAPI, WebSocket, WebSocketDisconnect, WebSocke
 from fastapi.testclient import TestClient
 
 from stratae.integrations.fastapi import scoped_websocket
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 pytestmark = pytest.mark.fastapi
 
@@ -54,7 +54,6 @@ def get_session(
     """Provide a connection-scoped resource that records how its connection ended."""
 
     @async_request_scope.cache()
-    @async_resource
     async def get_session():
         await asyncio.sleep(0)
         events.append("open")

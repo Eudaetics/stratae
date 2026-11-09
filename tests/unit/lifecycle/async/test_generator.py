@@ -1,4 +1,4 @@
-"""Test suite for async generator (@async_resource) registration and cleanup."""
+"""Test suite for caching async generator functions: registration and cleanup."""
 
 import asyncio
 import re
@@ -7,7 +7,6 @@ from unittest.mock import Mock
 import pytest
 
 from stratae.lifecycle.exceptions import ScopeInactiveError
-from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -61,7 +60,6 @@ async def test_generator_async(async_scope: AsyncScope):
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def sample_generator():
         await asyncio.sleep(0)
         try:
@@ -95,7 +93,6 @@ async def test_register_generator_inactive_scope_async(async_scope: AsyncScope):
 
     # Arrange
     @async_scope.cache()
-    @async_resource
     async def sample_generator():
         await asyncio.sleep(0)
         yield "test"
@@ -119,7 +116,6 @@ async def test_decorate_generator_async_exception_cleanup(async_scope: AsyncScop
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def sample_generator():
         try:
             yield SimpleObject()
@@ -154,7 +150,6 @@ async def test_decorator_generator_async_exception_handling(async_scope: AsyncSc
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def sample_generator():
         try:
             await asyncio.sleep(0)
@@ -198,7 +193,6 @@ async def test_multiple_generators_async(async_scope: AsyncScope):
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def generator_one():
         try:
             await asyncio.sleep(0)
@@ -207,7 +201,6 @@ async def test_multiple_generators_async(async_scope: AsyncScope):
             mock_cleanup_1()
 
     @async_scope.cache()
-    @async_resource
     async def generator_two():
         try:
             await asyncio.sleep(0)
@@ -216,7 +209,6 @@ async def test_multiple_generators_async(async_scope: AsyncScope):
             mock_cleanup_2()
 
     @async_scope.cache()
-    @async_resource
     async def generator_three():
         try:
             await asyncio.sleep(0)
@@ -253,7 +245,6 @@ async def test_generator_async_exception_group(async_scope: AsyncScope):
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def generator_one():
         try:
             await asyncio.sleep(0)
@@ -262,7 +253,6 @@ async def test_generator_async_exception_group(async_scope: AsyncScope):
             mock_cleanup_1()
 
     @async_scope.cache()
-    @async_resource
     async def generator_two():
         try:
             await asyncio.sleep(0)
@@ -271,7 +261,6 @@ async def test_generator_async_exception_group(async_scope: AsyncScope):
             mock_cleanup_2()
 
     @async_scope.cache()
-    @async_resource
     async def generator_three():
         try:
             await asyncio.sleep(0)
@@ -325,7 +314,6 @@ async def test_generator_sees_exception_raised_in_caller_block_async(async_scope
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def sample_generator():
         try:
             await asyncio.sleep(0)
@@ -366,7 +354,6 @@ async def test_generator_can_suppress_exception_raised_in_caller_block_async(
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def sample_generator():
         try:
             await asyncio.sleep(0)
@@ -402,7 +389,6 @@ async def test_multiple_generators_each_raise_from_callers_exception_async(
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def resource_a():
         try:
             await asyncio.sleep(0)
@@ -411,7 +397,6 @@ async def test_multiple_generators_each_raise_from_callers_exception_async(
             raise _AFailure() from None
 
     @async_scope.cache()
-    @async_resource
     async def resource_b():
         try:
             await asyncio.sleep(0)
@@ -461,7 +446,6 @@ async def test_resource_reraising_callers_exception_groups_it_once(async_scope: 
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def resource_a():
         try:
             await asyncio.sleep(0)
@@ -470,7 +454,6 @@ async def test_resource_reraising_callers_exception_groups_it_once(async_scope: 
             raise caller_failure from None
 
     @async_scope.cache()
-    @async_resource
     async def resource_b():
         try:
             await asyncio.sleep(0)
@@ -520,7 +503,6 @@ async def test_resource_swallowing_exception_hides_it_from_earlier_resources_asy
     class SimpleObject: ...
 
     @async_scope.cache()
-    @async_resource
     async def resource_a():
         try:
             await asyncio.sleep(0)
@@ -531,7 +513,6 @@ async def test_resource_swallowing_exception_hides_it_from_earlier_resources_asy
             raise
 
     @async_scope.cache()
-    @async_resource
     async def resource_b():
         try:
             await asyncio.sleep(0)
@@ -573,7 +554,6 @@ async def test_cleanup_raising_non_exception_still_closes_earlier_resources(
     closed: list[str] = []
 
     @async_scope.cache()
-    @async_resource
     async def first():
         await asyncio.sleep(0)
         try:
@@ -582,7 +562,6 @@ async def test_cleanup_raising_non_exception_still_closes_earlier_resources(
             closed.append("first")
 
     @async_scope.cache()
-    @async_resource
     async def second():
         await asyncio.sleep(0)
         yield "second"
@@ -613,7 +592,6 @@ async def test_non_exception_cleanup_failures_are_grouped_with_exceptions(async_
 
     # Arrange
     @async_scope.cache()
-    @async_resource
     async def first():
         await asyncio.sleep(0)
         try:
@@ -622,7 +600,6 @@ async def test_non_exception_cleanup_failures_are_grouped_with_exceptions(async_
             raise _FirstFailure()
 
     @async_scope.cache()
-    @async_resource
     async def second():
         await asyncio.sleep(0)
         yield "second"

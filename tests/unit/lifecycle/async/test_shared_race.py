@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 
 from stratae.lifecycle.exceptions import CacheCycleError
-from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -96,7 +95,6 @@ async def test_shared_scope_resource_entered_once_under_task_contention(
     task_count = 20
 
     @async_scope.cache()
-    @async_resource
     async def get_resource():
         nonlocal enter_count, cleanup_count
         enter_count += 1

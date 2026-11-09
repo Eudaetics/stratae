@@ -72,9 +72,8 @@ request = Scope("request", isolation="shared", requires=application)
 
 
 # Cache the yielded value and return it for all calls within a request;
-# @resource marks get_session as a contextmanager to be auto-entered
+# the code after the yield runs when the request scope ends
 @request.cache()
-@resource
 def get_session():
     session = Session()
     try:
@@ -302,7 +301,7 @@ from typing import Annotated
 from fastapi import FastAPI
 from stratae.depends import Depends, inject
 from stratae.integrations.fastapi import scoped_route
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 
 request = AsyncScope("request")
@@ -312,7 +311,6 @@ app.router.route_class = scoped_route(request)
 
 
 @request.cache()
-@async_resource
 async def get_session():
     session = AsyncSession()
     try:

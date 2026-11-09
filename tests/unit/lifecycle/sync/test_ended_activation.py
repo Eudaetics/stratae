@@ -8,7 +8,6 @@ import pytest
 
 from stratae.lifecycle._slots import SharedVar
 from stratae.lifecycle.exceptions import ScopeActivationError, ScopeInactiveError
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope, StorageType
 
 
@@ -97,7 +96,6 @@ def test_resource_entered_after_activation_ends_is_exited_at_once(context_scope:
     errors: list[ScopeInactiveError] = []
 
     @context_scope.cache()
-    @resource
     def get_connection():
         entering.set()
         finish_entering.wait(timeout=2)

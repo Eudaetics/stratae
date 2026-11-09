@@ -7,7 +7,7 @@ import pytest
 
 from stratae.context import Context
 from stratae.depends import Depends, inject
-from stratae.lifecycle import Scope, resource
+from stratae.lifecycle import Scope
 
 
 class _SimulatedException(ValueError):
@@ -106,7 +106,6 @@ def test_lifecycle_inject_sync_generator(application_scope: Scope):
 
     @application_scope.cache()
     @inject
-    @resource
     def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
@@ -140,7 +139,6 @@ def test_lifecycle_inject_nested_sync_generator(application_scope: Scope, reques
 
     @application_scope.cache()
     @inject
-    @resource
     def get_app_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield resource
@@ -149,7 +147,6 @@ def test_lifecycle_inject_nested_sync_generator(application_scope: Scope, reques
 
     @request_scope.cache()
     @inject
-    @resource
     def get_request_resource(resource: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield resource
@@ -191,7 +188,6 @@ def test_lifecycle_inject_sync_with_exception(application_scope: Scope):
 
     @application_scope.cache()
     @inject
-    @resource
     def get_resource(_: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         yield
         raise _SimulatedException()
@@ -219,7 +215,6 @@ def test_lifecycle_inject_sync_gen_with_exception(application_scope: Scope):
 
     @application_scope.cache()
     @inject
-    @resource
     def get_resource(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
@@ -260,7 +255,6 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(application_scope: S
 
     @application_scope.cache()
     @inject
-    @resource
     def get_one(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db
@@ -274,7 +268,6 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(application_scope: S
 
     @application_scope.cache()
     @inject
-    @resource
     def get_two(db: Annotated[SimpleObject, Depends(lambda: SimpleObject())]):
         try:
             yield db

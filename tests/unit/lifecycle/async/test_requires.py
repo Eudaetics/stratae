@@ -8,7 +8,6 @@ import pytest
 
 from stratae.lifecycle._slots import SharedVar, SlotStorage
 from stratae.lifecycle.exceptions import ScopeActivationError
-from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -201,7 +200,6 @@ async def test_deactivate_child_with_resource_cleans_up_exit_stack(storage: str)
     mock = Mock()
 
     @child.cache()
-    @async_resource
     async def get_resource():
         await asyncio.sleep(0)
         try:

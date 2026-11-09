@@ -7,7 +7,6 @@ from typing import NoReturn
 import pytest
 
 from stratae.lifecycle.exceptions import ScopeActivationError
-from stratae.lifecycle.resource import async_resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -205,7 +204,6 @@ async def test_exception_raised_while_handling_another_propagates_unchanged_thro
     seen: list[BaseException] = []
 
     @scope.cache()
-    @async_resource
     async def get_connection():
         await asyncio.sleep(0)
         try:

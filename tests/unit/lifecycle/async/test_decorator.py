@@ -3,7 +3,6 @@
 import asyncio
 from unittest.mock import Mock
 
-from stratae.lifecycle.resource import async_resource, resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -38,7 +37,7 @@ async def test_decorator_on_sync(async_scope: AsyncScope):
 
 async def test_decorator_on_sync_generator(async_scope: AsyncScope):
     """
-    Test caching a sync generator (@resource) using the decorator syntax.
+    Test caching a sync generator function using the decorator syntax.
 
     Given: An AsyncScope and a sync generator function,
     When: The generator function is cached in that scope,
@@ -48,7 +47,6 @@ async def test_decorator_on_sync_generator(async_scope: AsyncScope):
     mock_cleanup = Mock()
 
     @async_scope.cache()
-    @resource
     def sample_generator():
         try:
             yield "test"
@@ -95,7 +93,7 @@ async def test_decorator_on_async(async_scope: AsyncScope):
 
 async def test_decorator_on_async_generator(async_scope: AsyncScope):
     """
-    Test caching an async generator (@async_resource) using the decorator syntax.
+    Test caching an async generator function using the decorator syntax.
 
     Given: An AsyncScope and an async generator function,
     When: The generator function is cached in that scope,
@@ -105,7 +103,6 @@ async def test_decorator_on_async_generator(async_scope: AsyncScope):
     mock_cleanup = Mock()
 
     @async_scope.cache()
-    @async_resource
     async def sample_generator():
         await asyncio.sleep(0)
         try:

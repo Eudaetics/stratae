@@ -27,7 +27,7 @@ from sqlalchemy.pool import StaticPool
 
 from stratae.context import Context
 from stratae.depends import Depends, inject
-from stratae.lifecycle import AsyncScope, async_resource
+from stratae.lifecycle import AsyncScope
 
 class Base(DeclarativeBase):
     pass
@@ -43,7 +43,6 @@ work = AsyncScope("work", requires=application)
 current_user = Context[str]("current_user", default="system")
 
 @application.cache()
-@async_resource
 async def get_engine() -> AsyncIterator[AsyncEngine]:
     # In-memory SQLite for the example; a real service passes its database URL.
     engine = create_async_engine("sqlite+aiosqlite://", poolclass=StaticPool)
@@ -65,7 +64,6 @@ async def begin_transaction(session: AsyncSession) -> None:
     print(f"transaction for {current_user()}")
 
 @work.cache()
-@async_resource
 async def get_session() -> AsyncIterator[AsyncSession]:
     async with (await get_sessionmaker())() as session:
         await begin_transaction(session)

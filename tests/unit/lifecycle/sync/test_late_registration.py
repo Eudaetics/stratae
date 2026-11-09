@@ -5,7 +5,6 @@ from collections.abc import Callable
 
 import pytest
 
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope, StorageType
 
 
@@ -60,7 +59,6 @@ def test_resource_registered_outside_live_activation_is_entered_and_cleaned_up()
 
     def register() -> None:
         @scope.cache()
-        @resource
         def get_connection():
             events.append("open")
             try:

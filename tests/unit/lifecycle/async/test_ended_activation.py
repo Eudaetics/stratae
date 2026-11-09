@@ -6,7 +6,6 @@ import threading
 import pytest
 
 from stratae.lifecycle.exceptions import CacheCycleError, ScopeInactiveError
-from stratae.lifecycle.resource import async_resource, resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -60,7 +59,6 @@ async def test_resource_entered_after_activation_ends_is_exited_at_once(
     events: list[str] = []
 
     @async_context_scope.cache()
-    @async_resource
     async def get_connection():
         entering.set()
         await finish_entering.wait()
@@ -101,7 +99,6 @@ async def test_sync_resource_entered_after_activation_ends_is_exited_at_once(
     events: list[str] = []
 
     @async_context_scope.cache()
-    @resource
     def get_connection():
         entering.set()
         finish_entering.wait(timeout=2)

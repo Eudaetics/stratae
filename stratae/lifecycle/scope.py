@@ -5,8 +5,9 @@ Scope activation and per-scope function-result caching.
 Activate one with `with scope:` (`async with` for {py:class}`AsyncScope`), or with
 {py:meth}`Scope.activate` and {py:meth}`Scope.deactivate` when the two happen in different
 callbacks. `@scope.cache()` caches a function's result for the active activation. A
-{py:func}`resource <stratae.lifecycle.resource.resource>`-tagged function is entered when
-cached, and its yielded value is cached in its place.
+generator function is a resource. Its generator is entered when cached, and its yielded
+value is cached in its place. A decorator over a generator function is seen through when it
+records what it wraps, as `functools.wraps` does.
 
 `isolation="shared"` uses one cache across all threads and tasks, for application-wide
 state. `isolation="context"` (the default) gives each execution context its own cache, for
@@ -543,9 +544,8 @@ class Scope(BaseScope):
         """
         Create a decorator that caches a function's result within this scope.
 
-        Like `functools.lru_cache`, results are keyed by arguments. A
-        {py:func}`resource <stratae.lifecycle.resource.resource>`-tagged function is entered,
-        its yielded value cached, and exited when the activation ends.
+        Like `functools.lru_cache`, results are keyed by arguments. A generator function's
+        generator is entered, its yielded value cached, and closed when the activation ends.
 
         ```{tip}
         Pass `ignore_params=True` when the result doesn't vary by argument within an
@@ -641,10 +641,8 @@ class AsyncScope(BaseScope):
         """
         Create a decorator that caches a function's result within this scope.
 
-        Accepts sync and async functions. A
-        {py:func}`resource <stratae.lifecycle.resource.resource>` or
-        {py:func}`async_resource <stratae.lifecycle.resource.async_resource>`-tagged function
-        is entered, its yielded value cached, and exited when the activation ends.
+        Accepts sync and async functions. A generator function's generator, sync or async,
+        is entered, its yielded value cached, and closed when the activation ends.
 
         :param cache_key: Derives a hashable key from the arguments. Defaults to the
             arguments themselves.

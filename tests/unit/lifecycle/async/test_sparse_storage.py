@@ -7,7 +7,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle.resource import async_resource, resource
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -50,7 +49,6 @@ def callable_factory(
         return SimpleObject(x)
 
     @scope.cache(ignore_params=ignore_params)
-    @async_resource
     async def get_object_cm_async(x: int = 0):
         call_counter()
         await asyncio.sleep(0)
@@ -64,7 +62,6 @@ def callable_factory(
         return SimpleObject(x)
 
     @scope.cache(ignore_params=ignore_params)
-    @resource
     def get_object_cm_sync(x: int = 0):
         call_counter()
         yield SimpleObject(x)
@@ -227,7 +224,6 @@ async def test_async_sparse_storage_exit_stack_cleaned_up(
     mock = Mock()
 
     @scope.cache()
-    @async_resource
     async def test_resource():
         await asyncio.sleep(0)
         try:

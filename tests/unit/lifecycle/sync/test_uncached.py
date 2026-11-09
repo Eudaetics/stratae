@@ -1,8 +1,8 @@
 """Test suite for Scope.cache's `.uncached` escape hatch to call the original function directly."""
 
+from contextlib import contextmanager
 from unittest.mock import Mock
 
-from stratae.lifecycle.resource import resource
 from stratae.lifecycle.scope import Scope
 
 
@@ -124,20 +124,18 @@ def test_uncached_plain_function_inside_scope(scope: Scope):
 
 def test_uncached_resource_outside_scope(scope: Scope):
     """
-    `.uncached` for a `resource`-tagged function is the plain, unentered context manager.
+    `.uncached` for a cached generator function is the generator function itself.
 
-    Given: A `resource`-tagged generator function cached in a scope,
-    When: `.uncached` is called and entered as a context manager without the scope
+    Given: A generator function cached in a scope,
+    When: `.uncached` is wrapped with `contextmanager` and entered without the scope
           being active,
-    Then: The resource is entered and cleaned up for that call alone, exactly like
-          using the undecorated `@resource` function directly.
+    Then: The resource is entered and cleaned up for that call alone.
     """
     # Arrange
     call_counter = Mock()
     cleanup_counter = Mock()
 
     @scope.cache()
-    @resource
     def get_object():
         call_counter()
         try:
@@ -146,7 +144,7 @@ def test_uncached_resource_outside_scope(scope: Scope):
             cleanup_counter()
 
     # Act
-    with get_object.uncached() as obj1:
+    with contextmanager(get_object.uncached)() as obj1:
         assert obj1.value == 1
         cleanup_counter.assert_not_called()
 
@@ -159,7 +157,7 @@ def test_uncached_resource_inside_scope(scope: Scope):
     """
     `.uncached` for a resource bypasses the scope's cache and exit stack even when active.
 
-    Given: A `resource`-tagged function cached in an active scope,
+    Given: A generator function cached in an active scope,
     When: The cached call enters and caches the resource for the scope's lifetime,
           then `.uncached` is entered and exited as its own context manager,
     Then: `.uncached`'s resource is a distinct instance, cleaned up at its own `with`
@@ -170,7 +168,6 @@ def test_uncached_resource_inside_scope(scope: Scope):
     cleanup_counter = Mock()
 
     @scope.cache()
-    @resource
     def get_object():
         call_counter()
         try:
@@ -184,7 +181,7 @@ def test_uncached_resource_inside_scope(scope: Scope):
         assert call_counter.call_count == 1
         cleanup_counter.assert_not_called()
 
-        with get_object.uncached() as uncached:
+        with contextmanager(get_object.uncached)() as uncached:
             assert uncached is not cached
             assert call_counter.call_count == 2
             cleanup_counter.assert_not_called()

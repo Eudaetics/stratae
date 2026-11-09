@@ -32,12 +32,11 @@ First, set up a connection that commits when the job succeeds and rolls back aut
 ````{example} Committing on success, rolling back on error
 ```{code-block} python
 import sqlite3
-from stratae.lifecycle import Scope, resource
+from stratae.lifecycle import Scope
 
 job = Scope("job")
 
 @job.cache()
-@resource
 def get_connection():
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
@@ -57,7 +56,7 @@ def get_connection():
 
 `@job.cache()` ties `get_connection` to that scope. Call it once inside a `job` activation and it runs. Call it again inside the same activation and it returns the same connection instead of opening a new one.
 
-`resource` serves two purposes. It's an alias for creating a `contextmanager` and noting it should be entered automatically. Wrapped this way, the function returns the actual cached value instead of a generator. Cleanup doesn't have to be called by hand. If the scope ends cleanly, that's a commit. If something raised instead, that's a rollback. Either way, the connection closes.
+`get_connection` is a generator function, so the scope treats it as a resource. It runs the function up to its `yield`, and caches the value yielded, so callers get the connection, not a generator. The code after the `yield` runs when the scope ends. Cleanup doesn't have to be called by hand. If the scope ends cleanly, that's a commit. If something raised instead, that's a rollback. Either way, the connection closes.
 
 ````{example} A failing job rolls back instead of committing
 ```{code-block} python

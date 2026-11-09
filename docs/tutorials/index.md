@@ -47,12 +47,11 @@ print(total_with_tax(100.0))
 
 ````{example} Caching and cleaning up a batch within a scope
 ```{code-block} python
-from stratae.lifecycle import Scope, resource
+from stratae.lifecycle import Scope
 
 batch = Scope("batch")
 
 @batch.cache()
-@resource
 def get_batch():
     print("opening batch")
     items: list[str] = []
