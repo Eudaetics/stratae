@@ -64,35 +64,19 @@ class SharedRequiresContextError(LifecycleConfigurationError):
         )
 
 
-class AlreadyCachedError(LifecycleConfigurationError):
-    """Raised when caching a function that's already cached in another scope."""
-
-    def __init__(self, func: Callable[..., Any], cached_in: str, scope: str) -> None:
-        """
-        Name the function and both scopes.
-
-        :param func: The function.
-        :param cached_in: The scope it's cached in.
-        :param scope: The scope it was being cached in too.
-        """
-        super().__init__(
-            f"{func!r} is already cached in scope {cached_in!r}; cannot also cache it in {scope!r}."
-        )
-
-
-class UncacheableError(LifecycleConfigurationError):
-    """Raised when caching an object that can't hold attributes, such as a bound method."""
+class UnreadableSignatureError(LifecycleConfigurationError):
+    """Raised when caching a callable whose signature can't be read, such as `dict`."""
 
     def __init__(self, func: Callable[..., Any], scope: str) -> None:
         """
-        Name the object and the scope.
+        Name the callable and the scope.
 
-        :param func: The object.
+        :param func: The callable.
         :param scope: The scope it was being cached in.
         """
         super().__init__(
-            f"Cannot cache {func!r} in scope {scope!r}: builtins, bound methods, and other "
-            "objects that can't hold attributes can't be cached. Wrap it in a function instead."
+            f"Cannot cache {func!r} in scope {scope!r}: its signature can't be read, so a "
+            "wrapper matching it can't be built. Wrap it in a function instead."
         )
 
 

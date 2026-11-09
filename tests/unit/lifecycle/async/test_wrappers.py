@@ -8,7 +8,6 @@ from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle.exceptions import LifecycleConfigurationError
 from stratae.lifecycle.scope import AsyncScope
 
 
@@ -528,28 +527,66 @@ async def test_cache_sync_in_async_scope(async_scope: AsyncScope):
     assert calls.call_count == 1
 
 
-def test_cache_same_function_in_two_scopes_raises():
+async def test_same_function_in_two_scopes_has_independent_caches():
     """
-    A function can only ever be cached in one scope.
+    An async function cached in two scopes should get a separate cache in each.
 
-    Given: A function already cached in one AsyncScope,
-    When: An attempt is made to cache it again in a different AsyncScope,
-    Then: A LifecycleConfigurationError is raised, and the function stays claimed by the
-          first scope.
+    Given: One async function cached in two AsyncScopes,
+    When: Both are awaited while both scopes are active,
+    Then: Each scope caches its own value.
     """
     # Arrange
-    scope_a = AsyncScope("a", "shared")
-    scope_b = AsyncScope("b", "shared")
+    scope_a, scope_b = AsyncScope("a"), AsyncScope("b")
 
-    async def get_value():
+    async def get_value() -> object:
         await asyncio.sleep(0)
         return object()
 
-    scope_a.cache()(get_value)
+    in_a, in_b = scope_a.cache()(get_value), scope_b.cache()(get_value)
 
-    # Act & Assert
-    with pytest.raises(
-        LifecycleConfigurationError,
-        match="already cached in scope 'a'; cannot also cache it in 'b'",
-    ):
-        scope_b.cache()(get_value)
+    # Act
+    async with scope_a, scope_b:
+        first_a, first_b = await in_a(), await in_b()
+        again_a, again_b = await in_a(), await in_b()
+
+    # Assert
+    assert (again_a, again_b) == (first_a, first_b)
+    assert first_a is not first_b
+
+
+class _AsyncRepo:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get(self, key: int) -> list[int]:
+        await asyncio.sleep(0)
+        self.calls += 1
+        return [key]
+
+
+async def test_cached_async_bound_method_runs_once_per_activation():
+    """
+    A cached async bound method should run once per activation for the same arguments.
+
+    Given: An async bound method cached in an AsyncScope,
+    When: It's awaited twice in one activation, then twice in a second activation,
+    Then: The method runs once in the first activation, and once more in the second,
+        returning the same object within each.
+    """
+    # Arrange
+    repo = _AsyncRepo()
+    scope = AsyncScope("request")
+    cached = scope.cache()(repo.get)
+
+    # Act
+    async with scope:
+        first = await cached(1)  # runs repo.get
+        assert await cached(1) is first  # cache hit
+    calls_after_first = repo.calls
+    async with scope:
+        second = await cached(1)  # new activation, empty cache: runs repo.get again
+        assert await cached(1) is second  # cache hit
+
+    # Assert
+    assert calls_after_first == 1
+    assert repo.calls == 2
