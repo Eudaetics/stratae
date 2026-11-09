@@ -1,25 +1,31 @@
 from collections.abc import Callable, Hashable
 from contextvars import ContextVar
-from threading import Lock
+from threading import RLock
 from typing import Any, ClassVar, Self
 from weakref import WeakValueDictionary
 
 from stratae._callables import is_async_callable
-from stratae.depends.exceptions import DependencyNotFoundError, UnhashableDependencyError
+from stratae.depends.exceptions import UnhashableDependencyError
 
 _UNSET = object()
 
 
 class Provider:
-    """A registered dependency provider and its override state."""
+    """
+    A registered dependency provider and its override state.
+
+    `provide` is the dependency itself until an override is entered. It's the override path
+    while any context can still see an override value, and the dependency again once none
+    can.
+    """
 
     __slots__ = {
         "__weakref__",
         "dependency",
         "is_async",
+        "live",
         "lock",
         "override",
-        "override_count",
         "provide",
         "resolved",
     }
@@ -29,8 +35,8 @@ class Provider:
     provide: Callable[[], Any]
     is_async: bool
     override: ContextVar[Any]
-    override_count: int
-    lock: Lock
+    live: int
+    lock: RLock
     resolved: bool
 
     def __new__(cls, dependency: Callable[..., Any]) -> Self:
@@ -50,30 +56,43 @@ class Provider:
         instance.provide = dependency
         instance.is_async = is_async_callable(dependency)
         instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
-        instance.override_count = 0
-        instance.lock = Lock()
+        instance.live = 0
+        instance.lock = RLock()
         instance.resolved = False
         cls._registry[dependency] = instance
         return instance
 
-    def provide_override(self):
-        """Return override if set, otherwise evaluate the dependency."""
-        ctx = self.override.get()
-        if ctx is _UNSET:
+    def provide_held(self):
+        """Return the override's value if set, otherwise evaluate the dependency."""
+        held = self.override.get()
+        if held is _UNSET:
             return self.dependency()
-        return ctx
+        return held.value
+
+    def provide_held_async(self):
+        """Return an awaitable of the override's value if set, otherwise the dependency's."""
+        held = self.override.get()
+        if held is _UNSET:
+            return self.dependency()
+        return held
+
+    def hold(self) -> None:
+        """Count a new override value; the first moves `provide` onto the override path."""
+        with self.lock:
+            self.live += 1
+            if self.live == 1:
+                self.provide = self.provide_held_async if self.is_async else self.provide_held
+
+    def release(self) -> None:
+        """Count an override value no context can see; the last moves `provide` back."""
+        with self.lock:
+            self.live -= 1
+            if self.live == 0:
+                self.provide = self.dependency
 
     def update(self, dependency: Callable[..., Any]):
         """Replace the dependency and its provide function."""
         with self.lock:
             self.dependency = dependency
-            if self.override_count == 0:
+            if self.live == 0:
                 self.provide = self.dependency
-
-    @classmethod
-    def find(cls, func: Callable[..., Any]):
-        """Find the Provider registered for a dependency."""
-        try:
-            return cls._registry[func]
-        except KeyError:
-            raise DependencyNotFoundError(func) from None

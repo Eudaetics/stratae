@@ -2,10 +2,8 @@
 
 from unittest.mock import AsyncMock, Mock
 
-import pytest
-
+from stratae.depends import override
 from stratae.depends._provide import Provider
-from stratae.depends.exceptions import DependencyNotFoundError
 
 
 def test_depends_wrapper_initialization():
@@ -235,7 +233,7 @@ def test_update_dependency_during_override():
     updated_dependency = Mock()
 
     depends = Provider(original_dependency)
-    depends.override_count = 1
+    depends.live = 1
 
     # Act
     depends.update(updated_dependency)
@@ -267,69 +265,12 @@ def test_returns_same_instance_after_update():
     assert same is depends
 
 
-def test_find_with_dependency():
+def test_provide_held_unset():
     """
-    Find returns the wrapper for a registered dependency.
-
-    Given: a dependency wrapped via Provider,
-    When: find is called with that dependency,
-    Then: it should return the associated Provider instance.
-    """
-    # Arrange
-    sample_dependency = Mock()
-    depends = Provider(sample_dependency)
-
-    # Act
-    found = Provider.find(sample_dependency)
-
-    # Assert
-    assert found is depends
-
-
-def test_find_invalid_dependency():
-    """
-    Find raises for an unregistered dependency.
-
-    Given: a function that has never been wrapped via Provider,
-    When: find is called with that function,
-    Then: it should raise DependencyNotFoundError.
-    """
-    # Arrange
-    unregistered_dependency = Mock()
-
-    # Act & Assert
-    with pytest.raises(DependencyNotFoundError):
-        Provider.find(unregistered_dependency)
-
-
-def test_find_after_update():
-    """
-    Find still resolves the wrapper after an update.
-
-    Given: a Provider that has been updated to a new dependency,
-    When: find is called with the original dependency,
-    Then: it should return the same Provider instance.
-    """
-    # Arrange
-    original_dependency = Mock()
-    updated_dependency = Mock()
-
-    depends = Provider(original_dependency)
-
-    # Act
-    depends.update(updated_dependency)
-    found = Provider.find(original_dependency)
-
-    # Assert
-    assert found is depends
-
-
-def test_provide_override_unset():
-    """
-    provide_override falls back to the dependency when unset.
+    provide_held falls back to the dependency when unset.
 
     Given: a Provider instance with no override set,
-    When: provide_override is called,
+    When: provide_held is called,
     Then: it should return the result of calling the dependency.
     """
     # Arrange
@@ -337,41 +278,38 @@ def test_provide_override_unset():
     depends = Provider(sample_dependency)
 
     # Act
-    result = depends.provide_override()
+    result = depends.provide_held()
 
     # Assert
     assert result == "sample"
 
 
-def test_provide_override_set():
+def test_provide_held_set():
     """
-    provide_override returns the override value when set.
+    provide_held returns the override value when set.
 
     Given: a Provider instance with an override value set,
-    When: provide_override is called,
+    When: provide_held is called,
     Then: it should return the override value instead of calling the dependency.
     """
     # Arrange
     sample_dependency = Mock()
     depends = Provider(sample_dependency)
-    token = depends.override.set("overridden")
-
-    try:
+    with override(sample_dependency).to("overridden"):
         # Act
-        result = depends.provide_override()
+        result = depends.provide_held()
 
-        # Assert
-        assert result == "overridden"
-    finally:
-        depends.override.reset(token)
+    # Assert
+    assert result == "overridden"
+    sample_dependency.assert_not_called()
 
 
-def test_provide_override_nested():
+def test_provide_held_nested():
     """
-    provide_override resolves and restores correctly across nested overrides.
+    provide_held resolves and restores correctly across nested overrides.
 
     Given: a Provider instance with an override set inside another override,
-    When: provide_override is called at each nesting level,
+    When: provide_held is called at each nesting level,
     Then: it should return the innermost value while nested, and fall back to
     the outer value and then the dependency as each override is reset.
     """
@@ -380,14 +318,12 @@ def test_provide_override_nested():
     depends = Provider(sample_dependency)
 
     # Act & Assert
-    outer_token = depends.override.set("outer")
-    assert depends.provide_override() == "outer"
+    with override(sample_dependency).to("outer"):
+        assert depends.provide_held() == "outer"
 
-    inner_token = depends.override.set("inner")
-    assert depends.provide_override() == "inner"
+        with override(sample_dependency).to("inner"):
+            assert depends.provide_held() == "inner"
 
-    depends.override.reset(inner_token)
-    assert depends.provide_override() == "outer"
+        assert depends.provide_held() == "outer"
 
-    depends.override.reset(outer_token)
-    assert depends.provide_override() == "sample"
+    assert depends.provide_held() == "sample"

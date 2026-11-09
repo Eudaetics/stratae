@@ -4,9 +4,10 @@ Context managers for temporarily replacing injected dependency values.
 {py:func}`override` names a provider, and `.to(value)` gives the value to inject in its place.
 The value's type is checked against what the provider returns, or resolves to if it's async.
 Entering the override replaces the provider, and exiting restores it. Overrides are
-context-local, so concurrent tasks don't interfere. To replace several providers, enter
-several overrides in one `with` statement. If one fails to enter, those already entered are
-restored.
+context-local, so concurrent tasks don't interfere. A task or thread started inside the
+block copies its context. It keeps the override for as long as it runs, even after the block
+exits. To replace several providers, enter several overrides in one `with` statement. If one
+fails to enter, those already entered are restored.
 
 ````{example} Swapping dependencies for test doubles
 ```{code-block} python
@@ -62,12 +63,20 @@ from=notifications@example.com to=jane@example.com subject='Welcome!'
 from collections.abc import Awaitable, Callable
 from contextvars import Token
 from typing import Any, overload
+from weakref import finalize
 
 from stratae.depends._provide import Provider
 
 
-class _ReusableAwaitable:
-    __slots__ = ("value",)
+class _Held:
+    """
+    An override value as its provider's ContextVar holds it, and awaitable for an async one.
+
+    It lives as long as some context can see it, including contexts copied by tasks started
+    inside the override. Its finalizer tells the provider when to leave the override path.
+    """
+
+    __slots__ = ("__weakref__", "value")
 
     def __init__(self, value: Any) -> None:
         self.value = value
@@ -89,24 +98,15 @@ class _Override[T]:
         self.tokens: list[Token[Any]] = []
 
     def __enter__(self) -> None:
-        with self.dep.lock:
-            if self.dep.override_count == 0:
-                self.dep.provide = self.dep.provide_override
-            self.dep.override_count += 1
-            self.tokens.append(
-                self.dep.override.set(
-                    _ReusableAwaitable(self.value) if self.dep.is_async else self.value
-                )
-            )
+        held = _Held(self.value)
+        self.dep.hold()
+        finalize(held, self.dep.release)
+        self.tokens.append(self.dep.override.set(held))
 
     def __exit__(self, *_: object) -> None:
-        with self.dep.lock:
-            try:
-                self.dep.override.reset(self.tokens.pop())
-            finally:
-                self.dep.override_count -= 1
-                if self.dep.override_count == 0:
-                    self.dep.provide = self.dep.dependency
+        # Popped only once reset succeeds, so an exit from the wrong context can be retried.
+        self.dep.override.reset(self.tokens[-1])
+        self.tokens.pop()
 
 
 class _Target[T]:
@@ -138,6 +138,5 @@ def override(func: Callable[..., Any]) -> _Target[Any]:
 
     :param func: A provider passed to {py:func}`Depends <stratae.depends.injection.Depends>`.
     :returns: An object whose `to` method takes the replacement value.
-    :raises DependencyNotFoundError: If `func` was never passed to `Depends`.
     """
-    return _Target(Provider.find(func))
+    return _Target(Provider(func))

@@ -42,7 +42,7 @@ def test_dropped_injection_graph_is_collected():
         return (
             weakref.ref(local_func),
             weakref.ref(local_dep),
-            weakref.ref(Provider.find(local_dep)),
+            weakref.ref(Provider(local_dep)),
         )
 
     wrapper_ref, dep_ref, depends_ref = build()
@@ -84,12 +84,12 @@ def test_live_consumer_keeps_dependency_registered():
     def local_func(dep: Annotated[int, Depends(local_dep)]) -> int:
         return dep
 
-    depends_ref = weakref.ref(Provider.find(local_dep))
+    depends_ref = weakref.ref(Provider(local_dep))
 
     # Act
     gc.collect()
 
     # Assert
     assert depends_ref() is not None
-    assert Provider.find(local_dep) is depends_ref()
+    assert Provider(local_dep) is depends_ref()
     assert local_func() == 2

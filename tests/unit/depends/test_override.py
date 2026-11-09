@@ -1,14 +1,16 @@
 """Test suite for the override tool in the dependency injection module."""
 
+import asyncio
 import contextvars
+import gc
 import threading
+from typing import Annotated
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from stratae.depends import override
+from stratae.depends import Depends, inject, override
 from stratae.depends._provide import Provider
-from stratae.depends.exceptions import DependencyNotFoundError
 
 
 def test_override_returns_value_while_active():
@@ -103,25 +105,25 @@ def test_override_does_not_call_dependency_while_active():
     dep.assert_not_called()
 
 
-def test_override_tracks_active_count():
+def test_override_returns_provide_to_the_dependency_after_exit():
     """
-    override_count should reflect the number of active overrides.
+    Once no context can see an override, provide should be the dependency itself again.
 
     Given: a Provider for a dependency,
     When: an override is entered and then exited,
-    Then: override_count should increment on entry and decrement back on exit.
+    Then: provide is the dependency before, not while overridden, and the dependency after.
     """
     # Arrange
     dep = Mock(return_value="real")
     depends = Provider(dep)
 
     # Act & Assert
-    assert depends.override_count == 0
+    assert depends.provide is dep
 
     with override(dep).to("overridden"):
-        assert depends.override_count == 1
+        assert depends.provide is not dep
 
-    assert depends.override_count == 0
+    assert depends.provide is dep
 
 
 def test_nested_override_same_dependency():
@@ -204,23 +206,172 @@ def test_several_overrides_unwind_entered_on_partial_failure():
 
     # Assert
     assert wrapper_a.provide() == "real-a"
-    assert wrapper_a.override_count == 0
+    assert wrapper_a.provide is dep_a
 
 
-def test_override_raises_for_unregistered_dependency():
+def test_override_applies_before_depends_is_evaluated():
     """
-    Override should raise for a dependency that was never wrapped.
+    An override entered before any Depends() for its provider should still apply.
 
-    Given: a dependency that has never been wrapped via Provider,
-    When: override is called with that dependency,
-    Then: it should raise DependencyNotFoundError.
+    Given: a provider no annotation has used yet,
+    When: it is overridden, and a function injecting it is defined inside the override,
+    Then: the function gets the override value inside, and the real value after.
     """
+
     # Arrange
-    dep = Mock()
+    def get_key() -> str:
+        return "real"
 
     # Act & Assert
-    with pytest.raises(DependencyNotFoundError):
-        override(dep)
+    with override(get_key).to("early"):
+
+        @inject
+        def use(key: Annotated[str, Depends(get_key)]) -> str:
+            return key
+
+        assert use() == "early"
+
+    assert use() == "real"
+
+
+async def test_override_holds_in_a_task_that_outlives_it():
+    """
+    A task created inside an override should keep it after the block exits.
+
+    Given: a Provider for a dependency,
+    When: a task is created inside an override, and reads the dependency after the block exits,
+    Then: the task gets the override value, and code outside the block gets the real one.
+    """
+    # Arrange
+    dep = Mock(return_value="real")
+    depends = Provider(dep)
+    block_exited = asyncio.Event()
+
+    async def read_later() -> str:
+        await block_exited.wait()
+        return depends.provide()
+
+    # Act
+    with override(dep).to("task"):
+        task = asyncio.create_task(read_later())
+    outside = depends.provide()
+    block_exited.set()
+
+    # Assert
+    assert await task == "task"
+    assert outside == "real"
+
+
+async def test_async_override_held_by_a_task_falls_back_outside_it():
+    """
+    While a task holds an async provider's override, code outside it should get the real value.
+
+    Given: an async provider, and a task created inside its override that's still running,
+    When: code outside the block awaits the provider, and then the task does,
+    Then: the outside code gets the real value, and the task gets the override value.
+    """
+    # Arrange
+    dep = AsyncMock(return_value="real")
+    depends = Provider(dep)
+    block_exited = asyncio.Event()
+
+    async def read_later() -> str:
+        await block_exited.wait()
+        return await depends.provide()
+
+    with override(dep).to("task"):
+        task = asyncio.create_task(read_later())
+
+    # Act
+    outside = await depends.provide()
+    block_exited.set()
+
+    # Assert
+    assert outside == "real"
+    assert await task == "task"
+
+
+async def test_override_holds_in_a_task_group_child():
+    """
+    A TaskGroup child created inside an override should keep it after the block exits.
+
+    Given: a Provider for a dependency, and a TaskGroup,
+    When: a child is created inside an override, and reads the dependency after the block exits,
+    Then: the child gets the override value.
+    """
+    # Arrange
+    dep = Mock(return_value="real")
+    depends = Provider(dep)
+    block_exited = asyncio.Event()
+
+    async def read_later() -> str:
+        await block_exited.wait()
+        return depends.provide()
+
+    # Act
+    async with asyncio.TaskGroup() as group:
+        with override(dep).to("child"):
+            child = group.create_task(read_later())
+        block_exited.set()
+
+    # Assert
+    assert child.result() == "child"
+
+
+async def test_override_holds_in_to_thread():
+    """
+    A thread started with asyncio.to_thread inside an override should keep it after the block.
+
+    Given: a Provider for a dependency,
+    When: a to_thread call is started inside an override, and reads after the block exits,
+    Then: the thread gets the override value.
+    """
+    # Arrange
+    dep = Mock(return_value="real")
+    depends = Provider(dep)
+    block_exited = threading.Event()
+
+    def read_later() -> str:
+        block_exited.wait()
+        return depends.provide()
+
+    # Act
+    with override(dep).to("thread"):
+        call = asyncio.ensure_future(asyncio.to_thread(read_later))
+        await asyncio.sleep(0)
+    block_exited.set()
+
+    # Assert
+    assert await call == "thread"
+
+
+async def test_override_returns_provide_to_the_dependency_once_a_task_finishes():
+    """
+    Once a task holding an override finishes, provide should be the dependency itself again.
+
+    Given: a Provider for a dependency, and a task created inside an override,
+    When: the block exits, and then the task finishes and is dropped,
+    Then: provide stays on the override path while the task runs, and returns after.
+    """
+    # Arrange
+    dep = Mock(return_value="real")
+    depends = Provider(dep)
+    release = asyncio.Event()
+
+    async def hold() -> None:
+        await release.wait()
+
+    with override(dep).to("task"):
+        task = asyncio.create_task(hold())
+
+    # Act & Assert
+    assert depends.provide is not dep
+    release.set()
+    await task
+    del task
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert depends.provide is dep
 
 
 def test_override_thread_isolation():
@@ -279,13 +430,46 @@ def test_override_can_be_reentered_while_held():
     assert depends.provide() == "real"
 
 
-def test_override_exit_in_other_context_still_restores_provide():
+def test_override_released_by_garbage_collection_while_lock_is_held():
     """
-    An override exited outside the context that entered it should still stop counting itself.
+    A holder freed by garbage collection on a thread holding the provider's lock is released.
+
+    Given: an override value that only a garbage reference cycle keeps alive,
+    When: a thread holding the provider's lock runs garbage collection,
+    Then: the release runs on that thread without deadlocking, and provide is the dependency.
+    """
+    # Arrange
+    dep = Mock(return_value="real")
+    depends = Provider(dep)
+    context = contextvars.copy_context()
+    context.run(override(dep).to("cyclic").__enter__)
+    cycle: list[object] = [context]
+    cycle.append(cycle)
+    del context, cycle
+    assert depends.provide is not dep
+
+    def collect_under_lock() -> None:
+        with depends.lock:
+            gc.collect()
+
+    # Act
+    collector = threading.Thread(target=collect_under_lock, daemon=True)
+    collector.start()
+    collector.join(timeout=5)
+
+    # Assert
+    assert not collector.is_alive(), "release deadlocked on the provider's lock"
+    assert depends.provide is dep
+
+
+def test_override_exit_in_other_context_keeps_it_where_it_was_entered():
+    """
+    An override exited outside the context that entered it should stay in that context.
 
     Given: an override entered in one context,
     When: it is exited from a copied context, where resetting its token fails,
-    Then: the reset error propagates, and provide is restored to the real dependency.
+    Then: the reset error propagates, the entering context keeps the override, and exiting
+        it there afterwards restores the real dependency.
     """
     # Arrange
     dep = Mock(return_value="real")
@@ -298,5 +482,7 @@ def test_override_exit_in_other_context_still_restores_provide():
         contextvars.copy_context().run(ctx.__exit__)
 
     # Assert
-    assert depends.override_count == 0
+    assert depends.provide() == "fake"
+    ctx.__exit__()
     assert depends.provide() == "real"
+    assert depends.provide is dep
