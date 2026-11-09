@@ -46,7 +46,7 @@ Access denied: resource is archived
 from collections.abc import Awaitable, Callable, Sequence
 from functools import wraps
 from inspect import isawaitable
-from typing import Any, Literal, Self, TypeGuard, cast, overload
+from typing import Any, Literal, Self, cast, overload
 
 from stratae._callables import is_async_callable
 
@@ -200,13 +200,6 @@ def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
     return _all_of_sync
 
 
-def _is_async_fn[**P, R](
-    fn: Callable[P, R] | Callable[P, Awaitable[R]],
-) -> TypeGuard[Callable[P, Awaitable[R]]]:
-    """Narrow a callable to its async form."""
-    return is_async_callable(fn)
-
-
 def _wrap_async[**P, R](
     fn: Callable[P, Awaitable[R]], checks: tuple[_Check, ...], mode: CheckMode
 ) -> Callable[P, Awaitable[R]]:
@@ -221,7 +214,7 @@ def _wrap_async[**P, R](
 def _wrap_sync[**P, R](
     fn: Callable[P, R], checks: tuple[_Check, ...], mode: CheckMode
 ) -> Callable[P, R]:
-    async_checks = [guard for guard in checks if _is_async_fn(guard)]
+    async_checks = [guard for guard in checks if is_async_callable(guard)]
     if async_checks:
         raise AsyncCheckOnSyncError(fn, len(async_checks))
 
@@ -260,7 +253,7 @@ def require[**P, R](
     ) -> Callable[P, R] | Callable[P, Awaitable[R]]:
         if not checks:
             return fn
-        if _is_async_fn(fn):
+        if is_async_callable(fn):
             return _wrap_async(fn, checks, mode)
         return cast(Callable[P, R], _wrap_sync(fn, checks, mode))
 

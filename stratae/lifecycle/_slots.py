@@ -72,8 +72,17 @@ ScopeVar = ContextVar[SlotStorage] | SharedVar
 
 RESERVED_SLOTS = 4
 """
-Slots 0-3 hold the entered resources, live-dependent count, reset token, and parent's
-storage - see `stratae.lifecycle._stack`.
+How many slots at the start of every activation's storage hold its own bookkeeping.
+
+- Slot 0: the entered resources, closed when the activation ends. See
+  `stratae.lifecycle._stack`.
+- Slot 1: how many activations of scopes requiring this one are live.
+- Slot 2: the token that resets the scope's activation holder.
+- Slot 3: the storage of the activation this one requires, or `None`.
+
+Code reading or writing them uses the bare numbers, each commented with its slot. A named
+module constant costs a global lookup per use, and every use is on an activation, a
+deactivation or a resource entry.
 """
 
 
@@ -120,11 +129,11 @@ class SlotStore:
         self.threads = threads
         self.template: SlotStorage
         if dense:
-            template = [UNSET, 0, None, None]
+            template = [UNSET, 0, None, None]  # slots 0-3, see RESERVED_SLOTS
             self.template = template
             self.new = template.copy
         else:
-            self.template = SlotDict({1: 0, 2: None, 3: None})
+            self.template = SlotDict({1: 0, 2: None, 3: None})  # slots 1-3
             # Built from a plain dict: faster than copying the SlotDict.
             self.new = partial(SlotDict, {1: 0, 2: None, 3: None})
         if shared:

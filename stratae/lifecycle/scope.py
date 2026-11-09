@@ -249,23 +249,23 @@ class BaseScope:
                 parent_slots = requires._var.get(None)
                 if not parent_slots:
                     raise RequiredScopeInactiveError(self.name, requires.name)
-                parent_slots[1] += 1
+                parent_slots[1] += 1  # the parent's slot 1: live dependents
             finally:
                 if parent_lock is not None:
                     parent_lock.release()
         else:
             parent_slots = None
         slots = self._new_slots()
-        slots[0] = []
-        slots[3] = parent_slots
+        slots[0] = []  # slot 0: entered resources
+        slots[3] = parent_slots  # slot 3: parent's storage
         try:
-            slots[2] = self._var.set(slots)
+            slots[2] = self._var.set(slots)  # slot 2: reset token
         except BaseException:
             if parent_slots is not None:
                 # Only a shared scope's set raises, and a shared scope can only require
                 # another shared scope, so there's always a parent lock here.
                 with cast(threading.Lock, parent_lock):
-                    parent_slots[1] -= 1
+                    parent_slots[1] -= 1  # the parent's slot 1: live dependents
             raise
         return slots
 
@@ -287,10 +287,10 @@ class BaseScope:
                 _raise_not_current(self.name, expected)
             if not slots:
                 raise NothingToDeactivateError(self.name)
-            if slots[1] > 0:
+            if slots[1] > 0:  # slot 1: live dependents
                 raise DependentScopeActiveError(self.name)
             try:
-                var.reset(slots[2])
+                var.reset(slots[2])  # slot 2: reset token
             except ValueError:
                 raise WrongContextDeactivationError(self.name) from None
             return slots
@@ -302,12 +302,12 @@ class BaseScope:
 def _release(parent_slots: SlotStorage, parent_lock: "threading.Lock | None") -> None:
     """Stop counting an ended, closed activation against its parent's storage."""
     if parent_lock is None:
-        parent_slots[1] -= 1
+        parent_slots[1] -= 1  # the parent's slot 1: live dependents
     else:
         # Faster than `with` on this hot path.
         parent_lock.acquire()
         try:
-            parent_slots[1] -= 1
+            parent_slots[1] -= 1  # the parent's slot 1: live dependents
         finally:
             parent_lock.release()
 
@@ -397,8 +397,8 @@ class Scope(BaseScope):
         # Inlined _activate for a scope without a parent: `with scope:` is the hot path.
         if self._requires is None:
             slots = self._new_slots()
-            slots[0] = []
-            slots[2] = self._var.set(slots)
+            slots[0] = []  # slot 0: entered resources
+            slots[2] = self._var.set(slots)  # slot 2: reset token
         else:
             self._activate()
 
@@ -411,7 +411,7 @@ class Scope(BaseScope):
         """Deactivate this scope's current activation, closing its entered resources."""
         # Inlined deactivate: `with scope:` is the hot path.
         slots = self._end(None)
-        contexts, parent_slots = slots[0], slots[3]
+        contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
         slots.clear()
         try:
             return close(contexts, exc) if contexts else False
@@ -444,7 +444,7 @@ class Scope(BaseScope):
             a scope requiring this one is still active.
         """
         slots = self._end(None if activation is None else activation.slots)
-        contexts, parent_slots = slots[0], slots[3]
+        contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
         slots.clear()
         try:
             return close(contexts, exc) if contexts else False
@@ -494,8 +494,8 @@ class AsyncScope(BaseScope):
         # Inlined _activate for a scope without a parent: `async with scope:` is the hot path.
         if self._requires is None:
             slots = self._new_slots()
-            slots[0] = []
-            slots[2] = self._var.set(slots)
+            slots[0] = []  # slot 0: entered resources
+            slots[2] = self._var.set(slots)  # slot 2: reset token
         else:
             self._activate()
 
@@ -508,7 +508,7 @@ class AsyncScope(BaseScope):
         """Deactivate this scope's current activation, closing its entered resources."""
         # Inlined deactivate: `async with scope:` is the hot path; this saves a coroutine.
         slots = self._end(None)
-        contexts, parent_slots = slots[0], slots[3]
+        contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
         slots.clear()
         try:
             return await aclose(contexts, exc) if contexts else False
@@ -541,7 +541,7 @@ class AsyncScope(BaseScope):
             a scope requiring this one is still active.
         """
         slots = self._end(None if activation is None else activation.slots)
-        contexts, parent_slots = slots[0], slots[3]
+        contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
         slots.clear()
         try:
             return await aclose(contexts, exc) if contexts else False

@@ -163,7 +163,7 @@ def enter_generator[T](slots: SlotStorage, gen: Generator[T, None, None]) -> T:
     if not slots:
         exit_generator(gen, None)
         raise _closed_error()
-    slots[0].append((False, gen))
+    slots[0].append((False, gen))  # slot 0: entered resources
     return result
 
 
@@ -182,7 +182,7 @@ async def enter_async_generator[T](slots: SlotStorage, gen: AsyncGenerator[T, No
     if not slots:
         await exit_async_generator(gen, None)
         raise _closed_error()
-    slots[0].append((True, gen))
+    slots[0].append((True, gen))  # slot 0: entered resources
     return result
 
 
