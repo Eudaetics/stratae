@@ -69,7 +69,7 @@ from collections.abc import Awaitable, Callable
 from inspect import Parameter, Signature, signature
 from typing import Any, Literal, cast, overload
 
-from stratae.events._typeguards import is_async_factory, is_sync_factory
+from stratae._callables import is_async_callable
 from stratae.events.hooks import Hooks
 from stratae.events.patterns import NoPayload
 from stratae.events.protocols import (
@@ -208,7 +208,7 @@ def bind(
 
         return _typed(passthrough, _payload_parameters(event), event)
 
-    if not is_sync_factory(factory):
+    if is_async_callable(factory):
         raise TypeError(_SYNC_FACTORY_REQUIRED)
 
     def construct(*args: Any, **kwargs: Any) -> Any:
@@ -289,7 +289,7 @@ def abind(
 
         return _typed(passthrough, _payload_parameters(event), event)
 
-    async_factory = factory if is_async_factory(factory) else None
+    async_factory = factory if is_async_callable(factory) else None
 
     async def construct(*args: Any, **kwargs: Any) -> Any:
         if async_factory is not None:
