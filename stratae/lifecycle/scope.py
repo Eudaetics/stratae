@@ -100,33 +100,23 @@ request 2 block 4: logging 102
 
 import threading
 from collections.abc import Callable, Hashable
-from contextvars import ContextVar
-from functools import partial
 from types import TracebackType
 from typing import Any, Literal, NoReturn, cast, get_args
 
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
-from stratae.lifecycle._slots import UNSET, ScopeVar, SharedVar, SlotDict, SlotStorage
+from stratae.lifecycle._slots import ScopeVar, SlotStorage, SlotStore
 from stratae.lifecycle._stack import aclose, close
 from stratae.lifecycle.exceptions import (
-    ActivationEndedError,
     AlreadyDeactivatedError,
     CacheKeyConflictError,
     DependentScopeActiveError,
     InvalidScopeOptionError,
-    NoActivationError,
     NothingToDeactivateError,
     RequiredScopeInactiveError,
     SharedRequiresContextError,
     SharedScopeThreadsError,
     WrongContextDeactivationError,
 )
-
-_RESERVED_SLOTS = 4
-"""
-Slots 0-3 hold the entered resources, live-dependent count, reset token, and parent's
-storage - see `stratae.lifecycle._stack`.
-"""
 
 IsolationType = Literal["shared", "context"]
 StorageType = Literal["dense", "sparse"]
@@ -157,16 +147,13 @@ class BaseScope:
     """
 
     __slots__ = (
-        "_counter",
-        "_free_slots",
         "_isolation",
         "_lock",
         "_new_slots",
         "_parent_lock",
         "_requires",
-        "_slot_lock",
+        "_slots",
         "_storage",
-        "_template",
         "_threads",
         "_var",
         "name",
@@ -176,12 +163,9 @@ class BaseScope:
     _storage: StorageType
     _threads: bool
     _requires: "BaseScope | None"
+    _slots: SlotStore
     _var: ScopeVar
-    _template: SlotStorage
     _new_slots: Callable[[], SlotStorage]
-    _counter: int
-    _free_slots: list[int]
-    _slot_lock: threading.RLock
     _lock: "threading.Lock | None"
     _parent_lock: "threading.Lock | None"
 
@@ -217,18 +201,14 @@ class BaseScope:
         self._storage = storage
         self._threads = threads
         self._requires = requires
-        if storage == "dense":
-            self._template = [UNSET, 0, None, None]
-            self._new_slots = self._template.copy
-        else:
-            self._template = SlotDict({1: 0, 2: None, 3: None})
-            # Built from a plain dict: faster than copying the SlotDict.
-            self._new_slots = partial(SlotDict, {1: 0, 2: None, 3: None})
-        self._var = ContextVar(name) if isolation == "context" else SharedVar(name)
-        self._counter = _RESERVED_SLOTS
-        self._free_slots = []
-        self._slot_lock = threading.RLock()
-        self._lock = self._var.lock if isinstance(self._var, SharedVar) else None
+        slots = SlotStore(
+            name, shared=isolation == "shared", dense=storage == "dense", threads=threads
+        )
+        self._slots = slots
+        # Copied out of the store for the activation hot paths.
+        self._var = slots.var
+        self._new_slots = slots.new
+        self._lock = slots.lock
         self._parent_lock = requires._lock if requires is not None else None
 
     @property
@@ -254,36 +234,6 @@ class BaseScope:
     def is_active(self) -> bool:
         """Whether this scope has a live activation in the calling context."""
         return bool(self._var.get(None))
-
-    def is_shared(self) -> bool:
-        """Whether this scope's activation holder is a lock-guarded SharedVar."""
-        return isinstance(self._var, SharedVar)
-
-    def activation_var(self) -> ScopeVar:
-        """Return the scope's raw `ContextVar` or `SharedVar`."""
-        return self._var
-
-    def get_slots(self) -> SlotStorage:
-        """
-        Get this scope's live slot storage, extended with any slots allocated since activation.
-
-        :returns: The scope's live slot storage.
-        :raises ScopeInactiveError: If the scope isn't active in the calling context.
-        """
-        try:
-            slots = self._var.get()
-        except LookupError:
-            raise NoActivationError(self.name) from None
-        if not slots:
-            raise ActivationEndedError(self.name)
-        self._extend(slots)
-        return slots
-
-    def _extend(self, slots: SlotStorage) -> None:
-        """Extend live dense storage with any slots allocated since it was copied."""
-        template = self._template
-        if isinstance(template, list) and isinstance(slots, list) and len(slots) < len(template):
-            slots.extend(template[len(slots) :])
 
     def _activate(self) -> SlotStorage:
         """
@@ -347,39 +297,6 @@ class BaseScope:
         finally:
             if lock is not None:
                 lock.release()
-
-    def allocate_slot(self) -> tuple[int, bool]:
-        """
-        Allocate a slot for a cached function. Internal to the cache decorators.
-
-        :returns: The slot's index, and whether it was reused from the free pool.
-        """
-        with self._slot_lock:
-            if free := self._free_slots:
-                return free.pop(), True
-            if isinstance(self._template, SlotDict):
-                slot = self._counter
-                self._counter = slot + 1
-                return slot, False
-            self._template.append(UNSET)
-            if active := self._var.get(None):
-                self._extend(active)
-            return len(self._template) - 1, False
-
-    def release_slot(self, slot: int) -> None:
-        """
-        Return a slot to the free pool once its owning cache wrapper is gone.
-
-        :param slot: The slot index/key returned by {py:meth}`BaseScope.allocate_slot`.
-        """
-        with self._slot_lock:
-            active = self._var.get(None)
-            if isinstance(active, list):
-                if slot < len(active):
-                    active[slot] = UNSET
-            elif active is not None:
-                active.pop(slot, None)
-            self._free_slots.append(slot)
 
 
 def _release(parent_slots: SlotStorage, parent_lock: "threading.Lock | None") -> None:
@@ -560,7 +477,7 @@ class Scope(BaseScope):
         """
         if ignore_params and cache_key is not None:
             raise CacheKeyConflictError()
-        return CacheDecorator(self, cache_key, ignore_params)
+        return CacheDecorator(self._slots, cache_key, ignore_params)
 
 
 class AsyncScope(BaseScope):
@@ -652,4 +569,4 @@ class AsyncScope(BaseScope):
         """
         if ignore_params and cache_key is not None:
             raise CacheKeyConflictError()
-        return AsyncCacheDecorator(self, cache_key, ignore_params)
+        return AsyncCacheDecorator(self._slots, cache_key, ignore_params)

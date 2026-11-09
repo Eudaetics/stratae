@@ -3,7 +3,7 @@ def wrapper(**kw):
         __slots__ = __var__.get()
         __cache__ = __slots__[4]
     except LookupError:
-        __slots__ = __scope__.get_slots()
+        __slots__ = __store__.get()
         __cache__ = __slots__[4]
     if __cache__ is __UNSET__:
         __cache__ = {}

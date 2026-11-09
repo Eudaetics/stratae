@@ -88,7 +88,7 @@ async def test_reused_slot_wrapper_ignores_dead_wrappers_value(
 
     del old
     gc.collect()
-    assert scope._free_slots  # pyright: ignore[reportPrivateUsage]
+    assert scope._slots._free  # pyright: ignore[reportPrivateUsage]
 
     # Act
     new = _make_cached(scope, kind, keyed, 2, calls)
@@ -96,7 +96,7 @@ async def test_reused_slot_wrapper_ignores_dead_wrappers_value(
     second = await _call_in(other, new)
 
     # Assert
-    assert not scope._free_slots  # pyright: ignore[reportPrivateUsage]
+    assert not scope._slots._free  # pyright: ignore[reportPrivateUsage]
     assert (first, second) == (2, 2)
     assert calls == [1, 2]
     await asyncio.create_task(scope.deactivate(activation), context=other)

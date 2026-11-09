@@ -34,7 +34,7 @@ def test_context_scope_template_growth_is_bounded(context_scope: Scope):
         del get_value
         gc.collect()
 
-    assert len(context_scope._template) == 5  # pyright: ignore[reportPrivateUsage]
+    assert len(context_scope._slots.template) == 5  # pyright: ignore[reportPrivateUsage]
 
 
 def test_reclaimed_slot_does_not_leak_stale_value(scope: Scope):
@@ -103,7 +103,7 @@ def test_hot_loop_template_growth_is_bounded(scope: Scope):
             del get_value
             gc.collect()
 
-    assert len(scope._template) == 5  # pyright: ignore[reportPrivateUsage]
+    assert len(scope._slots.template) == 5  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize("storage", ["dense", "sparse"])
@@ -175,5 +175,5 @@ def test_reclaimed_slot_is_freed_when_released_inside_an_unextended_activation(
 
     # Assert
     assert result.value == 2
-    assert len(context_scope._template) == 5  # pyright: ignore[reportPrivateUsage]
+    assert len(context_scope._slots.template) == 5  # pyright: ignore[reportPrivateUsage]
     other_context.run(context_scope.deactivate, activation)

@@ -12,9 +12,10 @@ cached.
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hashable
 from inspect import isasyncgenfunction, isgeneratorfunction, unwrap
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import Any, Literal, overload
 
 from stratae._callables import is_async_callable
+from stratae.lifecycle._slots import SlotStore
 from stratae.lifecycle._wrappers import (
     Cached,
     create_async_generator_wrapper,
@@ -26,9 +27,6 @@ from stratae.lifecycle._wrappers import (
 from stratae.lifecycle.exceptions import (
     AsyncGeneratorInSyncScopeError,
 )
-
-if TYPE_CHECKING:
-    from stratae.lifecycle.scope import AsyncScope, Scope
 
 
 def _hidden_generator(func: Callable[..., Any]) -> Literal["sync", "async"] | None:
@@ -51,22 +49,22 @@ def _hidden_generator(func: Callable[..., Any]) -> Literal["sync", "async"] | No
 class CacheDecorator:
     """Decorator returned by `Scope.cache()`."""
 
-    __slots__ = ("_cache_key", "_ignore_params", "_scope")
+    __slots__ = ("_cache_key", "_ignore_params", "_store")
 
     def __init__(
         self,
-        scope: "Scope",
+        store: SlotStore,
         cache_key: Callable[..., Hashable] | None = None,
         ignore_params: bool = False,
     ) -> None:
         """
         Bind the decorator to a scope.
 
-        :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>`.
+        :param store: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>`'s slot storage.
         :param cache_key: Derives a hashable key from the arguments.
         :param ignore_params: Cache one value per activation regardless of arguments.
         """
-        self._scope = scope
+        self._store = store
         self._cache_key = cache_key
         self._ignore_params = ignore_params
 
@@ -89,36 +87,37 @@ class CacheDecorator:
             generator function.
         :raises UnreadableSignatureError: If `func`'s signature can't be read.
         """
-        scope, cache_key, ignore_params = self._scope, self._cache_key, self._ignore_params
+        store, cache_key, ignore_params = self._store, self._cache_key, self._ignore_params
         hidden = None if isgeneratorfunction(func) else _hidden_generator(func)
         if isasyncgenfunction(func) or hidden == "async":
-            raise AsyncGeneratorInSyncScopeError(func, scope.name)
+            raise AsyncGeneratorInSyncScopeError(func, store.name)
         if isgeneratorfunction(func):
-            return create_generator_wrapper(func, scope, cache_key, ignore_params)
+            return create_generator_wrapper(func, store, cache_key, ignore_params)
         if hidden == "sync":
-            return create_checked_wrapper(func, scope, cache_key, ignore_params, is_async=False)
-        return create_sync_wrapper(func, scope, cache_key, ignore_params)
+            return create_checked_wrapper(func, store, cache_key, ignore_params, is_async=False)
+        return create_sync_wrapper(func, store, cache_key, ignore_params)
 
 
 class AsyncCacheDecorator:
     """Decorator returned by `AsyncScope.cache()`."""
 
-    __slots__ = ("_cache_key", "_ignore_params", "_scope")
+    __slots__ = ("_cache_key", "_ignore_params", "_store")
 
     def __init__(
         self,
-        scope: "AsyncScope",
+        store: SlotStore,
         cache_key: Callable[..., Hashable] | None = None,
         ignore_params: bool = False,
     ) -> None:
         """
         Bind the decorator to a scope.
 
-        :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+        :param store: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`'s
+            slot storage.
         :param cache_key: Derives a hashable key from the arguments.
         :param ignore_params: Cache one value per activation regardless of arguments.
         """
-        self._scope = scope
+        self._store = store
         self._cache_key = cache_key
         self._ignore_params = ignore_params
 
@@ -151,16 +150,16 @@ class AsyncCacheDecorator:
             Async if `func` is async or an async generator function, or a decorator hides one.
         :raises UnreadableSignatureError: If `func`'s signature can't be read.
         """
-        scope, cache_key, ignore_params = self._scope, self._cache_key, self._ignore_params
+        store, cache_key, ignore_params = self._store, self._cache_key, self._ignore_params
         if isasyncgenfunction(func):
-            return create_async_generator_wrapper(func, scope, cache_key, ignore_params)
+            return create_async_generator_wrapper(func, store, cache_key, ignore_params)
         if isgeneratorfunction(func):
-            return create_generator_wrapper(func, scope, cache_key, ignore_params)
+            return create_generator_wrapper(func, store, cache_key, ignore_params)
         if is_async_callable(func):
-            return create_async_wrapper(func, scope, cache_key, ignore_params)
+            return create_async_wrapper(func, store, cache_key, ignore_params)
         hidden = _hidden_generator(func)
         if hidden is not None:
             return create_checked_wrapper(
-                func, scope, cache_key, ignore_params, is_async=hidden == "async"
+                func, store, cache_key, ignore_params, is_async=hidden == "async"
             )
-        return create_sync_wrapper(func, scope, cache_key, ignore_params)
+        return create_sync_wrapper(func, store, cache_key, ignore_params)

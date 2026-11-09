@@ -3,7 +3,7 @@ def wrapper():
     try:
         __value__ = __slots__[4]
     except (TypeError, LookupError):
-        __slots__ = __scope__.get_slots()
+        __slots__ = __store__.get()
         __value__ = __slots__[4]
     if __value__ is __UNSET__:
         while True:
@@ -21,7 +21,7 @@ def wrapper():
                 __release__()
             __done__.wait()
             if not __slots__:
-                __ended__(__scope__)
+                __ended__(__store__)
         try:
             __value__ = __func__()
             if __slots__:
