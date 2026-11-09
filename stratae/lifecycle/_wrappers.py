@@ -38,6 +38,7 @@ from stratae.lifecycle._stack import enter_async_generator, enter_generator
 from stratae.lifecycle.exceptions import (
     ActivationEndedError,
     AsyncGeneratorInSyncScopeError,
+    UnreadableSignatureError,
 )
 
 if TYPE_CHECKING:
@@ -134,6 +135,18 @@ class _SlotCode:
         """Render the store of `source` into this slot."""
         value = f"__Owned__({source})" if self.owned else source
         return f"__slots__[{self.index}] = {value}"
+
+
+def _read_params(func: Callable[..., Any], scope: "BaseScope") -> list[Parameter]:
+    """
+    Return `func`'s parameters, which its wrapper mirrors.
+
+    :raises UnreadableSignatureError: If `func`'s signature can't be read.
+    """
+    try:
+        return list(read_signature(func).parameters.values())
+    except ValueError:
+        raise UnreadableSignatureError(func, scope.name) from None
 
 
 def _allocate_slot(scope: "BaseScope") -> _SlotCode:
@@ -598,7 +611,7 @@ def _create_sync_wrapper_impl(
     ignore_params: bool,
 ) -> Callable[..., Any]:
     """Build the wrapper shared by the sync and sync-in-async decorators."""
-    params = list(read_signature(func).parameters.values())
+    params = _read_params(func, scope)
     slot = _allocate_slot(scope)
 
     writer = Writer()
@@ -679,7 +692,7 @@ def create_async_wrapper[**P, T](
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
-    params = list(read_signature(func).parameters.values())
+    params = _read_params(func, scope)
     slot = _allocate_slot(scope)
 
     writer = Writer()
@@ -726,7 +739,7 @@ def _create_entering_wrapper_impl(
     :param write_value: Writes the miss, from the call's source.
     :param bindings: Extra namespace bindings `write_value`'s code needs.
     """
-    params = list(read_signature(func).parameters.values())
+    params = _read_params(func, scope)
     slot = _allocate_slot(scope)
     call = f"__func__({_render_forward_arguments(params)})"
 

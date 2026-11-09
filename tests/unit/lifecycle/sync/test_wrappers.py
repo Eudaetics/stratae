@@ -1,13 +1,15 @@
 """Test suite for Scope.cache's wrapper/cache-key behavior, exercised via the sync Scope."""
 
+import functools
 import re
 from collections.abc import Callable
+from functools import wraps
 from typing import Any, Literal
 from unittest.mock import Mock
 
 import pytest
 
-from stratae.lifecycle.exceptions import LifecycleConfigurationError
+from stratae.lifecycle.exceptions import UnreadableSignatureError
 from stratae.lifecycle.scope import Scope
 
 
@@ -531,55 +533,205 @@ def test_wrapper_kwargs_only(scope: Scope):
         assert result is not foo(a=0, b=2, c=3)
 
 
-def test_cache_same_function_in_two_scopes_raises():
+def test_same_function_in_two_scopes_has_independent_caches():
     """
-    A function can only ever be cached in one scope.
+    A function cached in two scopes should get a separate cache in each.
 
-    Given: A function already cached in one scope,
-    When: An attempt is made to cache it again in a different scope,
-    Then: A LifecycleConfigurationError is raised, and the function stays claimed by the
-          first scope.
+    Given: One function cached in two scopes,
+    When: Both are called while both scopes are active, and one scope is activated again,
+    Then: Each scope caches its own value, and refills only its own on a new activation.
     """
     # Arrange
-    scope_a = Scope("a", "shared")
-    scope_b = Scope("b", "shared")
+    scope_a, scope_b = Scope("a"), Scope("b")
 
-    def get_value():
+    def get_value() -> object:
         return object()
 
-    scope_a.cache()(get_value)
+    in_a, in_b = scope_a.cache()(get_value), scope_b.cache()(get_value)
 
-    # Act & Assert
-    with pytest.raises(
-        LifecycleConfigurationError,
-        match="already cached in scope 'a'; cannot also cache it in 'b'",
-    ):
-        scope_b.cache()(get_value)
+    # Act
+    with scope_a:
+        with scope_b:
+            first_a, first_b = in_a(), in_b()
+            assert in_a() is first_a
+            assert in_b() is first_b
+        with scope_b:
+            second_b = in_b()
+        second_a = in_a()
+
+    # Assert
+    assert first_a is not first_b
+    assert second_a is first_a
+    assert second_b is not first_b
+
+
+def test_stacked_caches_cache_the_inner_value():
+    """
+    A cache over another scope's cache should cache what the inner one returns.
+
+    Given: A function cached in an inner scope, and that cached function cached again in an
+        outer scope,
+    When: The inner scope is activated twice within one outer activation,
+    Then: The outer cache keeps the first value, while the inner one refills.
+    """
+    # Arrange
+    outer, inner = Scope("outer"), Scope("inner")
+
+    def get_value() -> object:
+        return object()
+
+    in_inner = inner.cache()(get_value)
+    in_outer = outer.cache()(in_inner)
+
+    # Act
+    with outer:
+        with inner:
+            first = in_outer()
+            assert in_inner() is first
+        with inner:
+            refilled = in_inner()
+            kept = in_outer()
+
+    # Assert
+    assert kept is first
+    assert refilled is not first
 
 
 class _Repo:
-    def get(self) -> int:
-        return 1
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get(self, key: int) -> list[int]:
+        self.calls += 1
+        return [key]
+
+    @classmethod
+    def make(cls) -> "_Repo":
+        return cls()
+
+    @staticmethod
+    def helper() -> list[int]:
+        return [1]
+
+
+class _Callable:
+    def __call__(self, value: int) -> list[int]:
+        return [value]
 
 
 @pytest.mark.parametrize(
-    "target",
-    [sorted, object, [].copy, _Repo().get],
-    ids=["builtin_function", "builtin_type", "builtin_bound_method", "bound_method"],
+    ("target", "args"),
+    [
+        (_Repo().get, (1,)),
+        (_Repo.make, ()),
+        (_Repo.helper, ()),
+        (sorted, ((3, 1),)),
+        (object, ()),
+        ([1].copy, ()),
+        (_Callable(), (5,)),
+    ],
+    ids=[
+        "bound_method",
+        "classmethod",
+        "staticmethod",
+        "builtin_function",
+        "builtin_type",
+        "builtin_bound_method",
+        "callable_object",
+    ],
 )
-def test_unmarkable_callables_cannot_be_cached(target: Callable[..., Any]):
+def test_any_callable_with_a_signature_can_be_cached(
+    target: Callable[..., Any], args: tuple[Any, ...]
+):
     """
-    A callable that can't hold the scope mark can't be cached, with a clear error.
+    Any callable whose signature can be read should be cacheable.
 
-    Given: A builtin function, an immutable builtin type, a builtin's bound method, or a
-           Python bound method - none of which can hold the scope mark,
-    When: It's cached in a scope,
-    Then: A LifecycleConfigurationError is raised, suggesting wrapping it in a function,
-          rather than caching it without the check against caching it in two scopes.
+    Given: A bound, class or static method, a builtin function, type or bound method, or a
+        callable object,
+    When: It's cached and called twice with the same arguments in an active scope,
+    Then: Both calls return the same object.
     """
     # Arrange
-    scope = Scope("request", "shared")
+    scope = Scope("request")
+    cached = scope.cache()(target)
 
+    # Act
+    with scope:
+        first, second = cached(*args), cached(*args)
+
+    # Assert
+    assert first is second
+
+
+def test_cached_bound_method_runs_once_per_activation():
+    """
+    A cached bound method should run once per activation for the same arguments.
+
+    Given: A bound method cached in a scope,
+    When: It's called twice in one activation, then twice in a second activation,
+    Then: The method runs once in the first activation, and once more in the second.
+    """
+    # Arrange
+    repo = _Repo()
+    scope = Scope("request")
+    cached = scope.cache()(repo.get)
+
+    # Act
+    with scope:
+        cached(1)  # runs repo.get
+        cached(1)  # cache hit
+    calls_after_first = repo.calls
+    with scope:
+        cached(1)  # new activation, empty cache: runs repo.get again
+        cached(1)  # cache hit
+
+    # Assert
+    assert calls_after_first == 1
+    assert repo.calls == 2
+
+
+def test_caching_leaves_the_callable_unchanged():
+    """
+    Caching should write nothing onto the callable, or onto what a decorator wraps.
+
+    Given: A function, and another behind a `functools.wraps` decorator,
+    When: Each is cached, and the first is cached in a second scope too,
+    Then: Neither function nor the wrapped one gains attributes.
+    """
+
+    # Arrange
+    def plain() -> int:
+        return 1
+
+    def inner() -> int:
+        return 2
+
+    @wraps(inner)
+    def decorated() -> int:
+        return inner()
+
+    before = (dict(vars(plain)), dict(vars(inner)))
+
+    # Act
+    Scope("a").cache()(plain)
+    Scope("b").cache()(plain)
+    Scope("c").cache()(decorated)
+
+    # Assert
+    assert (dict(vars(plain)), dict(vars(inner))) == before
+
+
+@pytest.mark.parametrize(
+    "target", [dict, functools.partial(max, 1)], ids=["builtin_type", "builtin_partial"]
+)
+def test_callable_without_a_readable_signature_is_refused(target: Callable[..., Any]):
+    """
+    A callable whose signature can't be read should be refused when it's decorated.
+
+    Given: The dict type, or a partial over a builtin, neither with a readable signature,
+    When: It's cached in a scope,
+    Then: UnreadableSignatureError should be raised, suggesting wrapping it in a function.
+    """
     # Act & Assert
-    with pytest.raises(LifecycleConfigurationError, match="Wrap it in a function"):
-        scope.cache()(target)
+    with pytest.raises(UnreadableSignatureError, match="Wrap it in a function"):
+        Scope("request").cache()(target)

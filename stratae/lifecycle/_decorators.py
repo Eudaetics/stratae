@@ -1,10 +1,13 @@
 """
 Decorator objects returned by `Scope.cache` and `AsyncScope.cache`.
 
-A function may be cached in only one scope, so its cache always has one fixed home. How it's
-wrapped is chosen once, when it's decorated. A generator function, sync or async, has its
-generator entered and the yielded value cached. A function whose decorator hides a generator
-function checks what each miss returns. Any other function has its return value cached.
+Any callable whose signature can be read may be cached, in any number of scopes. Each
+`cache()` call builds its own wrapper and storage, and nothing is written onto the callable.
+
+How it's wrapped is chosen once, when it's decorated. A generator function, sync or async,
+has its generator entered and the yielded value cached. A function whose decorator hides a
+generator function checks what each miss returns. Any other callable has its return value
+cached.
 """
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hashable
@@ -22,13 +25,11 @@ from stratae.lifecycle._wrappers import (
     create_sync_wrapper,
 )
 from stratae.lifecycle.exceptions import (
-    AlreadyCachedError,
     AsyncGeneratorInSyncScopeError,
-    UncacheableError,
 )
 
 if TYPE_CHECKING:
-    from stratae.lifecycle.scope import AsyncScope, BaseScope, Scope
+    from stratae.lifecycle.scope import AsyncScope, Scope
 
 
 def _hidden_generator(func: Callable[..., Any]) -> Literal["sync", "async"] | None:
@@ -46,22 +47,6 @@ def _hidden_generator(func: Callable[..., Any]) -> Literal["sync", "async"] | No
     if isgeneratorfunction(inner):
         return "sync"
     return None
-
-
-def _mark_as_scoped(func: Callable[..., Any], scope: "BaseScope") -> None:
-    """
-    Mark func's unwrapped identity as cached in scope.
-
-    :raises LifecycleConfigurationError: If func is already cached, or can't hold the mark.
-    """
-    target = unwrap(func)
-    existing: BaseScope | None = getattr(target, "__cache_scope__", None)
-    if existing is not None:
-        raise AlreadyCachedError(func, existing.name, scope.name)
-    try:
-        target.__cache_scope__ = scope
-    except (AttributeError, TypeError):
-        raise UncacheableError(func, scope.name) from None
 
 
 class CacheDecorator:
@@ -103,13 +88,12 @@ class CacheDecorator:
         :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
         :raises AsyncGeneratorInSyncScopeError: If `func` is, or a decorator hides, an async
             generator function.
-        :raises LifecycleConfigurationError: If `func` is already cached in a scope.
+        :raises UnreadableSignatureError: If `func`'s signature can't be read.
         """
         scope, cache_key, ignore_params = self._scope, self._cache_key, self._ignore_params
         hidden = None if isgeneratorfunction(func) else _hidden_generator(func)
         if isasyncgenfunction(func) or hidden == "async":
             raise AsyncGeneratorInSyncScopeError(func, scope.name)
-        _mark_as_scoped(func, scope)
         if isgeneratorfunction(func):
             return create_generator_wrapper(func, scope, cache_key, ignore_params)
         if hidden == "sync":
@@ -166,10 +150,9 @@ class AsyncCacheDecorator:
             ends.
         :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
             Async if `func` is async or an async generator function, or a decorator hides one.
-        :raises LifecycleConfigurationError: If `func` is already cached in a scope.
+        :raises UnreadableSignatureError: If `func`'s signature can't be read.
         """
         scope, cache_key, ignore_params = self._scope, self._cache_key, self._ignore_params
-        _mark_as_scoped(func, scope)
         if isasyncgenfunction(func):
             return create_async_generator_wrapper(func, scope, cache_key, ignore_params)
         if isgeneratorfunction(func):
