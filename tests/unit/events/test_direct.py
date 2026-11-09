@@ -12,6 +12,10 @@ DirectBus:
 - Async handlers are rejected with TypeError at registration, in both the
   direct and decorator forms of handle.
 - remove removes a handler; subsequent emits do not invoke it.
+- remove ignores a handler registered on another bus.
+- A handler registered after an event's first emits receives its next emit, whether or not the
+  event had handlers before.
+- A pub/sub event with no handlers reaches none, and emitting it raises nothing.
 - handlers returns an empty tuple for an event with no handlers.
 - handlers returns every handler registered for an event.
 - handlers excludes a removed handler.
@@ -409,6 +413,66 @@ def test_remove_prevents_further_dispatch(bus: DirectBus):
 
     # Assert
     handler.assert_not_called()
+
+
+def test_remove_ignores_handler_from_another_bus(bus: DirectBus):
+    """
+    Remove should ignore a handler this bus doesn't have.
+
+    Given: A handler registered on another bus, for an event this bus has never seen
+    When: This bus removes it
+    Then: Nothing is raised, and the other bus still dispatches to it
+    """
+    # Arrange
+    other = DirectBus()
+    handler = Mock()
+    foreign = other.handle(_task_created, handler)
+
+    # Act
+    bus.remove(foreign)
+
+    # Assert
+    other.emit(_task_created, None, _TaskCreated(1))
+    handler.assert_called_once_with(_TaskCreated(1))
+
+
+def test_handler_registered_after_first_emits_receives_next(bus: DirectBus):
+    """
+    A handler registered after an event's first emits should receive its next emit.
+
+    Given: An event emitted with no handlers, then with one handler
+    When: A second handler is registered and the event emitted again
+    Then: The first handler received both later emits, and the second only the last
+    """
+    # Arrange
+    first, second = Mock(), Mock()
+    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.handle(_task_created, first)
+    bus.emit(_task_created, None, _TaskCreated(2))
+    bus.handle(_task_created, second)
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(3))
+
+    # Assert
+    assert first.call_count == 2
+    second.assert_called_once_with(_TaskCreated(3))
+
+
+def test_emit_without_handlers_reaches_none(bus: DirectBus):
+    """
+    A pub/sub event with no handlers should reach none, without raising.
+
+    Given: A pub/sub event with no handlers on this bus
+    When: It's emitted
+    Then: The emit returns None, and the bus still has no handlers for it
+    """
+    # Act
+    result = bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert result is None
+    assert bus.handlers(_task_created) == ()
 
 
 def test_handlers_empty_for_event_without_handlers(bus: DirectBus):
