@@ -196,22 +196,9 @@ from typing import Any
 
 from fastapi import Depends, Request, Response, params
 from fastapi.routing import APIRoute
-from starlette.types import Receive, Send
-from starlette.types import Scope as ASGIScope
 
+from stratae.integrations._activation import ActivatingRoute, close_activation
 from stratae.lifecycle import AsyncScope
-from stratae.lifecycle.scope import AsyncActivation
-
-_ACTIVATION_KEY = "stratae.activation"
-"""ASGI scope key holding a request's open activation, until whichever side closes it."""
-
-
-async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
-    """Close the request's activation with `exc`, unless already closed."""
-    activation: AsyncActivation | None = asgi_scope.pop(_ACTIVATION_KEY, None)
-    if activation is None:
-        return
-    await activation.scope.deactivate(activation, exc)
 
 
 def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> type[APIRoute]:
@@ -225,21 +212,10 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
         commits that must finish before the response.
     :returns: An APIRoute subclass, to set as a router's `route_class`.
     """
-    lifecycle_scope = scope
     handler_scope = handler
 
-    class ScopedRoute(APIRoute):
-        async def handle(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
-            scope[_ACTIVATION_KEY] = lifecycle_scope.activate()
-            try:
-                await super().handle(scope, receive, send)
-            except BaseException as exc:
-                await _close_activation(scope, exc)
-                raise
-            # Inlined _close_activation, saving a coroutine per request.
-            activation: AsyncActivation | None = scope.pop(_ACTIVATION_KEY, None)
-            if activation is not None:
-                await lifecycle_scope.deactivate(activation)
+    class ScopedRoute(ActivatingRoute, APIRoute):
+        activates = scope
 
         def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
             route_handler = super().get_route_handler()
@@ -257,7 +233,7 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
                 try:
                     return await route_handler(request)
                 except BaseException as exc:
-                    await _close_activation(request.scope, exc)
+                    await close_activation(request.scope, exc)
                     raise
 
             return scoped_handler
