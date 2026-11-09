@@ -194,12 +194,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route, WebSocketRoute
-from starlette.types import Receive, Send
-from starlette.types import Scope as ASGIScope
 from starlette.websockets import WebSocket
 
+from stratae.integrations._activation import ActivatingRoute, close_activation
 from stratae.lifecycle import AsyncScope
-from stratae.lifecycle.scope import AsyncActivation
 
 
 class UnsupportedEndpointError(TypeError):
@@ -223,19 +221,6 @@ class SyncWebSocketEndpointError(UnsupportedEndpointError):
     def __init__(self, endpoint: object) -> None:
         """:param endpoint: The endpoint."""
         super().__init__(f"scoped_websocket_route needs an async endpoint, got {endpoint!r}.")
-
-
-_ACTIVATION_KEY = "stratae.activation"
-"""ASGI scope key holding a request's or connection's open activation, until whichever side
-closes it."""
-
-
-async def _close_activation(asgi_scope: ASGIScope, exc: BaseException) -> None:
-    """Close the request's or connection's activation with `exc`, unless already closed."""
-    activation: AsyncActivation | None = asgi_scope.pop(_ACTIVATION_KEY, None)
-    if activation is None:
-        return
-    await activation.scope.deactivate(activation, exc)
 
 
 def _unwrap_partial(endpoint: Callable[..., Any]) -> Callable[..., Any]:
@@ -287,10 +272,11 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
     :returns: A Route subclass. Its endpoints must be functions or methods; others raise
         `TypeError`.
     """
-    lifecycle_scope = scope
     handler_scope = handler
 
-    class ScopedRoute(Route):
+    class ScopedRoute(ActivatingRoute, Route):
+        activates = scope
+
         def __init__(
             self,
             path: str,
@@ -307,21 +293,10 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
                 try:
                     return await call(request)
                 except BaseException as exc:
-                    await _close_activation(request.scope, exc)
+                    await close_activation(request.scope, exc)
                     raise
 
             super().__init__(path, scoped_endpoint, **kwargs)
-
-        async def handle(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
-            scope[_ACTIVATION_KEY] = lifecycle_scope.activate()
-            try:
-                await super().handle(scope, receive, send)
-            except BaseException as exc:
-                await _close_activation(scope, exc)
-                raise
-            activation: AsyncActivation | None = scope.pop(_ACTIVATION_KEY, None)
-            if activation is not None:
-                await lifecycle_scope.deactivate(activation)
 
     return ScopedRoute
 
@@ -341,7 +316,7 @@ def _scoped_websocket_endpoint(
         try:
             await endpoint(websocket)
         except BaseException as exc:
-            await _close_activation(websocket.scope, exc)
+            await close_activation(websocket.scope, exc)
             raise
 
     return scoped_endpoint
@@ -358,9 +333,10 @@ def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
         classes such as `WebSocketEndpoint`; sync functions raise
         {py:exc}`SyncWebSocketEndpointError`.
     """
-    lifecycle_scope = scope
 
-    class ScopedWebSocketRoute(WebSocketRoute):
+    class ScopedWebSocketRoute(ActivatingRoute, WebSocketRoute):
+        activates = scope
+
         def __init__(self, path: str, endpoint: Callable[..., Any], **kwargs: Any) -> None:
             target = _unwrap_partial(endpoint)
             if isfunction(target) or ismethod(target):
@@ -368,16 +344,5 @@ def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
                     raise SyncWebSocketEndpointError(endpoint)
                 endpoint = _scoped_websocket_endpoint(endpoint)
             super().__init__(path, endpoint, **kwargs)
-
-        async def handle(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
-            scope[_ACTIVATION_KEY] = lifecycle_scope.activate()
-            try:
-                await super().handle(scope, receive, send)
-            except BaseException as exc:
-                await _close_activation(scope, exc)
-                raise
-            activation: AsyncActivation | None = scope.pop(_ACTIVATION_KEY, None)
-            if activation is not None:
-                await lifecycle_scope.deactivate(activation)
 
     return ScopedWebSocketRoute

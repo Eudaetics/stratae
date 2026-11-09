@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -369,6 +369,70 @@ def test_streaming_response_rolls_back_on_body_failure(app: FastAPI, events: lis
 
     # Assert
     assert events == ["open", "rollback", "close"]
+
+
+def test_included_router_routes_keep_scope(async_request_scope: AsyncScope, events: list[str]):
+    """
+    A scoped route class should keep scoping routes FastAPI rebuilds when routers are included.
+
+    Given: A router using the scoped route class, included into another router, which is
+        included into the app
+    When: A route returns a StreamingResponse, and another raises
+    Then: The streamed body runs inside the request scope, which commits after it, and the
+        raising route rolls back
+    """
+
+    # Arrange
+    @async_request_scope.cache()
+    async def get_transaction():
+        await asyncio.sleep(0)
+        events.append("open")
+        try:
+            yield "connection"
+            events.append("commit")
+        except Exception:
+            events.append("rollback")
+            raise
+        finally:
+            events.append("close")
+
+    inner = APIRouter(route_class=scoped_route(async_request_scope))
+
+    @inner.get("/stream")
+    async def stream() -> StreamingResponse:
+        async def body():
+            events.append(f"stream:{await get_transaction()}")
+            yield b"chunk"
+
+        return StreamingResponse(body())
+
+    @inner.get("/unhandled")
+    async def unhandled() -> None:
+        await get_transaction()
+        raise _DeliberateUnhandledFailure()
+
+    outer = APIRouter()
+    outer.include_router(inner, prefix="/inner")
+    included_app = FastAPI()
+    included_app.include_router(outer, prefix="/outer")
+    client = TestClient(included_app, raise_server_exceptions=False)
+
+    # Act
+    streamed = client.get("/outer/inner/stream")
+    failed = client.get("/outer/inner/unhandled")
+
+    # Assert
+    assert streamed.text == "chunk"
+    assert failed.status_code == 500
+    assert events == [
+        "open",
+        "stream:connection",
+        "commit",
+        "close",
+        "open",
+        "rollback",
+        "close",
+    ]
 
 
 def test_exception_before_resource_use_still_propagates(app: FastAPI, events: list[str]):
