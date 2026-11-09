@@ -604,136 +604,23 @@ def _finalize(
     return wrapper
 
 
-def _create_sync_wrapper_impl(
-    func: Callable[..., Any],
-    scope: "BaseScope",
-    cache_key: Callable[..., Hashable] | None,
-    ignore_params: bool,
-) -> Callable[..., Any]:
-    """Build the wrapper shared by the sync and sync-in-async decorators."""
-    params = _read_params(func, scope)
-    slot = _allocate_slot(scope)
-
-    writer = Writer()
-    writer.write(f"def wrapper({render_parameters(params)}):")
-    with writer.block():
-        call = f"__func__({_render_forward_arguments(params)})"
-
-        def write_call() -> None:
-            writer.write(f"__value__ = {call}")
-
-        if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, scope, write_call)
-        else:
-            _write_keyed_body(writer, slot, scope, cache_key, params, write_call)
-
-    namespace = _build_namespace(func, scope, slot)
-    if cache_key is not None:
-        namespace["__cache_key__"] = cache_key
-    wrapper = _finalize(writer, func, params, namespace)
-    weakref.finalize(wrapper, scope.release_slot, slot.index)
-    return wrapper
-
-
-def create_sync_wrapper[**P, T](
-    func: Callable[P, T],
-    scope: "Scope",
-    cache_key: Callable[..., Hashable] | None = None,
-    ignore_params: bool = False,
-) -> Cached[P, T, T]:
-    """
-    Create a sync wrapper that caches `func`'s result per scope activation.
-
-    :param func: The function to cache.
-    :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>`.
-    :param cache_key: Derives a hashable key from the arguments.
-    :param ignore_params: Cache one value per activation regardless of arguments.
-    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
-    """
-    return cast(
-        Cached[P, T, T],
-        _create_sync_wrapper_impl(func, scope, cache_key, ignore_params),
-    )
-
-
-def create_sync_in_async_wrapper[**P, T](
-    func: Callable[P, T],
-    scope: "AsyncScope",
-    cache_key: Callable[..., Hashable] | None = None,
-    ignore_params: bool = False,
-) -> Cached[P, T, T]:
-    """
-    Create a sync wrapper that caches `func`'s result in an async scope.
-
-    :param func: The function to cache.
-    :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
-    :param cache_key: Derives a hashable key from the arguments.
-    :param ignore_params: Cache one value per activation regardless of arguments.
-    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
-    """
-    return cast(
-        Cached[P, T, T],
-        _create_sync_wrapper_impl(func, scope, cache_key, ignore_params),
-    )
-
-
-def create_async_wrapper[**P, T](
-    func: Callable[P, Awaitable[T]],
-    scope: "AsyncScope",
-    cache_key: Callable[..., Hashable] | None = None,
-    ignore_params: bool = False,
-) -> Cached[P, Awaitable[T], Awaitable[T]]:
-    """
-    Create an async wrapper that caches `func`'s result per scope activation.
-
-    :param func: The async function to cache.
-    :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
-    :param cache_key: Derives a hashable key from the arguments.
-    :param ignore_params: Cache one value per activation regardless of arguments.
-    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
-    """
-    params = _read_params(func, scope)
-    slot = _allocate_slot(scope)
-
-    writer = Writer()
-    writer.write(f"async def wrapper({render_parameters(params)}):")
-    with writer.block():
-        call = f"await __func__({_render_forward_arguments(params)})"
-
-        def write_call() -> None:
-            writer.write(f"__value__ = {call}")
-
-        if _is_slot_eligible(params, cache_key, ignore_params):
-            _write_slot_body(writer, slot, scope, write_call, is_async=True)
-        else:
-            _write_keyed_body(writer, slot, scope, cache_key, params, write_call, is_async=True)
-
-    namespace = _build_namespace(func, scope, slot, is_async=True)
-    if cache_key is not None:
-        namespace["__cache_key__"] = cache_key
-    wrapper = cast(
-        Cached[P, Awaitable[T], Awaitable[T]],
-        _finalize(writer, func, params, namespace),
-    )
-    weakref.finalize(wrapper, scope.release_slot, slot.index)
-    return wrapper
-
-
 type _WriteValue = Callable[[Writer, str], None]
 """Writes `__value__` on a miss, given the source of the call to the cached function."""
 
 
-def _create_entering_wrapper_impl(
+def _create_wrapper(
     func: Callable[..., Any],
     scope: "BaseScope",
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
     is_async: bool,
     write_value: _WriteValue,
-    bindings: dict[str, Any],
+    bindings: dict[str, Any] | None = None,
 ) -> Callable[..., Any]:
     """
-    Build a wrapper whose miss may enter a generator, registering it in the activation.
+    Build a cache wrapper for `func`, freeing its slot once the wrapper is gone.
+
+    Every kind of wrapper is built here. They differ only in how a miss computes its value.
 
     :param is_async: Whether the wrapper is `async def`, so its miss can await.
     :param write_value: Writes the miss, from the call's source.
@@ -756,12 +643,64 @@ def _create_entering_wrapper_impl(
             _write_keyed_body(writer, slot, scope, cache_key, params, write_compute, is_async)
 
     namespace = _build_namespace(func, scope, slot, is_async=is_async)
-    namespace.update(bindings)
+    if bindings is not None:
+        namespace.update(bindings)
     if cache_key is not None:
         namespace["__cache_key__"] = cache_key
     wrapper = _finalize(writer, func, params, namespace)
     weakref.finalize(wrapper, scope.release_slot, slot.index)
     return wrapper
+
+
+def _write_call(writer: Writer, call: str) -> None:
+    writer.write(f"__value__ = {call}")
+
+
+def _write_await(writer: Writer, call: str) -> None:
+    writer.write(f"__value__ = await {call}")
+
+
+def create_sync_wrapper[**P, T](
+    func: Callable[P, T],
+    scope: "Scope | AsyncScope",
+    cache_key: Callable[..., Hashable] | None = None,
+    ignore_params: bool = False,
+) -> Cached[P, T, T]:
+    """
+    Create a sync wrapper that caches `func`'s result per scope activation.
+
+    :param func: The function to cache.
+    :param scope: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>` or
+        {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
+    """
+    return cast(
+        Cached[P, T, T],
+        _create_wrapper(func, scope, cache_key, ignore_params, False, _write_call),
+    )
+
+
+def create_async_wrapper[**P, T](
+    func: Callable[P, Awaitable[T]],
+    scope: "AsyncScope",
+    cache_key: Callable[..., Hashable] | None = None,
+    ignore_params: bool = False,
+) -> Cached[P, Awaitable[T], Awaitable[T]]:
+    """
+    Create an async wrapper that caches `func`'s result per scope activation.
+
+    :param func: The async function to cache.
+    :param scope: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
+    """
+    return cast(
+        Cached[P, Awaitable[T], Awaitable[T]],
+        _create_wrapper(func, scope, cache_key, ignore_params, True, _write_await),
+    )
 
 
 def _write_enter_generator(writer: Writer, call: str) -> None:
@@ -816,7 +755,7 @@ def create_generator_wrapper[**P, T](
     """
     return cast(
         Cached[P, T, Generator[T, Any, Any]],
-        _create_entering_wrapper_impl(
+        _create_wrapper(
             func,
             scope,
             cache_key,
@@ -848,7 +787,7 @@ def create_async_generator_wrapper[**P, T](
     """
     return cast(
         Cached[P, Awaitable[T], AsyncGenerator[T, Any]],
-        _create_entering_wrapper_impl(
+        _create_wrapper(
             func,
             scope,
             cache_key,
@@ -902,7 +841,5 @@ def create_checked_wrapper(
         write_value = _write_check_sync
     return cast(
         Cached[..., Any, Any],
-        _create_entering_wrapper_impl(
-            func, scope, cache_key, ignore_params, is_async, write_value, bindings
-        ),
+        _create_wrapper(func, scope, cache_key, ignore_params, is_async, write_value, bindings),
     )

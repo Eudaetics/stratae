@@ -21,7 +21,6 @@ from stratae.lifecycle._wrappers import (
     create_async_wrapper,
     create_checked_wrapper,
     create_generator_wrapper,
-    create_sync_in_async_wrapper,
     create_sync_wrapper,
 )
 from stratae.lifecycle.exceptions import (
@@ -164,4 +163,4 @@ class AsyncCacheDecorator:
             return create_checked_wrapper(
                 func, scope, cache_key, ignore_params, is_async=hidden == "async"
             )
-        return create_sync_in_async_wrapper(func, scope, cache_key, ignore_params)
+        return create_sync_wrapper(func, scope, cache_key, ignore_params)
