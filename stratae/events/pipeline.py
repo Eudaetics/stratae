@@ -13,6 +13,7 @@ Headers travel with the message. An adapter gives its emit a
 {py:class}`MessageHeaders <stratae.events.middleware.MessageHeaders>` for publish middleware
 to add to, and sends them with the message. It handles a message inside
 {py:func}`receiving`, with the headers it arrived with, so handle middleware can read them.
+Only handle middleware reads them, so an adapter without any can skip `receiving`.
 """
 
 from collections.abc import Awaitable, Callable, Generator, Mapping

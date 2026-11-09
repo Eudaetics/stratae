@@ -1222,17 +1222,25 @@ class RabbitMQConsumer:
             await self._fail(registration, message, exc, retry=False)
             return
         try:
-            with Envelope.scope(_envelope_from(message)), receiving(_headers_from(message)):
-                if self._scope is None:
-                    await invoke(registration.handler, payload)
+            with Envelope.scope(_envelope_from(message)):
+                if self._handle_middleware:
+                    with receiving(_headers_from(message)):
+                        await self._run_handler(registration, payload)
                 else:
-                    async with self._scope:
-                        await invoke(registration.handler, payload)
+                    await self._run_handler(registration, payload)
         except Exception as exc:
             await self._fail(registration, message, exc, retry=True)
             return
         if message.delivery_tag is not None:
             await message.channel.basic_ack(message.delivery_tag)
+
+    async def _run_handler(self, registration: _Registration, payload: Any) -> None:
+        """Call the registration's handler with a decoded payload, in the scope if one is set."""
+        if self._scope is None:
+            await invoke(registration.handler, payload)
+        else:
+            async with self._scope:
+                await invoke(registration.handler, payload)
 
     async def _fail(
         self,
