@@ -89,11 +89,3 @@ class AsyncDependencyError(InjectionSignatureError):
     def __init__(self, func: Callable[..., Any]) -> None:
         """:param func: The sync function."""
         super().__init__(f"Sync function '{func.__name__}' cannot have async dependencies.")
-
-
-class DependencyNotFoundError(DependencyInjectionError, ValueError):
-    """Raised when a callable was never registered with `Depends`."""
-
-    def __init__(self, func: Callable[..., Any]) -> None:
-        """:param func: The callable."""
-        super().__init__(f"No Dependency found for {func}")
