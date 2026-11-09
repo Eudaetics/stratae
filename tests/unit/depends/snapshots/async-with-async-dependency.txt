@@ -1,0 +1,2 @@
+async def wrapper(x):
+    return await __func__(x, await __dep_value__.provide())

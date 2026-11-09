@@ -1,0 +1,14 @@
+def wrapper():
+    try:
+        __slots__ = __var__.get()
+        __value__ = __slots__[4]
+    except LookupError:
+        __slots__ = __scope__.get_slots()
+        __value__ = __slots__[4]
+    if __value__ is __UNSET__:
+        __value__ = __enter_generator__(__slots__, __func__())
+        try:
+            __slots__[4] = __value__
+        except IndexError:
+            pass
+    return __value__

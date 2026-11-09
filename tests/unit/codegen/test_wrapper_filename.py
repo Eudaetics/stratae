@@ -1,5 +1,6 @@
 """Test suite for wrapper filename generation."""
 
+import re
 from collections.abc import Callable
 
 import pytest
@@ -34,11 +35,11 @@ class _Named:
 
 def test_wrapper_filename_uses_module_and_qualname():
     """
-    wrapper_filename should embed the function's module, qualname, and identity.
+    wrapper_filename should embed the function's module and qualname.
 
     Given: A plain module-level function.
     When: Generating its wrapper filename.
-    Then: The filename should contain the function's module, qualname, and id.
+    Then: The filename should contain the function's module and qualname.
     """
     # Act
     result = wrapper_filename(_module_level_func)
@@ -46,7 +47,6 @@ def test_wrapper_filename_uses_module_and_qualname():
     # Assert
     assert __name__ in result
     assert _module_level_func.__qualname__ in result
-    assert f"{id(_module_level_func):#x}" in result
 
 
 def test_wrapper_filename_includes_locals_for_nested_function():
@@ -82,7 +82,6 @@ def test_wrapper_filename_supports_classes():
     # Assert
     assert __name__ in result
     assert _RegularClass.__qualname__ in result
-    assert f"{id(_RegularClass):#x}" in result
 
 
 def test_wrapper_filename_falls_back_to_name_without_qualname():
@@ -106,7 +105,6 @@ def test_wrapper_filename_falls_back_to_name_without_qualname():
     # Assert
     assert _Named.__module__ in result
     assert "custom_name" in result
-    assert f"{id(obj):#x}" in result
 
 
 def test_wrapper_filename_falls_back_to_repr_without_name_or_qualname():
@@ -129,7 +127,6 @@ def test_wrapper_filename_falls_back_to_repr_without_name_or_qualname():
     # Assert
     assert "?" in result
     assert repr(obj) in result
-    assert f"{id(obj):#x}" in result
 
 
 def test_wrapper_filename_does_not_evaluate_repr_when_qualname_present():
@@ -150,23 +147,23 @@ def test_wrapper_filename_does_not_evaluate_repr_when_qualname_present():
     result = wrapper_filename(obj)
 
     # Assert
-    assert result == f"<stratae: broken.module.BrokenRepr@{id(obj):#x}>"
+    assert re.fullmatch(r"<stratae: broken\.module\.BrokenRepr#\d+>", result)
 
 
-def test_wrapper_filename_is_stable_for_the_same_object():
+def test_wrapper_filename_is_unique_per_call():
     """
-    wrapper_filename should return the same value for repeated calls on the same object.
+    wrapper_filename should return a new filename on every call, even for the same object.
 
-    Given: A single function.
+    Given: A single function, wrapped twice.
     When: Generating its wrapper filename twice.
-    Then: Both results should be identical.
+    Then: The filenames should differ, so the two wrappers' sources are kept apart.
     """
     # Act
     first = wrapper_filename(_module_level_func)
     second = wrapper_filename(_module_level_func)
 
     # Assert
-    assert first == second
+    assert first != second
 
 
 def test_wrapper_filename_differs_between_distinct_functions():
