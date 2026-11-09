@@ -10,6 +10,14 @@ Handler:
 - config stores the supplied value.
 - Calling a Handler invokes the wrapped sync callable.
 - Calling a Handler wrapping an async callable returns an awaitable.
+
+Handlers:
+- Holds its handlers as a tuple, equal to a plain tuple of them.
+- Keeps the sync and async handlers apart.
+- adding returns new handlers with the handler added, leaving the original unchanged.
+- removing returns new handlers without the handler, leaving the original unchanged.
+- removing a handler it doesn't hold returns the same handlers.
+- removing takes out only the given registration of a callable registered twice.
 """
 
 import asyncio
@@ -18,7 +26,7 @@ from typing import Any
 
 import pytest
 
-from stratae.events import Handler
+from stratae.events import Handler, Handlers
 
 
 def _sync_handler(payload: int) -> int:
@@ -118,3 +126,120 @@ async def test_calling_handler_wrapping_async_callable_returns_awaitable():
     result = await handler(payload)
 
     assert result == 2
+
+
+def test_handlers_equal_plain_tuple():
+    """
+    Handlers should be a tuple of its handlers.
+
+    Given: Two handlers
+    When: Handlers is built from them
+    Then: It should equal a plain tuple of the same handlers
+    """
+    # Arrange
+    first, second = Handler(_sync_handler, None), Handler(_async_handler, None)
+
+    # Act
+    handlers = Handlers((first, second))
+
+    # Assert
+    assert handlers == (first, second)
+
+
+def test_handlers_keeps_sync_and_async_apart():
+    """
+    Handlers should keep its sync and async handlers apart.
+
+    Given: Sync and async handlers, interleaved
+    When: Handlers is built from them
+    Then: sync should hold the sync ones and asynchronous the async ones, each in order
+    """
+    # Arrange
+    sync_a, sync_b = Handler(_sync_handler, None), Handler(_SyncCallable(), None)
+    async_a, async_b = Handler(_async_handler, None), Handler(_AsyncCallable(), None)
+
+    # Act
+    handlers = Handlers((sync_a, async_a, sync_b, async_b))
+
+    # Assert
+    assert handlers.sync == (sync_a, sync_b)
+    assert handlers.asynchronous == (async_a, async_b)
+
+
+def test_handlers_adding_leaves_original_unchanged():
+    """
+    ``adding`` should return new handlers, with the original unchanged.
+
+    Given: Handlers holding one sync handler
+    When: An async handler is added
+    Then: The result should hold both, kept apart, and the original only the first
+    """
+    # Arrange
+    first, added = Handler(_sync_handler, None), Handler(_async_handler, None)
+    original: Handlers[Handler[Any, Any, Any]] = Handlers((first,))
+
+    # Act
+    result = original.adding(added)
+
+    # Assert
+    assert result == (first, added)
+    assert result.asynchronous == (added,)
+    assert original == (first,)
+    assert original.asynchronous == ()
+
+
+def test_handlers_removing_leaves_original_unchanged():
+    """
+    ``removing`` should return new handlers without the handler, with the original unchanged.
+
+    Given: Handlers holding a sync and an async handler
+    When: The async handler is removed
+    Then: The result should hold only the sync one, and the original both
+    """
+    # Arrange
+    kept, removed = Handler(_sync_handler, None), Handler(_async_handler, None)
+    original = Handlers((kept, removed))
+
+    # Act
+    result = original.removing(removed)
+
+    # Assert
+    assert result == (kept,)
+    assert result.asynchronous == ()
+    assert original == (kept, removed)
+
+
+def test_handlers_removing_absent_handler_returns_same_handlers():
+    """
+    ``removing`` a handler it doesn't hold should return the same handlers.
+
+    Given: Handlers holding one handler, and another handler it doesn't hold
+    When: The other handler is removed
+    Then: The same Handlers should be returned
+    """
+    # Arrange
+    original = Handlers((Handler(_sync_handler, None),))
+
+    # Act
+    result = original.removing(Handler(_sync_handler, None))
+
+    # Assert
+    assert result is original
+
+
+def test_handlers_removing_takes_out_only_that_registration():
+    """
+    ``removing`` should take out only the given registration of a callable registered twice.
+
+    Given: Two Handlers wrapping the same callable
+    When: One of them is removed
+    Then: The other should remain
+    """
+    # Arrange
+    kept, removed = Handler(_sync_handler, None), Handler(_sync_handler, None)
+
+    # Act
+    result = Handlers((kept, removed)).removing(removed)
+
+    # Assert
+    assert result == (kept,)

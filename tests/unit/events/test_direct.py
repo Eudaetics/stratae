@@ -21,6 +21,12 @@ DirectBus:
 - handlers excludes a removed handler.
 - handlers returns a schema-less event's handlers.
 - handlers returns a snapshot that later registrations do not change.
+- handlers returns a snapshot that later removals do not change.
+- handlers returns the same value until the event's handlers change.
+- A dispatcher receives the event's registered Handlers as they are, not a copy.
+- A handler registered during an emit is not called by that emit, only by the next.
+- A handler removed during an emit is still called by that emit, but not by the next.
+- Handlers registered at the same time from several threads are all kept.
 - The same callable may be registered multiple times independently.
 - emit dispatches the payload to all registered handlers.
 - A raising handler does not prevent other handlers from running.
@@ -78,6 +84,8 @@ DirectBus (with envelope):
 """
 
 import gc
+import sys
+import threading
 import weakref
 from collections.abc import Collection, Generator
 from contextlib import contextmanager
@@ -94,6 +102,7 @@ from stratae.events import (
     Envelope,
     HandleCall,
     Handler,
+    Handlers,
     Hooks,
     Immutable,
     Middleware,
@@ -566,6 +575,159 @@ def test_handlers_snapshot_unchanged_by_later_registration(bus: DirectBus):
     assert result == (first,)
 
 
+def test_handlers_snapshot_unchanged_by_later_removal(bus: DirectBus):
+    """
+    ``handlers`` should return a snapshot that later removals don't change.
+
+    Given: The handlers of an event, looked up while it has two handlers
+    When: One of them is removed
+    Then: The earlier result should still hold both Handlers
+    """
+    # Arrange
+    kept = bus.handle(_task_created, Mock())
+    removed = bus.handle(_task_created, Mock())
+    result = bus.handlers(_task_created)
+
+    # Act
+    bus.remove(removed)
+
+    # Assert
+    assert result == (kept, removed)
+
+
+def test_handlers_same_value_until_changed(bus: DirectBus):
+    """
+    ``handlers`` should return the same value until the event's handlers change.
+
+    Given: An event with one handler
+    When: handlers is called twice, then again after another registration
+    Then: The first two calls should return the same object, and the third a new one
+    """
+    # Arrange
+    bus.handle(_task_created, Mock())
+
+    # Act
+    first, second = bus.handlers(_task_created), bus.handlers(_task_created)
+    bus.handle(_task_created, Mock())
+    third = bus.handlers(_task_created)
+
+    # Assert
+    assert first is second
+    assert third is not first
+
+
+def test_dispatcher_receives_registered_handlers_as_given():
+    """
+    A dispatcher should receive the event's registered handlers as they are, not a copy.
+
+    Given: A bus whose PubSub dispatcher records the handlers it's given, and two handlers
+    When: The event is emitted
+    Then: The dispatcher should receive the same Handlers that handlers returns
+    """
+    # Arrange
+    received: list[Collection[Handler[Any, Any, Any]]] = []
+
+    def record[S](
+        event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, object]], payload: S
+    ) -> None:
+        received.append(handlers)
+
+    bus = DirectBus(dispatchers=[Dispatch(PubSub, record)])
+    bus.handle(_task_created, Mock())
+    bus.handle(_task_created, Mock())
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert len(received) == 1
+    assert received[0] is bus.handlers(_task_created)
+    assert isinstance(received[0], Handlers)
+
+
+def test_handler_registered_during_emit_waits_for_next_emit(bus: DirectBus):
+    """
+    A handler registered while an emit runs should be called by the next emit, not that one.
+
+    Given: A handler that registers another handler the first time it runs
+    When: The event is emitted twice
+    Then: The registered handler should be called by the second emit only
+    """
+    # Arrange
+    late = Mock()
+    registered: list[Handler[Any, Any, Any]] = []
+
+    def register_late(_: object) -> None:
+        if not registered:
+            registered.append(bus.handle(_task_created, late))
+
+    bus.handle(_task_created, register_late)
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1))
+    late.assert_not_called()
+    bus.emit(_task_created, None, _TaskCreated(2))
+
+    # Assert
+    late.assert_called_once_with(_TaskCreated(2))
+
+
+def test_handler_removed_during_emit_still_runs_in_that_emit(bus: DirectBus):
+    """
+    A handler removed while an emit runs should still be called by that emit, not the next.
+
+    Given: A handler that removes another handler of the same event
+    When: The event is emitted twice
+    Then: The removed handler should be called by the first emit only, whatever the order
+    """
+    # Arrange
+    removed_mock = Mock()
+    removed = bus.handle(_task_created, removed_mock)
+    bus.handle(_task_created, lambda _: bus.remove(removed))
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, None, _TaskCreated(2))
+
+    # Assert
+    removed_mock.assert_called_once_with(_TaskCreated(1))
+
+
+def test_concurrent_registrations_keep_every_handler(bus: DirectBus):
+    """
+    Handlers registered at the same time from several threads should all be kept.
+
+    Given: Several threads released together, each registering many handlers to one event,
+        with the interpreter switching threads as often as it can
+    When: Every thread has finished
+    Then: The event should hold every handler registered
+    """
+    # Arrange
+    threads, per_thread = 8, 100
+    start = threading.Barrier(threads)
+
+    def register() -> None:
+        start.wait()
+        for _ in range(per_thread):
+            bus.handle(_task_created, lambda _: None)
+
+    workers = [threading.Thread(target=register) for _ in range(threads)]
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+
+    # Act
+    try:
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+    finally:
+        sys.setswitchinterval(interval)
+
+    # Assert
+    assert len(bus.handlers(_task_created)) == threads * per_thread
+
+
 def test_same_callable_registered_twice_called_twice(bus: DirectBus):
     """
     Registering the same callable twice should produce two independent registrations.
@@ -680,9 +842,8 @@ def test_handler_removing_registration_during_dispatch_does_not_break_other_hand
     """
     A removed handler mid-dispatch should not prevent other handlers from running.
 
-    Handlers are stored in a set, so iteration order is not guaranteed; several other
-    handlers are registered alongside the self-removing to reduce the chances of degenerate
-    ordering causing the test to fail.
+    Handler order isn't specified, so several other handlers are registered alongside the
+    self-removing one, so that some run after it whatever the order.
 
     Given: A self-removing handler and several other handlers registered to an event
     When: an event is emitted

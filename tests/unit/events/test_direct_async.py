@@ -16,6 +16,11 @@ AsyncDirectBus:
 - handlers excludes a removed handler.
 - handlers returns a schema-less event's handlers.
 - handlers returns a snapshot that later registrations do not change.
+- A dispatcher receives the event's registered Handlers as they are, not a copy.
+- A handler registered during an emit is not called by that emit, only by the next.
+- A sync or async handler removed during an emit is still called by that emit, but not by the
+  next.
+- Handlers registered at the same time from several threads are all kept.
 - The same callable may be registered multiple times independently.
 - emit called directly dispatches to the event's handlers.
 - A raising handler does not prevent other handlers from running.
@@ -69,6 +74,8 @@ AsyncDirectBus (with envelope):
 """
 
 import asyncio
+import sys
+import threading
 from collections.abc import Awaitable, Collection, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -85,6 +92,7 @@ from stratae.events import (
     Envelope,
     HandleCall,
     Handler,
+    Handlers,
     Hooks,
     Immutable,
     Middleware,
@@ -458,6 +466,133 @@ def test_handlers_snapshot_unchanged_by_later_registration(bus: AsyncDirectBus):
 
     # Assert
     assert result == (first,)
+
+
+async def test_dispatcher_receives_registered_handlers_as_given():
+    """
+    A dispatcher should receive the event's registered handlers as they are, not a copy.
+
+    Given: A bus whose PubSub dispatcher records the handlers it's given, and a sync and an
+        async handler
+    When: The event is emitted
+    Then: The dispatcher should receive the same Handlers that handlers returns
+    """
+    # Arrange
+    received: list[Collection[Handler[Any, Any, Any]]] = []
+
+    async def record[S](
+        event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, Any]], payload: S
+    ) -> None:
+        await asyncio.sleep(0)
+        received.append(handlers)
+
+    bus = AsyncDirectBus(dispatchers=[Dispatch(PubSub, record)])
+    bus.handle(_task_created, Mock())
+    bus.handle(_task_created, AsyncMock())
+
+    # Act
+    await bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert len(received) == 1
+    assert received[0] is bus.handlers(_task_created)
+    assert isinstance(received[0], Handlers)
+
+
+async def test_handler_registered_during_emit_waits_for_next_emit(bus: AsyncDirectBus):
+    """
+    A handler registered while an emit runs should be called by the next emit, not that one.
+
+    Given: An async handler that registers another async handler the first time it runs
+    When: The event is emitted twice
+    Then: The registered handler should be called by the second emit only
+    """
+    # Arrange
+    late = AsyncMock()
+    registered: list[Handler[Any, Any, Any]] = []
+
+    async def register_late(_: object) -> None:
+        await asyncio.sleep(0)
+        if not registered:
+            registered.append(bus.handle(_task_created, late))
+
+    bus.handle(_task_created, register_late)
+
+    # Act
+    await bus.emit(_task_created, None, _TaskCreated(1))
+    late.assert_not_called()
+    await bus.emit(_task_created, None, _TaskCreated(2))
+
+    # Assert
+    late.assert_awaited_once_with(_TaskCreated(2))
+
+
+@pytest.mark.parametrize("removed_mock", [Mock(), AsyncMock()], ids=["sync", "async"])
+async def test_handler_removed_during_emit_still_runs_in_that_emit(
+    bus: AsyncDirectBus, removed_mock: Mock
+):
+    """
+    A handler removed while an emit runs should still be called by that emit, not the next.
+
+    Given: A sync or async handler, and an async handler that removes it
+    When: The event is emitted twice
+    Then: The removed handler should be called by the first emit only, whatever the order
+    """
+    # Arrange
+    removed = bus.handle(_task_created, removed_mock)
+
+    async def remove(_: object) -> None:
+        await asyncio.sleep(0)
+        bus.remove(removed)
+
+    bus.handle(_task_created, remove)
+
+    # Act
+    await bus.emit(_task_created, None, _TaskCreated(1))
+    await bus.emit(_task_created, None, _TaskCreated(2))
+
+    # Assert
+    removed_mock.assert_called_once_with(_TaskCreated(1))
+
+
+def test_concurrent_registrations_keep_every_handler(bus: AsyncDirectBus):
+    """
+    Handlers registered at the same time from several threads should all be kept.
+
+    Given: Several threads released together, each registering many sync and async handlers
+        to one event, with the interpreter switching threads as often as it can
+    When: Every thread has finished
+    Then: The event should hold every handler registered, each on its own side
+    """
+    # Arrange
+    threads, per_thread = 8, 100
+    start = threading.Barrier(threads)
+
+    async def async_handler(_: object) -> None:
+        """Do nothing, asynchronously."""
+
+    def register() -> None:
+        start.wait()
+        for index in range(per_thread):
+            bus.handle(_task_created, async_handler if index % 2 else lambda _: None)
+
+    workers = [threading.Thread(target=register) for _ in range(threads)]
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+
+    # Act
+    try:
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+    finally:
+        sys.setswitchinterval(interval)
+
+    # Assert
+    handlers = bus.handlers(_task_created)
+    assert len(handlers) == threads * per_thread
+    assert len(handlers.sync) == len(handlers.asynchronous) == threads * per_thread // 2
 
 
 async def test_same_callable_registered_twice_called_twice(bus: AsyncDirectBus):

@@ -32,7 +32,16 @@ import asyncio
 from collections.abc import Awaitable, Callable, Collection
 from typing import Any, Literal, assert_type
 
-from stratae.events import AsyncDirectBus, DirectBus, Handler, Hooks, NoPayload, PubSub, Request
+from stratae.events import (
+    AsyncDirectBus,
+    DirectBus,
+    Handler,
+    Handlers,
+    Hooks,
+    NoPayload,
+    PubSub,
+    Request,
+)
 from stratae.events._dispatch import (
     dispatch_request,
     dispatch_request_async,
@@ -222,9 +231,9 @@ def test_builtin_dispatchers_fit_their_patterns() -> None:
         [Request[_S, _R, Any], Collection[Handler[[_S], Any, _R | Awaitable[_R]]], _S],
         Awaitable[_R],
     ] = dispatch_request_async
-    pubsub: Callable[[PubSub[_S, Any], Collection[Handler[[_S], Any, object]], _S], None] = fan_out
+    pubsub: Callable[[PubSub[_S, Any], Handlers[Handler[[_S], Any, object]], _S], None] = fan_out
     pubsub_async: Callable[
-        [PubSub[_S, Any], Collection[Handler[[_S], Any, Any]], _S], Awaitable[None]
+        [PubSub[_S, Any], Handlers[Handler[[_S], Any, Any]], _S], Awaitable[None]
     ] = fan_out_async
 
     # Assert
