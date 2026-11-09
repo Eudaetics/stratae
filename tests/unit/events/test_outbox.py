@@ -15,6 +15,7 @@ OutboxProducer:
 - A middleware class that isn't a context manager is refused when the producer is built.
 - Emitting returns None, and publishes nothing.
 - Binding or emitting a request event raises TypeError.
+- Emitting without binding registers the route, and refuses a route bound to another event.
 - A route bound to another event or config raises ValueError; the same config object, or an
   equal one, binds again.
 - An equal event, built separately, binds an existing route; a different payload type under
@@ -55,7 +56,7 @@ from typing import Any, cast, override
 
 import pytest
 
-from stratae.events import Envelope, Hooks, Middleware, PublishCall, PubSub, Request
+from stratae.events import Envelope, Hooks, Middleware, NoPayload, PublishCall, PubSub, Request
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.outbox import (
     InMemoryOutboxStore,
@@ -423,6 +424,25 @@ def test_route_clash_refused(outbox: OutboxProducer):
         outbox.bind(_order_placed, config=OutboxConfig("other-config", route="orders"))
     outbox.bind(_order_placed, config=config)
     outbox.bind(_order_placed, config=OutboxConfig("orders-config", route="orders"))
+
+
+async def test_direct_emit_registers_route(outbox: OutboxProducer, store: InMemoryOutboxStore):
+    """
+    Emitting without binding should still register the route, and refuse a clashing one.
+
+    Given: An outbox producer with nothing bound
+    When: An event is emitted directly, then another event is emitted to the same route
+    Then: The first registers its route and writes a record; the second raises ValueError
+        and writes nothing
+    """
+    # Act
+    await outbox.emit(_order_placed, OutboxConfig("orders", route="orders"), _Order(1))
+
+    # Assert
+    assert dict(outbox.routes) == {"orders": (_order_placed, "orders")}
+    with pytest.raises(ValueError, match="'orders' is already bound"):
+        await outbox.emit(_heartbeat, OutboxConfig("orders", route="orders"), NoPayload())
+    assert len(store.pending()) == 1
 
 
 def test_equal_event_binds_existing_route(outbox: OutboxProducer):
