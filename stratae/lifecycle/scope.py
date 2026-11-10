@@ -310,7 +310,6 @@ class BaseScope[M]:
     """
 
     __slots__ = (
-        "_isolation",
         "_lock",
         "_middleware",
         "_new_slots",
@@ -318,15 +317,10 @@ class BaseScope[M]:
         "_plain",
         "_requires",
         "_slots",
-        "_storage",
-        "_threads",
         "_var",
         "name",
     )
 
-    _isolation: IsolationType
-    _storage: StorageType
-    _threads: bool
     _requires: "BaseScope[Any] | None"
     _middleware: tuple[M, ...]
     _plain: bool
@@ -378,9 +372,6 @@ class BaseScope[M]:
         self._plain = requires is None and not self._middleware
 
         self.name = name
-        self._isolation = isolation
-        self._storage = storage
-        self._threads = threads
         self._requires = requires
         slots = SlotStore(
             name, shared=isolation == "shared", dense=storage == "dense", threads=threads
@@ -395,17 +386,17 @@ class BaseScope[M]:
     @property
     def isolation(self) -> IsolationType:
         """Cache isolation strategy for this scope."""
-        return self._isolation
+        return "shared" if self._slots.shared else "context"
 
     @property
     def storage(self) -> StorageType:
         """Slot storage strategy for this scope."""
-        return self._storage
+        return "dense" if self._slots.dense else "sparse"
 
     @property
     def threads(self) -> bool:
         """Whether cached entries are computed once across threads sharing an activation."""
-        return self._threads
+        return self._slots.threads
 
     @property
     def middleware(self) -> tuple[M, ...]:

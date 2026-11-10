@@ -27,9 +27,9 @@ class Pending:
 
     __slots__ = ("done", "owner")
 
-    def __init__(self, owner: int | None = None) -> None:
-        """Claim for thread `owner`, or the calling thread if omitted."""
-        self.owner = threading.get_ident() if owner is None else owner
+    def __init__(self, owner: int) -> None:
+        """Claim for thread `owner`."""
+        self.owner = owner
         self.done: threading.Event | None = None
 
     def watch(self) -> threading.Event:
@@ -59,9 +59,9 @@ class AsyncPending:
 
     __slots__ = ("owner", "waiters")
 
-    def __init__(self, owner: asyncio.Task[Any] | None = None) -> None:
-        """Claim for task `owner`, or the calling task if omitted."""
-        self.owner = asyncio.current_task() if owner is None else owner
+    def __init__(self, owner: asyncio.Task[Any] | None) -> None:
+        """Claim for task `owner`."""
+        self.owner = owner
         self.waiters: list[asyncio.Future[None]] | None = None
 
     def watch(self) -> asyncio.Future[None]:

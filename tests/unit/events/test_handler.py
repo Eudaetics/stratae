@@ -4,8 +4,7 @@ Unit tests for the Handler class.
 This test suite verifies the following behaviors:
 
 Handler:
-- is_async is False for a synchronous callable.
-- is_async is True for an asynchronous callable, including an object with async __call__.
+- is_async is stored as given, for sync and async functions and callable objects.
 - call stores the wrapped callable.
 - config stores the supplied value.
 - Calling a Handler invokes the wrapped sync callable.
@@ -51,7 +50,7 @@ class _AsyncCallable:
 
 
 @pytest.mark.parametrize(
-    ("call", "expected"),
+    ("call", "is_async"),
     [
         (_sync_handler, False),
         (_async_handler, True),
@@ -60,15 +59,15 @@ class _AsyncCallable:
     ],
     ids=["sync_function", "async_function", "sync_callable", "async_callable"],
 )
-def test_is_async_reflects_callable_type(call: Callable[[Any], Any], expected: bool):
+def test_is_async_stored_as_given(call: Callable[[Any], Any], is_async: bool):
     """
-    is_async should be False for sync callables and True for async callables.
+    is_async should be what the bus that built the Handler says, which it works out once.
 
-    Given: A sync or async callable
-    When: A Handler is constructed with it
-    Then: is_async should match whether the callable is a coroutine function
+    Given: A sync or async callable, and whether it's async
+    When: A Handler is constructed with both
+    Then: is_async is the value given
     """
-    assert Handler(call, object()).is_async is expected
+    assert Handler(call, object(), is_async=is_async).is_async is is_async
 
 
 def test_call_stores_wrapped_callable():
@@ -79,7 +78,7 @@ def test_call_stores_wrapped_callable():
     When: A Handler is constructed with it
     Then: call should be that callable
     """
-    handler = Handler(_sync_handler, object())
+    handler = Handler(_sync_handler, object(), is_async=False)
 
     assert handler.call is _sync_handler
 
@@ -93,7 +92,7 @@ def test_config_stores_supplied_value():
     Then: config should reference the supplied value
     """
     config = {"test": 1}
-    handler = Handler(_sync_handler, config)
+    handler = Handler(_sync_handler, config, is_async=False)
 
     assert handler.config is config
 
@@ -107,7 +106,7 @@ def test_calling_handler_invokes_sync_callable():
     Then: The result should be the callable's return value
     """
     payload = 1
-    handler = Handler(_sync_handler, object())
+    handler = Handler(_sync_handler, object(), is_async=False)
 
     assert handler(payload) == 1
 
@@ -121,7 +120,7 @@ async def test_calling_handler_wrapping_async_callable_returns_awaitable():
     Then: The result should be awaitable and resolve to the callable's return value
     """
     payload = 1
-    handler = Handler(_async_handler, object())
+    handler = Handler(_async_handler, object(), is_async=True)
 
     result = await handler(payload)
 
@@ -137,7 +136,10 @@ def test_handlers_equal_plain_tuple():
     Then: It should equal a plain tuple of the same handlers
     """
     # Arrange
-    first, second = Handler(_sync_handler, None), Handler(_async_handler, None)
+    first, second = (
+        Handler(_sync_handler, None, is_async=False),
+        Handler(_async_handler, None, is_async=True),
+    )
 
     # Act
     handlers = Handlers((first, second))
@@ -155,8 +157,14 @@ def test_handlers_keeps_sync_and_async_apart():
     Then: sync should hold the sync ones and asynchronous the async ones, each in order
     """
     # Arrange
-    sync_a, sync_b = Handler(_sync_handler, None), Handler(_SyncCallable(), None)
-    async_a, async_b = Handler(_async_handler, None), Handler(_AsyncCallable(), None)
+    sync_a, sync_b = (
+        Handler(_sync_handler, None, is_async=False),
+        Handler(_SyncCallable(), None, is_async=False),
+    )
+    async_a, async_b = (
+        Handler(_async_handler, None, is_async=True),
+        Handler(_AsyncCallable(), None, is_async=True),
+    )
 
     # Act
     handlers = Handlers((sync_a, async_a, sync_b, async_b))
@@ -175,7 +183,10 @@ def test_handlers_adding_leaves_original_unchanged():
     Then: The result should hold both, kept apart, and the original only the first
     """
     # Arrange
-    first, added = Handler(_sync_handler, None), Handler(_async_handler, None)
+    first, added = (
+        Handler(_sync_handler, None, is_async=False),
+        Handler(_async_handler, None, is_async=True),
+    )
     original: Handlers[Handler[Any, Any, Any]] = Handlers((first,))
 
     # Act
@@ -197,7 +208,10 @@ def test_handlers_removing_leaves_original_unchanged():
     Then: The result should hold only the sync one, and the original both
     """
     # Arrange
-    kept, removed = Handler(_sync_handler, None), Handler(_async_handler, None)
+    kept, removed = (
+        Handler(_sync_handler, None, is_async=False),
+        Handler(_async_handler, None, is_async=True),
+    )
     original = Handlers((kept, removed))
 
     # Act
@@ -218,10 +232,10 @@ def test_handlers_removing_absent_handler_returns_same_handlers():
     Then: The same Handlers should be returned
     """
     # Arrange
-    original = Handlers((Handler(_sync_handler, None),))
+    original = Handlers((Handler(_sync_handler, None, is_async=False),))
 
     # Act
-    result = original.removing(Handler(_sync_handler, None))
+    result = original.removing(Handler(_sync_handler, None, is_async=False))
 
     # Assert
     assert result is original
@@ -236,7 +250,10 @@ def test_handlers_removing_takes_out_only_that_registration():
     Then: The other should remain
     """
     # Arrange
-    kept, removed = Handler(_sync_handler, None), Handler(_sync_handler, None)
+    kept, removed = (
+        Handler(_sync_handler, None, is_async=False),
+        Handler(_sync_handler, None, is_async=False),
+    )
 
     # Act
     result = Handlers((kept, removed)).removing(removed)

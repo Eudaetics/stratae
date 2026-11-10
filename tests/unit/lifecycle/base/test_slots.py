@@ -115,13 +115,17 @@ def test_allocate_dense_grows_template():
     """
     # Arrange
     scope = Scope("application", "shared")
-    assert len(_store(scope).template) == 4
+    template = _store(scope).template
+    assert template is not None
+    assert len(template) == 4
 
     # Act
     _store(scope).allocate()
 
     # Assert
-    assert len(_store(scope).template) == 5
+    template = _store(scope).template
+    assert template is not None
+    assert len(template) == 5
 
 
 def test_allocate_dense_grows_live_active_slots():

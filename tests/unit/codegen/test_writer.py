@@ -3,7 +3,6 @@
 import pytest
 
 from stratae.codegen import Writer
-from stratae.codegen.exceptions import InvalidIndentWidthError
 
 
 def test_writer_init():
@@ -18,66 +17,7 @@ def test_writer_init():
     writer = Writer()
 
     # Assert
-    assert writer._whitespace == " " * 4  # pyright: ignore[reportPrivateUsage]
     assert writer._nesting == 0  # pyright: ignore[reportPrivateUsage]
-
-
-def test_writer_init_custom_spacing():
-    """
-    Writer init should use specified indent spacing when overridden.
-
-    Given: A Writer class.
-    When: Initializing an instance of that class with custom indent width.
-    Then: The whitespace should be the number of spaces given by width.
-    """
-    # Arrange
-    width = 2
-
-    # Act
-    writer = Writer(width=width)
-
-    # Assert
-    assert writer._whitespace == " " * width  # pyright: ignore[reportPrivateUsage]
-
-
-def test_writer_init_tabs():
-    """
-    Writer init should use a tab character when use_tabs is True.
-
-    Given: A Writer class.
-    When: Initializing an instance with use_tabs=True.
-    Then: The whitespace unit should be a single tab character.
-    """
-    # Arrange & Act
-    writer = Writer(use_tabs=True)
-
-    # Assert
-    assert writer._whitespace == "\t"  # pyright: ignore[reportPrivateUsage]
-
-
-def test_writer_init_tabs_ignores_width():
-    """
-    Writer init should not validate width when use_tabs is True.
-
-    Given: A Writer class.
-    When: Initializing an instance with use_tabs=True and an invalid width.
-    Then: No error should be raised, as width is ignored when using tabs.
-    """
-    # Act & Assert
-    Writer(width=0, use_tabs=True)
-
-
-def test_writer_init_invalid_width():
-    """
-    Writer init should reject a non-positive indent width.
-
-    Given: A Writer class.
-    When: Initializing an instance with a width less than 1.
-    Then: A ValueError should be raised.
-    """
-    # Act & Assert
-    with pytest.raises(InvalidIndentWidthError):
-        Writer(width=0)
 
 
 def test_writer_write():

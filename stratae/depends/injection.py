@@ -57,7 +57,7 @@ pi_2000_123456
 
 import __future__
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from inspect import (
     Parameter,
     Signature,
@@ -89,15 +89,7 @@ from stratae.depends.exceptions import (
 )
 
 
-@overload
-def Depends[**P, R](dependency: Callable[P, Awaitable[R]]) -> Provider: ...  # noqa: S1542
-
-
-@overload
-def Depends[**P, R](dependency: Callable[P, R]) -> Provider: ...  # noqa: S1542
-
-
-def Depends[**P, R](dependency: Callable[P, R | Awaitable[R]]) -> Provider:  # noqa: S1542
+def Depends(dependency: Callable[..., Any]) -> Provider:  # noqa: S1542
     """
     Mark a callable as the provider for an injected parameter.
 

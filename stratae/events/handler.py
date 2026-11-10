@@ -1,5 +1,5 @@
 """
-Wrap event handler callables with async detection and identity semantics.
+Wrap event handler callables with their routing config, compared by identity.
 
 {py:class}`Handler` pairs a callable with its routing config and records whether it's async.
 Each registration returns a distinct `Handler`, which is the token `remove` takes back.
@@ -40,8 +40,6 @@ log: first
 from collections.abc import Callable, Iterable
 from typing import Any, Self
 
-from stratae._callables import is_async_callable
-
 
 class Handler[**P, HandlerConfig, R]:
     """
@@ -52,20 +50,18 @@ class Handler[**P, HandlerConfig, R]:
 
     __slots__ = ("call", "config", "is_async")
 
-    def __init__(
-        self, call: Callable[P, R], config: HandlerConfig, is_async: bool | None = None
-    ) -> None:
+    def __init__(self, call: Callable[P, R], config: HandlerConfig, is_async: bool) -> None:
         """
         Wrap a handler.
 
         :param call: Sync or async callable taking the payload: what the bus invokes, which may
             wrap the registered function, e.g. in hooks.
         :param config: The handler's routing config.
-        :param is_async: Whether `call` is async. Detected if omitted.
+        :param is_async: Whether `call` is async: whether calling it gives a coroutine.
         """
         self.call = call
         self.config = config
-        self.is_async = is_async_callable(call) if is_async is None else is_async
+        self.is_async = is_async
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call the handler. An async handler returns an unawaited coroutine."""

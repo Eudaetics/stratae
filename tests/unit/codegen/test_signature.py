@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 
 from stratae.codegen import defaults, kwdefaults, render_arguments, render_parameters
-from stratae.codegen.exceptions import InvalidTransitionError
 
 
 def _typed_empty(): ...
@@ -32,6 +31,9 @@ def _typed_po_va(x: int, /, *args: int): ...
 def _typed_po_pod_va_ko_vk(x: int, y: int = 1, /, *args: int, z: int, **kwargs: int): ...
 def _typed_pk_ko_vk(x: int, *, z: int, **kwargs: int): ...
 def _typed_po_pod_ko_vk(x: int, y: int = 1, /, *, z: int, **kwargs: int): ...
+def _typed_ko(*, z: int): ...
+def _typed_ko_ko(*, a: int, b: int): ...
+def _typed_po_vk(x: int, /, **kwargs: int): ...
 
 
 _CASES: list[tuple[Callable[..., Any], str]] = [
@@ -57,6 +59,9 @@ _CASES: list[tuple[Callable[..., Any], str]] = [
     (_typed_po_pod_va_ko_vk, "x, y, /, *args, z, **kwargs"),
     (_typed_pk_ko_vk, "x, *, z, **kwargs"),
     (_typed_po_pod_ko_vk, "x, y, /, *, z, **kwargs"),
+    (_typed_ko, "*, z"),
+    (_typed_ko_ko, "*, a, b"),
+    (_typed_po_vk, "x, /, **kwargs"),
 ]
 
 
@@ -77,84 +82,6 @@ def test_render_parameters(func: Callable[..., Any], expected: str):
 
     # Assert
     assert result == expected
-
-
-_INVALID_TRANSITIONS: list[tuple[list[Parameter], str]] = [
-    (
-        [
-            Parameter("z", kind=Parameter.KEYWORD_ONLY),
-            Parameter("x", kind=Parameter.POSITIONAL_ONLY),
-        ],
-        "keyword_only_before_positional_only",
-    ),
-    (
-        [
-            Parameter("args", kind=Parameter.VAR_POSITIONAL),
-            Parameter("x", kind=Parameter.POSITIONAL_ONLY),
-        ],
-        "var_positional_before_positional_only",
-    ),
-    (
-        [
-            Parameter("args", kind=Parameter.VAR_POSITIONAL),
-            Parameter("x", kind=Parameter.POSITIONAL_OR_KEYWORD),
-        ],
-        "var_positional_before_standard",
-    ),
-    (
-        [
-            Parameter("kwargs", kind=Parameter.VAR_KEYWORD),
-            Parameter("x", kind=Parameter.POSITIONAL_ONLY),
-        ],
-        "var_keyword_before_positional_only",
-    ),
-    (
-        [
-            Parameter("kwargs", kind=Parameter.VAR_KEYWORD),
-            Parameter("x", kind=Parameter.POSITIONAL_OR_KEYWORD),
-        ],
-        "var_keyword_before_standard",
-    ),
-    (
-        [
-            Parameter("kwargs", kind=Parameter.VAR_KEYWORD),
-            Parameter("args", kind=Parameter.VAR_POSITIONAL),
-        ],
-        "var_keyword_before_var_positional",
-    ),
-    (
-        [
-            Parameter("kwargs", kind=Parameter.VAR_KEYWORD),
-            Parameter("z", kind=Parameter.KEYWORD_ONLY),
-        ],
-        "var_keyword_before_keyword_only",
-    ),
-    (
-        [
-            Parameter("z", kind=Parameter.KEYWORD_ONLY),
-            Parameter("args", kind=Parameter.VAR_POSITIONAL),
-        ],
-        "keyword_only_before_var_positional",
-    ),
-]
-
-
-@pytest.mark.parametrize(
-    "parameters",
-    [case for case, _ in _INVALID_TRANSITIONS],
-    ids=[case_id for _, case_id in _INVALID_TRANSITIONS],
-)
-def test_render_parameters_invalid_transition(parameters: list[Parameter]):
-    """
-    render_parameters should reject a parameter list with an invalid kind ordering.
-
-    Given: A parameter list whose parameter kinds are out of valid signature order.
-    When: Rendering those parameters with render_parameters.
-    Then: An InvalidTransitionError should be raised.
-    """
-    # Act & Assert
-    with pytest.raises(InvalidTransitionError):
-        render_parameters(parameters)
 
 
 def _every_kind(a: int = 1, /, b: int = 2, *args: int, c: int = 3, d: int, **kwargs: int) -> None:

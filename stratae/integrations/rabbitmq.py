@@ -623,7 +623,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         :raises aiormq.exceptions.ChannelClosed: If the channel closes before the broker
             confirms, e.g. because the exchange doesn't exist.
         """
-        self._check_event(event)
+        self._prepare_event(event)
         stamped = MessageHeaders(headers or {}, reserved=_RESERVED)
         # The message's own envelope, current while middleware and hooks run, so they see it.
         with Envelope.scope(envelope, new_id=self._new_id) as sent:
@@ -674,7 +674,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         except PublishError as exc:
             raise UnroutableError(_UNROUTABLE.format(config.exchange, config.routing_key)) from exc
 
-    def _check_event(self, event: AnyEvent) -> None:
+    def _prepare_event(self, event: AnyEvent) -> None:
         """Raise NotImplementedError for an event that isn't PubSub."""
         if not isinstance(event, PubSub):
             raise NotImplementedError(_REQUEST_REPLY_NOT_IMPLEMENTED)

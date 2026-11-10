@@ -127,14 +127,14 @@ class SlotStore:
         self.shared = shared
         self.dense = dense
         self.threads = threads
-        self.template: SlotStorage
+        self.template: list[Any] | None = None
+        """Dense storage's slots as a new activation starts them; sparse storage has none."""
         if dense:
             template = [UNSET, 0, None, None]  # slots 0-3, see RESERVED_SLOTS
             self.template = template
             self.new = template.copy
         else:
-            self.template = SlotDict({1: 0, 2: None, 3: None})  # slots 1-3
-            # Built from a plain dict: faster than copying the SlotDict.
+            # Built from a plain dict: faster than copying a SlotDict. Slots 1-3.
             self.new = partial(SlotDict, {1: 0, 2: None, 3: None})
         if shared:
             var = SharedVar(name)
@@ -163,7 +163,7 @@ class SlotStore:
     def _extend(self, slots: SlotStorage) -> None:
         """Extend live dense storage with any slots allocated since it was copied."""
         template = self.template
-        if isinstance(template, list) and isinstance(slots, list) and len(slots) < len(template):
+        if template is not None and isinstance(slots, list) and len(slots) < len(template):
             slots.extend(template[len(slots) :])
 
     def allocate(self) -> tuple[int, bool]:
@@ -175,14 +175,15 @@ class SlotStore:
         with self._slot_lock:
             if free := self._free:
                 return free.pop(), True
-            if isinstance(self.template, SlotDict):
+            template = self.template
+            if template is None:
                 slot = self._counter
                 self._counter = slot + 1
                 return slot, False
-            self.template.append(UNSET)
+            template.append(UNSET)
             if active := self.var.get(None):
                 self._extend(active)
-            return len(self.template) - 1, False
+            return len(template) - 1, False
 
     def release(self, slot: int) -> None:
         """
