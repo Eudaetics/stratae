@@ -2,11 +2,13 @@
 In-process event buses that dispatch straight to registered handlers, with no broker.
 
 {py:class}`DirectBus` dispatches synchronously and rejects async handlers.
-{py:class}`AsyncDirectBus` accepts both. It runs each
-{py:class}`PubSub <stratae.events.patterns.PubSub>` handler in its own copy of the context,
-and several async handlers concurrently. Register handlers with `handle`, keyed by event,
-and create emitters with `bind`. A {py:class}`Request <stratae.events.patterns.Request>`
-event needs exactly one responder, which `handlers` can confirm before anything emits it.
+{py:class}`AsyncDirectBus` accepts both, and runs several async handlers concurrently. Both
+run each {py:class}`PubSub <stratae.events.patterns.PubSub>` handler in its own copy of the
+context, so one handler's context variables never reach another, nor the emitter.
+
+Register handlers with `handle`, keyed by event, and create emitters with `bind`. A
+{py:class}`Request <stratae.events.patterns.Request>` event needs exactly one responder, which
+`handlers` can confirm before anything emits it.
 
 Each bus delivers the patterns it has a dispatcher for, found by the event's class, so a
 subclass of a supported pattern is delivered as that pattern. Add or replace a pattern with
@@ -345,9 +347,10 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
     """
     In-process, synchronous event bus.
 
-    {py:class}`PubSub <stratae.events.patterns.PubSub>` events fan out to every handler.
-    {py:class}`Request <stratae.events.patterns.Request>` events return their one responder's
-    reply. Async handlers are rejected with `TypeError`.
+    {py:class}`PubSub <stratae.events.patterns.PubSub>` events fan out to every handler, each
+    in its own copy of the context, so context variables one sets reach neither the others nor
+    the emitter. {py:class}`Request <stratae.events.patterns.Request>` events return their one
+    responder's reply. Async handlers are rejected with `TypeError`.
 
     :param envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
         each emission, made as the
