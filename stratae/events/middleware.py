@@ -135,8 +135,8 @@ from typing import (
     NoReturn,
 )
 
+from stratae._checked import checked_callables
 from stratae._middleware import (
-    frozen,
     manager,
     refuse_coroutine,
     refuse_result,
@@ -188,11 +188,12 @@ class Middleware:
         """
         Freeze each half as a tuple, refusing a lone middleware and anything uncallable.
 
-        :raises MiddlewareNotTupleError: If a half is a single callable or a string.
-        :raises MiddlewareNotCallableError: If a half holds something that isn't callable.
+        :raises TypeError: If a half is a single callable or a string, or holds something that
+            isn't callable.
         """
         for field in ("publish", "handle"):
-            object.__setattr__(self, field, frozen(getattr(self, field), "Middleware", field))
+            items = checked_callables(getattr(self, field), f"Middleware {field}=")
+            object.__setattr__(self, field, items)
 
     def require(
         self, bus: str, *, asynchronous: bool, publish: bool = True, handle: bool = True

@@ -85,8 +85,8 @@ from inspect import isawaitable
 from types import CoroutineType
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from stratae._checked import checked_callables
 from stratae.callables import is_async_callable
-from stratae.events._frozen import freeze_tuples
 
 if TYPE_CHECKING:
     from stratae.events.protocols import AnyEvent
@@ -127,7 +127,9 @@ class Hooks[S, R]:
 
     def __post_init__(self) -> None:
         """Freeze each slot as a tuple, refusing a lone hook, and note whether any is async."""
-        freeze_tuples(self, _SLOTS, "hooks", "audit")
+        for slot in _SLOTS:
+            hooks = checked_callables(getattr(self, slot), f"Hooks {slot}=")
+            object.__setattr__(self, slot, hooks)
         is_async = any(is_async_callable(hook) for slot in _SLOTS for hook in getattr(self, slot))
         object.__setattr__(self, "has_async", is_async)
 

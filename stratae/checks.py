@@ -191,6 +191,21 @@ async def check_async(*checks: _Check, mode: CheckMode = "all") -> None:
     _raise_gathered(exceptions, "check_async")
 
 
+def _combined(checks: tuple[_Check, ...], mode: CheckMode) -> _Check:
+    """Combine checks into one running them in `mode`, async if any of them is."""
+    if any(is_async_callable(fn) for fn in checks):
+
+        async def combined_async() -> None:
+            await check_async(*checks, mode=mode)
+
+        return combined_async
+
+    def combined() -> None:
+        check(*checks, mode=mode)
+
+    return combined
+
+
 def any_of(*checks: _Check) -> _Check:
     """
     Combine checks into one that passes if any of them does.
@@ -200,17 +215,7 @@ def any_of(*checks: _Check) -> _Check:
     :param checks: Zero-argument callables to try in order.
     :returns: A check raising {py:exc}`CheckFailures` with all failures if none pass.
     """
-    if any(is_async_callable(fn) for fn in checks):
-
-        async def _any_of_async() -> None:
-            await check_async(*checks, mode="any")
-
-        return _any_of_async
-
-    def _any_of_sync() -> None:
-        check(*checks, mode="any")
-
-    return _any_of_sync
+    return _combined(checks, "any")
 
 
 def all_of(*checks: _Check) -> _Check:
@@ -222,17 +227,7 @@ def all_of(*checks: _Check) -> _Check:
     :param checks: Zero-argument callables to run in order.
     :returns: A check raising the first failure.
     """
-    if any(is_async_callable(fn) for fn in checks):
-
-        async def _all_of_async() -> None:
-            await check_async(*checks, mode="all")
-
-        return _all_of_async
-
-    def _all_of_sync() -> None:
-        check(*checks, mode="all")
-
-    return _all_of_sync
+    return _combined(checks, "all")
 
 
 def _wrap_async[**P, R](
