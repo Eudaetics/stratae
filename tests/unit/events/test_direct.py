@@ -384,7 +384,7 @@ def test_async_handler_rejected_at_registration(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(TypeError):
-        bus.handle(_task_created, handler)
+        bus.handle(_task_created, handler)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 def test_async_handler_rejected_in_decorator_form(bus: DirectBus):
@@ -402,7 +402,7 @@ def test_async_handler_rejected_in_decorator_form(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(TypeError):
-        decorator(handler)
+        decorator(handler)  # pyright: ignore[reportArgumentType]
 
 
 def test_remove_prevents_further_dispatch(bus: DirectBus):
@@ -1175,7 +1175,7 @@ def test_async_callable_object_rejected_at_registration(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(TypeError):
-        bus.handle(_task_created, Handler())
+        bus.handle(_task_created, Handler())  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 # region: Dispatchers
@@ -1339,12 +1339,12 @@ def test_emit_and_handle_hooks_on_pubsub(bus: DirectBus):
     Given: A pub/sub event with two handlers, only one registered with hooks
     When: The event is emitted with hooks
     Then: The emit hooks run around the whole emit; the handler's hooks run around that
-        handler only, seeing its return
+        handler only, seeing its return of None
     """
     # Arrange
     log: list[str] = []
-    bus.handle(_task_created, lambda task: task.task_id, hooks=_log_hooks(log, "handle"))
-    bus.handle(_task_created, lambda task: task.task_id * 10)
+    bus.handle(_task_created, lambda task: None, hooks=_log_hooks(log, "handle"))
+    bus.handle(_task_created, lambda task: None)
 
     # Act
     bus.emit(_task_created, None, _TaskCreated(4), hooks=_log_hooks(log, "publish"))
@@ -1353,7 +1353,7 @@ def test_emit_and_handle_hooks_on_pubsub(bus: DirectBus):
     assert log == [
         "publish before _TaskCreated",
         "handle before _TaskCreated",
-        "handle success 4",
+        "handle success None",
         "publish success None",
     ]
 
@@ -1839,7 +1839,11 @@ def test_nested_emit_has_own_headers():
 
     bus = DirectBus(middleware=Middleware(publish=(tag,), handle=(_recording_headers(seen),)))
     bus.handle(_find_book, lambda query: _BookResult(query.query))
-    bus.handle(_task_created, lambda task: bus.emit(_find_book, None, _BookQuery("dune")))
+
+    def ask(_: _TaskCreated) -> None:
+        bus.emit(_find_book, None, _BookQuery("dune"))
+
+    bus.handle(_task_created, ask)
 
     # Act
     bus.emit(_task_created, None, _TaskCreated(1))

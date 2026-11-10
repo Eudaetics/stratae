@@ -309,9 +309,8 @@ async def test_hooks_run_on_both_sides_of_the_broker(broker: _Broker):
 
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
 
-    def on_message(message: Message) -> str:
+    def on_message(message: Message) -> None:
         log.append(f"handler {message.text}")
-        return message.text.upper()
 
     consumer.handle(
         message_event,
@@ -340,7 +339,7 @@ async def test_hooks_run_on_both_sides_of_the_broker(broker: _Broker):
     assert [entry for entry in log if not entry.startswith("publish")] == [
         "handle before hello",
         "handler hello",
-        "handle success 'HELLO'",
+        "handle success None",
     ]
 
 

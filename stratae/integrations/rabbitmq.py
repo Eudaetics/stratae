@@ -908,16 +908,24 @@ class _Registration:
         self.consumer_tag: str | None = None
 
 
+type _Returns = Awaitable[None] | None
+"""What a pub/sub handler returns: `None`, or an awaitable resolving to it."""
+
+
 class _ConsumeDecorator[S: Any](Protocol):
     """Decorator form of `handle`, returning the Handler."""
 
-    def __call__[R](self, fn: Callable[[S], R]) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
+    def __call__[R: _Returns](
+        self, fn: Callable[[S], R]
+    ) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
 
 
 class _SignalConsumeDecorator(Protocol):
     """Decorator form of `handle` for a schema-less event, returning the Handler."""
 
-    def __call__[R](self, fn: Callable[[], R]) -> Handler[[], RabbitMQConsumeConfig, R]: ...
+    def __call__[R: _Returns](
+        self, fn: Callable[[], R]
+    ) -> Handler[[], RabbitMQConsumeConfig, R]: ...
 
 
 class RabbitMQConsumer:
@@ -1070,14 +1078,14 @@ class RabbitMQConsumer:
             )
 
     @overload
-    def handle[R](
+    def handle[R: _Returns](
         self,
         event: PubSub[NoPayload, Literal[True]],
         fn: Callable[[], R],
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
-        hooks: Hooks[NoPayload, object] | None = None,
+        hooks: Hooks[NoPayload, None] | None = None,
     ) -> Handler[[], RabbitMQConsumeConfig, R]: ...
 
     @overload
@@ -1088,18 +1096,18 @@ class RabbitMQConsumer:
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
-        hooks: Hooks[NoPayload, object] | None = None,
+        hooks: Hooks[NoPayload, None] | None = None,
     ) -> _SignalConsumeDecorator: ...
 
     @overload
-    def handle[S, R](
+    def handle[S, R: _Returns](
         self,
         event: PubSub[S, Literal[False]],
         fn: Callable[[S], R],
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
-        hooks: Hooks[S, object] | None = None,
+        hooks: Hooks[S, None] | None = None,
     ) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
 
     @overload
@@ -1110,7 +1118,7 @@ class RabbitMQConsumer:
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
-        hooks: Hooks[S, object] | None = None,
+        hooks: Hooks[S, None] | None = None,
     ) -> _ConsumeDecorator[S]: ...
 
     def handle(
@@ -1130,7 +1138,7 @@ class RabbitMQConsumer:
         Consumption starts now if connected, otherwise on entering the context.
 
         :param event: The {py:class}`PubSub <stratae.events.patterns.PubSub>` event to handle.
-        :param fn: The handler. If omitted, returns a decorator.
+        :param fn: The handler, returning `None`. If omitted, returns a decorator.
         :param config: The queue or exchange to consume from.
         :param deserializer: Overrides the consumer's deserializer for this registration.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this handler on

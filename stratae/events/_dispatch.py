@@ -72,7 +72,7 @@ def dispatch_request_async[S, R](
 
 
 def fan_out[S](
-    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, object]], payload: S
+    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, None]], payload: S
 ) -> None:
     """Call every handler in turn, raising their failures together as `HandlerErrors`."""
     exceptions: list[Exception] = []

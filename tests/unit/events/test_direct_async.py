@@ -576,7 +576,10 @@ def test_concurrent_registrations_keep_every_handler(bus: AsyncDirectBus):
     def register() -> None:
         start.wait()
         for index in range(per_thread):
-            bus.handle(_task_created, async_handler if index % 2 else lambda _: None)
+            if index % 2:
+                bus.handle(_task_created, async_handler)
+            else:
+                bus.handle(_task_created, lambda _: None)
 
     workers = [threading.Thread(target=register) for _ in range(threads)]
     interval = sys.getswitchinterval()
@@ -1391,20 +1394,20 @@ async def test_sync_handler_with_async_handle_hooks_awaited(bus: AsyncDirectBus)
 
     Given: A sync handler registered with async hooks
     When: The event is emitted
-    Then: The hooks run around the handler and see its return
+    Then: The hooks run around the handler and see its return of None
     """
     # Arrange
     log: list[str] = []
-    hooks: Hooks[_TaskCreated, object] = Hooks(
+    hooks: Hooks[_TaskCreated, None] = Hooks(
         before=(_alog(log, "before"),), success=(_alog(log, "success"),)
     )
-    bus.handle(_task_created, lambda task: task.task_id, hooks=hooks)
+    bus.handle(_task_created, lambda task: None, hooks=hooks)
 
     # Act
     await bus.emit(_task_created, None, _TaskCreated(7))
 
     # Assert
-    assert log == ["before _TaskCreated", "success 7"]
+    assert log == ["before _TaskCreated", "success None"]
 
 
 async def test_publish_hooks_run_inside_envelope(bus_with_envelope: AsyncDirectBus):

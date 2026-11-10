@@ -1328,9 +1328,8 @@ async def test_handle_hooks_run_before_ack(consumer: RabbitMQConsumer, channel: 
     def complete(event: Any, payload: _OrderPlaced, error: BaseException | None) -> None:
         log.append(f"complete {error!r}")
 
-    def on_order(order: _OrderPlaced) -> str:
+    def on_order(order: _OrderPlaced) -> None:
         log.append("handler")
-        return "done"
 
     hooks = Hooks(before=(before,), success=(success,), complete=(complete,))
     consumer.handle(_order_placed, on_order, config=_config, hooks=hooks)
@@ -1346,7 +1345,7 @@ async def test_handle_hooks_run_before_ack(consumer: RabbitMQConsumer, channel: 
         await _delivery_callback(channel)(message)
 
     # Assert
-    assert log == ["before 7", "handler", "success 'done'", "complete None", "ack"]
+    assert log == ["before 7", "handler", "success None", "complete None", "ack"]
 
 
 async def test_raising_handle_hook_nacks(consumer: RabbitMQConsumer, channel: AsyncMock):
@@ -2557,3 +2556,31 @@ async def test_missing_envelope_ids_come_from_consumer_source(
     assert envelope.message_id == UUID(int=1)
     expected = correlation if headers == "correlation only" else UUID(int=2)
     assert envelope.correlation_id == expected
+
+
+def test_handle_types_pubsub_handlers_as_returning_none(consumer: RabbitMQConsumer):
+    """
+    A consumer's handler should be typed as returning None, as a pub/sub handler is.
+
+    Given: Handlers returning None, sync and async, and handlers returning a value
+    When: Each is registered, directly and as a decorator
+    Then: Those returning None type-check, and those returning a value are type errors
+    """
+
+    # Arrange
+    def returns_none(order: _OrderPlaced) -> None: ...
+
+    async def resolves_to_none(order: _OrderPlaced) -> None: ...
+
+    def returns_value(order: _OrderPlaced) -> str:
+        return "done"
+
+    # Act
+    consumer.handle(_order_placed, returns_none, config=_config)
+    consumer.handle(_order_placed, resolves_to_none, config=_config)
+    consumer.handle(_order_placed, returns_value, config=_config)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    decorate = consumer.handle(_order_placed, config=_config)
+    decorate(returns_value)  # pyright: ignore[reportArgumentType]
+
+    # Assert
+    assert len(consumer._registrations) == 4  # pyright: ignore[reportPrivateUsage]

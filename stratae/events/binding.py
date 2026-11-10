@@ -67,6 +67,7 @@ print(inspect.signature(create_built_order))
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from inspect import Parameter, Signature, signature
+from types import NoneType
 from typing import Any, Literal, cast, overload
 
 from stratae._callables import is_async_callable
@@ -94,7 +95,7 @@ _NO_PAYLOAD = NoPayload()
 def _reply(event: AnyEvent) -> Any:
     """Return the event's reply type as a return annotation: `None`, not `NoneType`."""
     reply = event.emit_returns
-    return None if reply is type(None) else reply
+    return None if reply is NoneType else reply
 
 
 def _factory_parameters(factory: Callable[..., Any]) -> list[Parameter]:

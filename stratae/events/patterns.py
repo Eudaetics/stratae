@@ -2,7 +2,7 @@
 Define events as classes, one per dispatch pattern.
 
 An event pairs a payload schema with a dispatch pattern, independent of any bus.
-{py:class}`PubSub` is fire-and-forget: every handler runs and their returns are ignored.
+{py:class}`PubSub` is fire-and-forget: every handler runs, and returns `None`.
 {py:class}`Request` is request/reply: exactly one responder, whose reply the emitter gets.
 A `Request` without a `reply` type is a command, replying `None`. Without a schema, an event
 carries no payload and binds to a zero-argument callable.
@@ -67,6 +67,7 @@ None
 """
 
 from dataclasses import dataclass, field
+from types import NoneType
 from typing import Any, Literal, NoReturn, overload
 
 _NAME_REQUIRED = "A payload-less {0} needs a name, e.g. {0}(name='heartbeat')."
@@ -170,7 +171,7 @@ class Request[S, R, Signal: bool](Immutable):
         :param reply: The reply type. Omit for a command, which replies `None`.
         :raises TypeError: If a payload-less event has no `name`.
         """
-        reply_type = type(None) if reply is None else reply
+        reply_type = NoneType if reply is None else reply
         self._assign(
             name=_event_name("Request", schema, name),
             schema=schema,
@@ -188,7 +189,11 @@ class Request[S, R, Signal: bool](Immutable):
 @dataclass(init=False, unsafe_hash=True, slots=True)
 class PubSub[S, Signal: bool](Immutable):
     """
-    Fire-and-forget event: every handler runs, and their returns are ignored.
+    Fire-and-forget event: every handler runs, and returns `None`.
+
+    Nothing reads a pub/sub handler's result: an event that needs an answer is a
+    {py:class}`Request`. So a handler is typed as returning `None`, or an awaitable resolving
+    to it, and a type checker flags one that returns a value.
 
     Immutable once constructed. Compares and hashes by its class, name and payload type.
     `Signal` is a type-only parameter marking a payload-less event.
@@ -199,8 +204,8 @@ class PubSub[S, Signal: bool](Immutable):
     is_signal: Signal = field(compare=False, repr=False)
     emit_returns: type[None] = field(compare=False, repr=False)
     """`NoneType`: emitting a pub/sub event returns nothing."""
-    handler_returns: type[object] = field(compare=False, repr=False)
-    """`object`: a pub/sub handler may return anything, and it's ignored."""
+    handler_returns: type[None] = field(compare=False, repr=False)
+    """`NoneType`: a pub/sub handler returns nothing."""
 
     @overload
     def __init__(self: "PubSub[NoPayload, Literal[True]]", *, name: str) -> None: ...
@@ -221,6 +226,6 @@ class PubSub[S, Signal: bool](Immutable):
             name=_event_name("PubSub", schema, name),
             schema=schema,
             is_signal=schema is NoPayload,
-            emit_returns=type(None),
-            handler_returns=object,
+            emit_returns=NoneType,
+            handler_returns=NoneType,
         )
