@@ -7,6 +7,8 @@ RabbitMQConsumeConfig:
 - The queue is stored on initialization.
 - Exchange, binding key, and exchange type are stored on initialization.
 - Omitting both the queue and the exchange raises ValueError.
+- It's an immutable value: assignment is refused, and configs with the same fields, binding
+  keys given as one string or a list of it, are equal.
 
 RabbitMQConsumer:
 - Constructing a consumer without a deserializer is a type error and raises TypeError.
@@ -114,6 +116,7 @@ Connection health and reconnecting:
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 from collections.abc import AsyncGenerator
@@ -267,6 +270,23 @@ def test_consume_config_stores_binding_fields():
     assert config.exchange == "events"
     assert config.binding_keys == ("order.*",)
     assert config.exchange_type == "topic"
+
+
+def test_consume_config_is_an_immutable_value():
+    """
+    RabbitMQConsumeConfig should be an immutable value.
+
+    Given: Two configs with the same fields, one binding key given as a string and the other
+        as a list, and a config for another queue
+    When: They're compared, and a field is assigned
+    Then: The first two are equal, the third isn't, and assignment raises
+    """
+    config = RabbitMQConsumeConfig("audit", exchange="events", binding_key="order.*")
+
+    assert config == RabbitMQConsumeConfig("audit", exchange="events", binding_key=["order.*"])
+    assert config != RabbitMQConsumeConfig("ledger", exchange="events", binding_key="order.*")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.queue = "ledger"  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_consume_config_requires_queue_or_exchange():

@@ -26,13 +26,15 @@ Outbox:
 
 Without an SDK or a known adapter:
 - With a no-op tracer provider, messages carry no trace headers, and handling still works.
-- A config from an adapter it doesn't know is a messaging span named after the event, with no
-  system or destination, as is a RabbitMQ config when the adapter module isn't imported.
+- A config that doesn't describe its destination, or whose messaging_destination isn't a
+  Destination, is a messaging span named after the event, with no system or destination.
+- A config from any adapter that describes its destination gets its system, name and
+  attributes, and spans named after it. A destination with no name gives its system, and
+  spans named after the event.
 """
 
 import asyncio
 import json
-import sys
 from itertools import pairwise
 from typing import Any
 from unittest.mock import AsyncMock
@@ -45,7 +47,14 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import NoOpTracerProvider, SpanContext, SpanKind, StatusCode
 from pytest_mock import MockerFixture
 
-from stratae.events import AsyncDirectBus, DirectBus, Envelope, EnvelopeConfig, PubSub
+from stratae.events import (
+    AsyncDirectBus,
+    Destination,
+    DirectBus,
+    Envelope,
+    EnvelopeConfig,
+    PubSub,
+)
 from stratae.events.middleware import HandleCall, MessageHeaders, PublishCall, run_middleware
 from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer
 from stratae.integrations.opentelemetry import tracing
@@ -574,27 +583,30 @@ async def test_no_sdk_changes_nothing(connect_mock: AsyncMock, channel: AsyncMoc
     assert ran == [2]
 
 
+class _Undescribed:
+    """A routing config from an adapter that doesn't describe its destination."""
+
+
+class _NotADestination:
+    """A routing config with an unrelated attribute that happens to share the name."""
+
+    messaging_destination = "audit"
+
+
 @pytest.mark.parametrize(
-    ("config", "imported"), [("custom", True), (_config(), False)], ids=["custom", "not imported"]
+    "config", ["custom", _Undescribed(), _NotADestination()], ids=["str", "plain", "unrelated"]
 )
-def test_unknown_config(
-    monkeypatch: pytest.MonkeyPatch,
-    provider: TracerProvider,
-    exporter: InMemorySpanExporter,
-    config: object,
-    imported: bool,
+def test_undescribed_config(
+    provider: TracerProvider, exporter: InMemorySpanExporter, config: object
 ):
     """
-    A config the middleware can't name should be a messaging span named after the event.
+    A config that doesn't describe its destination should give spans named after the event.
 
-    Given: A config from an adapter it doesn't know, or a RabbitMQ config with the adapter's
-        module not imported
+    Given: A config with no messaging_destination, or one that isn't a Destination
     When: The publish and handle middleware run around a call with it
     Then: The spans are named after the event, with no system or destination
     """
     # Arrange
-    if not imported:
-        monkeypatch.delitem(sys.modules, "stratae.integrations.rabbitmq")
     middleware = tracing(provider)
     publish = PublishCall(_order_placed, config, _OrderPlaced(1), MessageHeaders())
 
@@ -610,9 +622,74 @@ def test_unknown_config(
         assert "messaging.destination.name" not in (span.attributes or {})
 
 
+class _QueueConfig:
+    """A routing config from an adapter of the test's own, describing its destination."""
+
+    def __init__(self, destination: Destination) -> None:
+        self.messaging_destination = destination
+
+
+def test_described_config_gets_messaging_attributes(
+    provider: TracerProvider, exporter: InMemorySpanExporter
+):
+    """
+    A config from any adapter that describes its destination should get messaging attributes.
+
+    Given: A test adapter's config whose Destination has a system, a name, and an attribute
+        of its own
+    When: The publish and handle middleware run around a call with it
+    Then: The spans are named after the destination and carry its system, name and attribute
+    """
+    # Arrange
+    destination = Destination("testmq", "orders", attributes={"messaging.testmq.lane": 3})
+    config = _QueueConfig(destination)
+    middleware = tracing(provider)
+    publish = PublishCall(_order_placed, config, _OrderPlaced(1), MessageHeaders())
+
+    # Act
+    run_middleware(middleware.publish, publish, lambda: None)
+    run_middleware(middleware.handle, _handle_call(config, publish.headers), lambda: None)
+
+    # Assert
+    spans = _spans(exporter)
+    assert set(spans) == {"publish orders", "process orders"}
+    for span in spans.values():
+        attributes = span.attributes or {}
+        assert attributes["messaging.system"] == "testmq"
+        assert attributes["messaging.destination.name"] == "orders"
+        assert attributes["messaging.testmq.lane"] == 3
+        assert "messaging.destination.anonymous" not in attributes
+
+
 def _handle_call(config: object, headers: MessageHeaders) -> HandleCall:
     """Return a handler call for an order, under the config and with the headers."""
     return HandleCall(_order_placed, config, _OrderPlaced(1), dict(headers))
 
 
 # endregion
+
+
+def test_described_config_without_name(provider: TracerProvider, exporter: InMemorySpanExporter):
+    """
+    A destination with no name should give its system, and spans named after the event.
+
+    Given: A test adapter's config whose Destination has a system but no name
+    When: The publish and handle middleware run around a call with it
+    Then: The spans are named after the event, and carry the system but no destination name
+    """
+    # Arrange
+    config = _QueueConfig(Destination("testmq"))
+    middleware = tracing(provider)
+    publish = PublishCall(_order_placed, config, _OrderPlaced(1), MessageHeaders())
+
+    # Act
+    run_middleware(middleware.publish, publish, lambda: None)
+    run_middleware(middleware.handle, _handle_call(config, publish.headers), lambda: None)
+
+    # Assert
+    spans = _spans(exporter)
+    assert set(spans) == {"publish _OrderPlaced", "process _OrderPlaced"}
+    for span in spans.values():
+        attributes = span.attributes or {}
+        assert attributes["messaging.system"] == "testmq"
+        assert "messaging.destination.name" not in attributes

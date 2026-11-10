@@ -126,6 +126,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping
 from contextlib import suppress
 from copy import copy
+from dataclasses import KW_ONLY, InitVar, dataclass, field
 from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
@@ -147,6 +148,7 @@ from stratae.events import (
     TIMESTAMP_HEADER,
     AnyEvent,
     Deserializer,
+    Destination,
     Envelope,
     EnvelopeConfig,
     EventType,
@@ -209,6 +211,12 @@ FAILURE_HEADER = "x-failure"
 """Header naming the exception a retried or dead-lettered message last failed with."""
 
 _RESERVED = ENVELOPE_HEADERS | {ATTEMPTS_HEADER, FAILURE_HEADER}
+
+_SYSTEM = "rabbitmq"
+"""The messaging system RabbitMQ destinations name, as OpenTelemetry's conventions spell it."""
+
+_ROUTING_KEY = "messaging.rabbitmq.destination.routing_key"
+"""The conventions' attribute for a published message's routing key."""
 """The headers the adapter sets itself, which middleware and `emit` can't."""
 
 
@@ -264,48 +272,46 @@ def _failed(message: DeliveredMessage, attempts: int, exc: Exception) -> Basic.P
     return properties
 
 
+@dataclass(frozen=True, slots=True)
 class RabbitMQConfig:
-    """Exchange and routing key for a {py:class}`RabbitMQPublisher` binding."""
+    """
+    Exchange and routing key for a {py:class}`RabbitMQPublisher` binding.
 
-    __slots__ = (
-        "exchange",
-        "exchange_durable",
-        "exchange_type",
-        "mandatory",
-        "properties",
-        "routing_key",
-    )
+    An immutable value: configs with the same fields are equal.
+    """
 
-    def __init__(
-        self,
-        exchange: str,
-        routing_key: str,
-        *,
-        exchange_type: str | None = None,
-        exchange_durable: bool = False,
-        properties: Basic.Properties | None = None,
-        mandatory: bool = False,
-    ) -> None:
-        """
-        Create a publish target.
+    exchange: str
+    """The exchange to publish to."""
+    routing_key: str
+    """The message's routing key."""
+    _: KW_ONLY
+    exchange_type: str | None = None
+    """If given, declare the exchange with this type before the first publish. Leave unset
+    when it's declared elsewhere."""
+    exchange_durable: bool = False
+    """Whether a declared exchange survives a broker restart. Must match any existing
+    declaration."""
+    properties: Basic.Properties | None = None
+    """AMQP properties sent with every message."""
+    mandatory: bool = False
+    """Whether a message must reach a queue. If it matches none, `emit` raises
+    {py:exc}`UnroutableError <stratae.events.exceptions.UnroutableError>`; otherwise the broker
+    drops it, and `emit` still succeeds."""
+    messaging_destination: Destination = field(init=False, repr=False, compare=False)
+    """
+    Where messages published with this config go, for tracing.
 
-        :param exchange: The exchange to publish to.
-        :param routing_key: The message's routing key.
-        :param exchange_type: If given, declare the exchange with this type before the first
-            publish. Leave unset when it's declared elsewhere.
-        :param exchange_durable: Whether a declared exchange survives a broker restart. Must
-            match any existing declaration.
-        :param properties: AMQP properties sent with every message.
-        :param mandatory: Whether a message must reach a queue. If it matches none, `emit`
-            raises {py:exc}`UnroutableError <stratae.events.exceptions.UnroutableError>`;
-            otherwise the broker drops it, and `emit` still succeeds.
-        """
-        self.exchange = exchange
-        self.routing_key = routing_key
-        self.exchange_type = exchange_type
-        self.exchange_durable = exchange_durable
-        self.properties = properties
-        self.mandatory = mandatory
+    Named `exchange:routing_key`, leaving out an empty part, or `amq.default` when both are
+    empty. The routing key is also its own attribute.
+    """
+
+    def __post_init__(self) -> None:
+        """Work out the destination once, since the config can't change."""
+        exchange, key = self.exchange, self.routing_key
+        name = ":".join(part for part in (exchange, key) if part) or "amq.default"
+        attributes = {_ROUTING_KEY: key} if key else {}
+        destination = Destination(_SYSTEM, name, attributes=attributes)
+        object.__setattr__(self, "messaging_destination", destination)
 
 
 class ConnectionState(StrEnum):
@@ -770,76 +776,65 @@ def _retry_queue(queue: str, delay: float) -> str:
     return f"{queue}.retry.{_milliseconds(delay)}"
 
 
+@dataclass(frozen=True, slots=True)
 class RabbitMQConsumeConfig:
     """
     Queue or exchange for a {py:class}`RabbitMQConsumer` registration.
 
     A `queue` alone is consumed competitively. An `exchange` declares and binds a queue
-    of its own: private and auto-deleted if `queue` is omitted, durable if named.
+    of its own: private and auto-deleted if `queue` is omitted, durable if named. An immutable
+    value: configs with the same fields are equal.
+
+    :raises ValueError: If neither `queue` nor `exchange` is given, or `on_failure` is given
+        without a `queue`.
     """
 
-    __slots__ = (
-        "arguments",
-        "auto_delete",
-        "binding_keys",
-        "durable",
-        "exchange",
-        "exchange_durable",
-        "exchange_type",
-        "exclusive",
-        "on_failure",
-        "queue",
-    )
+    queue: str | None = None
+    """The queue to consume. If omitted, a private server-named queue is used."""
+    _: KW_ONLY
+    exchange: str | None = None
+    """An exchange to bind the queue to."""
+    binding_key: InitVar[str | Iterable[str]] = ""
+    """The binding's routing key pattern, or several. Kept as `binding_keys`."""
+    exchange_type: str = "fanout"
+    """The exchange's declared type."""
+    exchange_durable: bool = False
+    """Whether the exchange survives a broker restart. Must match any existing declaration."""
+    durable: bool | None = None
+    """Overrides the inferred queue durability."""
+    exclusive: bool | None = None
+    """Overrides the inferred queue exclusivity."""
+    auto_delete: bool | None = None
+    """Overrides the inferred queue auto-delete flag."""
+    arguments: dict[str, Any] | None = None
+    """Queue declaration arguments, e.g. a message TTL."""
+    on_failure: RabbitMQFailurePolicy | None = None
+    """
+    A {py:class}`RabbitMQFailurePolicy` retrying, dead-lettering or dropping messages whose
+    handling fails. Without one, a failed message is nacked without requeue.
+    """
+    binding_keys: tuple[str, ...] = field(init=False)
+    """The binding's routing key patterns, from `binding_key`."""
+    messaging_destination: Destination = field(init=False, repr=False, compare=False)
+    """
+    Where messages handled with this config come from, for tracing.
 
-    def __init__(
-        self,
-        queue: str | None = None,
-        *,
-        exchange: str | None = None,
-        binding_key: str | Iterable[str] = "",
-        exchange_type: str = "fanout",
-        exchange_durable: bool = False,
-        durable: bool | None = None,
-        exclusive: bool | None = None,
-        auto_delete: bool | None = None,
-        arguments: dict[str, Any] | None = None,
-        on_failure: RabbitMQFailurePolicy | None = None,
-    ) -> None:
-        """
-        Create a consume source.
+    Named `exchange:queue`, leaving out a part that isn't given. Without a `queue`, the server
+    names a private one, so the destination is anonymous.
+    """
 
-        :param queue: The queue to consume. If omitted, a private server-named queue is used.
-        :param exchange: An exchange to bind the queue to.
-        :param binding_key: The binding's routing key pattern.
-        :param exchange_type: The exchange's declared type.
-        :param exchange_durable: Whether the exchange survives a broker restart. Must match any
-            existing declaration.
-        :param durable: Overrides the inferred queue durability.
-        :param exclusive: Overrides the inferred queue exclusivity.
-        :param auto_delete: Overrides the inferred queue auto-delete flag.
-        :param arguments: Queue declaration arguments, e.g. a message TTL.
-        :param on_failure: A {py:class}`RabbitMQFailurePolicy` retrying, dead-lettering or
-            dropping messages whose handling fails. Without one, a failed message is nacked
-            without requeue.
-        :raises ValueError: If neither `queue` nor `exchange` is given, or `on_failure` is
-            given without a `queue`.
-        """
-        if queue is None and exchange is None:
+    def __post_init__(self, binding_key: str | Iterable[str]) -> None:
+        """Check the config, and keep its binding keys and destination."""
+        if self.queue is None and self.exchange is None:
             raise ValueError(_NO_CONSUME_TARGET)
-        if on_failure is not None and queue is None:
+        if self.on_failure is not None and self.queue is None:
             raise ValueError(_FAILURE_POLICY_NEEDS_QUEUE)
-        self.queue = queue
-        self.exchange = exchange
-        self.binding_keys: tuple[str, ...] = (
-            (binding_key,) if isinstance(binding_key, str) else tuple(binding_key)
-        )
-        self.exchange_type = exchange_type
-        self.exchange_durable = exchange_durable
-        self.durable = durable
-        self.exclusive = exclusive
-        self.auto_delete = auto_delete
-        self.arguments = arguments
-        self.on_failure = on_failure
+        keys = (binding_key,) if isinstance(binding_key, str) else tuple(binding_key)
+        object.__setattr__(self, "binding_keys", keys)
+        queue = self.queue
+        name = ":".join(part for part in (self.exchange, queue) if part)
+        destination = Destination(_SYSTEM, name, anonymous=queue is None)
+        object.__setattr__(self, "messaging_destination", destination)
 
 
 def _declare_queue(channel: AbstractChannel, config: RabbitMQConsumeConfig):

@@ -84,7 +84,7 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import KW_ONLY, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from inspect import isawaitable
@@ -113,8 +113,7 @@ _PUBSUB_ONLY = (
 )
 
 _ROUTE_TAKEN = (
-    "outbox route {!r} is already bound to another event or config; give this binding its"
-    " own route, or reuse the same config object"
+    "outbox route {!r} is already bound to another event or config; give this binding its own route"
 )
 
 _UNKNOWN_ROUTE = "no outbox binding for route {!r}; bind it before the relay starts"
@@ -230,34 +229,23 @@ class OutboxStore(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
 class OutboxConfig[C]:
     """
     How an outbox binding is routed when it's relayed.
 
     `C` is the publisher's routing config, such as a
-    {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.RabbitMQConfig>`.
+    {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.RabbitMQConfig>`. An immutable
+    value: configs with the same fields are equal.
     """
 
-    __slots__ = ("config", "key", "route")
-
-    def __init__(
-        self,
-        config: C,
-        *,
-        route: str | None = None,
-        key: Callable[[Any], str] | None = None,
-    ) -> None:
-        """
-        Create an outbox routing config.
-
-        :param config: The publisher's routing config, used by the relay.
-        :param route: The name records store instead of the config. Defaults to the event's
-            name.
-        :param key: Derives an ordering key from the payload.
-        """
-        self.config = config
-        self.route = route
-        self.key = key
+    config: C
+    """The publisher's routing config, used by the relay."""
+    _: KW_ONLY
+    route: str | None = None
+    """The name records store instead of the config. Defaults to the event's name."""
+    key: Callable[[Any], str] | None = None
+    """Derives an ordering key from the payload."""
 
 
 class OutboxProducer:
@@ -419,8 +407,7 @@ class OutboxProducer:
     def _register(self, event: AnyEvent, config: OutboxConfig[Any]) -> str:
         """Record the route's event and publisher config, refusing a clash."""
         route = config.route or event.name
-        known = self._routes.setdefault(route, (event, config.config))
-        if known[0] != event or (known[1] is not config.config and known[1] != config.config):
+        if self._routes.setdefault(route, (event, config.config)) != (event, config.config):
             raise ValueError(_ROUTE_TAKEN.format(route))
         return route
 
