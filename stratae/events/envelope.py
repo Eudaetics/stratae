@@ -48,9 +48,9 @@ shipment scheduled: Envelope(message_id=..7d86, correlation_id=..740c, causation
 
 from __future__ import annotations
 
-from collections.abc import Generator, Mapping
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Mapping
+from contextlib import AbstractContextManager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -137,23 +137,42 @@ class Envelope:
         return _current.get(None)
 
     @classmethod
-    @contextmanager
-    def scope(cls, envelope: Envelope | None = None) -> Generator[Envelope, None, None]:
+    def scope(cls, envelope: Envelope | None = None) -> AbstractContextManager[Envelope]:
         """
         Set the active envelope for a block, restoring the previous one on exit.
 
-        :param envelope: The envelope to activate. Defaults to a child of the current
-            envelope, or a new root.
+        :param envelope: The envelope to activate. Defaults to a child of the envelope current
+            when the block is entered, or a new root.
         :returns: A context manager yielding the active {py:class}`Envelope`.
         """
-        if envelope is None:
-            parent = _current.get(None)
-            envelope = parent.child() if parent else cls()
-        token = _current.set(envelope)
-        try:
-            yield envelope
-        finally:
-            _current.reset(token)
+        return _Scope(cls, envelope)
 
 
 _current: ContextVar[Envelope] = ContextVar("_current_envelope")
+
+
+class _Scope:
+    """
+    The context manager {py:func}`Envelope.scope` returns.
+
+    A class rather than a `contextlib.contextmanager` generator: each emit, outbox write and
+    request opens one, and a generator costs about twice as much to enter and exit.
+    """
+
+    __slots__ = ("_envelope", "_kind", "_token")
+
+    def __init__(self, kind: type[Envelope], envelope: Envelope | None) -> None:
+        self._kind = kind
+        self._envelope = envelope
+        self._token: Token[Envelope]
+
+    def __enter__(self) -> Envelope:
+        envelope = self._envelope
+        if envelope is None:
+            parent = _current.get(None)
+            envelope = parent.child() if parent else self._kind()
+        self._token = _current.set(envelope)
+        return envelope
+
+    def __exit__(self, *_: object) -> None:
+        _current.reset(self._token)
