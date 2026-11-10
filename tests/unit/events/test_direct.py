@@ -122,6 +122,7 @@ from stratae.events.exceptions import (
     NoResponderError,
 )
 from stratae.events.pipeline import receiving
+from stratae.middleware import MiddlewareNotEnterableError
 
 
 class _NoSuchBook(LookupError):
@@ -1721,7 +1722,7 @@ def test_async_middleware_refused():
         async def __aexit__(self, *exc: object) -> None: ...
 
     # Act / Assert
-    with pytest.raises(TypeError, match="DirectBus enters middleware synchronously"):
+    with pytest.raises(MiddlewareNotEnterableError, match="DirectBus"):
         DirectBus(middleware=Middleware(publish=(Trace,)))
 
 

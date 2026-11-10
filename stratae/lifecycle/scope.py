@@ -37,12 +37,15 @@ context manager, as an event bus's middleware is. Each activation enters the con
 in order once the scope is active, so they can use its cached functions. They're held as the
 activation's first resources, so it exits them last, in reverse, after its other resources
 have closed. An exit sees the activation's error, including one from a resource's cleanup,
-such as a failed commit, and can suppress it, as an outer `with` statement can. An error an
+such as a failed commit, but can't suppress it. An exit that tries raises
+{py:exc}`MiddlewareError <stratae.middleware.MiddlewareError>` from the error instead. Code
+that should decide whether an error propagates is a resource, not middleware. An error an
 exit raises follows the rule for a resource's cleanup: alone after a clean activation, or
 grouped with the activation's error. One that raises on entry refuses the activation: the
 ones already entered are exited with that error, and it propagates. A {py:class}`Scope`
 enters sync context managers. An {py:class}`AsyncScope` enters sync or async ones, which is
-why its `activate()` is awaited, as its `deactivate()` is.
+why its `activate()` is awaited, as its `deactivate()` is. Scopes and event buses follow the
+same middleware contract, described in {py:mod}`stratae.middleware`.
 
 ````{example} Timing each unit of work, and reporting how it ended
 ```{code-block} python
@@ -191,9 +194,19 @@ request 2 block 4: logging 102
 import threading
 from collections.abc import AsyncGenerator, Callable, Generator, Hashable
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
-from types import TracebackType
+from types import CoroutineType, TracebackType
 from typing import Any, ClassVar, Literal, NoReturn, cast, get_args
 
+from stratae._middleware import (
+    frozen,
+    manager,
+    refuse_coroutine,
+    refuse_result,
+    refuse_swallow,
+    refuse_unenterable,
+    task_cancelling,
+    type_of,
+)
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._slots import ScopeVar, SlotStorage, SlotStore
 from stratae.lifecycle._stack import aclose, close, enter_async_generator, enter_generator
@@ -202,8 +215,6 @@ from stratae.lifecycle.exceptions import (
     CacheKeyConflictError,
     DependentScopeActiveError,
     InvalidScopeOptionError,
-    MiddlewareNotEnterableError,
-    MiddlewareNotTupleError,
     NothingToDeactivateError,
     RequiredScopeInactiveError,
     SharedRequiresContextError,
@@ -242,47 +253,52 @@ def _validate_requires(
         raise SharedRequiresContextError(name, requires.name)
 
 
-def _enterable(kind: type, asynchronous: bool) -> bool:
-    """Whether a scope can enter a context manager of type `kind`."""
-    if asynchronous and hasattr(kind, "__aenter__") and hasattr(kind, "__aexit__"):
-        return True
-    return hasattr(kind, "__enter__") and hasattr(kind, "__exit__")
-
-
-def _validate_middleware[M](
-    name: str, middleware: tuple[M, ...], asynchronous: bool
-) -> tuple[M, ...]:
+def _held(context: Any, middleware: object, asynchronous: bool) -> Generator[None, None, None]:
     """
-    Return the middleware as a tuple, refusing a lone callable and a class it can't enter.
-
-    Only a class can be checked before it's called; any other callable is checked on each
-    activation, when entering what it returns fails.
-    """
-    if callable(middleware) or isinstance(middleware, str):
-        raise MiddlewareNotTupleError(name)
-    frozen = tuple(middleware)
-    for item in frozen:
-        if isinstance(item, type) and not _enterable(item, asynchronous):
-            raise MiddlewareNotEnterableError(name, item)
-    return frozen
-
-
-def _held(manager: AbstractContextManager[object]) -> Generator[None, None, None]:
-    """
-    Hold a middleware's context manager entered, as a resource of the activation.
+    Hold a middleware's sync context manager entered, as a resource of the activation.
 
     Entered with the activation, it sits beneath every resource the activation enters later,
     so closing the activation exits it last, with the activation's error, as nested `with`
-    statements would.
+    statements would. Unlike a `with` statement, its exit can't swallow that error, and an
+    `async def` `__enter__` or `__exit__` is refused, as {py:mod}`stratae.middleware` says.
+
+    :param context: What the middleware returned. Its methods are looked up on its type, as
+        `with` does, and it's refused if it has none.
+    :param middleware: The middleware it came from, for error messages.
+    :param asynchronous: Whether an async scope holds it, so a swallowed cancellation is
+        checked against the task.
+    :raises MiddlewareResultError: If `context` isn't a sync context manager.
     """
-    with manager:
+    kind = type_of(context)
+    try:
+        enter, leave = kind.__enter__, kind.__exit__
+    except AttributeError:
+        refuse_result(middleware, context, asynchronous)
+    if (result := enter(context)).__class__ is CoroutineType:
+        refuse_coroutine(result, middleware)
+    try:
         yield
+    except BaseException as error:
+        suppressed = leave(context, type(error), error, error.__traceback__)
+        if suppressed.__class__ is CoroutineType:
+            refuse_coroutine(suppressed, middleware)
+        if suppressed:
+            refuse_swallow(error, middleware, task_cancelling() if asynchronous else True)
+        raise
+    if (result := leave(context, None, None, None)).__class__ is CoroutineType:
+        refuse_coroutine(result, middleware)
 
 
-async def _held_async(manager: AbstractAsyncContextManager[object]) -> AsyncGenerator[None]:
-    """Hold an async middleware's context manager entered, as {py:func}`_held` does."""
-    async with manager:
+async def _held_async(context: Any, kind: Any, middleware: object) -> AsyncGenerator[None]:
+    """Hold a middleware's async context manager entered, as {py:func}`_held` does."""
+    await kind.__aenter__(context)
+    try:
         yield
+    except BaseException as error:
+        if await kind.__aexit__(context, type(error), error, error.__traceback__):
+            refuse_swallow(error, middleware, task_cancelling())
+        raise
+    await kind.__aexit__(context, None, None, None)
 
 
 class BaseScope[M]:
@@ -347,13 +363,18 @@ class BaseScope[M]:
         :param middleware: Callables each returning a context manager to enter around every
             activation, outermost first. Each is called with the scope. See the module docs.
         :raises LifecycleConfigurationError: If `isolation` or `storage` is invalid, a shared
-            scope requires a context scope, a shared scope takes `threads=True`, `middleware`
-            isn't a tuple, or a middleware class isn't a context manager the scope can enter.
+            scope requires a context scope, or a shared scope takes `threads=True`.
+        :raises MiddlewareNotTupleError: If `middleware` is a single callable or a string.
+        :raises MiddlewareNotCallableError: If `middleware` holds something that isn't callable.
+        :raises MiddlewareNotEnterableError: If a middleware class isn't a context manager the
+            scope can enter.
         """
         _validate_types(name, isolation, storage)
         _validate_threads(name, isolation, threads)
         _validate_requires(name, isolation, requires)
-        self._middleware = _validate_middleware(name, middleware, self._asynchronous)
+        owner = f"{type(self).__name__} {name!r}"
+        self._middleware = frozen(middleware, owner, "middleware")
+        refuse_unenterable(self._middleware, owner, self._asynchronous)
         self._plain = requires is None and not self._middleware
 
         self.name = name
@@ -597,7 +618,7 @@ class Scope(BaseScope[ScopeMiddleware]):
         """
         try:
             for middleware in self._middleware:
-                enter_generator(slots, _held(middleware(self)))
+                enter_generator(slots, _held(middleware(self), middleware, False))
         except BaseException as refusal:
             self.deactivate(None, refusal)
             raise
@@ -719,11 +740,11 @@ class AsyncScope(BaseScope[AsyncScopeMiddleware]):
         """
         try:
             for middleware in self._middleware:
-                manager = middleware(self)
-                if isinstance(manager, AbstractAsyncContextManager):
-                    await enter_async_generator(slots, _held_async(manager))
+                context, kind, is_async = manager(middleware, self)
+                if is_async:
+                    await enter_async_generator(slots, _held_async(context, kind, middleware))
                 else:
-                    enter_generator(slots, _held(manager))
+                    enter_generator(slots, _held(context, middleware, True))
         except BaseException as refusal:
             await self.deactivate(None, refusal)
             raise

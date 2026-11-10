@@ -155,6 +155,45 @@ acting as user 42
 
 {doc}`Full reference <apidocs/stratae.context/stratae.context>`
 
+### Middleware
+
+One contract for middleware on lifecycle scopes and event buses: context managers entered around each activation or call, which can observe an error but not swallow it.
+
+````{example} One middleware around a scope's activations and a bus's emits
+```{code-block} python
+from contextlib import contextmanager
+from stratae.events import DirectBus, Middleware, PubSub
+from stratae.lifecycle import Scope
+
+@contextmanager
+def logged(wrapped):
+    name = type(wrapped).__name__
+    print(f"enter {name}")
+    try:
+        yield
+    finally:
+        print(f"exit {name}")
+
+class Ping:
+    pass
+
+ping = PubSub(Ping)
+work = Scope("work", middleware=(logged,))
+bus = DirectBus(middleware=Middleware(publish=(logged,)))
+
+with work:
+    bus.emit(ping, None, Ping())
+```
+```{output}
+enter Scope
+enter PublishCall
+exit PublishCall
+exit Scope
+```
+````
+
+{doc}`Full reference <apidocs/stratae.middleware/stratae.middleware>`
+
 ### Checks
 
 Run collections of zero-argument checks, raising or gathering their failures: `check`, `check_async`, and the `require` decorator.
@@ -256,5 +295,6 @@ lifecycle <apidocs/stratae.lifecycle/stratae.lifecycle>
 events <apidocs/stratae.events/stratae.events>
 checks <apidocs/stratae.checks/stratae.checks>
 context <apidocs/stratae.context/stratae.context>
+middleware <apidocs/stratae.middleware/stratae.middleware>
 integrations <apidocs/stratae.integrations/stratae.integrations>
 ```

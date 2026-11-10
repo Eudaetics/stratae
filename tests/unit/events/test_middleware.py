@@ -68,10 +68,14 @@ from typing import Any, cast
 
 import pytest
 
+from stratae import _middleware as shared_middleware
 from stratae.events import HandleCall, Hooks, Middleware, PublishCall, PubSub
-from stratae.events import middleware as middleware_module
-from stratae.events.exceptions import MiddlewareError
 from stratae.events.middleware import MessageHeaders, run_middleware, run_middleware_async
+from stratae.middleware import (
+    MiddlewareError,
+    MiddlewareNotEnterableError,
+    MiddlewareResultError,
+)
 
 
 class _OutOfStock(LookupError):
@@ -311,7 +315,7 @@ def test_require_refuses_async_class_for_sync_bus() -> None:
     middleware = Middleware(handle=(_alogging([], "trace"),))
 
     # Act / Assert
-    with pytest.raises(TypeError, match="DirectBus enters middleware synchronously"):
+    with pytest.raises(MiddlewareNotEnterableError, match="DirectBus"):
         middleware.require("DirectBus", asynchronous=False)
 
 
@@ -704,24 +708,24 @@ def test_reraised_error_is_left_as_is() -> None:
 
 def test_non_manager_middleware_raises() -> None:
     """
-    A middleware returning something that isn't a sync context manager should raise TypeError.
+    A middleware returning something that isn't a sync context manager should be refused.
 
     Given: A logging middleware outside one returning an async context manager
     When: run_middleware runs a call that records it ran
-    Then: A TypeError says a sync bus can't enter it, the call never ran, and the outer exit
-        saw the TypeError
+    Then: MiddlewareResultError says it isn't a sync context manager, the call never ran, and
+        the outer exit saw that error
     """
     # Arrange
     log: list[str] = []
     calls: list[str] = []
 
     # Act
-    with pytest.raises(TypeError, match="a sync bus can't enter"):
+    with pytest.raises(MiddlewareResultError, match="isn't a sync context manager"):
         _run((_logging(log, "outer"), _alogging(log, "async")), calls.append, "call")
 
     # Assert
     assert calls == []
-    assert log[-1].startswith("outer out None TypeError(")
+    assert log[-1].startswith("outer out None MiddlewareResultError(")
 
 
 def test_non_manager_middleware_raises_on_every_call() -> None:
@@ -740,19 +744,21 @@ def test_non_manager_middleware_raises_on_every_call() -> None:
 
     # Act
     for _ in range(2):
-        with pytest.raises(TypeError, match="a sync bus can't enter"):
+        with pytest.raises(MiddlewareResultError, match="isn't a sync context manager"):
             _run((plain,), calls.append, "call")
 
     # Assert
     assert calls == []
 
 
-def test_new_manager_class_per_call_keeps_working() -> None:
+async def test_new_manager_class_per_call_keeps_working() -> None:
     """
     Middleware returning a new context manager class on every call should keep working.
 
+    Only async buses remember classes: a sync bus looks each one's methods up directly.
+
     Given: A middleware that builds a new context manager class each time it's called
-    When: More calls run through it than the bus remembers classes for
+    When: More calls run through an async bus than it remembers classes for
     Then: Every call runs inside it, and the remembered classes stay within the bound
     """
     # Arrange
@@ -768,17 +774,21 @@ def test_new_manager_class_per_call_keeps_working() -> None:
 
         return Fresh()
 
-    count = middleware_module._ENTRIES_LIMIT + 10  # pyright: ignore[reportPrivateUsage]
+    async def record(index: int) -> None:
+        await asyncio.sleep(0)
+        calls.append(index)
+
+    count = shared_middleware._ENTRIES_LIMIT + 10  # pyright: ignore[reportPrivateUsage]
 
     # Act
     for index in range(count):
-        _run((fresh,), calls.append, index)
+        await _arun((fresh,), record, index)
 
     # Assert
     assert calls == list(range(count))
     assert len(entered) == count
-    limit = middleware_module._ENTRIES_LIMIT  # pyright: ignore[reportPrivateUsage]
-    assert len(middleware_module._SYNC_ENTRIES) <= limit  # pyright: ignore[reportPrivateUsage]
+    limit = shared_middleware._ENTRIES_LIMIT  # pyright: ignore[reportPrivateUsage]
+    assert len(shared_middleware._ENTRIES) <= limit  # pyright: ignore[reportPrivateUsage]
 
 
 def test_async_def_middleware_is_closed_on_sync_path() -> None:
@@ -799,7 +809,7 @@ def test_async_def_middleware_is_closed_on_sync_path() -> None:
         return coroutines[0]
 
     # Act
-    with pytest.raises(TypeError, match="isn't a sync context manager"):
+    with pytest.raises(MiddlewareResultError, match="isn't a sync context manager"):
         _run((async_def,), lambda: None)
 
     # Assert

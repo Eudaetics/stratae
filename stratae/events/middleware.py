@@ -20,13 +20,14 @@ A sync bus enters sync context managers. An async bus enters async ones, with `_
 and `__aexit__` or from `contextlib.asynccontextmanager`, and sync ones too, in the task
 running the call. So `lambda call: asyncio.timeout(5)` is a middleware giving each call five
 seconds. A middleware that's a class is checked when the bus is built, and any other callable
-on each call: one returning something the bus can't enter raises `TypeError`. A coroutine
+on each call: one returning something the bus can't enter raises
+{py:exc}`MiddlewareResultError <stratae.middleware.MiddlewareResultError>`. A coroutine
 returned, from an `async def` middleware, is closed; any other awaitable, such as a task, isn't
 the bus's to cancel, so it's left as it is.
 
 Middleware wraps the call, but can't change its reply or swallow its error. An exit that
 returns true, trying to swallow an ordinary error, raises
-{py:exc}`MiddlewareError <stratae.events.exceptions.MiddlewareError>` from it instead, so the
+{py:exc}`MiddlewareError <stratae.middleware.MiddlewareError>` from it instead, so the
 call still fails, and outer middleware sees that. Trying to swallow anything else, such as
 `KeyboardInterrupt` or the task's cancellation, raises it again as it is, so it still stops
 what it was meant to stop. A cancellation the middleware made itself, by timing the call out,
@@ -35,6 +36,8 @@ error of its own. Raised on entry, it refuses the call, and the middleware alrea
 it on exit. Raised on exit, it replaces the call's reply or error, as in nested `with`
 statements; that's how `asyncio.timeout` turns its cancellation into `TimeoutError`. The call
 runs exactly once, in the bus's own task, so a retry belongs to the handler, or to the adapter.
+These rules are the middleware contract in {py:mod}`stratae.middleware`, which lifecycle scopes
+follow too.
 
 Middleware can send context with a message in its headers, such as a trace or a tenant. Publish
 middleware sets them on `call.headers`, a {py:class}`MessageHeaders`. Handle middleware reads
@@ -122,7 +125,6 @@ handling lamp for acme
 ````
 """
 
-import asyncio
 from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, MutableMapping
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from dataclasses import dataclass
@@ -133,47 +135,39 @@ from typing import (
     NoReturn,
 )
 
-from stratae.events._frozen import freeze_tuples
+from stratae._middleware import (
+    frozen,
+    manager,
+    refuse_coroutine,
+    refuse_result,
+    refuse_swallow,
+    refuse_unenterable,
+    task_cancelling,
+    type_of,
+)
 from stratae.events.envelope import ENVELOPE_HEADERS
-from stratae.events.exceptions import MiddlewareError
 
 if TYPE_CHECKING:
     from stratae.events.protocols import AnyEvent
 
 type _Manager = AbstractContextManager[object] | AbstractAsyncContextManager[object]
 
-_SYNC_BUS_REJECTED = "{} enters middleware synchronously; {!r} isn't a sync context manager"
-
-_REJECTED = "{} can't enter {!r}: it isn't a context manager"
-
-_NOT_SYNC = (
-    "middleware {!r} returned {!r}, which a sync bus can't enter: it isn't a sync context manager"
-)
-
-_NOT_A_MANAGER = "middleware {!r} returned {!r}, which isn't a context manager"
-
-_SWALLOWED = "middleware {!r} tried to swallow {!r}, but middleware can't swallow errors"
-
 _NO_HEADERS: Mapping[str, str] = MappingProxyType({})
 
 _RESERVED = "{!r} is a header the bus sets itself, so middleware can't set it"
 
-_ASYNC_METHOD = (
-    "middleware {!r} has an async __enter__ or __exit__; an async context manager defines"
-    " __aenter__ and __aexit__"
-)
-
-_type_of: Callable[[object], Any] = type
-"""`type`, typed to return `Any`: a context manager's methods are looked up on its type."""
-
 type _Entered = list[tuple[Any, Any, Callable[[Any], Any]]]
 """
-The context managers entered so far, innermost last: each with its type, which its methods
-are looked up on, as `with` does, and the middleware it came from.
+The context managers entered so far, innermost last: each with its `__exit__`, looked up on
+its type as `with` does, and the middleware it came from.
 """
 
 type _EnteredAsync = list[tuple[Any, Any, Callable[[Any], Any], bool]]
-"""The same, with whether each one was entered asynchronously."""
+"""
+The context managers an async bus has entered so far, innermost last: each with its type,
+which its methods are looked up on, the middleware it came from, and whether it was entered
+asynchronously.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,14 +185,20 @@ class Middleware:
     """Run around each handler call, outermost first."""
 
     def __post_init__(self) -> None:
-        """Freeze each slot as a tuple, refusing a lone middleware given in place of one."""
-        freeze_tuples(self, ("publish", "handle"), "middleware", "trace")
+        """
+        Freeze each half as a tuple, refusing a lone middleware and anything uncallable.
+
+        :raises MiddlewareNotTupleError: If a half is a single callable or a string.
+        :raises MiddlewareNotCallableError: If a half holds something that isn't callable.
+        """
+        for field in ("publish", "handle"):
+            object.__setattr__(self, field, frozen(getattr(self, field), "Middleware", field))
 
     def require(
         self, bus: str, *, asynchronous: bool, publish: bool = True, handle: bool = True
     ) -> None:
         """
-        Raise TypeError if any middleware in the selected halves is a class a bus can't enter.
+        Refuse any middleware in the selected halves that's a class the bus can't enter.
 
         Only a class can be checked before it's called; the bus checks other callables on each
         call.
@@ -207,12 +207,10 @@ class Middleware:
         :param asynchronous: Whether the bus runs middleware asynchronously.
         :param publish: Whether to check the `publish` half; a consumer doesn't run it.
         :param handle: Whether to check the `handle` half; a publisher doesn't run it.
+        :raises MiddlewareNotEnterableError: If a selected middleware is such a class.
         """
         selected = (*(self.publish if publish else ()), *(self.handle if handle else ()))
-        message = _REJECTED if asynchronous else _SYNC_BUS_REJECTED
-        for item in selected:
-            if isinstance(item, type) and _entry(item, asynchronous) is None:
-                raise TypeError(message.format(bus, item))
+        refuse_unenterable(selected, bus, asynchronous)
 
 
 class MessageHeaders(MutableMapping[str, str]):
@@ -326,104 +324,6 @@ class HandleCall(_Call):
         """
 
 
-_UNKNOWN: Any = object()
-
-_ENTRIES_LIMIT = 256
-"""How many context manager types each bus kind remembers the entry of; beyond it, it checks."""
-
-_SYNC_ENTRIES: dict[type, bool | None] = {}
-"""How a sync bus enters each context manager type it has seen, so it checks each type once."""
-
-_ASYNC_ENTRIES: dict[type, bool | None] = {}
-"""How an async bus enters each context manager type it has seen."""
-
-
-def _entry(kind: type, asynchronous: bool) -> bool | None:
-    """
-    Return how a bus enters a context manager of type `kind`.
-
-    :returns: `True` to enter it asynchronously, `False` synchronously, or `None` if the bus
-        can't enter it.
-    """
-    if asynchronous and hasattr(kind, "__aenter__") and hasattr(kind, "__aexit__"):
-        return True
-    if hasattr(kind, "__enter__") and hasattr(kind, "__exit__"):
-        return False
-    return None
-
-
-def _manager(
-    middleware: Callable[[Any], Any], call: _Call, asynchronous: bool
-) -> tuple[Any, Any, bool]:
-    """
-    Call a middleware, returning its context manager, the manager's type, and if it's async.
-
-    :raises TypeError: If it returned something the bus can't enter.
-    """
-    manager = middleware(call)
-    kind = _type_of(manager)
-    entries = _ASYNC_ENTRIES if asynchronous else _SYNC_ENTRIES
-    entry = entries.get(kind, _UNKNOWN)
-    if entry is _UNKNOWN:
-        entry = _entry(kind, asynchronous)
-        # Bounded, so middleware that makes a new class per call can't grow it forever.
-        if len(entries) < _ENTRIES_LIMIT:
-            entries[kind] = entry
-    if entry is None:
-        if manager.__class__ is CoroutineType:
-            manager.close()  # an async def middleware's, closed so it isn't left unawaited
-        message = _NOT_A_MANAGER if asynchronous else _NOT_SYNC
-        raise TypeError(message.format(middleware, manager))
-    return manager, kind, entry
-
-
-def _refuse_coroutine(result: Any, middleware: object) -> NoReturn:
-    """
-    Raise TypeError for a sync `__enter__` or `__exit__` that's an `async def`.
-
-    Its coroutine is closed, so it isn't left unawaited. Callers check for a coroutine
-    themselves, keeping a call off each layer's normal path. Only a coroutine is refused,
-    being unambiguously an `async def` mistake: anything else `__enter__` returns is the
-    context manager's own, awaitable or not, and is left alone.
-    """
-    result.close()
-    raise TypeError(_ASYNC_METHOD.format(middleware))
-
-
-def _refuse_swallow(error: BaseException, middleware: object, cancelling: bool) -> NoReturn:
-    """
-    Raise in place of an exit that returned true, trying to swallow `error`.
-
-    An ordinary error becomes MiddlewareError from it, so the call still fails as an error.
-    Anything else, such as `KeyboardInterrupt`, is raised again as it is, so it still stops
-    what it was meant to stop: turned into an ordinary error, `except Exception` would catch
-    it. A cancellation is raised again only while the task is still being cancelled. One the
-    middleware made itself, timing the call out, has been uncancelled by the time it swallows
-    the timeout, and re-raising it would look like the task being cancelled.
-
-    :param cancelling: Whether the task running the call is still being cancelled.
-    """
-    if isinstance(error, Exception) or (
-        isinstance(error, asyncio.CancelledError) and not cancelling
-    ):
-        raise MiddlewareError(_SWALLOWED.format(middleware, error)) from error
-    raise error
-
-
-def _task_cancelling() -> bool:
-    """
-    Return whether the current task is being cancelled, as a swallowed cancellation shows.
-
-    The call runs in this task, so its count is the call's: `asyncio.timeout` uncancels the
-    task when it turns its own cancellation into `TimeoutError`. Code earlier in the task that
-    caught a cancellation without uncancelling leaves the count raised, and a swallowed
-    timeout's cancellation is then raised again rather than reported. Outside a task, a
-    cancellation can't be the task's.
-    """
-    task = asyncio.current_task()
-    return task is not None and task.cancelling() > 0
-
-
 def _exit(entered: _Entered, call: _Call) -> None:
     """
     Exit the entered context managers innermost first, after the call succeeded.
@@ -431,11 +331,11 @@ def _exit(entered: _Entered, call: _Call) -> None:
     An exit that raises fails the call, so the rest exit with that error, and no reply.
     """
     while entered:
-        manager, kind, middleware = entered.pop()
+        context, leave, middleware = entered.pop()
         try:
-            result = kind.__exit__(manager, None, None, None)
+            result = leave(context, None, None, None)
             if result.__class__ is CoroutineType:
-                _refuse_coroutine(result, middleware)
+                refuse_coroutine(result, middleware)
         except BaseException as error:
             call.reply = None
             _unwind(entered, error)
@@ -450,15 +350,15 @@ def _unwind(entered: _Entered, error: BaseException) -> NoReturn:
     `error` is being handled, so a new error chains from it, as in a `with`.
     """
     while entered:
-        manager, kind, middleware = entered.pop()
+        context, leave, middleware = entered.pop()
         try:
             exc_info = (type(error), error, error.__traceback__)
-            suppressed = kind.__exit__(manager, *exc_info)
+            suppressed = leave(context, *exc_info)
             if suppressed.__class__ is CoroutineType:
-                _refuse_coroutine(suppressed, middleware)
+                refuse_coroutine(suppressed, middleware)
             if suppressed:
                 # A sync bus has no task to cancel, so any cancellation is raised again.
-                _refuse_swallow(error, middleware, cancelling=True)
+                refuse_swallow(error, middleware, cancelling=True)
         except BaseException as raised:
             if raised is not error:
                 _unwind(entered, raised)
@@ -479,16 +379,20 @@ def run_middleware[T](
         {py:class}`HandleCall` around a handler call.
     :param call: The emit or handler call the middleware wraps.
     :returns: What `call` returns.
-    :raises TypeError: If a middleware doesn't return a sync context manager.
+    :raises MiddlewareResultError: If a middleware doesn't return a sync context manager.
     """
     entered: _Entered = []
     try:
         for item in middleware:
-            manager, kind, _ = _manager(item, seen, asynchronous=False)
-            result = kind.__enter__(manager)
-            if result.__class__ is CoroutineType:
-                _refuse_coroutine(result, item)
-            entered.append((manager, kind, item))
+            context = item(seen)
+            kind = type_of(context)
+            try:
+                enter, leave = kind.__enter__, kind.__exit__
+            except AttributeError:
+                refuse_result(item, context, False)
+            if (result := enter(context)).__class__ is CoroutineType:
+                refuse_coroutine(result, item)
+            entered.append((context, leave, item))
         reply = call(*args)
     except BaseException as error:
         _unwind(entered, error)
@@ -500,12 +404,12 @@ def run_middleware[T](
 async def _exit_async(entered: _EnteredAsync, call: _Call) -> None:
     """Exit the entered context managers, sync or async, the way {py:func}`_exit` does."""
     while entered:
-        manager, kind, middleware, is_async = entered.pop()
+        context, kind, middleware, is_async = entered.pop()
         try:
             if is_async:
-                await kind.__aexit__(manager, None, None, None)
-            elif (result := kind.__exit__(manager, None, None, None)).__class__ is CoroutineType:
-                _refuse_coroutine(result, middleware)
+                await kind.__aexit__(context, None, None, None)
+            elif (result := kind.__exit__(context, None, None, None)).__class__ is CoroutineType:
+                refuse_coroutine(result, middleware)
         except BaseException as error:
             call.reply = None
             await _unwind_async(entered, error)
@@ -514,15 +418,15 @@ async def _exit_async(entered: _EnteredAsync, call: _Call) -> None:
 async def _unwind_async(entered: _EnteredAsync, error: BaseException) -> NoReturn:
     """Exit the entered context managers, sync or async, the way {py:func}`_unwind` does."""
     while entered:
-        manager, kind, middleware, is_async = entered.pop()
+        context, kind, middleware, is_async = entered.pop()
         try:
             exc_info = (type(error), error, error.__traceback__)
             if is_async:
-                suppressed = await kind.__aexit__(manager, *exc_info)
-            elif (suppressed := kind.__exit__(manager, *exc_info)).__class__ is CoroutineType:
-                _refuse_coroutine(suppressed, middleware)
+                suppressed = await kind.__aexit__(context, *exc_info)
+            elif (suppressed := kind.__exit__(context, *exc_info)).__class__ is CoroutineType:
+                refuse_coroutine(suppressed, middleware)
             if suppressed:
-                _refuse_swallow(error, middleware, cancelling=_task_cancelling())
+                refuse_swallow(error, middleware, cancelling=task_cancelling())
         except BaseException as raised:
             if raised is not error:
                 await _unwind_async(entered, raised)
@@ -543,17 +447,17 @@ async def run_middleware_async[T](
         {py:class}`HandleCall` around a handler call.
     :param call: The emit or handler call the middleware wraps.
     :returns: What `call` resolves to.
-    :raises TypeError: If a middleware doesn't return a context manager.
+    :raises MiddlewareResultError: If a middleware doesn't return a context manager.
     """
     entered: _EnteredAsync = []
     try:
         for item in middleware:
-            manager, kind, is_async = _manager(item, seen, asynchronous=True)
+            context, kind, is_async = manager(item, seen)
             if is_async:
-                await kind.__aenter__(manager)
-            elif (result := kind.__enter__(manager)).__class__ is CoroutineType:
-                _refuse_coroutine(result, item)
-            entered.append((manager, kind, item, is_async))
+                await kind.__aenter__(context)
+            elif (result := kind.__enter__(context)).__class__ is CoroutineType:
+                refuse_coroutine(result, item)
+            entered.append((context, kind, item, is_async))
         reply = await call(*args)
     except BaseException as error:
         await _unwind_async(entered, error)
