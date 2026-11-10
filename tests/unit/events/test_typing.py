@@ -26,6 +26,10 @@ Hooks:
 
 Built-in dispatchers:
 - Each fits its pattern for any payload and reply type, returning what the pattern emits.
+
+Pub/sub handlers:
+- handle on either direct bus takes a pub/sub handler returning None, sync or async, and
+  refuses one returning a value as a type error.
 """
 
 import asyncio
@@ -231,7 +235,7 @@ def test_builtin_dispatchers_fit_their_patterns() -> None:
         [Request[_S, _R, Any], Collection[Handler[[_S], Any, _R | Awaitable[_R]]], _S],
         Awaitable[_R],
     ] = dispatch_request_async
-    pubsub: Callable[[PubSub[_S, Any], Handlers[Handler[[_S], Any, object]], _S], None] = fan_out
+    pubsub: Callable[[PubSub[_S, Any], Handlers[Handler[[_S], Any, None]], _S], None] = fan_out
     pubsub_async: Callable[
         [PubSub[_S, Any], Handlers[Handler[[_S], Any, Any]], _S], Awaitable[None]
     ] = fan_out_async
@@ -273,3 +277,39 @@ def test_hooks_typed_by_event() -> None:
     # Assert
     assert_type(place(item="desk"), _Order)
     assert_type(order, _Order)
+
+
+def test_pubsub_handlers_return_none() -> None:
+    """
+    A pub/sub handler should be typed as returning None, on either direct bus.
+
+    Given: Handlers returning None, sync and async, and handlers returning a value
+    When: Each is registered for a pub/sub event
+    Then: Those returning None type-check, and those returning a value are type errors
+    """
+
+    # Arrange
+    def returns_none(order: _OrderPlaced) -> None: ...
+
+    async def resolves_to_none(order: _OrderPlaced) -> None: ...
+
+    def returns_value(order: _OrderPlaced) -> int:
+        return 1
+
+    async def resolves_to_value(order: _OrderPlaced) -> int:
+        await asyncio.sleep(0)
+        return 1
+
+    bus, async_bus = DirectBus(), AsyncDirectBus()
+
+    # Act
+    bus.handle(_order_placed, returns_none)
+    async_bus.handle(_order_placed, returns_none)
+    async_bus.handle(_order_placed, resolves_to_none)
+    bus.handle(_order_placed, returns_value)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    async_bus.handle(_order_placed, returns_value)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    async_bus.handle(_order_placed, resolves_to_value)  # pyright: ignore[reportCallIssue, reportArgumentType]
+
+    # Assert
+    assert len(bus.handlers(_order_placed)) == 2
+    assert len(async_bus.handlers(_order_placed)) == 4

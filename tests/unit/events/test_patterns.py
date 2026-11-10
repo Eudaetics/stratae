@@ -12,7 +12,7 @@ Request:
 
 PubSub:
 - Stores its schema and derives its name, or takes an explicit one.
-- Emits None, and its handlers may return anything.
+- Emits None, and its handlers return None.
 - A payload-less event takes its name, carries NoPayload, and is a signal.
 - A payload-less event without a name raises TypeError.
 
@@ -28,6 +28,7 @@ Equality:
 - An event's repr shows its name, payload type and, for a request, its reply type.
 """
 
+from types import NoneType
 from typing import Any, Literal, cast
 
 import pytest
@@ -115,7 +116,7 @@ def test_command_replies_none() -> None:
     place_order = Request(_OrderPlaced)
 
     # Assert
-    assert place_order.reply is type(None)
+    assert place_order.reply is NoneType
 
 
 def test_payloadless_request_is_signal() -> None:
@@ -172,20 +173,20 @@ def test_pubsub_stores_schema_and_derives_name() -> None:
     assert order_placed.is_signal is False
 
 
-def test_pubsub_emits_none_and_handlers_return_anything() -> None:
+def test_pubsub_emits_none_and_handlers_return_none() -> None:
     """
-    A pub/sub event should emit None and accept any handler return.
+    A pub/sub event should emit None, and its handlers should return None.
 
     Given: A payload class
     When: A PubSub is created
-    Then: It emits NoneType, and its handlers return object
+    Then: It emits NoneType, and its handlers return NoneType
     """
     # Act
     order_placed = PubSub(_OrderPlaced)
 
     # Assert
-    assert order_placed.emit_returns is type(None)
-    assert order_placed.handler_returns is object
+    assert order_placed.emit_returns is NoneType
+    assert order_placed.handler_returns is NoneType
 
 
 def test_pubsub_accepts_explicit_name() -> None:
