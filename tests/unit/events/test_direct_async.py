@@ -64,6 +64,10 @@ AsyncDirectBus (middleware):
 - Handle middleware reads the headers async publish middleware set, on every handler of a
   concurrent fan-out, and concurrent emits each read their own.
 - Publish middleware setting a reserved header refuses the emit; no handler runs.
+- emit is reported as a coroutine function, and returns a coroutine for every event: nothing
+  runs and nothing is raised until it's awaited, a sync responder included.
+- A custom dispatcher's awaitable that isn't a coroutine still makes emit return a coroutine,
+  which a task can run.
 
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -74,6 +78,7 @@ AsyncDirectBus (with envelope):
 """
 
 import asyncio
+import inspect
 import sys
 import threading
 from collections.abc import Awaitable, Collection, Generator
@@ -1708,3 +1713,93 @@ async def test_envelope_ids_come_from_bus_source():
     [envelope] = seen
     assert envelope is not None
     assert (envelope.message_id, envelope.correlation_id) == (UUID(int=1), UUID(int=2))
+
+
+def test_emit_is_a_coroutine_function(bus: AsyncDirectBus):
+    """
+    Emit should be reported as a coroutine function, on the class and on a bus.
+
+    Given: An async bus
+    When: inspect checks AsyncDirectBus.emit and bus.emit
+    Then: Both are coroutine functions
+    """
+    # Act / Assert
+    assert inspect.iscoroutinefunction(AsyncDirectBus.emit)
+    assert inspect.iscoroutinefunction(bus.emit)
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+async def test_emit_raises_only_when_awaited(bus: AsyncDirectBus):
+    """
+    An emit that can't be dispatched should raise when it's awaited, not when it's called.
+
+    Given: A request event with no responder, and an event of a pattern the bus can't dispatch
+    When: Each is emitted without awaiting, then awaited
+    Then: Each call returns a coroutine without raising, and awaiting it raises
+    """
+    # Act
+    no_responder = bus.emit(_find_book, None, _BookQuery("dune"))
+    unsupported = bus.emit(_quotes, None, _BookQuery("dune"))
+
+    # Assert
+    assert inspect.iscoroutine(no_responder)
+    assert inspect.iscoroutine(unsupported)
+    with pytest.raises(NoResponderError):
+        await no_responder
+    with pytest.raises(TypeError, match="no dispatcher"):
+        await unsupported
+
+
+async def test_sync_responder_runs_when_awaited(bus: AsyncDirectBus):
+    """
+    A sync responder on an async bus should run when the emit is awaited, not when it's called.
+
+    Given: A sync responder recording its calls
+    When: A request is emitted, then awaited
+    Then: The responder hasn't run after the call, and has once the emit is awaited
+    """
+    # Arrange
+    calls: list[str] = []
+
+    def respond(query: _BookQuery) -> _BookResult:
+        calls.append(query.query)
+        return _BookResult(query.query)
+
+    bus.handle(_find_book, respond)
+
+    # Act
+    emitted = bus.emit(_find_book, None, _BookQuery("dune"))
+    before = list(calls)
+    reply = await emitted
+
+    # Assert
+    assert before == []
+    assert calls == ["dune"]
+    assert reply.title == "dune"
+
+
+async def test_custom_dispatcher_awaitable_emit_is_coroutine():
+    """
+    An emit should be a coroutine even when a custom dispatcher returns another awaitable.
+
+    Given: A dispatcher returning a future, already resolved to the number of handlers
+    When: The event is emitted and the emit run as a task
+    Then: emit returns a coroutine, and the task resolves to the future's result
+    """
+
+    # Arrange
+    def count(event: Any, handlers: Collection[Any], payload: Any) -> Awaitable[int]:
+        future = asyncio.get_running_loop().create_future()
+        future.set_result(len(handlers))
+        return future
+
+    bus = AsyncDirectBus(dispatchers=[Dispatch(_Gather, count)])
+    bus.handle(_quotes, lambda query: 1)
+
+    # Act
+    emitted = bus.emit(_quotes, None, _BookQuery("dune"))
+    result = await asyncio.create_task(emitted)
+
+    # Assert
+    assert inspect.iscoroutine(emitted)
+    assert result == 1
