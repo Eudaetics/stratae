@@ -53,7 +53,7 @@ class _Receiving:
         self._token: Token[Mapping[str, str]]
 
     def __enter__(self) -> None:
-        self._token = _received.set(MappingProxyType(dict(self._headers)))
+        self._token = _received.set(MappingProxyType(self._headers))
 
     def __exit__(self, *_: object) -> None:
         _received.reset(self._token)
@@ -65,8 +65,8 @@ def receiving(headers: Mapping[str, str]) -> _Receiving:
 
     Handle middleware outside any `receiving` block sees no headers.
 
-    :param headers: The headers the message arrived with. Handle middleware gets a read-only
-        copy, taken when the block is entered.
+    :param headers: The headers the message arrived with, as a mapping the caller doesn't
+        change afterwards. Handle middleware reads it read-only, without a copy.
     :returns: A context manager for the block.
     """
     return _Receiving(headers)

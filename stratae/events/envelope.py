@@ -59,6 +59,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Self
 from uuid import UUID
 
 MESSAGE_ID_HEADER = "x-message-id"
@@ -103,7 +104,7 @@ def _when(value: object | None) -> datetime:
     return datetime.now(UTC) if value is None else datetime.fromisoformat(str(value))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Envelope:
     """
     Immutable correlation and causation ids for one message in a causal chain.
@@ -117,7 +118,7 @@ class Envelope:
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @classmethod
-    def root(cls, new_id: _NewId = _new_uuid4) -> Envelope:
+    def root(cls, new_id: _NewId = _new_uuid4) -> Self:
         """
         Start a new chain.
 
@@ -127,7 +128,7 @@ class Envelope:
         # Positional, in field order: cheaper than keywords on this per-emit path.
         return cls(new_id(), new_id())
 
-    def child(self, new_id: _NewId = _new_uuid4) -> Envelope:
+    def child(self, new_id: _NewId = _new_uuid4) -> Self:
         """
         Derive the next envelope in this chain.
 
@@ -135,7 +136,7 @@ class Envelope:
         :returns: An {py:class}`Envelope` with this `correlation_id`, caused by this message.
         """
         # Positional, in field order: cheaper than keywords on this per-emit path.
-        return Envelope(new_id(), self.correlation_id, self.message_id)
+        return type(self)(new_id(), self.correlation_id, self.message_id)
 
     def to_headers(self) -> dict[str, str]:
         """
@@ -153,7 +154,7 @@ class Envelope:
         return headers
 
     @classmethod
-    def from_headers(cls, headers: Mapping[str, object], new_id: _NewId = _new_uuid4) -> Envelope:
+    def from_headers(cls, headers: Mapping[str, object], new_id: _NewId = _new_uuid4) -> Self:
         """
         Rebuild an envelope from message headers, generating any missing fields.
 

@@ -240,7 +240,8 @@ class MessageHeaders(MutableMapping[str, str]):
         """
         self._reserved = reserved
         self._headers: dict[str, str] = {}
-        self.update(headers)
+        if headers:
+            self.update(headers)
 
     def __setitem__(self, name: str, value: str) -> None:
         """Set a header, refusing a reserved name."""
@@ -263,6 +264,14 @@ class MessageHeaders(MutableMapping[str, str]):
     def __len__(self) -> int:
         """Return how many headers are set."""
         return len(self._headers)
+
+    def to_dict(self) -> dict[str, str]:
+        """
+        Return the headers as a new plain `dict`, for sending them with the message.
+
+        Faster than `dict(headers)`, which reads a mapping one header at a time.
+        """
+        return self._headers.copy()
 
     def __repr__(self) -> str:
         """Show the headers."""

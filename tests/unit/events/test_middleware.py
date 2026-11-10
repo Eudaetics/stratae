@@ -453,6 +453,55 @@ def test_message_headers_reserve_given_names() -> None:
     assert dict(headers) == {"x-correlation-id": "custom"}
 
 
+def test_message_headers_start_empty_without_updating(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    MessageHeaders should start empty without running the inherited update.
+
+    Given: An update that records each call
+    When: Headers are created with none given, and with an empty mapping
+    Then: Both are created empty, and update was never called
+    """
+    # Arrange
+    calls: list[tuple[object, ...]] = []
+
+    def update(*args: object) -> None:
+        calls.append(args)
+
+    monkeypatch.setattr(MessageHeaders, "update", update)
+
+    # Act
+    headers = MessageHeaders()
+    given_empty = MessageHeaders({})
+
+    # Assert
+    assert len(headers) == 0
+    assert len(given_empty) == 0
+    assert calls == []
+
+
+def test_message_headers_to_dict_is_a_separate_copy() -> None:
+    """
+    MessageHeaders.to_dict should return the headers as a new plain dict.
+
+    Given: Headers with a tenant
+    When: They're copied with to_dict, then the copy and the headers are both changed
+    Then: The copy was a plain dict of the headers, and neither change reaches the other
+    """
+    # Arrange
+    headers = MessageHeaders({"x-tenant": "acme"})
+
+    # Act
+    copied = headers.to_dict()
+    snapshot = (type(copied), dict(copied))
+    copied["x-extra"] = "1"
+    headers["traceparent"] = "00-trace"
+
+    # Assert
+    assert snapshot == (dict, {"x-tenant": "acme"})
+    assert copied == {"x-tenant": "acme", "x-extra": "1"}
+    assert dict(headers) == {"x-tenant": "acme", "traceparent": "00-trace"}
+
+
 # endregion
 
 # region: run_middleware

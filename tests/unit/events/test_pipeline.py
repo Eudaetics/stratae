@@ -25,7 +25,7 @@ receiving:
 """
 
 import asyncio
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Generator, MutableMapping
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
@@ -236,19 +236,20 @@ async def test_wrap_handler_middleware_reads_received_headers(asynchronous: bool
     Handle middleware should read the headers of the enclosing receiving block, or none.
 
     Given: A handler wrapped in handle middleware recording the headers it reads
-    When: It's called inside a receiving block whose headers change after entry, then outside
-    Then: The middleware read the headers as received, then none
+    When: It's called inside a receiving block, then outside
+    Then: The middleware read the headers as received, read-only, then none
     """
     # Arrange
     seen: list[dict[str, str]] = []
+    writable: list[bool] = []
 
     @contextmanager
     def record(call: HandleCall) -> Generator[None, None, None]:
         seen.append(dict(call.headers))
+        writable.append(isinstance(call.headers, MutableMapping))
         yield
 
     call, is_async = wrap_handler(_order_placed, None, _shout, None, (record,), asynchronous)
-    received = {"x-tenant": "acme"}
 
     async def handle() -> None:
         reply = call(_Order("lamp"))
@@ -256,13 +257,13 @@ async def test_wrap_handler_middleware_reads_received_headers(asynchronous: bool
             await reply
 
     # Act
-    with receiving(received):
-        received["x-tenant"] = "changed"
+    with receiving({"x-tenant": "acme"}):
         await handle()
     await handle()
 
     # Assert
     assert seen == [{"x-tenant": "acme"}, {}]
+    assert writable == [False, False]
 
 
 def test_receiving_restores_outer_headers_on_exit_and_error() -> None:

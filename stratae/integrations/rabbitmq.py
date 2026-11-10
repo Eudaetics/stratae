@@ -220,11 +220,11 @@ _ROUTING_KEY = "messaging.rabbitmq.destination.routing_key"
 
 
 def _stamp(
-    properties: Basic.Properties | None, envelope: Envelope, headers: Mapping[str, str]
+    properties: Basic.Properties | None, envelope: Envelope, headers: MessageHeaders
 ) -> Basic.Properties:
     """Copy properties, stamped with the message's headers, envelope ids, and timestamp."""
     stamped = copy(properties) if properties is not None else Basic.Properties()
-    stamped.headers = (stamped.headers or {}) | dict(headers) | envelope.to_headers()
+    stamped.headers = (stamped.headers or {}) | headers.to_dict() | envelope.to_headers()
     stamped.message_id = str(envelope.message_id)
     stamped.correlation_id = str(envelope.correlation_id)
     stamped.timestamp = envelope.timestamp
