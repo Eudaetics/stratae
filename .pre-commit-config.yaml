@@ -31,4 +31,5 @@ repos:
           - fastapi
           - opentelemetry-api
           - starlette
+          - uuid-utils
         exclude: ^tests/|^docs|conftest.py

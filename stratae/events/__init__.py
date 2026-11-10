@@ -19,7 +19,7 @@ wraps every emit and handler call on a bus.
 
 ````{example} Create event triggering a logging event
 ```{code-block} python
-from stratae.events import DirectBus, Envelope, PubSub, Request
+from stratae.events import DirectBus, Envelope, EnvelopeConfig, PubSub, Request
 
 class LogMessage:
     def __init__(self, text: str) -> None:
@@ -36,7 +36,7 @@ class User:
 log_message_event = PubSub(LogMessage)
 create_user_event = Request(CreateUserSchema, reply=User)
 
-bus = DirectBus(use_envelope=True)
+bus = DirectBus(envelope=EnvelopeConfig())
 log = bus.bind(log_message_event, factory=LogMessage)
 create = bus.bind(create_user_event, factory=CreateUserSchema)
 
@@ -73,6 +73,7 @@ from .envelope import (
     MESSAGE_ID_HEADER,
     TIMESTAMP_HEADER,
     Envelope,
+    EnvelopeConfig,
 )
 from .handler import Handler, Handlers, WithoutPayload
 from .hooks import Hooks
@@ -103,6 +104,7 @@ __all__ = [
     "Dispatch",
     "EmitCallable",
     "Envelope",
+    "EnvelopeConfig",
     "EventType",
     "HandleCall",
     "Handler",

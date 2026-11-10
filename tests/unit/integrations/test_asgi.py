@@ -24,7 +24,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from stratae.events import DirectBus, PubSub
-from stratae.events.envelope import Envelope
+from stratae.events.envelope import Envelope, EnvelopeConfig
 from stratae.integrations.asgi import ASGIScope, EnvelopeMiddleware, Message, Receive, Send
 
 _CALLER = UUID("0b9d7a52-6f1e-4c3a-9d2b-5e8f1a7c4d60")
@@ -112,7 +112,7 @@ async def test_emitted_events_share_correlation_id():
     """
     # Arrange
     event = PubSub(str)
-    bus = DirectBus(use_envelope=True)
+    bus = DirectBus(envelope=EnvelopeConfig())
     emit = bus.bind(event)
     handled: list[Envelope] = []
     bus.handle(event)(lambda payload: handled.append(_current()))
@@ -356,3 +356,39 @@ async def test_concurrent_requests_isolated():
 
     # Assert
     assert seen == {first: [first, first], second: [second, second]}
+
+
+class _Ids:
+    """An id source handing out UUID(int=1), UUID(int=2), and so on, in order."""
+
+    def __init__(self) -> None:
+        self.made: list[UUID] = []
+
+    def __call__(self) -> UUID:
+        made = UUID(int=len(self.made) + 1)
+        self.made.append(made)
+        return made
+
+
+@pytest.mark.parametrize("caller", [False, True], ids=["new chain", "caller's chain"])
+async def test_request_ids_come_from_middleware_source(caller: bool):
+    """
+    The middleware should draw each request's new ids from its id source.
+
+    Given: The middleware with a counting id source
+    When: A request is handled, without a correlation id, or with the caller's
+    Then: The message id is the source's first; the correlation id is its second for a new
+        chain, or the caller's, without asking the source again
+    """
+    # Arrange
+    app, ids = _App(), _Ids()
+    headers = ((b"x-correlation-id", str(_CALLER).encode()),) if caller else ()
+
+    # Act
+    await _call(EnvelopeMiddleware(app, envelope=EnvelopeConfig(new_id=ids)), _http(*headers))
+
+    # Assert
+    envelope = _envelope(app)
+    assert envelope.message_id == UUID(int=1)
+    assert envelope.correlation_id == (_CALLER if caller else UUID(int=2))
+    assert len(ids.made) == (1 if caller else 2)

@@ -81,6 +81,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 
 import pytest
 
@@ -90,6 +91,7 @@ from stratae.events import (
     Dispatch,
     EmitCallable,
     Envelope,
+    EnvelopeConfig,
     HandleCall,
     Handler,
     Handlers,
@@ -175,7 +177,7 @@ def bus() -> AsyncDirectBus:
 @pytest.fixture
 def bus_with_envelope() -> AsyncDirectBus:
     """Return a fresh AsyncDirectBus instance with envelope tracking enabled."""
-    return AsyncDirectBus(use_envelope=True)
+    return AsyncDirectBus(envelope=EnvelopeConfig())
 
 
 def test_bus_satisfies_producer_protocol(bus: AsyncDirectBus):
@@ -1486,7 +1488,7 @@ async def test_middleware_wraps_hooks_inside_envelope():
     # Arrange
     log: list[str] = []
     bus = AsyncDirectBus(
-        use_envelope=True,
+        envelope=EnvelopeConfig(),
         middleware=Middleware(
             publish=(_alabelled(log, "publish mw"),), handle=(_alabelled(log, "handle mw"),)
         ),
@@ -1664,3 +1666,42 @@ async def test_reserved_header_refuses_emit():
 
 
 # endregion
+
+
+class _Ids:
+    """An id source handing out UUID(int=1), UUID(int=2), and so on, in order."""
+
+    def __init__(self) -> None:
+        self.made: list[UUID] = []
+
+    def __call__(self) -> UUID:
+        made = UUID(int=len(self.made) + 1)
+        self.made.append(made)
+        return made
+
+
+async def test_envelope_ids_come_from_bus_source():
+    """
+    An enveloped async bus should draw each emission's envelope ids from its id source.
+
+    Given: An async bus with envelopes and a counting id source
+    When: An event is emitted
+    Then: The handler's envelope takes the source's first two ids
+    """
+    # Arrange
+    bus = AsyncDirectBus(envelope=EnvelopeConfig(new_id=_Ids()))
+    seen: list[Envelope | None] = []
+
+    async def record(_: _TaskCreated) -> None:
+        await asyncio.sleep(0)
+        seen.append(Envelope.current())
+
+    bus.handle(_task_created, record)
+
+    # Act
+    await bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    [envelope] = seen
+    assert envelope is not None
+    assert (envelope.message_id, envelope.correlation_id) == (UUID(int=1), UUID(int=2))

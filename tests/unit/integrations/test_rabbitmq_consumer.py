@@ -121,7 +121,7 @@ from contextlib import asynccontextmanager
 from itertools import count
 from typing import Any, cast
 from unittest.mock import AsyncMock, call
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pamqp.commands import Basic
@@ -131,6 +131,7 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     Envelope,
+    EnvelopeConfig,
     HandleCall,
     Handler,
     Hooks,
@@ -2505,3 +2506,54 @@ def test_consumer_requires_a_deserializer():
     # Act / Assert
     with pytest.raises(TypeError, match="deserializer"):
         RabbitMQConsumer(_URL)  # pyright: ignore[reportCallIssue]
+
+
+class _Ids:
+    """An id source handing out UUID(int=1), UUID(int=2), and so on, in order."""
+
+    def __init__(self) -> None:
+        self.made: list[UUID] = []
+
+    def __call__(self) -> UUID:
+        made = UUID(int=len(self.made) + 1)
+        self.made.append(made)
+        return made
+
+
+@pytest.mark.parametrize("headers", ["none", "correlation only", "unreadable"])
+async def test_missing_envelope_ids_come_from_consumer_source(
+    connect_mock: AsyncMock, channel: AsyncMock, headers: str
+):
+    """
+    A consumer should draw the ids a delivered message lacks from its id source.
+
+    Given: A consumer with a counting id source
+    When: A message arrives with no envelope ids, with only a correlation id, or with
+        unreadable ones
+    Then: The handler's envelope takes its missing ids from the source, and keeps the
+        correlation id the message carried
+    """
+    # Arrange
+    consumer = RabbitMQConsumer(_URL, deserializer=_decode, envelope=EnvelopeConfig(new_id=_Ids()))
+    seen: list[Envelope | None] = []
+    consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
+    correlation = uuid4()
+    message = _message(
+        b'{"order_id": 7}',
+        {
+            "none": None,
+            "correlation only": {"x-correlation-id": str(correlation)},
+            "unreadable": {"x-message-id": "not a uuid"},
+        }[headers],
+    )
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    [envelope] = seen
+    assert envelope is not None
+    assert envelope.message_id == UUID(int=1)
+    expected = correlation if headers == "correlation only" else UUID(int=2)
+    assert envelope.correlation_id == expected

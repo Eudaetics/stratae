@@ -45,7 +45,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import NoOpTracerProvider, SpanContext, SpanKind, StatusCode
 from pytest_mock import MockerFixture
 
-from stratae.events import AsyncDirectBus, DirectBus, Envelope, PubSub
+from stratae.events import AsyncDirectBus, DirectBus, Envelope, EnvelopeConfig, PubSub
 from stratae.events.middleware import HandleCall, MessageHeaders, PublishCall, run_middleware
 from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer
 from stratae.integrations.opentelemetry import tracing
@@ -143,7 +143,7 @@ def test_direct_bus_spans(provider: TracerProvider, exporter: InMemorySpanExport
     """
     # Arrange
     seen: list[Envelope | None] = []
-    bus = DirectBus(use_envelope=True, middleware=tracing(provider))
+    bus = DirectBus(envelope=EnvelopeConfig(), middleware=tracing(provider))
     bus.handle(_order_placed, lambda order: seen.append(Envelope.current()))
 
     # Act
@@ -176,7 +176,7 @@ def test_direct_bus_spans_nest(provider: TracerProvider, exporter: InMemorySpanE
     """
     # Arrange
     shipped = PubSub(name="shipped")
-    bus = DirectBus(use_envelope=True, middleware=tracing(provider))
+    bus = DirectBus(envelope=EnvelopeConfig(), middleware=tracing(provider))
     ship = bus.bind(shipped)
     bus.handle(shipped, lambda: None)
     bus.handle(_order_placed, lambda order: ship())

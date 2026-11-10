@@ -98,7 +98,7 @@ from typing import (
 from uuid import UUID
 
 from stratae.events.binding import abind
-from stratae.events.envelope import ENVELOPE_HEADERS, Envelope
+from stratae.events.envelope import ENVELOPE_HEADERS, Envelope, EnvelopeConfig
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import MessageHeaders, Middleware
@@ -278,6 +278,7 @@ class OutboxProducer:
         serializer: Callable[[Any], bytes],
         *,
         middleware: Middleware = Middleware(),
+        envelope: EnvelopeConfig = EnvelopeConfig(),
     ) -> None:
         """
         Create an outbox producer.
@@ -287,9 +288,13 @@ class OutboxProducer:
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `publish` half runs around every write, inside the record's envelope;
             its `handle` half is a consumer's.
+        :param envelope: How each record's envelope is made. Its ids are random by default.
+            Records are claimed oldest first, so time-ordered
+            ids, such as `uuid7`'s, suit a store indexed by id.
         :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
+        self._new_id = envelope.new_id
         self._publish_middleware = middleware.publish
         self._store = store
         self._serializer = serializer
@@ -400,7 +405,7 @@ class OutboxProducer:
     ) -> R:
         """Write a payload to the outbox under a route that's already registered."""
         headers = MessageHeaders()
-        with Envelope.scope() as envelope:
+        with Envelope.scope(new_id=self._new_id) as envelope:
             args = (event, config, payload, serializer, envelope, route, headers)
             if hooks is None and not self._publish_middleware:
                 await self._write(*args)

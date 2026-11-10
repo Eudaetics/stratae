@@ -91,6 +91,7 @@ from collections.abc import Collection, Generator
 from contextlib import contextmanager
 from typing import Any, Literal, cast
 from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 
@@ -100,6 +101,7 @@ from stratae.events import (
     Dispatch,
     EmitCallable,
     Envelope,
+    EnvelopeConfig,
     HandleCall,
     Handler,
     Handlers,
@@ -208,7 +210,7 @@ def bus() -> DirectBus:
 @pytest.fixture
 def bus_with_envelope() -> DirectBus:
     """Return a fresh DirectBus instance with envelope tracking enabled."""
-    return DirectBus(use_envelope=True)
+    return DirectBus(envelope=EnvelopeConfig())
 
 
 def test_bus_satisfies_producer_protocol(bus: DirectBus):
@@ -1624,7 +1626,7 @@ def test_publish_middleware_inside_envelope():
         seen.append(Envelope.current())
         yield
 
-    bus = DirectBus(use_envelope=True, middleware=Middleware(publish=(record,)))
+    bus = DirectBus(envelope=EnvelopeConfig(), middleware=Middleware(publish=(record,)))
     bus.handle(_task_created, lambda task: seen.append(Envelope.current()))
 
     # Act
@@ -1896,3 +1898,45 @@ def test_handle_middleware_without_publish_middleware_sees_no_headers():
 
 
 # endregion
+
+
+class _Ids:
+    """An id source handing out UUID(int=1), UUID(int=2), and so on, in order."""
+
+    def __init__(self) -> None:
+        self.made: list[UUID] = []
+
+    def __call__(self) -> UUID:
+        made = UUID(int=len(self.made) + 1)
+        self.made.append(made)
+        return made
+
+
+def test_envelope_ids_come_from_bus_source():
+    """
+    An enveloped bus should draw each emission's envelope ids from its id source.
+
+    Given: A bus with envelopes and a counting id source, and a handler that emits again
+    When: An event is emitted
+    Then: The root takes the source's first two ids, and the nested emit's child its third
+    """
+    # Arrange
+    bus = DirectBus(envelope=EnvelopeConfig(new_id=_Ids()))
+    seen: list[Envelope] = []
+    inner = PubSub(name="inner")
+
+    @bus.handle(_task_created)
+    def outer(_: _TaskCreated) -> None:
+        seen.append(cast(Envelope, Envelope.current()))
+        bus.emit(inner, None, NoPayload())
+
+    bus.handle(inner, lambda: seen.append(cast(Envelope, Envelope.current())))
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    root, child = seen
+    assert (root.message_id, root.correlation_id) == (UUID(int=1), UUID(int=2))
+    assert child.message_id == UUID(int=3)
+    assert child.causation_id == root.message_id

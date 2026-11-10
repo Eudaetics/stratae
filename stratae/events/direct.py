@@ -14,7 +14,7 @@ subclass of a supported pattern is delivered as that pattern. Add or replace a p
 is checked against its pattern: pairing it with the wrong pattern, or returning something other
 than what the pattern emits, is a type error. Registering or binding an event
 of an unsupported pattern raises `TypeError`. With
-`use_envelope=True`, each emission opens an
+`envelope=EnvelopeConfig()`, each emission opens an
 {py:class}`Envelope <stratae.events.envelope.Envelope>`.
 
 ````{example} Sending events over a DirectBus
@@ -106,7 +106,7 @@ from stratae.events._dispatch import (
     no_dispatcher,
 )
 from stratae.events.binding import AsyncBindMixin, BindMixin
-from stratae.events.envelope import Envelope
+from stratae.events.envelope import Envelope, EnvelopeConfig
 from stratae.events.handler import Handler, Handlers
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import MessageHeaders, Middleware
@@ -220,7 +220,7 @@ class BaseDirectBus(ABC):
     def __init__(
         self,
         *,
-        use_envelope: bool = False,
+        envelope: EnvelopeConfig | None = None,
         dispatchers: Collection[Dispatch] = (),
         middleware: Middleware = Middleware(),
     ) -> None:
@@ -235,11 +235,11 @@ class BaseDirectBus(ABC):
         pairs = (*self._defaults, *dispatchers)
         self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
-        self._use_envelope = use_envelope
+        self._envelope = envelope
         # Chosen once: with no middleware and no envelope, an emit without hooks can call its
         # dispatcher directly. Handle middleware needs the emit's headers, even if none are set.
         # Without handle middleware, nothing reads them, so `_run` delivers without them.
-        self._plain = not middleware.publish and not middleware.handle and not use_envelope
+        self._plain = not middleware.publish and not middleware.handle and envelope is None
 
     def _check_event(self, event: _AnyEvent) -> None:
         """Raise TypeError for an event with no dispatcher, and record its route if it has one."""
@@ -349,8 +349,10 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
     {py:class}`Request <stratae.events.patterns.Request>` events return their one responder's
     reply. Async handlers are rejected with `TypeError`.
 
-    :param use_envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>`
-        for each emission.
+    :param envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
+        each emission, made as the
+        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` says. `None`,
+        the default, opens none.
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
         defaults for `Request` and `PubSub`.
     :param middleware: Sync {py:class}`Middleware <stratae.events.middleware.Middleware>` run
@@ -470,7 +472,8 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
     ) -> Any:
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
         publish, headers = self._middleware.publish, MessageHeaders()
-        with Envelope.scope() if self._use_envelope else _NO_ENVELOPE:
+        envelope = self._envelope
+        with Envelope.scope(new_id=envelope.new_id) if envelope is not None else _NO_ENVELOPE:
             if self._middleware.handle:
                 call, args = self._receive, (headers, dispatcher, event, handlers, payload)
             else:
@@ -500,8 +503,10 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
     {py:class}`Request <stratae.events.patterns.Request>` events resolve to their one
     responder's reply.
 
-    :param use_envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>`
-        for each emission.
+    :param envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
+        each emission, made as the
+        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` says. `None`,
+        the default, opens none.
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
         defaults for `Request` and `PubSub`. Their dispatchers return awaitables.
     :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>` run
@@ -629,7 +634,8 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
     ) -> Any:
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
         publish, headers = self._middleware.publish, MessageHeaders()
-        with Envelope.scope() if self._use_envelope else _NO_ENVELOPE:
+        envelope = self._envelope
+        with Envelope.scope(new_id=envelope.new_id) if envelope is not None else _NO_ENVELOPE:
             if self._middleware.handle:
                 call, args = self._receive, (headers, dispatcher, event, handlers, payload)
             else:

@@ -32,7 +32,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
-from stratae.events import DirectBus, PubSub
+from stratae.events import DirectBus, EnvelopeConfig, PubSub
 from stratae.events.envelope import Envelope
 from stratae.integrations.asgi import EnvelopeMiddleware
 
@@ -41,7 +41,7 @@ class OrderPlaced:
         self.item = item
 
 order_placed = PubSub(OrderPlaced)
-bus = DirectBus(use_envelope=True)
+bus = DirectBus(envelope=EnvelopeConfig())
 announce = bus.bind(order_placed, factory=OrderPlaced)
 chains: dict[str, str] = {}
 
@@ -105,9 +105,9 @@ with Envelope.scope(Envelope(correlation_id=UUID("0b9d7a52-6f1e-4c3a-9d2b-5e8f1a
 
 from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from stratae.events.envelope import CORRELATION_ID_HEADER, Envelope
+from stratae.events.envelope import CORRELATION_ID_HEADER, Envelope, EnvelopeConfig
 
 type ASGIScope = MutableMapping[str, Any]
 type Message = MutableMapping[str, Any]
@@ -140,6 +140,7 @@ class EnvelopeMiddleware:
         header: str = CORRELATION_ID_HEADER,
         trust_header: bool = True,
         echo_header: bool = True,
+        envelope: EnvelopeConfig = EnvelopeConfig(),
     ) -> None:
         """
         Wrap `app`, opening an envelope around each of its requests and connections.
@@ -149,18 +150,21 @@ class EnvelopeMiddleware:
         :param trust_header: Whether a request's correlation id header is adopted. If false,
             every request starts a new chain.
         :param echo_header: Whether the response carries the request's correlation id.
+        :param envelope: How each request's envelope is made. Its `new_id` makes the message
+            id, and the correlation id when the request doesn't bring one. Random by default.
         """
         self.app = app
         self._header = header.lower().encode("latin-1")
         self._trust_header = trust_header
         self._echo_header = echo_header
+        self._new_id = envelope.new_id
 
     async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
         """Handle one ASGI connection, inside a new envelope if it's a request."""
         if scope["type"] not in _CONNECTIONS:
             await self.app(scope, receive, send)
             return
-        envelope = Envelope(correlation_id=self._correlation_id(scope))
+        envelope = Envelope(message_id=self._new_id(), correlation_id=self._correlation_id(scope))
         with Envelope.scope(envelope):
             await self.app(scope, receive, self._echoing(envelope, send))
 
@@ -170,8 +174,8 @@ class EnvelopeMiddleware:
             # ASGI servers send header names lowercased; the first match is the one used.
             for name, value in scope["headers"]:
                 if name == self._header:
-                    return _uuid(value) or uuid4()
-        return uuid4()
+                    return _uuid(value) or self._new_id()
+        return self._new_id()
 
     def _echoing(self, envelope: Envelope, send: Send) -> Send:
         """Return `send`, adding the correlation id header to the response if echoing."""

@@ -53,10 +53,20 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast, override
+from uuid import UUID
 
 import pytest
 
-from stratae.events import Envelope, Hooks, Middleware, NoPayload, PublishCall, PubSub, Request
+from stratae.events import (
+    Envelope,
+    EnvelopeConfig,
+    Hooks,
+    Middleware,
+    NoPayload,
+    PublishCall,
+    PubSub,
+    Request,
+)
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.outbox import (
     InMemoryOutboxStore,
@@ -906,3 +916,36 @@ async def test_full_batch_followed_at_once(outbox: OutboxProducer, store: _Watch
 
     # Assert
     assert len(store.sent()) == 3
+
+
+class _Ids:
+    """An id source handing out UUID(int=1), UUID(int=2), and so on, in order."""
+
+    def __init__(self) -> None:
+        self.made: list[UUID] = []
+
+    def __call__(self) -> UUID:
+        made = UUID(int=len(self.made) + 1)
+        self.made.append(made)
+        return made
+
+
+async def test_record_ids_come_from_producer_source(store: InMemoryOutboxStore):
+    """
+    An outbox producer should draw each record's envelope ids from its id source.
+
+    Given: A producer with a counting id source
+    When: An event is written outside any envelope
+    Then: The record's id and correlation id are the source's first two
+    """
+    # Arrange
+    outbox = OutboxProducer(store, serializer=_encode, envelope=EnvelopeConfig(new_id=_Ids()))
+    place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+
+    # Act
+    await place(order_id=7)
+
+    # Assert
+    (record,) = store.pending()
+    assert record.id == UUID(int=1)
+    assert record.envelope.correlation_id == UUID(int=2)
