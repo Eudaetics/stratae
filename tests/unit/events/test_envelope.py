@@ -1,11 +1,14 @@
 """Unit test suite for Envelope."""
 
 import asyncio
+import sys
+import uuid
 from datetime import UTC
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+import stratae.events.envelope as envelope_module
 from stratae.events import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
@@ -416,3 +419,154 @@ async def test_async_spawned_task_inherits_parent_envelope():
 
     # Assert
     assert seen[0] is parent
+
+
+class _Ids:
+    """An id source handing out UUID(int=1), UUID(int=2), and so on, in order."""
+
+    def __init__(self) -> None:
+        self.made: list[UUID] = []
+
+    def __call__(self) -> UUID:
+        made = UUID(int=len(self.made) + 1)
+        self.made.append(made)
+        return made
+
+
+def test_root_takes_both_ids_from_source():
+    """
+    Envelope.root should take its message and correlation ids from the given source.
+
+    Given: A counting id source
+    When: A root envelope is made with it
+    Then: Its message and correlation ids are the source's first two, with no causation id
+    """
+    # Act
+    envelope = Envelope.root(_Ids())
+
+    # Assert
+    assert (envelope.message_id, envelope.correlation_id) == (UUID(int=1), UUID(int=2))
+    assert envelope.causation_id is None
+
+
+def test_child_takes_message_id_from_source():
+    """
+    Envelope.child should take only its message id from the given source.
+
+    Given: A parent envelope and a counting id source
+    When: A child is made with the source
+    Then: Its message id is the source's first, and it keeps the parent's chain
+    """
+    # Arrange
+    parent = Envelope()
+
+    # Act
+    child = parent.child(_Ids())
+
+    # Assert
+    assert child.message_id == UUID(int=1)
+    assert child.correlation_id == parent.correlation_id
+    assert child.causation_id == parent.message_id
+
+
+def test_from_headers_takes_only_missing_ids_from_source():
+    """
+    Envelope.from_headers should draw from the source only for ids the headers lack.
+
+    Given: Headers carrying a correlation id but no message id, and a counting id source
+    When: An envelope is rebuilt from them with the source
+    Then: The message id is the source's first, the correlation id the header's, and the
+        source was asked once
+    """
+    # Arrange
+    ids = _Ids()
+    correlation = uuid4()
+
+    # Act
+    envelope = Envelope.from_headers({CORRELATION_ID_HEADER: str(correlation)}, ids)
+
+    # Assert
+    assert envelope.message_id == UUID(int=1)
+    assert envelope.correlation_id == correlation
+    assert ids.made == [UUID(int=1)]
+
+
+def test_scope_takes_ids_from_source_for_root_and_child():
+    """
+    Envelope.scope should draw the ids of the envelope it makes from the given source.
+
+    Given: A counting id source
+    When: A default scope is entered with it, and another inside it
+    Then: The root's ids are the source's first two, and the child's message id its third
+    """
+    # Arrange
+    ids = _Ids()
+
+    # Act
+    with Envelope.scope(new_id=ids) as root, Envelope.scope(new_id=ids) as child:
+        pass
+
+    # Assert
+    assert (root.message_id, root.correlation_id) == (UUID(int=1), UUID(int=2))
+    assert child.message_id == UUID(int=3)
+    assert child.causation_id == root.message_id
+
+
+def test_default_ids_are_random():
+    """
+    Envelopes made without a source should keep random, version 4, ids.
+
+    Given: No id source
+    When: A root and a child are made, directly and through a scope
+    Then: Every id is version 4
+    """
+    # Act
+    with Envelope.scope() as root:
+        child = root.child()
+    made = Envelope()
+
+    # Assert
+    assert {envelope.message_id.version for envelope in (root, child, made)} | {
+        root.correlation_id.version,
+        made.correlation_id.version,
+    } == {4}
+
+
+def test_default_new_id_uses_uuid_utils_when_installed():
+    """
+    The default id maker should be uuid_utils.compat's uuid4 when the uuid extra is installed.
+
+    Given: uuid_utils installed, as the test dependencies install it
+    When: The default id maker is chosen, and makes an id
+    Then: It's uuid_utils.compat.uuid4, and its id is a standard version 4 uuid.UUID
+    """
+    # Arrange
+    from uuid_utils import compat
+
+    # Act
+    new_id = envelope_module._default_new_id()  # pyright: ignore[reportPrivateUsage]
+    made = new_id()
+
+    # Assert
+    assert new_id is compat.uuid4
+    assert type(made) is uuid.UUID
+    assert made.version == 4
+
+
+def test_default_new_id_falls_back_to_standard_library(monkeypatch: pytest.MonkeyPatch):
+    """
+    Without the uuid extra, the default id maker should be the standard library's uuid4.
+
+    Given: uuid_utils hidden from imports
+    When: The default id maker is chosen
+    Then: It's uuid.uuid4
+    """
+    # Arrange
+    monkeypatch.setitem(sys.modules, "uuid_utils", None)
+    monkeypatch.setitem(sys.modules, "uuid_utils.compat", None)
+
+    # Act
+    new_id = envelope_module._default_new_id()  # pyright: ignore[reportPrivateUsage]
+
+    # Assert
+    assert new_id is uuid.uuid4

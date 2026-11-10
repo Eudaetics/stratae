@@ -75,6 +75,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, cast
 from unittest.mock import AsyncMock, call
+from uuid import UUID
 
 import pytest
 from aiormq.exceptions import PublishError
@@ -86,6 +87,7 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     Envelope,
+    EnvelopeConfig,
     Hooks,
     Middleware,
     NoPayload,
@@ -1402,3 +1404,37 @@ def test_publisher_requires_a_serializer():
     # Act / Assert
     with pytest.raises(TypeError, match="serializer"):
         RabbitMQPublisher(_URL)  # pyright: ignore[reportCallIssue]
+
+
+class _Ids:
+    """An id source handing out UUID(int=1), UUID(int=2), and so on, in order."""
+
+    def __init__(self) -> None:
+        self.made: list[UUID] = []
+
+    def __call__(self) -> UUID:
+        made = UUID(int=len(self.made) + 1)
+        self.made.append(made)
+        return made
+
+
+async def test_emit_draws_envelope_ids_from_publisher_source(
+    connect_mock: AsyncMock, channel: AsyncMock
+):
+    """
+    A publisher should draw a message's envelope ids from its id source.
+
+    Given: A publisher with a counting id source, outside any envelope
+    When: A payload is emitted without a given envelope
+    Then: The message carries the source's first two ids as its message and correlation ids
+    """
+    # Arrange
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, envelope=EnvelopeConfig(new_id=_Ids()))
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, _config, _OrderPlaced(7))
+
+    # Assert
+    sent = channel.basic_publish.await_args.kwargs["properties"]
+    assert (sent.message_id, sent.correlation_id) == (str(UUID(int=1)), str(UUID(int=2)))

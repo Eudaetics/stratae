@@ -135,6 +135,7 @@ from typing import (
     cast,
     overload,
 )
+from uuid import UUID
 
 from aiormq import connect
 from aiormq.exceptions import PublishError
@@ -147,6 +148,7 @@ from stratae.events import (
     AnyEvent,
     Deserializer,
     Envelope,
+    EnvelopeConfig,
     EventType,
     Handler,
     NoPayload,
@@ -222,8 +224,8 @@ def _stamp(
     return stamped
 
 
-def _envelope_from(message: DeliveredMessage) -> Envelope | None:
-    """Rebuild the Envelope carried by a delivered message."""
+def _envelope_from(message: DeliveredMessage, new_id: Callable[[], UUID]) -> Envelope | None:
+    """Rebuild the Envelope carried by a delivered message, making any missing id with `new_id`."""
     properties = message.header.properties
     native = {
         MESSAGE_ID_HEADER: properties.message_id,
@@ -234,7 +236,7 @@ def _envelope_from(message: DeliveredMessage) -> Envelope | None:
     if (headers.get(MESSAGE_ID_HEADER) is None) != (headers.get(CORRELATION_ID_HEADER) is None):
         _log.info("partial envelope headers; minting the missing id: %r", headers)
     try:
-        return Envelope.from_headers(headers)
+        return Envelope.from_headers(headers, new_id)
     except ValueError:
         _log.warning("unparseable envelope headers; scoping a fresh envelope: %r", headers)
         return None
@@ -506,6 +508,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         topology: Iterable[RabbitMQConsumeConfig] = (),
         reconnect: RabbitMQReconnect | None = RabbitMQReconnect(),
         middleware: Middleware = Middleware(),
+        envelope: EnvelopeConfig = EnvelopeConfig(),
     ) -> None:
         """
         Create a publisher.
@@ -522,10 +525,13 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
             or async. Its `publish` half runs around every publish, inside the message's
             envelope; its `handle` half is a consumer's, so one `Middleware` can be shared with
             a consumer.
+        :param envelope: How the envelope of a message published without a given one is made.
+            Its `new_id` makes random ids by default.
         :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
         :raises ValueError: If a `topology` config has no named `queue`.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
+        self._new_id = envelope.new_id
         self._topology = tuple(topology)
         for config in self._topology:
             if config.queue is None:
@@ -614,7 +620,7 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         self._check_event(event)
         stamped = MessageHeaders(headers or {}, reserved=_RESERVED)
         # The message's own envelope, current while middleware and hooks run, so they see it.
-        with Envelope.scope(envelope) as sent:
+        with Envelope.scope(envelope, new_id=self._new_id) as sent:
             if hooks is None and not self._publish_middleware:
                 await self._publish(event, config, payload, serializer, sent, stamped)
             else:
@@ -949,6 +955,7 @@ class RabbitMQConsumer:
         scope: AsyncScope | None = None,
         reconnect: RabbitMQReconnect | None = RabbitMQReconnect(),
         middleware: Middleware = Middleware(),
+        envelope: EnvelopeConfig = EnvelopeConfig(),
     ) -> None:
         """
         Create a consumer.
@@ -968,9 +975,13 @@ class RabbitMQConsumer:
             or async. Its `handle` half runs around every handler call, inside the message's
             envelope; a message that fails to decode never reaches it. Its `publish` half is a
             publisher's, so one `Middleware` can be shared with a publisher.
+        :param envelope: How a delivered message's envelope is completed: its `new_id` makes
+            any id the message is missing, or all of them if its envelope can't be read. Random
+            by default.
         :raises TypeError: If any `handle` middleware is a class that isn't a context manager.
         """
         middleware.require(type(self).__name__, asynchronous=True, publish=False)
+        self._new_id = envelope.new_id
         self._handle_middleware = middleware.handle
         self._scope = scope
         self._deserializer = deserializer
@@ -1222,7 +1233,7 @@ class RabbitMQConsumer:
             await self._fail(registration, message, exc, retry=False)
             return
         try:
-            with Envelope.scope(_envelope_from(message)):
+            with Envelope.scope(_envelope_from(message, self._new_id), new_id=self._new_id):
                 if self._handle_middleware:
                     with receiving(_headers_from(message)):
                         await self._run_handler(registration, payload)

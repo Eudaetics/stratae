@@ -6,7 +6,7 @@ Wrap every emit or handler call on a bus with middleware, for cross-cutting conc
 it's fixed from then on. The first middleware listed is outermost, and middleware wraps the
 event's {py:class}`Hooks <stratae.events.hooks.Hooks>`, which wrap the call itself. Both run
 inside the emission's envelope when the bus opens one: always on a broker adapter, and on a
-direct bus built with `use_envelope=True`.
+direct bus built with an `envelope`.
 
 A middleware is a callable taking a {py:class}`PublishCall` or {py:class}`HandleCall`, which
 carries the event and payload, and returning a context manager: an instance of a class with
