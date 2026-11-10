@@ -187,7 +187,7 @@ with TestClient(app) as client, client.websocket_connect("/notes") as websocket:
 
 from collections.abc import Awaitable, Callable
 from functools import partial, wraps
-from inspect import iscoroutinefunction, isfunction, ismethod
+from inspect import isfunction, ismethod
 from typing import Any, cast
 
 from starlette.concurrency import run_in_threadpool
@@ -196,6 +196,7 @@ from starlette.responses import Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
+from stratae.callables import is_async_callable
 from stratae.integrations._activation import ActivatingRoute, close_activation
 from stratae.lifecycle import AsyncScope
 
@@ -231,9 +232,9 @@ def _unwrap_partial(endpoint: Callable[..., Any]) -> Callable[..., Any]:
     return target
 
 
-def _endpoint_function(endpoint: Callable[..., Any]) -> Callable[..., Any]:
+def _refuse_class_endpoint(endpoint: Callable[..., Any]) -> None:
     """
-    Return the function or method behind `endpoint`, unwrapping `functools.partial`.
+    Refuse an endpoint that isn't a function or method, or a `functools.partial` of one.
 
     :raises ClassEndpointError: If it's an ASGI app or `HTTPEndpoint` class, which scoped
         routes don't support.
@@ -241,7 +242,6 @@ def _endpoint_function(endpoint: Callable[..., Any]) -> Callable[..., Any]:
     target = _unwrap_partial(endpoint)
     if not (isfunction(target) or ismethod(target)):
         raise ClassEndpointError(endpoint)
-    return target
 
 
 def _as_async(
@@ -252,7 +252,8 @@ def _as_async(
 
     The threadpool copies the context, so scopes stay visible to the endpoint.
     """
-    if iscoroutinefunction(_endpoint_function(endpoint)):
+    _refuse_class_endpoint(endpoint)
+    if is_async_callable(endpoint):
         return cast(Callable[[Request], Awaitable[Response]], endpoint)
 
     async def run_sync(request: Request) -> Response:
@@ -340,7 +341,7 @@ def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
         def __init__(self, path: str, endpoint: Callable[..., Any], **kwargs: Any) -> None:
             target = _unwrap_partial(endpoint)
             if isfunction(target) or ismethod(target):
-                if not iscoroutinefunction(target):
+                if not is_async_callable(target):
                     raise SyncWebSocketEndpointError(endpoint)
                 endpoint = _scoped_websocket_endpoint(endpoint)
             super().__init__(path, endpoint, **kwargs)

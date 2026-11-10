@@ -197,8 +197,8 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from types import CoroutineType, TracebackType
 from typing import Any, ClassVar, Literal, NoReturn, cast, get_args, overload
 
+from stratae._checked import checked_callables
 from stratae._middleware import (
-    frozen,
     manager,
     refuse_coroutine,
     refuse_result,
@@ -358,8 +358,8 @@ class BaseScope[M]:
             activation, outermost first. Each is called with the scope. See the module docs.
         :raises LifecycleConfigurationError: If `isolation` or `storage` is invalid, a shared
             scope requires a context scope, or a shared scope takes `threads=True`.
-        :raises MiddlewareNotTupleError: If `middleware` is a single callable or a string.
-        :raises MiddlewareNotCallableError: If `middleware` holds something that isn't callable.
+        :raises TypeError: If `middleware` is a single callable or a string, or holds something
+            that isn't callable.
         :raises MiddlewareNotEnterableError: If a middleware class isn't a context manager the
             scope can enter.
         """
@@ -367,7 +367,7 @@ class BaseScope[M]:
         _validate_threads(name, isolation, threads)
         _validate_requires(name, isolation, requires)
         owner = f"{type(self).__name__} {name!r}"
-        self._middleware = frozen(middleware, owner, "middleware")
+        self._middleware = checked_callables(middleware, f"{owner} middleware=")
         refuse_unenterable(self._middleware, owner, self._asynchronous)
         self._plain = requires is None and not self._middleware
 

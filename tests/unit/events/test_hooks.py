@@ -124,14 +124,14 @@ def test_lone_hook_raises_clear_error() -> None:
 
     Given: One hook function passed as before= instead of a tuple of them
     When: Hooks are built
-    Then: A TypeError says before= takes a tuple of hooks
+    Then: A TypeError says Hooks before= takes a tuple of callables
     """
 
     # Arrange
     def hook(event: Any, payload: Any) -> None: ...
 
     # Act / Assert
-    with pytest.raises(TypeError, match="before= takes a tuple of hooks"):
+    with pytest.raises(TypeError, match="Hooks before= takes a tuple of callables"):
         Hooks(before=cast(Any, hook))
 
 

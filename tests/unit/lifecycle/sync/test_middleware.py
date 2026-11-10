@@ -37,9 +37,7 @@ from stratae.lifecycle.scope import Scope
 from stratae.middleware import (
     MiddlewareAsyncMethodError,
     MiddlewareError,
-    MiddlewareNotCallableError,
     MiddlewareNotEnterableError,
-    MiddlewareNotTupleError,
     MiddlewareResultError,
 )
 
@@ -529,10 +527,10 @@ def test_lone_middleware_refused():
 
     Given: A middleware callable
     When: A scope is built with it alone as middleware
-    Then: MiddlewareNotTupleError names the scope
+    Then: A TypeError names the scope
     """
     # Act / Assert
-    with pytest.raises(MiddlewareNotTupleError, match="'work'"):
+    with pytest.raises(TypeError, match="Scope 'work' middleware= takes a tuple of callables"):
         Scope("work", middleware=_recording([], "lone"))  # pyright: ignore[reportArgumentType]
 
 
@@ -543,11 +541,10 @@ def test_string_middleware_refused(middleware: object):
 
     Given: A string, or bytes, in place of a tuple
     When: A scope is built with it as middleware
-    Then: A TypeError is raised: MiddlewareNotTupleError for a string, and
-        MiddlewareNotCallableError for bytes, whose items are ints
+    Then: A TypeError names the scope: a string isn't a tuple, and bytes hold ints
     """
     # Act / Assert
-    with pytest.raises((MiddlewareNotTupleError, MiddlewareNotCallableError), match="'work'"):
+    with pytest.raises(TypeError, match="Scope 'work' middleware="):
         Scope("work", middleware=middleware)  # pyright: ignore[reportArgumentType]
 
 
@@ -557,10 +554,12 @@ def test_uncallable_middleware_refused():
 
     Given: A tuple holding None
     When: A scope is built with it as middleware
-    Then: MiddlewareNotCallableError names the scope and the item
+    Then: A TypeError names the scope and the item
     """
     # Act / Assert
-    with pytest.raises(MiddlewareNotCallableError, match=r"'work' middleware= .* holds None"):
+    with pytest.raises(
+        TypeError, match="Scope 'work' middleware= holds None, which isn't callable"
+    ):
         Scope("work", middleware=(None,))  # pyright: ignore[reportArgumentType]
 
 

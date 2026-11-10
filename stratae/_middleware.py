@@ -14,9 +14,7 @@ from typing import Any, NoReturn
 from stratae.middleware import (
     MiddlewareAsyncMethodError,
     MiddlewareError,
-    MiddlewareNotCallableError,
     MiddlewareNotEnterableError,
-    MiddlewareNotTupleError,
     MiddlewareResultError,
 )
 
@@ -35,26 +33,6 @@ How an async owner enters each context manager type it has seen, so it checks ea
 Sync owners don't classify: they look up `__enter__` and `__exit__`, which they need anyway,
 and refuse the result if either is missing.
 """
-
-
-def frozen[M](middleware: tuple[M, ...], owner: str, field: str) -> tuple[M, ...]:
-    """
-    Return the middleware as a tuple, refusing a lone callable, a string, and anything uncallable.
-
-    :param middleware: The middleware as given, in any sequence.
-    :param owner: The scope or bus, or `Middleware`, given it, for the error message.
-    :param field: The argument it was given as, for the error message.
-    :raises MiddlewareNotTupleError: If it's a single callable or a string.
-    :raises MiddlewareNotCallableError: If an item isn't callable.
-    """
-    # A string would otherwise be split into its characters.
-    if callable(middleware) or isinstance(middleware, str):
-        raise MiddlewareNotTupleError(owner, field)
-    items = tuple(middleware)
-    for item in items:
-        if not callable(item):
-            raise MiddlewareNotCallableError(owner, field, item)
-    return items
 
 
 def refuse_unenterable(middleware: tuple[Any, ...], owner: str, asynchronous: bool) -> None:

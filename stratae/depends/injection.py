@@ -63,7 +63,6 @@ from inspect import (
     Signature,
     isasyncgenfunction,
     isclass,
-    iscoroutinefunction,
     isfunction,
     isgeneratorfunction,
     ismethod,
@@ -71,6 +70,7 @@ from inspect import (
 )
 from typing import Annotated, Any, get_origin, overload
 
+from stratae.callables import is_async_callable
 from stratae.codegen import read_signature
 from stratae.depends._provide import Provider
 from stratae.depends._wrappers import (
@@ -270,7 +270,7 @@ def _validate_sync_async_constraint(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> None:
     """Raise if a sync function has async dependencies."""
-    if iscoroutinefunction(func) or isasyncgenfunction(func):
+    if is_async_callable(func) or isasyncgenfunction(func):
         return
 
     if any(v.is_async for v in resolved_deps.values()):
@@ -290,7 +290,7 @@ def _create_wrapper(
 
 def _wrapper_factory(func: Callable[..., Any]) -> Callable[..., Callable[..., Any]]:
     """Pick the wrapper factory for the function's type."""
-    if iscoroutinefunction(func):
+    if is_async_callable(func):
         return create_async_wrapper
     elif isasyncgenfunction(func):
         return create_async_gen_wrapper

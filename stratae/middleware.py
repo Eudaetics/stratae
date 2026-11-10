@@ -53,36 +53,6 @@ class MiddlewareError(Exception):
         )
 
 
-class MiddlewareNotTupleError(TypeError):
-    """Raised when middleware is given as a single callable or a string, not a tuple."""
-
-    def __init__(self, owner: str, field: str) -> None:
-        """
-        Name what was given the middleware, and where.
-
-        :param owner: The scope or bus, or `Middleware`, that was given it.
-        :param field: The argument it was given as.
-        """
-        super().__init__(f"{owner} {field}= takes a tuple of middleware, e.g. {field}=(trace,)")
-
-
-class MiddlewareNotCallableError(TypeError):
-    """Raised when a tuple of middleware holds something that isn't callable."""
-
-    def __init__(self, owner: str, field: str, item: object) -> None:
-        """
-        Name what was given the middleware, where, and the item.
-
-        :param owner: The scope or bus, or `Middleware`, that was given it.
-        :param field: The argument it was given as.
-        :param item: The item that isn't callable.
-        """
-        super().__init__(
-            f"{owner} {field}= takes a tuple of middleware, but holds {item!r}, which isn't "
-            "callable"
-        )
-
-
 class MiddlewareNotEnterableError(TypeError):
     """Raised when a middleware is a class whose instances a scope or bus can't enter."""
 

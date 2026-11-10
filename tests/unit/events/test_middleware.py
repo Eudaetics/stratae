@@ -270,10 +270,10 @@ def test_lone_middleware_raises_clear_error(given: object) -> None:
 
     Given: One middleware class, or a string, passed as publish= instead of a tuple
     When: Middleware is built
-    Then: A TypeError says publish= takes a tuple of middleware
+    Then: A TypeError says Middleware publish= takes a tuple of callables
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="publish= takes a tuple of middleware"):
+    with pytest.raises(TypeError, match="Middleware publish= takes a tuple of callables"):
         Middleware(publish=cast(Any, given))
 
 
@@ -286,7 +286,7 @@ def test_uncallable_middleware_raises_clear_error() -> None:
     Then: A TypeError names the entry that isn't callable
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="handle= takes a tuple of middleware, but holds None"):
+    with pytest.raises(TypeError, match="Middleware handle= holds None, which isn't callable"):
         Middleware(handle=cast(Any, (_logging([], "trace"), None)))
 
 
@@ -299,7 +299,7 @@ def test_uncallable_hook_raises_clear_error() -> None:
     Then: A TypeError names the entry that isn't callable
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="before= takes a tuple of hooks, but holds 'audit'"):
+    with pytest.raises(TypeError, match="Hooks before= holds 'audit', which isn't callable"):
         Hooks(before=cast(Any, ("audit",)))
 
 
