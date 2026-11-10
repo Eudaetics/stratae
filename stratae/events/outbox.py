@@ -458,7 +458,7 @@ class OutboxProducer:
             id=envelope.message_id,
             route=route,
             body=body,
-            headers=dict(headers) | envelope.to_headers(),
+            headers=headers.to_dict() | envelope.to_headers(),
             created_at=now,
             available_at=now,
             key=config.key(payload) if config.key is not None else None,

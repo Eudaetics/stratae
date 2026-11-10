@@ -1,6 +1,7 @@
 """Unit test suite for Envelope."""
 
 import asyncio
+import dataclasses
 import sys
 import uuid
 from datetime import UTC
@@ -119,6 +120,56 @@ def test_child_has_distinct_message_id():
 
     # Assert
     assert child.message_id != parent.message_id
+
+
+class _TracedEnvelope(Envelope):
+    """A subclass, to check the constructors keep the class they're called on."""
+
+    __slots__ = ()
+
+
+def test_envelope_constructors_keep_the_subclass():
+    """
+    root, child and from_headers build the class they're called on.
+
+    Given: A subclass of Envelope.
+    When: An envelope is made from it with root, child, and from_headers.
+    Then: Each is an instance of the subclass, and the child stays in the chain.
+    """
+    # Arrange
+    root = _TracedEnvelope.root()
+
+    # Act
+    child = root.child()
+    rebuilt = _TracedEnvelope.from_headers(child.to_headers())
+
+    # Assert
+    assert type(root) is _TracedEnvelope
+    assert type(child) is _TracedEnvelope
+    assert type(rebuilt) is _TracedEnvelope
+    assert child.causation_id == root.message_id
+
+
+def test_envelope_is_slotted_immutable_and_compared_by_value():
+    """
+    An envelope has no per-instance dict, can't be changed, and compares by its fields.
+
+    Given: An envelope and another with the same fields.
+    When: Their attributes are inspected, compared, and one is assigned to.
+    Then: Neither has a __dict__, they're equal, and the assignment raises.
+    """
+    # Arrange
+    envelope = Envelope()
+    same = Envelope(
+        envelope.message_id, envelope.correlation_id, envelope.causation_id, envelope.timestamp
+    )
+
+    # Act / Assert
+    assert not hasattr(envelope, "__dict__")
+    assert envelope == same
+    assert hash(envelope) == hash(same)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        envelope.message_id = uuid4()  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_headers_round_trip():

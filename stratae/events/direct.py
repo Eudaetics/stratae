@@ -511,7 +511,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         payload: Any,
     ) -> Any:
         """Dispatch payload to the event's handlers, with the headers it was published with."""
-        with receiving(headers):
+        with receiving(headers.to_dict()):
             return dispatcher(event, handlers, payload)
 
 
@@ -682,5 +682,5 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         payload: Any,
     ) -> Any:
         """Dispatch payload to the event's handlers, with the headers it was published with."""
-        with receiving(headers):
+        with receiving(headers.to_dict()):
             return await dispatcher(event, handlers, payload)
