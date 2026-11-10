@@ -9,14 +9,14 @@ import pytest
 pytest.importorskip("fastapi")
 
 from fastapi import APIRouter, BackgroundTasks, FastAPI, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 from stratae.depends import Depends, inject
 from stratae.integrations.fastapi import scoped_route
 from stratae.lifecycle import AsyncScope
-from stratae.lifecycle.exceptions import ScopeInactiveError
+from stratae.lifecycle.exceptions import CleanupErrors, ScopeInactiveError
 
 pytestmark = pytest.mark.fastapi
 
@@ -31,6 +31,13 @@ class _DeliberateCommitFailure(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("deliberate commit failure")
+
+
+class _DeliberateCleanupFailure(RuntimeError):
+    """A deliberate failure, raised by the test."""
+
+    def __init__(self) -> None:
+        super().__init__("deliberate cleanup failure")
 
 
 class _DeliberateFailureAfterCallingResourceTwice(RuntimeError):
@@ -841,3 +848,152 @@ def test_injected_route_filters_response_by_return_annotation():
     # Assert
     assert response.status_code == 200
     assert response.json() == {"name": "ada"}
+
+
+@pytest.mark.parametrize("with_handler", [False, True], ids=["request-scope", "handler-scope"])
+@pytest.mark.parametrize(
+    ("path", "status", "error"),
+    [("/handled", 409, "HTTPException"), ("/unhandled", 500, "_DeliberateUnhandledFailure")],
+    ids=["handled", "unhandled"],
+)
+def test_request_scope_closes_with_the_endpoint_error(
+    with_handler: bool, path: str, status: int, error: str
+):
+    """
+    The request scope closes with the endpoint's error, whether or not FastAPI handled it.
+
+    Given: A scoped route, with or without a handler scope, whose endpoint uses a
+        request-scoped resource and raises
+    When: It raises HTTPException(409), which FastAPI turns into a response, or an
+        unhandled error
+    Then: The client gets the error's status, and the request-scoped resource sees the error
+    """
+    # Arrange
+    events: list[str] = []
+    request_scope = AsyncScope("request")
+    handler_scope = AsyncScope("handler", requires=request_scope)
+
+    @request_scope.cache()
+    async def get_connection():
+        await asyncio.sleep(0)
+        try:
+            yield "connection"
+        except BaseException as exc:
+            events.append(f"saw {type(exc).__name__}")
+            raise
+        else:
+            events.append("closed cleanly")
+
+    router = APIRouter(
+        route_class=scoped_route(request_scope, handler=handler_scope if with_handler else None)
+    )
+
+    @router.get("/handled")
+    async def handled() -> None:
+        await get_connection()
+        raise HTTPException(status_code=409, detail="deliberate conflict")
+
+    @router.get("/unhandled")
+    async def unhandled() -> None:
+        await get_connection()
+        raise _DeliberateUnhandledFailure()
+
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(router)
+
+    # Act
+    response = TestClient(fastapi_app, raise_server_exceptions=False).get(path)
+
+    # Assert
+    assert response.status_code == status
+    assert events == [f"saw {error}"]
+
+
+def test_exception_handler_uses_request_scoped_resource():
+    """
+    An exception handler can use a request-scoped resource, since the scope is still open.
+
+    Given: A scoped route whose endpoint raises HTTPException(409), and an app exception
+        handler for it that uses the same request-scoped resource
+    When: The endpoint is requested
+    Then: The handler gets the resource, and the scope closes once, after the response
+    """
+    # Arrange
+    events: list[str] = []
+    request_scope = AsyncScope("request")
+
+    @request_scope.cache()
+    async def get_connection():
+        await asyncio.sleep(0)
+        events.append("open")
+        try:
+            yield "connection"
+        finally:
+            events.append("close")
+
+    router = APIRouter(route_class=scoped_route(request_scope))
+
+    @router.get("/conflict")
+    async def conflict() -> None:
+        await get_connection()
+        raise HTTPException(status_code=409, detail="deliberate conflict")
+
+    async def on_http_exception(request: Request, exc: Exception) -> Response:
+        return JSONResponse({"logged_with": await get_connection()}, status_code=409)
+
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(router)
+    fastapi_app.add_exception_handler(HTTPException, on_http_exception)
+
+    # Act
+    response = TestClient(fastapi_app).get("/conflict")
+
+    # Assert
+    assert response.status_code == 409
+    assert response.json() == {"logged_with": "connection"}
+    assert events == ["open", "close"]
+
+
+def test_failed_cleanup_after_handled_error_keeps_its_response(
+    record_response_start: Callable[..., Any],
+):
+    """
+    A request-scoped cleanup that fails after a handled error doesn't change the response.
+
+    Given: A scoped route whose endpoint raises HTTPException(409), with a request-scoped
+        resource whose cleanup fails
+    When: The endpoint is requested
+    Then: The 409 is sent first, then the cleanup failure is raised, grouped with the error
+        it was cleaning up after
+    """
+    # Arrange
+    events: list[str] = []
+    request_scope = AsyncScope("request")
+
+    @request_scope.cache()
+    async def get_connection():
+        await asyncio.sleep(0)
+        try:
+            yield "connection"
+        except BaseException:
+            events.append("cleanup failed")
+            raise _DeliberateCleanupFailure() from None
+
+    router = APIRouter(route_class=scoped_route(request_scope))
+
+    @router.get("/conflict")
+    async def conflict() -> None:
+        await get_connection()
+        raise HTTPException(status_code=409, detail="deliberate conflict")
+
+    fastapi_app = FastAPI()
+    fastapi_app.include_router(router)
+
+    # Act / Assert
+    with pytest.raises(CleanupErrors) as raised:
+        TestClient(record_response_start(fastapi_app, events)).get("/conflict")
+    assert events == ["response-start: 409", "cleanup failed"]
+    assert [type(exc) for exc in raised.value.exceptions] == [
+        _DeliberateCleanupFailure,
+        HTTPException,
+    ]

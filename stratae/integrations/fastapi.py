@@ -5,6 +5,11 @@ FastAPI integration for lifecycle management.
 {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` around each request. Set it as
 a router's `route_class`.
 
+The request scope closes once the response is fully sent, on success and on error alike. It
+closes with the error the route handler raised, including one FastAPI turns into a response,
+such as `HTTPException`. So its cleanup runs after the response, and exception handlers can
+use it.
+
 Work that must finish before the response, like committing a transaction, belongs in a
 nested `handler` scope. It ends when the route handler returns, so a failed commit becomes a 500.
 
@@ -197,7 +202,7 @@ from typing import Any
 from fastapi import Depends, Request, Response, params
 from fastapi.routing import APIRoute
 
-from stratae.integrations._activation import ActivatingRoute, close_activation
+from stratae.integrations._activation import ActivatingRoute, recording_errors, within
 from stratae.lifecycle import AsyncScope
 
 
@@ -206,7 +211,8 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
     Build an APIRoute subclass that activates `scope` around every request.
 
     :param scope: Active until the response is fully sent, including streaming and
-        background tasks.
+        background tasks. It closes with the error the route handler raised, if any, including
+        one FastAPI turns into a response, such as `HTTPException`.
     :param handler: An optional nested scope, active only while the route handler runs,
         including dependency solving and response validation. Use it for work like
         commits that must finish before the response.
@@ -219,24 +225,9 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
 
         def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
             route_handler = super().get_route_handler()
-
             if handler_scope is not None:
-                active_handler_scope = handler_scope
-
-                async def handler_scoped(request: Request) -> Response:
-                    async with active_handler_scope:
-                        return await route_handler(request)
-
-                return handler_scoped
-
-            async def scoped_handler(request: Request) -> Response:
-                try:
-                    return await route_handler(request)
-                except BaseException as exc:
-                    await close_activation(request.scope, exc)
-                    raise
-
-            return scoped_handler
+                route_handler = within(handler_scope, route_handler)
+            return recording_errors(route_handler)
 
     return ScopedRoute
 
