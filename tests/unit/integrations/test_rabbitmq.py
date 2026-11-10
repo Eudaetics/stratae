@@ -6,6 +6,8 @@ This test suite verifies the following behaviors:
 RabbitMQConfig:
 - The exchange and routing_key are stored on initialization.
 - The exchange_type is stored on initialization, defaulting to None.
+- It's an immutable value: assignment is refused, and configs with the same fields are equal.
+- An outbox accepts equal but distinct configs bound to the same route.
 
 RabbitMQPublisher:
 - Constructing a publisher without a serializer is a type error and raises TypeError.
@@ -70,6 +72,7 @@ Connection health and reconnecting:
 """
 
 import asyncio
+import dataclasses
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -96,6 +99,7 @@ from stratae.events import (
     Request,
 )
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
+from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer
 from stratae.integrations.rabbitmq import (
     ConnectionState,
     RabbitMQConfig,
@@ -156,6 +160,38 @@ def test_config_stores_exchange_and_routing_key():
 
     assert config.exchange == "events"
     assert config.routing_key == "order.placed"
+
+
+def test_config_is_an_immutable_value():
+    """
+    RabbitMQConfig should be an immutable value.
+
+    Given: Two configs built from the same fields, and one with another routing key
+    When: They're compared, and a field is assigned
+    Then: The first two are equal, the third isn't, and assignment raises
+    """
+    config = RabbitMQConfig("events", "order.placed", mandatory=True)
+
+    assert config == RabbitMQConfig("events", "order.placed", mandatory=True)
+    assert config != RabbitMQConfig("events", "order.shipped", mandatory=True)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.routing_key = "order.shipped"  # pyright: ignore[reportAttributeAccessIssue]
+
+
+def test_outbox_accepts_equal_configs_on_one_route():
+    """
+    An outbox should accept an equal RabbitMQ config, built separately, on a bound route.
+
+    Given: An outbox route bound to an event with a RabbitMQ config
+    When: The same event binds the route again with an equal config, then a different one
+    Then: The equal config is accepted, and the different one raises ValueError
+    """
+    outbox = OutboxProducer(InMemoryOutboxStore(), serializer=lambda payload: b"")
+    outbox.bind(_order_placed, config=OutboxConfig(RabbitMQConfig("events", "order.placed")))
+
+    outbox.bind(_order_placed, config=OutboxConfig(RabbitMQConfig("events", "order.placed")))
+    with pytest.raises(ValueError, match="already bound"):
+        outbox.bind(_order_placed, config=OutboxConfig(RabbitMQConfig("events", "other")))
 
 
 def test_config_stores_exchange_type():

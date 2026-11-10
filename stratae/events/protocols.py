@@ -7,10 +7,14 @@ Structural protocols for the event system.
 adapter. {py:class}`EmitCallable` describes a single emitter with a concrete return type.
 {py:class}`Serializer` and {py:class}`Deserializer` describe the codecs an adapter takes for
 payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
-one such pair.
+one such pair. {py:class}`Routed` describes a routing config that says where its messages go,
+as a {py:class}`Destination`, so tracing and other observers can name it without knowing the
+adapter.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from stratae.events.hooks import Hooks
@@ -164,4 +168,47 @@ class Deserializer(Protocol):
         :param type: The type to reconstruct.
         :returns: The reconstructed `type` instance.
         """
+        ...
+
+
+type AttributeValue = str | bool | int | float
+"""A value an observer can record about a destination, as OpenTelemetry attributes take."""
+
+_NO_ATTRIBUTES: Mapping[str, AttributeValue] = MappingProxyType({})
+
+
+@dataclass(frozen=True, slots=True)
+class Destination:
+    """
+    Where a routing config's messages go, or come from, as plain data.
+
+    A config describes itself with one, as {py:class}`Routed` says. The fields follow
+    OpenTelemetry's messaging semantic conventions, but nothing here depends on OpenTelemetry.
+    """
+
+    system: str
+    """The messaging system, such as `"rabbitmq"`: `messaging.system`."""
+    name: str | None = None
+    """The destination's name, if it has one: `messaging.destination.name`."""
+    anonymous: bool = False
+    """Whether the destination was made for one consumer and has no lasting name, such as a
+    server-named queue: `messaging.destination.anonymous`."""
+    attributes: Mapping[str, AttributeValue] = field(default=_NO_ATTRIBUTES)
+    """Attributes particular to the system, named as the conventions name them, such as
+    `messaging.rabbitmq.destination.routing_key`."""
+
+
+class Routed(Protocol):
+    """
+    Structural protocol for a routing config that says where its messages go.
+
+    An adapter's config implements it to take part in messaging spans: a publish config names
+    where it sends, a consume config where it receives from. It's read on each emit or handler
+    call, so a config that can change computes it when read. A config without it is still
+    routed; observers just can't name its destination.
+    """
+
+    @property
+    def messaging_destination(self) -> Destination:
+        """Where this config's messages go, or come from."""
         ...

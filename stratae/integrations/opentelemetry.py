@@ -23,6 +23,13 @@ Spans over a broker follow OpenTelemetry's messaging semantic conventions:
   covering a single message, as each handler call does, and it keeps the handling in the
   publisher's trace.
 
+A span's messaging system and destination come from the call's routing config, if it describes
+them with a `messaging_destination`: a
+{py:class}`Destination <stratae.events.protocols.Destination>`, as
+{py:class}`Routed <stratae.events.protocols.Routed>` describes. RabbitMQ's configs do, and an
+adapter of your own takes part the same way. This module names no adapter. A config that
+doesn't describe itself is still traced, without them.
+
 On a direct bus, an emit and each of its handler calls are `INTERNAL` spans, without
 messaging attributes. Every span records the event's name, and the ids of the
 {py:class}`Envelope <stratae.events.envelope.Envelope>` it runs in, when there's one. Over
@@ -70,8 +77,7 @@ emit OrderPlaced: INTERNAL, parent none
 
 from __future__ import annotations
 
-import sys
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import Any, cast
 
 from opentelemetry import context, propagate, trace
 from opentelemetry.context import Context
@@ -80,58 +86,24 @@ from opentelemetry.trace import Link, Span, SpanKind, Status, StatusCode, Tracer
 from stratae.events.envelope import Envelope
 from stratae.events.middleware import HandleCall, MessageHeaders, Middleware, PublishCall
 from stratae.events.outbox import OutboxConfig
-
-if TYPE_CHECKING:
-    from stratae.integrations.rabbitmq import RabbitMQConfig, RabbitMQConsumeConfig
-
-_RABBITMQ = "stratae.integrations.rabbitmq"
-"""The RabbitMQ adapter's module, read from `sys.modules` so `aiormq` is never imported."""
+from stratae.events.protocols import Destination
 
 
-def _rabbitmq() -> tuple[type[RabbitMQConfig], type[RabbitMQConsumeConfig]] | None:
+def _destination(config: object) -> Destination | None:
     """
-    Return the RabbitMQ adapter's config types, or `None` if it isn't imported.
+    Return where a config's messages go, or `None` if it doesn't say.
 
-    A config of these types can only exist once the adapter is imported, so a module that
-    isn't imported yet has no configs to recognize.
+    A config says with a `messaging_destination`, as
+    {py:class}`Routed <stratae.events.protocols.Routed>` describes. One that doesn't is still
+    traced, without messaging attributes for its destination.
     """
-    module = sys.modules.get(_RABBITMQ)
-    if module is None:
-        return None
-    return module.RabbitMQConfig, module.RabbitMQConsumeConfig
+    destination = getattr(config, "messaging_destination", None)
+    return destination if isinstance(destination, Destination) else None
 
 
-class _Target(NamedTuple):
-    """The messaging system and destination a call's config names, if it names them."""
-
-    system: str | None
-    destination: str | None
-    attributes: dict[str, Any]
-
-
-_UNKNOWN = _Target(None, None, {})
-
-
-def _send_target(config: object) -> _Target:
-    """Return where a publish to `config` goes."""
-    rabbitmq = _rabbitmq()
-    if rabbitmq is not None and isinstance(config, rabbitmq[0]):
-        exchange, key = config.exchange, config.routing_key
-        destination = ":".join(part for part in (exchange, key) if part) or "amq.default"
-        attributes = {"messaging.rabbitmq.destination.routing_key": key} if key else {}
-        return _Target("rabbitmq", destination, attributes)
-    return _UNKNOWN
-
-
-def _process_target(config: object) -> _Target:
-    """Return where a message handled under `config` comes from."""
-    rabbitmq = _rabbitmq()
-    if rabbitmq is not None and isinstance(config, rabbitmq[1]):
-        queue = config.queue
-        destination = ":".join(part for part in (config.exchange, queue) if part)
-        attributes = {"messaging.destination.anonymous": True} if queue is None else {}
-        return _Target("rabbitmq", destination, attributes)
-    return _UNKNOWN
+def _name(destination: Destination | None, event: str) -> str:
+    """Return what a messaging span is named after: its destination, or else its event."""
+    return destination.name or event if destination is not None else event
 
 
 def _envelope_attributes(messaging: bool) -> dict[str, Any]:
@@ -160,7 +132,7 @@ def _internal_attributes(event: str) -> dict[str, Any]:
 
 
 def _messaging_attributes(
-    event: str, target: _Target, operation: str, operation_type: str
+    event: str, destination: Destination | None, operation: str, operation_type: str
 ) -> dict[str, Any]:
     """Return a messaging span's attributes, per the messaging semantic conventions."""
     attributes: dict[str, Any] = {
@@ -168,11 +140,14 @@ def _messaging_attributes(
         "messaging.operation.name": operation,
         "messaging.operation.type": operation_type,
     }
-    if target.system is not None:
-        attributes["messaging.system"] = target.system
-    if target.destination:
-        attributes["messaging.destination.name"] = target.destination
-    return attributes | target.attributes | _envelope_attributes(messaging=True)
+    if destination is not None:
+        attributes["messaging.system"] = destination.system
+        if destination.name:
+            attributes["messaging.destination.name"] = destination.name
+        if destination.anonymous:
+            attributes["messaging.destination.anonymous"] = True
+        attributes.update(destination.attributes)
+    return attributes | _envelope_attributes(messaging=True)
 
 
 def _type_name(error: BaseException) -> str:
@@ -269,11 +244,11 @@ class _Publish:
         config: object = call.config
         if isinstance(config, OutboxConfig):
             outbox = cast("OutboxConfig[object]", config)
-            target, operation, operation_type = _send_target(outbox.config), "create", "create"
+            destination, operation, operation_type = _destination(outbox.config), "create", "create"
         else:
-            target, operation, operation_type = _send_target(config), "publish", "send"
-        attributes = _messaging_attributes(event, target, operation, operation_type)
-        name = f"{operation} {target.destination or event}"
+            destination, operation, operation_type = _destination(config), "publish", "send"
+        attributes = _messaging_attributes(event, destination, operation, operation_type)
+        name = f"{operation} {_name(destination, event)}"
         created = trace.get_current_span(propagate.extract(call.headers)).get_span_context()
         if created.is_valid:
             # Created earlier, as a relay's record was: link to its creation, and keep it.
@@ -299,9 +274,9 @@ class _Handle:
             return _Traced(
                 self._tracer, f"handle {event}", SpanKind.INTERNAL, attributes, parent=parent
             )
-        target = _process_target(call.config)
-        attributes = _messaging_attributes(event, target, "process", "process")
-        name = f"process {target.destination or event}"
+        destination = _destination(call.config)
+        attributes = _messaging_attributes(event, destination, "process", "process")
+        name = f"process {_name(destination, event)}"
         return _Traced(self._tracer, name, SpanKind.CONSUMER, attributes, parent=parent)
 
 

@@ -18,6 +18,8 @@ OutboxProducer:
 - Emitting without binding registers the route, and refuses a route bound to another event.
 - A route bound to another event or config raises ValueError; the same config object, or an
   equal one, binds again.
+- OutboxConfig is an immutable value: assignment is refused, and configs with the same fields
+  are equal.
 - An equal event, built separately, binds an existing route; a different payload type under
   the same name raises ValueError.
 
@@ -47,6 +49,7 @@ OutboxRelay:
 """
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
@@ -412,6 +415,22 @@ async def test_request_events_refused(outbox: OutboxProducer):
         outbox.bind(request, config=OutboxConfig("orders"))
     with pytest.raises(TypeError, match="fire-and-forget"):
         await outbox.emit(request, OutboxConfig("orders"), _Order(1))
+
+
+def test_outbox_config_is_an_immutable_value():
+    """
+    OutboxConfig should be an immutable value.
+
+    Given: Two configs with the same fields, and one with another route
+    When: They're compared, and a field is assigned
+    Then: The first two are equal, the third isn't, and assignment raises
+    """
+    config = OutboxConfig("orders-config", route="orders")
+
+    assert config == OutboxConfig("orders-config", route="orders")
+    assert config != OutboxConfig("orders-config", route="other")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        config.route = "other"  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_route_clash_refused(outbox: OutboxProducer):
