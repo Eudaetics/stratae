@@ -34,6 +34,8 @@ DirectBus:
 - A handler that removes a registration during dispatch does not prevent
   other handlers on the same emission from running.
 - A schema-less PubSub event's handler is called with no arguments.
+- Each PubSub handler runs in its own copy of the context: context variables one sets reach
+  neither the other handlers nor the emitter, and each sees what the emitter set.
 
 DirectBus (request events):
 - emit returns the responder's reply.
@@ -89,6 +91,7 @@ import threading
 import weakref
 from collections.abc import Collection, Generator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Literal, cast
 from unittest.mock import Mock
 from uuid import UUID
@@ -1944,3 +1947,57 @@ def test_envelope_ids_come_from_bus_source():
     assert (root.message_id, root.correlation_id) == (UUID(int=1), UUID(int=2))
     assert child.message_id == UUID(int=3)
     assert child.causation_id == root.message_id
+
+
+_marker: ContextVar[str] = ContextVar("_marker", default="unset")
+
+
+def test_handler_context_changes_stay_with_handler(bus: DirectBus):
+    """
+    Context variables a handler sets should reach neither the other handlers nor the emitter.
+
+    Given: Two handlers that each read a context variable, then set it
+    When: An event is emitted
+    Then: Each handler read the unset value, whatever order they ran in, and the emitter
+        still reads the unset value
+    """
+    # Arrange
+    seen: list[str] = []
+
+    def handler(task: _TaskCreated) -> None:
+        seen.append(_marker.get())
+        _marker.set(f"handler {len(seen)}")
+
+    bus.handle(_task_created, handler)
+    bus.handle(_task_created, handler)
+
+    # Act
+    bus.emit(_task_created, None, _TaskCreated(1))
+
+    # Assert
+    assert seen == ["unset", "unset"]
+    assert _marker.get() == "unset"
+
+
+def test_handlers_see_emitter_context(bus: DirectBus):
+    """
+    Each handler should see the context variables the emitter set.
+
+    Given: An emitter that has set a context variable, and two handlers reading it
+    When: An event is emitted
+    Then: Both handlers read the emitter's value
+    """
+    # Arrange
+    seen: list[str] = []
+    bus.handle(_task_created, lambda task: seen.append(_marker.get()))
+    bus.handle(_task_created, lambda task: seen.append(_marker.get()))
+    token = _marker.set("emitter")
+
+    # Act
+    try:
+        bus.emit(_task_created, None, _TaskCreated(1))
+    finally:
+        _marker.reset(token)
+
+    # Assert
+    assert seen == ["emitter", "emitter"]

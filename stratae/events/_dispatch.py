@@ -74,11 +74,16 @@ def dispatch_request_async[S, R](
 def fan_out[S](
     _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, None]], payload: S
 ) -> None:
-    """Call every handler in turn, raising their failures together as `HandlerErrors`."""
+    """
+    Call every handler in turn, each in its own copy of the context.
+
+    Context variables a handler sets don't reach the other handlers or the emitter, whatever
+    order the handlers run in. Their failures are raised together as `HandlerErrors`.
+    """
     exceptions: list[Exception] = []
     for handler in handlers:
         try:
-            handler(payload)
+            copy_context().run(handler, payload)
         except Exception as exc:
             exceptions.append(exc)
     if exceptions:
