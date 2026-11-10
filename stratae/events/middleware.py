@@ -276,14 +276,14 @@ class _Call:
 
     def __init__(self, event: "AnyEvent", config: Any, payload: Any) -> None:
         """Describe one call for a middleware; buses build these."""
-        self.event = event
+        self.event: AnyEvent = event
         """The event being emitted or handled."""
-        self.config = config
+        self.config: Any = config
         """
         The adapter's routing config for the call: an emit's `config`, or the registration's
         on a consumer, such as RabbitMQ's exchange and routing key. `None` on a direct bus.
         """
-        self.payload = payload
+        self.payload: Any = payload
         """The payload being emitted or handled."""
         self.reply: Any = None
         """The call's reply once it has returned, for the exits to see; `None` until then."""

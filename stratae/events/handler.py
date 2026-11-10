@@ -59,9 +59,9 @@ class Handler[**P, HandlerConfig, R]:
         :param config: The handler's routing config.
         :param is_async: Whether `call` is async: whether calling it gives a coroutine.
         """
-        self.call = call
-        self.config = config
-        self.is_async = is_async
+        self.call: Callable[P, R] = call
+        self.config: HandlerConfig = config
+        self.is_async: bool = is_async
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         """Call the handler. An async handler returns an unawaited coroutine."""
@@ -119,7 +119,7 @@ class WithoutPayload:
 
         :param fn: The handler, taking no arguments.
         """
-        self.fn = fn
+        self.fn: Callable[[], Any] = fn
 
     def __call__(self, _: object, /) -> Any:
         """Call the handler without the argument."""

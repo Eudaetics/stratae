@@ -36,12 +36,18 @@ def no_dispatcher(event: AnyEvent, handlers: Collection[Any], payload: Any) -> A
     ...
 
 
-def build_dispatcher(pairs: Iterable[tuple[type, Callable[..., Any]]]):
-    """Build a bus's dispatch function from pattern and dispatcher pairs; later pairs win."""
+def build_dispatcher(
+    pairs: Iterable[tuple[type, Callable[..., Any]]],
+) -> Callable[[type], Callable[..., Any]]:
+    """
+    Build a bus's dispatch function from pattern and dispatcher pairs; later pairs win.
+
+    It takes an event's class and returns its dispatcher, or `no_dispatcher` if there's none.
+    """
     dispatch = singledispatch(no_dispatcher)
     for pattern, dispatcher in pairs:
         dispatch.register(pattern, dispatcher)
-    return dispatch
+    return dispatch.dispatch
 
 
 def only_responder[H: Handler[Any, Any, Any]](event: AnyEvent, handlers: Collection[H]) -> H:

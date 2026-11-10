@@ -140,7 +140,7 @@ from uuid import UUID
 
 from aiormq import connect
 from aiormq.exceptions import PublishError
-from pamqp.commands import Basic
+from pamqp.commands import Basic, Queue
 
 from stratae.events import (
     CORRELATION_ID_HEADER,
@@ -351,9 +351,9 @@ class RabbitMQReconnect:
         """
         if not 0 < initial_delay <= max_delay or backoff < 1:
             raise ValueError(_BAD_RECONNECT)
-        self.initial_delay = initial_delay
-        self.max_delay = max_delay
-        self.backoff = backoff
+        self.initial_delay: float = initial_delay
+        self.max_delay: float = max_delay
+        self.backoff: float = backoff
 
     def delays(self) -> Iterator[float]:
         """Yield the wait before each reconnect attempt, without end."""
@@ -735,14 +735,14 @@ class RabbitMQFailurePolicy:
         :raises ValueError: If a delay isn't positive, or `dead_letter_queue` is given with
             `dead_letter=False`.
         """
-        self.retry_delays = tuple(retry_delays)
+        self.retry_delays: tuple[float, ...] = tuple(retry_delays)
         for delay in self.retry_delays:
             if delay <= 0:
                 raise ValueError(_NON_POSITIVE_DELAY.format(delay))
         if not dead_letter and dead_letter_queue is not None:
             raise ValueError(_DROP_WITH_QUEUE)
-        self.dead_letter = dead_letter
-        self.dead_letter_queue = dead_letter_queue
+        self.dead_letter: bool = dead_letter
+        self.dead_letter_queue: str | None = dead_letter_queue
 
     def retry_queue(self, queue: str, attempt: int) -> str | None:
         """
@@ -837,10 +837,12 @@ class RabbitMQConsumeConfig:
         object.__setattr__(self, "messaging_destination", destination)
 
 
-def _declare_queue(channel: AbstractChannel, config: RabbitMQConsumeConfig):
-    """Return the queue_declare call for config, inferring its flags."""
+async def _declare_queue(
+    channel: AbstractChannel, config: RabbitMQConsumeConfig
+) -> Queue.DeclareOk:
+    """Declare config's queue, inferring its flags."""
     named = config.queue is not None
-    return channel.queue_declare(
+    return await channel.queue_declare(
         config.queue or "",
         durable=named if config.durable is None else config.durable,
         exclusive=(not named) if config.exclusive is None else config.exclusive,

@@ -1,4 +1,4 @@
-from collections.abc import Callable, Hashable
+from collections.abc import Awaitable, Callable, Hashable
 from contextvars import ContextVar
 from threading import RLock
 from typing import Any, ClassVar, Self
@@ -62,14 +62,14 @@ class Provider:
         cls._registry[dependency] = instance
         return instance
 
-    def provide_held(self):
+    def provide_held(self) -> Any:
         """Return the override's value if set, otherwise evaluate the dependency."""
         held = self.override.get()
         if held is _UNSET:
             return self.dependency()
         return held.value
 
-    def provide_held_async(self):
+    def provide_held_async(self) -> Awaitable[Any]:
         """Return an awaitable of the override's value if set, otherwise the dependency's."""
         held = self.override.get()
         if held is _UNSET:
@@ -90,7 +90,7 @@ class Provider:
             if self.live == 0:
                 self.provide = self.dependency
 
-    def update(self, dependency: Callable[..., Any]):
+    def update(self, dependency: Callable[..., Any]) -> None:
         """Replace the dependency and its provide function."""
         with self.lock:
             self.dependency = dependency

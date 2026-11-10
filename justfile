@@ -13,6 +13,9 @@ lint-check:
 typecheck:
     uv run pyright
 
+verifytypes:
+    uv run --isolated --no-editable --reinstall-package stratae --all-extras --group dev pyright --verifytypes stratae --ignoreexternal
+
 test:
     uv run pytest
 
@@ -44,4 +47,4 @@ pyright-ignore-check:
     ! grep -rn --include='*.py' 'pyright: ignore' stratae
 
 # Mirrors CI without modifying files; run `just format lint` first to auto-fix.
-check: format-check lint-check typecheck test no-cover-check type-ignore-check pyright-ignore-check radon-cc radon-mi
+check: format-check lint-check typecheck verifytypes test no-cover-check type-ignore-check pyright-ignore-check radon-cc radon-mi

@@ -26,15 +26,15 @@ class Writer:
         finally:
             self._nesting -= 1
 
-    def write(self, line: str):
+    def write(self, line: str) -> None:
         """Append a stripped line at the current indent; blank lines get no indent."""
         line = line.strip()
         self._lines.append(f"{_INDENT * self._nesting}{line}" if line else "")
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Return the rendered source."""
         return self.render()
 
-    def render(self):
+    def render(self) -> str:
         """Join all written lines into the final source text."""
         return "\n".join(self._lines)

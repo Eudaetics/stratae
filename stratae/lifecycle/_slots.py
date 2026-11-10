@@ -1,4 +1,5 @@
 import threading
+from collections.abc import Callable
 from contextvars import ContextVar
 from functools import partial
 from typing import Any
@@ -42,9 +43,9 @@ class SharedVar:
     __slots__ = ("lock", "name", "storage")
 
     def __init__(self, name: str) -> None:
-        self.name = name
+        self.name: str = name
         self.storage: SlotStorage = UNSET
-        self.lock = threading.Lock()
+        self.lock: threading.Lock = threading.Lock()
 
     def get(self, default: Any = _MISSING) -> SlotStorage:
         """Return the live storage, or default when inactive, else raise LookupError."""
@@ -123,12 +124,14 @@ class SlotStore:
         :param dense: Whether slots are positional, rather than allocated lazily.
         :param threads: Whether threads sharing an activation compute each entry once.
         """
-        self.name = name
-        self.shared = shared
-        self.dense = dense
-        self.threads = threads
+        self.name: str = name
+        self.shared: bool = shared
+        self.dense: bool = dense
+        self.threads: bool = threads
         self.template: list[Any] | None = None
         """Dense storage's slots as a new activation starts them; sparse storage has none."""
+        self.new: Callable[[], SlotStorage]
+        """Makes a new activation's storage."""
         if dense:
             template = [UNSET, 0, None, None]  # slots 0-3, see RESERVED_SLOTS
             self.template = template
