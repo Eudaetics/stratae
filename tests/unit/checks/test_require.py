@@ -5,7 +5,15 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-from stratae.checks import require
+from stratae.checks import CheckResultError, require
+
+
+def _passing[M: Mock](mock: M, *children: str) -> M:
+    """Make `mock` and its named children passing checks: calling one returns `None`."""
+    mock.return_value = None
+    for name in children:
+        getattr(mock, name).return_value = None
+    return mock
 
 
 def test_require_sync_check_runs_before_sync_function():
@@ -17,7 +25,7 @@ def test_require_sync_check_runs_before_sync_function():
     Then: The check should run before the function body executes.
     """
     # Arrange
-    manager = Mock()
+    manager = _passing(Mock(), "check", "first", "second")
 
     @require(manager.check)
     def fn() -> None:
@@ -39,7 +47,7 @@ def test_require_runs_multiple_checks_in_order():
     Then: The checks should run in the order passed to require, before the function.
     """
     # Arrange
-    manager = Mock()
+    manager = _passing(Mock(), "check", "first", "second")
 
     @require(manager.first, manager.second)
     def fn() -> None:
@@ -52,26 +60,28 @@ def test_require_runs_multiple_checks_in_order():
     assert manager.mock_calls == [call.first(), call.second(), call.fn()]
 
 
-def test_require_discards_check_return_value():
+def test_require_refuses_check_returning_value():
     """
-    Verify a check's return value is discarded.
+    Verify a check returning a value is refused, and the function doesn't run.
 
-    Given: A check that returns a truthy value and a function decorated with require.
+    Given: A check that returns a value, and a function decorated with require.
     When: The decorated function is called.
-    Then: The function's own return value should be returned, unaffected by the check.
+    Then: CheckResultError should be raised, and the function body shouldn't run.
     """
     # Arrange
-    check = Mock(return_value="ignored")
+    body = Mock()
 
-    @require(check)
-    def fn() -> str:
-        return "fn result"
+    def check() -> str:
+        return "ignored"
 
-    # Act
-    result = fn()
+    @require(check)  # pyright: ignore[reportArgumentType]
+    def fn() -> None:
+        body()
 
-    # Assert
-    assert result == "fn result"
+    # Act / Assert
+    with pytest.raises(CheckResultError, match="returned 'ignored'"):
+        fn()
+    body.assert_not_called()
 
 
 def test_require_sync_check_raise_prevents_function_call():
@@ -105,7 +115,7 @@ def test_require_raise_stops_remaining_checks():
     Then: The exception should propagate, and the later check should not run.
     """
     # Arrange
-    later_check = Mock()
+    later_check = Mock(return_value=None)
     failing_check = Mock(side_effect=PermissionError("denied"))
 
     @require(failing_check, later_check)
@@ -144,8 +154,8 @@ async def test_require_async_check_runs_before_async_function():
     Then: The check should run before the function body executes.
     """
     # Arrange
-    manager = Mock()
-    check = AsyncMock()
+    manager = _passing(Mock(), "check", "first", "second")
+    check = AsyncMock(return_value=None)
     manager.attach_mock(check, "check")
 
     @require(check)
@@ -169,9 +179,9 @@ async def test_require_async_function_accepts_mixed_sync_and_async_checks():
     Then: Both checks should run, in order, before the function body executes.
     """
     # Arrange
-    manager = Mock()
-    sync_check = Mock()
-    async_check = AsyncMock()
+    manager = _passing(Mock(), "check", "first", "second")
+    sync_check = Mock(return_value=None)
+    async_check = AsyncMock(return_value=None)
     manager.attach_mock(sync_check, "sync_check")
     manager.attach_mock(async_check, "async_check")
 
@@ -220,7 +230,7 @@ def test_require_passes_through_args_and_kwargs():
     """
 
     # Arrange
-    @require(Mock())
+    @require(Mock(return_value=None))
     def fn(a: int, *, b: int) -> int:
         return a + b
 

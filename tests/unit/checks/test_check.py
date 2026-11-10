@@ -1,11 +1,21 @@
 """Test suite for check functions used to help guard/validate."""
 
+import asyncio
+from collections.abc import Generator
 from inspect import iscoroutinefunction
 from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-from stratae.checks import CheckMode, all_of, any_of, check, check_async
+from stratae.checks import CheckMode, CheckResultError, all_of, any_of, check, check_async
+
+
+def _passing[M: Mock](mock: M, *children: str) -> M:
+    """Make `mock` and its named children passing checks: calling one returns `None`."""
+    mock.return_value = None
+    for name in children:
+        getattr(mock, name).return_value = None
+    return mock
 
 
 def test_check_runs_all_functions():
@@ -17,7 +27,7 @@ def test_check_runs_all_functions():
     Then: `check` should not raise.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
 
     # Act
     check(fn.first, fn.second, fn.third)
@@ -36,7 +46,7 @@ def test_check_stops_on_failure():
     """
     # Arrange
     failing_check = Mock(side_effect=ValueError("broken"))
-    later_check = Mock()
+    later_check = Mock(return_value=None)
 
     # Act / Assert
     with pytest.raises(ValueError, match="broken"):
@@ -67,7 +77,7 @@ def test_check_gathers_errors():
     # Arrange
     fail1 = Mock(side_effect=ValueError("broken 1"))
     fail2 = Mock(side_effect=TypeError("broken 2"))
-    good = Mock()
+    good = Mock(return_value=None)
 
     # Act
     with pytest.raises(ExceptionGroup) as exc_info:
@@ -91,7 +101,7 @@ def test_check_any_returns_first_success():
     Then: `check` immediately returns without raising.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
 
     # Act
     check(fn.first, fn.second, fn.third, mode="any")
@@ -109,7 +119,7 @@ def test_check_any_swallows_errors_if_one_succeeds():
     Then: `check` returns without raising.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
     fn.fail = Mock(side_effect=ValueError("broken"))
 
     # Act
@@ -128,7 +138,7 @@ def test_check_any_swallows_errors_if_only_last_succeeds():
     Then: `check` returns without raising.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
     fn.fail = Mock(side_effect=ValueError("broken"))
 
     # Act
@@ -147,7 +157,7 @@ async def test_check_async_runs_all_functions():
     Then: `check_async` should not raise.
     """
     # Arrange
-    fn = AsyncMock()
+    fn = _passing(AsyncMock(), "first", "second", "third")
 
     # Act
     await check_async(fn.first, fn.second, fn.third)
@@ -166,7 +176,7 @@ async def test_check_async_stops_on_failure():
     """
     # Arrange
     failing_check = Mock(side_effect=ValueError("broken"))
-    later_check = Mock()
+    later_check = Mock(return_value=None)
 
     # Act / Assert
     with pytest.raises(ValueError, match="broken"):
@@ -185,7 +195,7 @@ async def test_check_async_gathers_errors():
     # Arrange
     fail1 = AsyncMock(side_effect=ValueError("broken 1"))
     fail2 = Mock(side_effect=TypeError("broken 2"))
-    good = Mock()
+    good = Mock(return_value=None)
 
     # Act
     with pytest.raises(ExceptionGroup) as exc_info:
@@ -209,7 +219,7 @@ async def test_check_async_any_returns_first_success():
     Then: check_async immediately returns without raising.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
 
     # Act
     await check_async(fn.first, fn.second, fn.third, mode="any")
@@ -227,7 +237,7 @@ async def test_check_async_any_swallows_errors_if_one_succeeds():
     Then: `check_async` returns without raising.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
     fn.fail = Mock(side_effect=ValueError("broken"))
 
     # Act
@@ -246,7 +256,7 @@ async def test_check_async_any_swallows_errors_if_only_last_succeeds():
     Then: `check_async` returns without raising.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
     fn.fail = Mock(side_effect=ValueError("broken"))
 
     # Act
@@ -265,7 +275,7 @@ def test_any_of_returns_sync_callable_when_all_checks_are_sync():
     Then: The returned callable should not be a coroutine function.
     """
     # Act
-    combined = any_of(Mock(), Mock())
+    combined = any_of(Mock(return_value=None), Mock(return_value=None))
 
     # Assert
     assert not iscoroutinefunction(combined)
@@ -280,7 +290,7 @@ def test_any_of_succeeds_if_one_check_succeeds():
     Then: It should not raise, and should stop running after the first success.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
     fn.fail = Mock(side_effect=ValueError("broken"))
     combined = any_of(fn.fail, fn.first, fn.second)
 
@@ -321,8 +331,8 @@ def test_any_of_nests_inside_check_and_passes_if_group_succeeds():
     """
     # Arrange
     is_admin = Mock(side_effect=PermissionError("not an admin"))
-    is_owner = Mock()
-    not_pending = Mock()
+    is_owner = Mock(return_value=None)
+    not_pending = Mock(return_value=None)
 
     # Act
     check(any_of(is_admin, is_owner), not_pending)
@@ -346,7 +356,7 @@ def test_any_of_nests_inside_check_and_fails_if_group_fails():
     # Arrange
     is_admin = Mock(side_effect=PermissionError("not an admin"))
     is_owner = Mock(side_effect=PermissionError("not the owner"))
-    not_pending = Mock()
+    not_pending = Mock(return_value=None)
 
     # Act / Assert
     with pytest.raises(ExceptionGroup):
@@ -363,7 +373,7 @@ def test_any_of_returns_async_callable_when_any_check_is_async():
     Then: The returned callable should be a coroutine function.
     """
     # Act
-    combined = any_of(Mock(), AsyncMock())
+    combined = any_of(Mock(return_value=None), AsyncMock(return_value=None))
 
     # Assert
     assert iscoroutinefunction(combined)
@@ -379,7 +389,7 @@ async def test_any_of_async_succeeds_via_check_async():
     """
     # Arrange
     fail = Mock(side_effect=ValueError("broken"))
-    succeed = AsyncMock()
+    succeed = AsyncMock(return_value=None)
     combined = any_of(fail, succeed)
 
     # Act
@@ -400,7 +410,7 @@ def test_any_of_async_group_raises_type_error_in_sync_check():
     Then: `check` should raise TypeError instead of running it.
     """
     # Arrange
-    combined = any_of(Mock(), AsyncMock())
+    combined = any_of(Mock(return_value=None), AsyncMock(return_value=None))
 
     # Act / Assert
     with pytest.raises(TypeError, match="returned an awaitable"):
@@ -416,7 +426,7 @@ def test_all_of_returns_sync_callable_when_all_checks_are_sync():
     Then: The returned callable should not be a coroutine function.
     """
     # Act
-    combined = all_of(Mock(), Mock())
+    combined = all_of(Mock(return_value=None), Mock(return_value=None))
 
     # Assert
     assert not iscoroutinefunction(combined)
@@ -431,7 +441,7 @@ def test_all_of_succeeds_if_all_checks_succeed():
     Then: Both checks should run and no exception should be raised.
     """
     # Arrange
-    fn = Mock()
+    fn = _passing(Mock(), "first", "second", "third")
     combined = all_of(fn.first, fn.second)
 
     # Act
@@ -451,7 +461,7 @@ def test_all_of_raises_first_failure_and_stops_remaining_checks():
     """
     # Arrange
     failing_check = Mock(side_effect=ValueError("broken"))
-    later_check = Mock()
+    later_check = Mock(return_value=None)
     combined = all_of(failing_check, later_check)
 
     # Act / Assert
@@ -472,8 +482,8 @@ def test_all_of_nests_inside_check_any_and_passes_if_group_succeeds():
     """
     # Arrange
     is_super_admin = Mock(side_effect=PermissionError("not a super admin"))
-    is_manager = Mock()
-    manages_target_user = Mock()
+    is_manager = Mock(return_value=None)
+    manages_target_user = Mock(return_value=None)
 
     # Act
     check(is_super_admin, all_of(is_manager, manages_target_user), mode="any")
@@ -496,7 +506,7 @@ def test_all_of_nests_inside_check_any_and_fails_if_group_fails():
     """
     # Arrange
     is_super_admin = Mock(side_effect=PermissionError("not a super admin"))
-    is_manager = Mock()
+    is_manager = Mock(return_value=None)
     manages_target_user = Mock(side_effect=ValueError("wrong department"))
 
     # Act / Assert
@@ -514,7 +524,7 @@ def test_all_of_returns_async_callable_when_any_check_is_async():
     Then: The returned callable should be a coroutine function.
     """
     # Act
-    combined = all_of(Mock(), AsyncMock())
+    combined = all_of(Mock(return_value=None), AsyncMock(return_value=None))
 
     # Assert
     assert iscoroutinefunction(combined)
@@ -529,8 +539,8 @@ async def test_all_of_async_succeeds_via_check_async():
     Then: It should not raise.
     """
     # Arrange
-    first = Mock()
-    second = AsyncMock()
+    first = Mock(return_value=None)
+    second = AsyncMock(return_value=None)
     combined = all_of(first, second)
 
     # Act
@@ -551,7 +561,7 @@ def test_all_of_async_group_raises_type_error_in_sync_check():
     Then: `check` should raise TypeError instead of running it.
     """
     # Arrange
-    combined = all_of(Mock(), AsyncMock())
+    combined = all_of(Mock(return_value=None), AsyncMock(return_value=None))
 
     # Act / Assert
     with pytest.raises(TypeError, match="returned an awaitable"):
@@ -603,7 +613,7 @@ def test_check_async_check_type_error_propagates_whatever_the_mode(mode: CheckMo
     # Arrange
     async def async_check() -> None: ...
 
-    passing = Mock()
+    passing = Mock(return_value=None)
 
     # Act / Assert
     with pytest.raises(TypeError, match="returned an awaitable"):
@@ -653,3 +663,110 @@ def test_all_of_without_checks_passes():
     Then: It passes.
     """
     check(all_of())
+
+
+_VALUES = pytest.mark.parametrize(
+    ("mode", "result"),
+    [("all", True), ("all", False), ("any", 0), ("gather", "")],
+    ids=["all-true", "all-false", "any-zero", "gather-empty"],
+)
+
+
+@_VALUES
+def test_check_refuses_check_returning_value(mode: CheckMode, result: object):
+    """
+    `check` should refuse a check returning anything but None, whatever the mode.
+
+    A check written as a predicate, returning False, would otherwise pass.
+
+    Given: A check returning a value, even a falsy one, then a passing check
+    When: `check` runs them in any mode
+    Then: CheckResultError names the value, rather than counting as a pass or a failure, and
+        the later check doesn't run
+    """
+
+    # Arrange
+    def returns_value() -> object:
+        return result
+
+    later = Mock(return_value=None)
+
+    # Act / Assert
+    with pytest.raises(CheckResultError, match=f"returned {result!r}"):
+        check(returns_value, later, mode=mode)  # pyright: ignore[reportArgumentType]
+    later.assert_not_called()
+
+
+@_VALUES
+async def test_check_async_refuses_sync_check_returning_value(mode: CheckMode, result: object):
+    """
+    `check_async` should refuse a sync check returning anything but None, whatever the mode.
+
+    Given: A sync check returning a value, even a falsy one, then a passing check
+    When: `check_async` runs them in any mode
+    Then: CheckResultError names the value, and the later check doesn't run
+    """
+
+    # Arrange
+    def returns_value() -> object:
+        return result
+
+    later = Mock(return_value=None)
+
+    # Act / Assert
+    with pytest.raises(CheckResultError, match=f"returned {result!r}"):
+        await check_async(returns_value, later, mode=mode)  # pyright: ignore[reportArgumentType]
+    later.assert_not_called()
+
+
+@_VALUES
+async def test_check_async_refuses_async_check_resolving_to_value(mode: CheckMode, result: object):
+    """
+    `check_async` should refuse an async check resolving to anything but None.
+
+    Given: An async check resolving to a value, even a falsy one, then a passing check
+    When: `check_async` runs them in any mode
+    Then: CheckResultError names the value, and the later check doesn't run
+    """
+
+    # Arrange
+    async def resolves_to_value() -> object:
+        await asyncio.sleep(0)
+        return result
+
+    later = Mock(return_value=None)
+
+    # Act / Assert
+    with pytest.raises(CheckResultError, match=f"returned {result!r}"):
+        await check_async(resolves_to_value, later, mode=mode)  # pyright: ignore[reportArgumentType]
+    later.assert_not_called()
+
+
+class _Recorded:
+    """An awaitable that isn't a coroutine, recording when it's awaited."""
+
+    def __init__(self, log: list[str]) -> None:
+        self.log = log
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
+        self.log.append("awaited")
+
+
+async def test_check_async_awaits_awaitable_from_sync_check():
+    """
+    `check_async` should await an awaitable a sync check returns, even one that isn't a coroutine.
+
+    Given: A sync check returning an awaitable object, then another check
+    When: `check_async` is called
+    Then: The awaitable is awaited before the next check runs
+    """
+    # Arrange
+    log: list[str] = []
+    second = Mock(side_effect=lambda: log.append("second"))
+
+    # Act
+    await check_async(lambda: _Recorded(log), second)
+
+    # Assert
+    assert log == ["awaited", "second"]

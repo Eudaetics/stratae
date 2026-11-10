@@ -1,7 +1,10 @@
 """
 Run collections of zero-argument checks, raising or gathering their failures.
 
-A check is a zero-argument callable that raises on failure. {py:func}`check` runs sync
+A check is a zero-argument callable that returns `None` to pass and raises to fail. A check
+that returns anything else is refused with {py:exc}`CheckResultError`, since a check written
+as a predicate, such as `lambda: user.is_admin`, would otherwise always pass. An async check
+resolves to `None` the same way. {py:func}`check` runs sync
 checks, {py:func}`check_async` runs sync or async ones, and {py:func}`require` runs them
 before a decorated function. {py:func}`any_of` and {py:func}`all_of` nest groups. The
 `mode` keyword controls failure handling:
@@ -46,13 +49,15 @@ Access denied: resource is archived
 from collections.abc import Awaitable, Callable, Sequence
 from functools import wraps
 from inspect import isawaitable
+from types import CoroutineType
 from typing import Any, Literal, Self, cast, overload
 
 from stratae._callables import is_async_callable
 
 type CheckMode = Literal["all", "gather", "any"]
 
-_Check = Callable[[], Any]
+type _Check = Callable[[], Awaitable[None] | None]
+"""A check: returns `None` to pass, or on async paths an awaitable resolving to it."""
 
 
 class CheckFailures(ExceptionGroup[Exception]):
@@ -72,10 +77,30 @@ class CheckFailures(ExceptionGroup[Exception]):
         super().__init__(f"Failures in {label}", failures)
 
 
+class CheckResultError(TypeError):
+    """
+    Raised when a check returns, or resolves to, something other than `None`.
+
+    A check passes by returning `None` and fails by raising, so a returned value is ignored.
+    A check returning `False` would pass, so any value is refused instead.
+    """
+
+    def __init__(self, fn: Callable[[], object], result: object) -> None:
+        """
+        Name the check and what it returned.
+
+        :param fn: The check.
+        :param result: What it returned, or resolved to.
+        """
+        super().__init__(
+            f"{fn!r} returned {result!r}; a check returns None to pass and raises to fail"
+        )
+
+
 class AwaitableCheckError(TypeError):
     """Raised when {py:func}`check` runs a check that returns an awaitable."""
 
-    def __init__(self, fn: Callable[[], Any]) -> None:
+    def __init__(self, fn: Callable[[], object]) -> None:
         """:param fn: The check."""
         super().__init__(f"{fn!r} returned an awaitable; use check_async() instead.")
 
@@ -109,14 +134,15 @@ def _raise_gathered(exceptions: list[Exception], label: str) -> None:
         raise CheckFailures(label, exceptions)
 
 
-def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
+def check(*checks: _Check, mode: CheckMode = "all"):
     """
     Run sync checks in order.
 
-    :param checks: Zero-argument sync callables that raise on failure.
+    :param checks: Zero-argument sync callables returning `None` to pass, raising to fail.
     :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs.
     :raises Exception: The first failure, in "all" mode.
     :raises AwaitableCheckError: If a check returns an awaitable; use {py:func}`check_async`.
+    :raises CheckResultError: If a check returns anything else but `None`, whatever the mode.
     :raises CheckFailures: All failures, in "gather" mode, or "any" mode if every check fails.
     """
     exceptions: list[Exception] = []
@@ -126,37 +152,46 @@ def check(*checks: Callable[[], Any], mode: CheckMode = "all"):
         except Exception as exc:
             _settle(exc, mode, exceptions)
             continue
-        if isawaitable(result):
-            getattr(result, "close", lambda: None)()
-            raise AwaitableCheckError(fn)
+        if result is not None:
+            if isawaitable(result):
+                getattr(result, "close", lambda: None)()
+                raise AwaitableCheckError(fn)
+            raise CheckResultError(fn, result)
         if mode == "any":
             return
     _raise_gathered(exceptions, "check")
 
 
-async def check_async(*checks: Callable[[], Any], mode: CheckMode = "all"):
+async def check_async(*checks: _Check, mode: CheckMode = "all"):
     """
     Run sync or async checks in order, awaiting the async ones.
 
-    :param checks: Zero-argument callables that raise on failure.
+    :param checks: Zero-argument callables returning `None` to pass, or an awaitable resolving
+        to it, and raising to fail.
     :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs.
     :raises Exception: The first failure, in "all" mode.
+    :raises CheckResultError: If a check returns, or resolves to, anything else but `None`,
+        whatever the mode.
     :raises CheckFailures: All failures, in "gather" mode, or "any" mode if every check fails.
     """
     exceptions: list[Exception] = []
     for fn in checks:
         try:
-            result = fn()
-            if isawaitable(result):
-                await result
-            if mode == "any":
-                return
+            result: object = fn()
+            # None and coroutines skip isawaitable, which costs several times either test.
+            if result is not None and (isinstance(result, CoroutineType) or isawaitable(result)):
+                result = await result
         except Exception as exc:
             _settle(exc, mode, exceptions)
+            continue
+        if result is not None:
+            raise CheckResultError(fn, result)
+        if mode == "any":
+            return
     _raise_gathered(exceptions, "check_async")
 
 
-def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
+def any_of(*checks: _Check) -> _Check:
     """
     Combine checks into one that passes if any of them does.
 
@@ -178,7 +213,7 @@ def any_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
     return _any_of_sync
 
 
-def all_of(*checks: Callable[[], Any]) -> Callable[[], Any]:
+def all_of(*checks: _Check) -> _Check:
     """
     Combine checks into one that passes only if all of them do.
 

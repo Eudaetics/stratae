@@ -20,6 +20,8 @@ run_hooks:
 - A BaseException skips failure; complete still sees it.
 - A before hook that returns an awaitable raises TypeError, and the awaitable is closed if
   it can be; an observing hook that does is logged like any other hook error.
+- A before hook returning a value, even a falsy one, raises TypeError naming it, and the
+  call doesn't run; an observing hook that does is logged, and the reply stands.
 
 run_hooks_async:
 - Awaits async hooks and runs sync ones, around an awaited call.
@@ -27,6 +29,10 @@ run_hooks_async:
 - An async failure hook that raises is logged, and the call's error still propagates.
 - A cancelled call skips failure; complete sees the CancelledError.
 - Observing hooks in a slot run concurrently, so a slow one doesn't hold up the rest.
+- A sync before or observing hook returning an awaitable that isn't a coroutine has it
+  awaited.
+- A before hook returning, or resolving to, a value raises TypeError, and the call doesn't run;
+  an observing hook that does is logged, and the reply stands.
 """
 
 import asyncio
@@ -347,7 +353,7 @@ def test_run_hooks_rejects_awaitable_from_before_hook() -> None:
     def returns_coroutine(*_: object) -> object:
         return coroutine
 
-    hooks: Hooks[Any, Any] = Hooks(before=(returns_coroutine,))
+    hooks: Hooks[Any, Any] = Hooks(before=(returns_coroutine,))  # pyright: ignore[reportArgumentType]
 
     # Act / Assert
     with pytest.raises(TypeError, match="returned an awaitable"):
@@ -373,12 +379,69 @@ def test_run_hooks_rejects_awaitable_without_close() -> None:
     def returns_pending(*_: object) -> object:
         return Pending()
 
-    hooks: Hooks[Any, Any] = Hooks(before=(returns_pending,))
+    hooks: Hooks[Any, Any] = Hooks(before=(returns_pending,))  # pyright: ignore[reportArgumentType]
 
     # Act / Assert
     with pytest.raises(TypeError, match="returned an awaitable"):
         run_hooks(hooks, _order_placed, _Order("lamp"), calls.append, "call")
     assert calls == []
+
+
+_VALUES = pytest.mark.parametrize(
+    "result", [True, False, 0, ""], ids=["true", "false", "zero", "empty"]
+)
+
+
+@_VALUES
+def test_run_hooks_refuses_value_from_before_hook(result: object) -> None:
+    """
+    A before hook returning a value, even a falsy one, should raise TypeError naming it.
+
+    Given: A before hook returning a value that isn't None
+    When: run_hooks runs a call
+    Then: TypeError names the hook and the value, and the call doesn't run
+    """
+    # Arrange
+    calls: list[str] = []
+
+    def returns_value(*_: object) -> object:
+        return result
+
+    hooks: Hooks[Any, Any] = Hooks(before=(returns_value,))  # pyright: ignore[reportArgumentType]
+
+    # Act / Assert
+    with pytest.raises(TypeError, match=f"returned {result!r}, but a hook returns None"):
+        run_hooks(hooks, _order_placed, _Order("lamp"), calls.append, "call")
+    assert calls == []
+
+
+@_VALUES
+def test_run_hooks_logs_value_from_observing_hook(
+    result: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    An observing hook returning a value should be logged, and the call's reply should stand.
+
+    Given: Success and complete hooks returning a value that isn't None
+    When: run_hooks runs a call that returns
+    Then: The reply returns, and both hooks are logged as returning a value
+    """
+
+    # Arrange
+    def returns_value(*_: object) -> object:
+        return result
+
+    hooks: Hooks[Any, Any] = Hooks(
+        success=(returns_value,),  # pyright: ignore[reportArgumentType]
+        complete=(returns_value,),  # pyright: ignore[reportArgumentType]
+    )
+
+    # Act
+    reply = run_hooks(hooks, _order_placed, _Order("lamp"), str, "reply")
+
+    # Assert
+    assert reply == "reply"
+    assert caplog.text.count("but a hook returns None") == 2
 
 
 # endregion
@@ -533,6 +596,123 @@ async def test_run_hooks_async_observing_hooks_run_concurrently() -> None:
     # Assert
     assert reply == "reply"
     assert log == ["second", "first"]
+
+
+class _Recorded:
+    """An awaitable that isn't a coroutine, recording when it's awaited."""
+
+    def __init__(self, log: list[str], name: str) -> None:
+        self.log = log
+        self.name = name
+
+    def __await__(self) -> Generator[None, None, None]:
+        yield
+        self.log.append(self.name)
+
+
+async def test_run_hooks_async_awaits_awaitables_from_sync_hooks() -> None:
+    """
+    A sync hook returning an awaitable that isn't a coroutine should have it awaited.
+
+    Given: Sync before, success and complete hooks, each returning an awaitable object
+    When: run_hooks_async runs a call that returns
+    Then: Each awaitable is awaited, the before hook's ahead of the call
+    """
+    # Arrange
+    log: list[str] = []
+
+    def before(event: Any, payload: Any) -> _Recorded:
+        return _Recorded(log, "before")
+
+    def success(event: Any, payload: Any, reply: Any) -> _Recorded:
+        return _Recorded(log, "success")
+
+    def complete(event: Any, payload: Any, error: Any) -> _Recorded:
+        return _Recorded(log, "complete")
+
+    async def call() -> str:
+        await asyncio.sleep(0)
+        log.append("call")
+        return "reply"
+
+    hooks: Hooks[Any, Any] = Hooks(before=(before,), success=(success,), complete=(complete,))
+
+    # Act
+    reply = await run_hooks_async(hooks, _order_placed, _Order("lamp"), call)
+
+    # Assert
+    assert reply == "reply"
+    assert log == ["before", "call", "success", "complete"]
+
+
+async def _resolves_to(result: object) -> object:
+    """Resolve to `result`, as an async hook returning a value would."""
+    await asyncio.sleep(0)
+    return result
+
+
+@pytest.mark.parametrize("returned", ["value", "resolved"])
+@_VALUES
+async def test_run_hooks_async_refuses_value_from_before_hook(
+    result: object, returned: str
+) -> None:
+    """
+    A before hook returning, or resolving to, a value should raise TypeError naming it.
+
+    Given: A sync before hook returning a value, or an async one resolving to it
+    When: run_hooks_async runs a call
+    Then: TypeError names the hook and the value, and the call doesn't run
+    """
+    # Arrange
+    calls: list[str] = []
+
+    def before(*_: object) -> object:
+        return result if returned == "value" else _resolves_to(result)
+
+    async def call() -> None:
+        await asyncio.sleep(0)
+        calls.append("call")
+
+    hooks: Hooks[Any, Any] = Hooks(before=(before,))  # pyright: ignore[reportArgumentType]
+
+    # Act / Assert
+    with pytest.raises(TypeError, match=f"returned {result!r}, but a hook returns None"):
+        await run_hooks_async(hooks, _order_placed, _Order("lamp"), call)
+    assert calls == []
+
+
+@pytest.mark.parametrize("returned", ["value", "resolved"])
+@_VALUES
+async def test_run_hooks_async_logs_value_from_observing_hook(
+    result: object, returned: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    An observing hook returning, or resolving to, a value should be logged; the reply stands.
+
+    Given: Success and complete hooks returning a value, or resolving to it
+    When: run_hooks_async runs a call that returns
+    Then: The reply returns, and both hooks are logged as returning a value
+    """
+
+    # Arrange
+    def observe(*_: object) -> object:
+        return result if returned == "value" else _resolves_to(result)
+
+    async def call() -> str:
+        await asyncio.sleep(0)
+        return "reply"
+
+    hooks: Hooks[Any, Any] = Hooks(
+        success=(observe,),  # pyright: ignore[reportArgumentType]
+        complete=(observe,),  # pyright: ignore[reportArgumentType]
+    )
+
+    # Act
+    reply = await run_hooks_async(hooks, _order_placed, _Order("lamp"), call)
+
+    # Assert
+    assert reply == "reply"
+    assert caplog.text.count("but a hook returns None") == 2
 
 
 # endregion
