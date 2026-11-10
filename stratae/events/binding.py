@@ -66,6 +66,7 @@ print(inspect.signature(create_built_order))
 
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from functools import partial
 from inspect import Parameter, Signature, signature
 from types import NoneType
 from typing import Any, Literal, cast, overload
@@ -121,18 +122,15 @@ def _typed[F: Callable[..., Any]](bound: F, parameters: list[Parameter], event: 
     return bound
 
 
-def _emit_options(
-    serializer: Callable[[Any], Any] | None, hooks: Hooks[Any, Any] | None
-) -> dict[str, Any]:
+def _with_hooks[E: Callable[..., Any]](emitter: E, hooks: Hooks[Any, Any] | None) -> E:
     """
-    Return the keyword arguments a bound callable passes to its emitter.
+    Return the emitter a bound callable calls: `emitter`, with `hooks` given if there are any.
 
     `hooks` is passed only when given, so an emitter that doesn't support hooks still works
-    until someone binds with them, then refuses loudly.
+    until someone binds with them, then refuses loudly. Fixed when binding, so each emit
+    passes its options as plain keywords rather than unpacking a dict.
     """
-    if hooks is None:
-        return {"serializer": serializer}
-    return {"serializer": serializer, "hooks": hooks}
+    return emitter if hooks is None else cast(E, partial(emitter, hooks=hooks))
 
 
 @overload
@@ -194,18 +192,18 @@ def bind(
     :returns: A callable that dispatches through `emitter`.
     :raises TypeError: If `factory` is async.
     """
-    options = _emit_options(serializer, hooks)
+    emit = _with_hooks(emitter, hooks)
     if factory is None and event.is_signal:
 
         def signal() -> Any:
-            return emitter(event, config, _NO_PAYLOAD, **options)
+            return emit(event, config, _NO_PAYLOAD, serializer=serializer)
 
         return _typed(signal, [], event)
 
     if factory is None:
 
         def passthrough(payload: Any) -> Any:
-            return emitter(event, config, payload, **options)
+            return emit(event, config, payload, serializer=serializer)
 
         return _typed(passthrough, _payload_parameters(event), event)
 
@@ -213,7 +211,7 @@ def bind(
         raise TypeError(_SYNC_FACTORY_REQUIRED)
 
     def construct(*args: Any, **kwargs: Any) -> Any:
-        return emitter(event, config, factory(*args, **kwargs), **options)
+        return emit(event, config, factory(*args, **kwargs), serializer=serializer)
 
     return _typed(construct, _factory_parameters(factory), event)
 
@@ -275,18 +273,18 @@ def abind(
     :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
     :returns: An async callable that dispatches through `emitter`.
     """
-    options = _emit_options(serializer, hooks)
+    emit = _with_hooks(emitter, hooks)
     if factory is None and event.is_signal:
 
         async def signal() -> Any:
-            return await emitter(event, config, _NO_PAYLOAD, **options)
+            return await emit(event, config, _NO_PAYLOAD, serializer=serializer)
 
         return _typed(signal, [], event)
 
     if factory is None:
 
         async def passthrough(payload: Any) -> Any:
-            return await emitter(event, config, payload, **options)
+            return await emit(event, config, payload, serializer=serializer)
 
         return _typed(passthrough, _payload_parameters(event), event)
 
@@ -297,7 +295,7 @@ def abind(
             payload = await async_factory(*args, **kwargs)
         else:
             payload = factory(*args, **kwargs)
-        return await emitter(event, config, payload, **options)
+        return await emit(event, config, payload, serializer=serializer)
 
     return _typed(construct, _factory_parameters(factory), event)
 

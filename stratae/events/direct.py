@@ -94,9 +94,11 @@ scheduled shipment for order 1
 
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator
 from contextlib import nullcontext
-from typing import Any, ClassVar, Protocol, overload, override
+from inspect import markcoroutinefunction
+from types import CoroutineType
+from typing import Any, ClassVar, NoReturn, Protocol, overload, override
 
 from stratae._callables import is_async_callable
 from stratae.events._dispatch import (
@@ -160,6 +162,23 @@ class _AsyncSignalHandlerDecorator[R](Protocol):
     def __call__(self, fn: Callable[[], Awaitable[R]]) -> Handler[[], _AnyEvent, Awaitable[R]]: ...
     @overload
     def __call__(self, fn: Callable[[], R]) -> Handler[[], _AnyEvent, R]: ...
+
+
+class _Failed:
+    """An awaitable raising an error found while starting an emit, once it's awaited."""
+
+    __slots__ = ("_error",)
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def __await__(self) -> Generator[Any, Any, NoReturn]:
+        raise self._error
+
+
+async def _await[R](awaitable: Awaitable[R]) -> R:
+    """Await what a custom dispatcher returned, so an emit is always a coroutine."""
+    return await awaitable
 
 
 class Dispatch:
@@ -521,7 +540,8 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
     _defaults = _ASYNC_DEFAULTS
 
     @override
-    async def emit[S, R](
+    @markcoroutinefunction
+    def emit[S, R](
         self,
         event: EventType[S, R, Any, Any],
         config: None,  # noqa: S1172
@@ -529,12 +549,14 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         *,
         serializer: Callable[[S], Any] | None = None,  # noqa: S1172
         hooks: Hooks[S, R] | None = None,
-    ) -> R:
+    ) -> Coroutine[Any, Any, R]:
         """
-        Dispatch a payload to the event's handlers.
+        Dispatch a payload to the event's handlers, returning a coroutine to await.
 
         Pub/sub handler failures are raised together as an exception group. A responder's
-        exception propagates directly.
+        exception propagates directly. Nothing runs, and nothing is raised, until the
+        coroutine is awaited, as if this were an `async def`. It returns the dispatch's own
+        coroutine rather than one of its own around it, which saves a coroutine per emit.
 
         :param event: The event to dispatch.
         :param config: Unused.
@@ -546,7 +568,13 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         :raises MultipleRespondersError: If a request event has more than one responder.
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
-        return await self._emit(event, payload, hooks)
+        try:
+            dispatched = self._emit(event, payload, hooks)
+        except Exception as error:
+            return _await(_Failed(error))
+        if dispatched.__class__ is CoroutineType:
+            return dispatched
+        return _await(dispatched)
 
     @overload
     def handle[R](

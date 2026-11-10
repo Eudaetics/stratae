@@ -12,7 +12,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
 from contextvars import Context, copy_context
 from functools import singledispatch
-from typing import Any
+from typing import Any, cast
 
 from stratae.events.exceptions import (
     BaseHandlerErrors,
@@ -58,7 +58,7 @@ def dispatch_request[S, R](
     event: Request[S, R, Any], handlers: Collection[Handler[[S], Any, R]], payload: S
 ) -> R:
     """Call a request event's sole responder and return its reply."""
-    return only_responder(event, handlers)(payload)
+    return only_responder(event, handlers).call(payload)
 
 
 def dispatch_request_async[S, R](
@@ -66,8 +66,15 @@ def dispatch_request_async[S, R](
     handlers: Collection[Handler[[S], Any, R | Awaitable[R]]],
     payload: S,
 ) -> Awaitable[R]:
-    """Call a request event's sole responder, awaiting it if async."""
+    """
+    Call a request event's sole responder, returning an awaitable of its reply.
+
+    An async responder's own coroutine is returned, with nothing around it. A sync responder
+    still runs only when the result is awaited, as an async one does.
+    """
     responder = only_responder(event, handlers)
+    if responder.is_async:
+        return cast(Awaitable[R], responder.call(payload))
     return invoke(responder, payload)
 
 
@@ -83,7 +90,7 @@ def fan_out[S](
     exceptions: list[Exception] = []
     for handler in handlers:
         try:
-            copy_context().run(handler, payload)
+            copy_context().run(handler.call, payload)
         except Exception as exc:
             exceptions.append(exc)
     if exceptions:
@@ -136,7 +143,7 @@ def _run_sync_handlers(
     """Call each sync handler in its own copy of the context, collecting its failure."""
     for handler in handlers:
         try:
-            copy_context().run(handler, payload)
+            copy_context().run(handler.call, payload)
         except _HANDLER_FAILURES as failure:
             failures.append(failure)
 
@@ -151,7 +158,7 @@ async def _await_lone_handler(
     cancellation, so it propagates rather than being collected.
     """
     try:
-        await _InContext(handler(payload), copy_context())
+        await _InContext(handler.call(payload), copy_context())
     except _HANDLER_FAILURES as failure:
         task = asyncio.current_task()
         if isinstance(failure, asyncio.CancelledError) and task is not None and task.cancelling():
@@ -167,7 +174,7 @@ async def _await_handlers(
         await _await_lone_handler(handlers[0], payload, failures)
     elif handlers:
         results = await asyncio.gather(
-            *(handler(payload) for handler in handlers), return_exceptions=True
+            *(handler.call(payload) for handler in handlers), return_exceptions=True
         )
         failures.extend(result for result in results if isinstance(result, BaseException))
 
