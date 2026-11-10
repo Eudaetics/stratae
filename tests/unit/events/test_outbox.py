@@ -37,6 +37,9 @@ OutboxRelay:
 - A failed publish is an attempt: the record is rescheduled with its error, after a delay
   that doubles up to a cap, and isn't claimed before then.
 - Once out of attempts, a record is parked as failed with its error; without a limit, never.
+- A failed publish that will be retried holds back the rest of its key's records in the
+  batch, unchanged and counting no attempt; once the retry is due, the key's records go out
+  in order. A record parked as failed holds nothing back.
 - An unknown route fails the record's attempt.
 - A publisher outage isn't an attempt: the rest of the batch is put back unchanged, and
   what was sent before it is marked sent.
@@ -763,6 +766,72 @@ async def test_out_of_attempts_parked_as_failed(outbox: OutboxProducer, store: I
     assert (failed.attempts, failed.error) == (1, "RuntimeError: refused")
     assert [r.attempts for r in unlimited_store.pending()] == [1]
     assert unlimited_store.failed() == []
+
+
+async def test_failure_holds_back_rest_of_its_key(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    A failed publish should hold back the rest of its key's records until it's retried.
+
+    Given: Records for keys a, a, b, a in that order, and a publisher that fails the first
+    When: The relay runs, runs again before the retry is due, then once it's due
+    Then: Only b is published at first, and the held records count no attempt; nothing more
+        goes out early; once due, the three a records are published in order
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    start = datetime.now(UTC) - timedelta(seconds=10)
+    keys = ["a", "a", "b", "a"]
+    records = [
+        _record(store, index, key=key, created_at=start + timedelta(seconds=index))
+        for index, key in enumerate(keys)
+    ]
+    publisher = _Publisher(RuntimeError("refused"))
+    relay = OutboxRelay(store, publisher, outbox, retry_delay=60)
+
+    # Act
+    await relay.run_once()
+    first_round = [payload for _, _, payload, _ in publisher.published]
+    held = {record.id: record.attempts for record in store.pending()}
+    await relay.run_once()
+    early = len(publisher.published)
+    failed = next(record for record in store.pending() if record.id == records[0].id)
+    store.reschedule(replace(failed, available_at=failed.created_at))
+    await relay.run_once()
+
+    # Assert
+    assert first_round == [b"2"]
+    assert held == {records[0].id: 1, records[1].id: 0, records[3].id: 0}
+    assert early == 1
+    assert [payload for _, _, payload, _ in publisher.published] == [b"2", b"0", b"1", b"3"]
+
+
+async def test_parked_failure_holds_nothing_back(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    A record parked as failed shouldn't hold back the later records with its key.
+
+    Given: Two records with the same key, a relay allowing one attempt, and a publisher that
+        fails the first
+    When: The relay runs
+    Then: The first is parked as failed, and the second is published in the same batch
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    start = datetime.now(UTC) - timedelta(seconds=10)
+    first = _record(store, 1, key="a", created_at=start)
+    _record(store, 2, key="a", created_at=start + timedelta(seconds=1))
+    publisher = _Publisher(RuntimeError("refused"))
+    relay = OutboxRelay(store, publisher, outbox, max_attempts=1)
+
+    # Act
+    await relay.run_once()
+
+    # Assert
+    assert [record.id for record in store.failed()] == [first.id]
+    assert [payload for _, _, payload, _ in publisher.published] == [b"2"]
 
 
 async def test_unknown_route_fails_attempt(outbox: OutboxProducer, store: InMemoryOutboxStore):

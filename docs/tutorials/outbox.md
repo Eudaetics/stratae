@@ -16,14 +16,26 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Sequence
 from uuid import UUID
 
-from sqlalchemy import JSON, DateTime, LargeBinary, String, Text, delete, or_, select, update
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    LargeBinary,
+    String,
+    Text,
+    delete,
+    exists,
+    or_,
+    select,
+    tuple_,
+    update,
+)
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, aliased, mapped_column
 from sqlalchemy.pool import StaticPool
 
 from stratae.events.outbox import OutboxRecord
@@ -116,6 +128,8 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 `add` puts the row into the unit of work's session. It's written when that session commits, and discarded if it rolls back. The other four methods belong to the relay. Each runs in a short transaction of its own.
 
+`claim` keeps records with the same key in order. It locks the due, unclaimed rows, skipping any another relay has locked. Then it leaves out each keyed row whose key has an earlier row still pending outside this claim. That earlier row may be waiting for a retry, or claimed by another relay. A lock hides a row from the first query, but not from the second, so two relays can't split a key between them. Rows are ordered by creation time, then by id. Time-ordered ids, such as `uuid7`'s, make that the order they were written in, even when two share a timestamp.
+
 ````{example} An outbox store on SQLAlchemy
 ```{code-block} python
 class SqlAlchemyOutboxStore:
@@ -141,15 +155,33 @@ class SqlAlchemyOutboxStore:
                 OutboxRow.available_at <= now,
                 or_(OutboxRow.claimed_until.is_(None), OutboxRow.claimed_until <= now),
             )
-            .order_by(OutboxRow.created_at)
+            .order_by(OutboxRow.created_at, OutboxRow.id)
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
         async with (await self._sessionmaker())() as session, session.begin():
             rows = (await session.scalars(due)).all()
-            for row in rows:
+            held = set(await session.scalars(self._held_back(rows)))
+            claimed = [row for row in rows if row.id not in held]
+            for row in claimed:
                 row.claimed_until = now + self._lease
-            return [row.to_record() for row in rows]
+            return [row.to_record() for row in claimed]
+
+    def _held_back(self, rows: Sequence[OutboxRow]) -> Any:
+        # The keyed rows with an earlier pending row of their key outside this claim:
+        # waiting for a retry, or claimed or locked by another relay.
+        earlier = aliased(OutboxRow)
+        ids = [row.id for row in rows]
+        return select(OutboxRow.id).where(
+            OutboxRow.id.in_([row.id for row in rows if row.key is not None]),
+            exists().where(
+                earlier.key == OutboxRow.key,
+                ~earlier.failed,
+                earlier.id.not_in(ids),
+                tuple_(earlier.created_at, earlier.id)
+                < tuple_(OutboxRow.created_at, OutboxRow.id),
+            ),
+        )
 
     async def mark_sent(self, records: Sequence[OutboxRecord]) -> None:
         ids = [record.id for record in records]

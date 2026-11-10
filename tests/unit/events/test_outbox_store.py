@@ -15,6 +15,11 @@ This test suite verifies the following behaviors:
 - A sent record is never claimed again.
 - A rescheduled record keeps its new attempts and error, and is claimable once due.
 - A failed record is never claimed again.
+- A keyed record isn't claimed while an earlier pending record with its key is outside the
+  claim: waiting for a retry, or claimed by an earlier claim. Records with other keys, or no
+  key, are claimed meanwhile.
+- Records with the same key come out in the order they were created, together in one claim.
+- Sending or parking the earlier record frees the later ones with its key.
 """
 
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
@@ -311,3 +316,99 @@ async def test_failed_record_never_claimed_again(harness: _Harness):
 
     # Assert
     assert await _claim(store) == []
+
+
+async def test_keyed_record_waits_for_earlier_retry(harness: _Harness):
+    """
+    A keyed record shouldn't be claimed while an earlier one with its key waits for a retry.
+
+    Given: A record not due for an hour, a later due record with the same key, a due record
+        with another key, and a due record with no key behind a record with no key not due
+    When: Records are claimed
+    Then: Only the records with the other key and with no key are claimed
+    """
+    # Arrange
+    store = harness.store()
+    later = datetime.now(UTC) + timedelta(hours=1)
+    retrying = _record(1, key="order-7", available_at=later)
+    waiting = _record(2, key="order-7")
+    other = _record(3, key="order-8")
+    unkeyed_later = _record(4, key=None, available_at=later)
+    unkeyed = _record(5, key=None)
+    async with _added(harness, store, retrying, waiting, other, unkeyed_later, unkeyed):
+        pass
+
+    # Act
+    claimed = await _claim(store)
+
+    # Assert
+    assert claimed == [other, unkeyed]
+
+
+async def test_keyed_record_waits_for_earlier_claim(harness: _Harness):
+    """
+    A keyed record shouldn't be claimed while an earlier one with its key is claimed elsewhere.
+
+    Given: Two records with the same key, and one with another key
+    When: One record is claimed, then the rest
+    Then: The first claim takes the oldest; the second takes only the other key's record
+    """
+    # Arrange
+    store = harness.store()
+    first, second = _record(1, key="order-7"), _record(2, key="order-7")
+    other = _record(3, key="order-8")
+    async with _added(harness, store, first, second, other):
+        pass
+
+    # Act
+    claims = [await _claim(store, 1), await _claim(store)]
+
+    # Assert
+    assert claims == [[first], [other]]
+
+
+async def test_same_key_claimed_in_creation_order(harness: _Harness):
+    """
+    Records with the same key should be claimed together, in the order they were created.
+
+    Given: Three due records with the same key, added out of order
+    When: Records are claimed
+    Then: All three are claimed, oldest first
+    """
+    # Arrange
+    store = harness.store()
+    first, second, third = (_record(order, key="order-7") for order in (1, 2, 3))
+    async with _added(harness, store, third, first, second):
+        pass
+
+    # Act
+    claimed = await _claim(store)
+
+    # Assert
+    assert claimed == [first, second, third]
+
+
+@pytest.mark.parametrize("outcome", ["sent", "parked"])
+async def test_settled_record_frees_its_key(harness: _Harness, outcome: str):
+    """
+    Sending or parking a record should free the later records with its key.
+
+    Given: Two records with the same key, the first claimed alone
+    When: The first is marked sent, or parked as failed
+    Then: The second is claimed next
+    """
+    # Arrange
+    store = harness.store()
+    first, second = _record(1, key="order-7"), _record(2, key="order-7")
+    async with _added(harness, store, first, second):
+        pass
+    (claimed,) = await _claim(store, 1)
+
+    # Act
+    if outcome == "sent":
+        await _call(store.mark_sent([claimed]))
+    else:
+        await _call(store.mark_failed(replace(claimed, attempts=10, error="gone")))
+
+    # Assert
+    assert await _claim(store) == [second]

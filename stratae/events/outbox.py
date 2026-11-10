@@ -24,9 +24,16 @@ The guarantees:
 
 - **At-least-once delivery.** A relay that stops after a publish but before marking it sent
   publishes it again, with the same message id. Consumers deduplicate on it.
-- **No ordering promise.** Records are claimed oldest first, so order usually holds, but
-  retries and several relays reorder them. An {py:class}`OutboxConfig` `key` lets a store
-  that supports it keep order per key.
+- **Order per key.** Records with the same {py:class}`OutboxConfig` `key` are published in
+  the order they were written, across retries and several relays. A record waiting for a
+  retry holds back the later ones with its key. Once it's parked as failed, it stops holding
+  them back, as a dead-letter queue does, so a record that can't be sent never stops its key
+  for good. Records with no key, or different keys, have no ordering promise: they're
+  claimed oldest first, but retries and several relays reorder them.
+- **Delivery can still reorder.** The outbox orders what it publishes, not what consumers
+  see. A consumer handling several messages at once, several consumers on one queue, and
+  retry queues all reorder delivery. A consumer that needs order per key has to keep it
+  too.
 - **Nothing lost.** A record is either sent, or parked as failed with its reason once it
   has failed `max_attempts` times. A broker outage never counts as an attempt.
 
@@ -91,6 +98,7 @@ from inspect import isawaitable
 from types import MappingProxyType
 from typing import (
     Any,
+    Literal,
     Protocol,
     cast,
     overload,
@@ -119,6 +127,12 @@ _ROUTE_TAKEN = (
 _UNKNOWN_ROUTE = "no outbox binding for route {!r}; bind it before the relay starts"
 
 _ALREADY_RUNNING = "the relay is already running; exit it before entering it again"
+
+type _Outcome = Literal["sent", "retrying", "parked", "outage"]
+"""
+What publishing one record came to. A record being retried holds back the later records of
+its key; an outage holds back the rest of the batch.
+"""
 
 _OUTAGES = (NotConnectedError, ConnectionError)
 """Errors that mean the publisher can't reach its broker, so no record is at fault."""
@@ -178,7 +192,10 @@ class OutboxRecord:
     """When it can next be claimed. Later than `created_at` after a failed attempt."""
 
     key: str | None = None
-    """An ordering key, for a store that keeps order per key."""
+    """
+    An ordering key. Records with the same key are published in the order they were
+    written; see {py:meth}`OutboxStore.claim`.
+    """
 
     attempts: int = 0
     """How many times publishing it has failed."""
@@ -213,6 +230,12 @@ class OutboxStore(Protocol):
 
         A claimed record isn't claimed again until it's marked or rescheduled, or until a
         lease the store chooses runs out, so a relay that dies doesn't strand it.
+
+        A record with a `key` is claimed only if every earlier record with its key that's
+        still pending, neither sent nor parked as failed, is in the same claim. So a record
+        waiting for a retry, or claimed by another relay, holds back the later ones with its
+        key. Earlier means created first. A store breaks ties in creation time some fixed
+        way, such as by id, which time-ordered ids make the order they were written in.
         """
         ...
 
@@ -468,7 +491,9 @@ class OutboxRelay:
     A publish that fails for its own record is an attempt. The record is retried after a
     growing delay, then parked as failed once it reaches `max_attempts`. A publish that fails
     because the publisher can't reach its broker isn't an attempt: the relay puts the batch
-    back as it was and waits for the broker.
+    back as it was and waits for the broker. A record that will be retried holds back the rest
+    of its key's records in the batch: they go back unchanged, without counting an attempt, so
+    none is published before it. One parked as failed holds nothing back.
     """
 
     def __init__(
@@ -564,28 +589,44 @@ class OutboxRelay:
         self._wake.clear()
 
     async def _relay_batch(self) -> tuple[int, int, bool]:
-        """Relay one batch, returning how many were claimed and sent, and if it hit an outage."""
+        """
+        Relay one batch, returning how many were claimed and sent, and if it hit an outage.
+
+        A record goes back unchanged, counting no attempt, once the broker is out of reach, or
+        while a record of its key is being retried.
+        """
         records = await _settle(self._store.claim(self._batch_size))
         sent: list[OutboxRecord] = []
+        retrying: set[str] = set()
         outage = False
         try:
-            for index, record in enumerate(records):
-                try:
-                    await self._publish(record)
-                except _OUTAGES:
-                    _log.warning("outbox relay can't reach the broker; retrying when it can")
-                    for waiting in records[index:]:
-                        await _settle(self._store.reschedule(waiting))
-                    outage = True
-                    break
-                except Exception as exc:
-                    await self._failed(record, exc)
-                else:
+            for record in records:
+                if outage or record.key in retrying:
+                    await _settle(self._store.reschedule(record))
+                    continue
+                outcome = await self._attempt(record)
+                if outcome == "sent":
                     sent.append(record)
+                elif outcome == "outage":
+                    outage = True
+                    await _settle(self._store.reschedule(record))
+                elif outcome == "retrying" and record.key is not None:
+                    retrying.add(record.key)
         finally:
             if sent:
                 await _settle(self._store.mark_sent(sent))
         return len(records), len(sent), outage
+
+    async def _attempt(self, record: OutboxRecord) -> _Outcome:
+        """Publish one record, and return what it came to, settling a failed attempt."""
+        try:
+            await self._publish(record)
+        except _OUTAGES:
+            _log.warning("outbox relay can't reach the broker; retrying when it can")
+            return "outage"
+        except Exception as exc:
+            return await self._failed(record, exc)
+        return "sent"
 
     async def _publish(self, record: OutboxRecord) -> None:
         """Publish a record under its envelope and headers, through its route's binding."""
@@ -602,7 +643,7 @@ class OutboxRelay:
             headers=_added(record.headers),
         )
 
-    async def _failed(self, record: OutboxRecord, exc: Exception) -> None:
+    async def _failed(self, record: OutboxRecord, exc: Exception) -> _Outcome:
         """Count a failed attempt: retry the record later, or park it once out of attempts."""
         attempts = record.attempts + 1
         failed = replace(record, attempts=attempts, error=f"{type(exc).__name__}: {exc}")
@@ -614,11 +655,12 @@ class OutboxRelay:
                 exc_info=exc,
             )
             await _settle(self._store.mark_failed(failed))
-            return
+            return "parked"
         delay = min(self._retry_delay * 2 ** (attempts - 1), self._max_retry_delay)
         _log.warning("outbox record %s failed; retrying in %.0fs", record.id, delay, exc_info=exc)
         retry_at = _now() + timedelta(seconds=delay)
         await _settle(self._store.reschedule(replace(failed, available_at=retry_at)))
+        return "retrying"
 
 
 class InMemoryOutboxStore:
@@ -681,13 +723,25 @@ class InMemoryOutboxStore:
             self._keep([record])
 
     def claim(self, limit: int) -> Sequence[OutboxRecord]:
-        """Claim up to `limit` due, unleased, pending records, oldest first."""
+        """
+        Claim up to `limit` due, unleased, pending records, oldest first.
+
+        A keyed record waits while an earlier pending record with its key isn't claimed with
+        it. Ties in creation time keep the order the records were added in.
+        """
         now = _now()
-        due = [
-            record
-            for record in self.pending()
-            if record.available_at <= now and self._leased.get(record.id, now) <= now
-        ][:limit]
+        due: list[OutboxRecord] = []
+        held: set[str] = set()
+        for record in self.pending():
+            if len(due) == limit:
+                break
+            key = record.key
+            if key is not None and key in held:
+                continue
+            if record.available_at <= now and self._leased.get(record.id, now) <= now:
+                due.append(record)
+            elif key is not None:
+                held.add(key)
         for record in due:
             self._leased[record.id] = now + self._lease
         return due
