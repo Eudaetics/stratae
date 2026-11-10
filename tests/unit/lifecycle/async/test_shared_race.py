@@ -296,7 +296,7 @@ def test_shared_scope_waiter_on_another_threads_loop_is_woken(debug: bool):
 
         asyncio.run(main(), debug=debug)
 
-    activation = scope.activate()
+    activation = asyncio.run(scope.activate())
     threads = [
         threading.Thread(target=run, args=(name,), daemon=True) for name in ("owner", "waiter")
     ]

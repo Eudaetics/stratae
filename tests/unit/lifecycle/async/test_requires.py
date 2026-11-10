@@ -11,7 +11,7 @@ from stratae.lifecycle.exceptions import ScopeActivationError
 from stratae.lifecycle.scope import AsyncScope
 
 
-def test_activate_without_active_parent_raises():
+async def test_activate_without_active_parent_raises():
     """
     Activating a scope with an inactive required parent raises.
 
@@ -28,7 +28,7 @@ def test_activate_without_active_parent_raises():
         ScopeActivationError,
         match=re.escape("Cannot activate 'request': required scope 'application' is not active."),
     ):
-        child.activate()
+        await child.activate()
 
 
 async def test_activate_with_active_parent_succeeds():
@@ -59,8 +59,8 @@ async def test_deactivate_parent_while_child_active_raises():
     # Arrange
     parent = AsyncScope("application", "shared")
     child = AsyncScope("request", requires=parent)
-    parent_activation = parent.activate()
-    child.activate()
+    parent_activation = await parent.activate()
+    await child.activate()
 
     # Act & Assert
     with pytest.raises(
@@ -82,8 +82,8 @@ async def test_deactivate_parent_after_child_deactivated_succeeds():
     # Arrange
     parent = AsyncScope("application", "shared")
     child = AsyncScope("request", requires=parent)
-    parent_activation = parent.activate()
-    child_activation = child.activate()
+    parent_activation = await parent.activate()
+    child_activation = await child.activate()
     await child.deactivate(child_activation)
 
     # Act
@@ -105,9 +105,9 @@ async def test_multiple_children_of_same_parent():
     parent = AsyncScope("application", "shared")
     child_a = AsyncScope("session", requires=parent)
     child_b = AsyncScope("worker", requires=parent)
-    parent_activation = parent.activate()
-    child_a_activation = child_a.activate()
-    child_b.activate()
+    parent_activation = await parent.activate()
+    child_a_activation = await child_a.activate()
+    await child_b.activate()
 
     # Act
     await child_a.deactivate(child_a_activation)
@@ -140,7 +140,7 @@ async def test_three_level_chain_activates_and_deactivates_in_order(
     assert not request.is_active()
 
 
-def test_three_level_chain_middle_scope_activate_requires_immediate_parent(
+async def test_three_level_chain_middle_scope_activate_requires_immediate_parent(
     async_scope_chain: tuple[AsyncScope, AsyncScope, AsyncScope],
 ):
     """
@@ -156,7 +156,7 @@ def test_three_level_chain_middle_scope_activate_requires_immediate_parent(
 
     # Act & Assert
     with pytest.raises(ScopeActivationError, match="required scope 'application' is not active"):
-        session.activate()
+        await session.activate()
 
 
 async def test_three_level_chain_out_of_order_deactivation_blocked(
@@ -172,9 +172,9 @@ async def test_three_level_chain_out_of_order_deactivation_blocked(
     """
     # Arrange
     application, session, request = async_scope_chain
-    application.activate()
-    session_activation = session.activate()
-    request.activate()
+    await application.activate()
+    session_activation = await session.activate()
+    await request.activate()
 
     # Act & Assert
     with pytest.raises(ScopeActivationError, match="a scope requiring it is still active"):
@@ -209,7 +209,7 @@ async def test_deactivate_child_with_resource_cleans_up_exit_stack(storage: str)
 
     # Act
     async with parent:
-        child_activation = child.activate()
+        child_activation = await child.activate()
         await get_resource()
         await child.deactivate(child_activation)
 
@@ -229,8 +229,8 @@ async def test_deactivate_raises_when_own_sparse_scope_has_active_dependent():
     # Arrange
     parent = AsyncScope("application", "shared", "sparse")
     child = AsyncScope("request", requires=parent)
-    parent_activation = parent.activate()
-    child.activate()
+    parent_activation = await parent.activate()
+    await child.activate()
 
     # Act & Assert
     with pytest.raises(
@@ -257,7 +257,7 @@ async def test_deactivate_child_without_resource_returns_none(storage: str):
 
     # Act
     async with parent:
-        child_activation = child.activate()
+        child_activation = await child.activate()
         await child.deactivate(child_activation)
 
     # Assert
@@ -276,10 +276,10 @@ async def test_failed_activate_does_not_count_as_live_dependent():
     # Arrange
     parent = AsyncScope("application", "shared")
     child = AsyncScope("worker", "shared", requires=parent)
-    parent_activation = parent.activate()
-    child_activation = child.activate()
+    parent_activation = await parent.activate()
+    child_activation = await child.activate()
     with pytest.raises(ScopeActivationError, match="already active"):
-        child.activate()
+        await child.activate()
     await child.deactivate(child_activation)
 
     # Act
@@ -301,7 +301,7 @@ async def test_parent_cannot_deactivate_while_child_is_mid_activation():
     # Arrange
     parent = AsyncScope("application", "shared")
     child = AsyncScope("worker", "shared", requires=parent)
-    parent_activation = parent.activate()
+    parent_activation = await parent.activate()
     refused: list[ScopeActivationError] = []
 
     class InterruptedVar(SharedVar):

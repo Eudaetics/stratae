@@ -96,6 +96,33 @@ class AsyncGeneratorInSyncScopeError(LifecycleConfigurationError, TypeError):
         )
 
 
+class MiddlewareNotTupleError(LifecycleConfigurationError, TypeError):
+    """Raised when a scope's `middleware` is a single callable or a string, not a tuple."""
+
+    def __init__(self, name: str) -> None:
+        """:param name: The scope's name."""
+        super().__init__(
+            f"Scope {name!r} middleware= takes a tuple of middleware, e.g. middleware=(timed,)"
+        )
+
+
+class MiddlewareNotEnterableError(LifecycleConfigurationError, TypeError):
+    """Raised when a scope's middleware is a class the scope can't enter."""
+
+    def __init__(self, name: str, middleware: object) -> None:
+        """
+        Name the scope and the middleware.
+
+        :param name: The scope's name.
+        :param middleware: The middleware class.
+        """
+        super().__init__(
+            f"Scope {name!r} can't enter {middleware!r}: it isn't a context manager this "
+            "scope supports. A Scope enters sync context managers; an AsyncScope enters "
+            "sync or async ones."
+        )
+
+
 class CacheKeyConflictError(LifecycleConfigurationError):
     """Raised when a cache decorator is given both `cache_key` and `ignore_params`."""
 

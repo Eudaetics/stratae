@@ -47,7 +47,7 @@ class ActivatingRoute(BaseRoute):
     async def handle(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
         """Handle a request or connection with the scope active, closing it unless closed."""
         lifecycle_scope = self.activates
-        scope[_ACTIVATION_KEY] = lifecycle_scope.activate()
+        scope[_ACTIVATION_KEY] = await lifecycle_scope.activate()
         try:
             await super().handle(scope, receive, send)
         except BaseException as exc:

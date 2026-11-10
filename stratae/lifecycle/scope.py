@@ -31,6 +31,96 @@ event loop on another thread is computing raises
 A scope can require a parent scope with `requires`; activating it raises unless the parent
 is active.
 
+Work that belongs around a whole activation, such as timing it or recording how it ended,
+goes in the scope's `middleware`: a tuple of callables, each given the scope and returning a
+context manager, as an event bus's middleware is. Each activation enters the context managers
+in order once the scope is active, so they can use its cached functions. They're held as the
+activation's first resources, so it exits them last, in reverse, after its other resources
+have closed. An exit sees the activation's error, including one from a resource's cleanup,
+such as a failed commit, and can suppress it, as an outer `with` statement can. An error an
+exit raises follows the rule for a resource's cleanup: alone after a clean activation, or
+grouped with the activation's error. One that raises on entry refuses the activation: the
+ones already entered are exited with that error, and it propagates. A {py:class}`Scope`
+enters sync context managers. An {py:class}`AsyncScope` enters sync or async ones, which is
+why its `activate()` is awaited, as its `deactivate()` is.
+
+````{example} Timing each unit of work, and reporting how it ended
+```{code-block} python
+from contextlib import contextmanager
+from stratae.lifecycle import Scope
+
+clock = iter([10.0, 10.25, 20.0, 20.5])  # stands in for time.monotonic
+
+@contextmanager
+def timed(scope: Scope):
+    started = next(clock)
+    try:
+        yield
+    except Exception as error:
+        print(f"{scope.name} failed after {next(clock) - started:.2f}s: {error}")
+        raise
+    print(f"{scope.name} took {next(clock) - started:.2f}s")
+
+work = Scope("work", middleware=(timed,))
+
+with work:
+    pass
+
+try:
+    with work:
+        raise LookupError("out of stock")
+except LookupError:
+    pass
+```
+```{output}
+work took 0.25s
+work failed after 0.50s: 'out of stock'
+```
+````
+
+Work that should only follow a commit belongs to the resource that commits, since only it
+knows the commit succeeded. Code after a resource's `yield` runs only when the activation
+ends cleanly, so the resource can run what was registered with it there.
+
+````{example} Logging an order only once its unit of work commits
+```{code-block} python
+from collections.abc import Callable
+from stratae.lifecycle import Scope
+
+work = Scope("work")
+
+class UnitOfWork:
+    def __init__(self) -> None:
+        self.after_commit: list[Callable[[], None]] = []
+
+@work.cache()
+def unit_of_work():
+    unit = UnitOfWork()
+    yield unit
+    print("committed")
+    for callback in unit.after_commit:
+        callback()
+
+def place_order(item: str) -> None:
+    unit_of_work().after_commit.append(lambda: print(f"order placed: {item}"))
+    if item == "unicorn":
+        raise LookupError("out of stock")
+
+with work:
+    place_order("lamp")
+
+try:
+    with work:
+        place_order("unicorn")
+except LookupError:
+    pass
+```
+```{output}
+committed
+order placed: lamp
+```
+````
+
 ````{example} Three scope tiers working together: application, request, and block
 ```{code-block} python
 import asyncio
@@ -99,18 +189,21 @@ request 2 block 4: logging 102
 """
 
 import threading
-from collections.abc import Callable, Hashable
+from collections.abc import AsyncGenerator, Callable, Generator, Hashable
+from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from types import TracebackType
-from typing import Any, Literal, NoReturn, cast, get_args
+from typing import Any, ClassVar, Literal, NoReturn, cast, get_args
 
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
 from stratae.lifecycle._slots import ScopeVar, SlotStorage, SlotStore
-from stratae.lifecycle._stack import aclose, close
+from stratae.lifecycle._stack import aclose, close, enter_async_generator, enter_generator
 from stratae.lifecycle.exceptions import (
     AlreadyDeactivatedError,
     CacheKeyConflictError,
     DependentScopeActiveError,
     InvalidScopeOptionError,
+    MiddlewareNotEnterableError,
+    MiddlewareNotTupleError,
     NothingToDeactivateError,
     RequiredScopeInactiveError,
     SharedRequiresContextError,
@@ -120,6 +213,14 @@ from stratae.lifecycle.exceptions import (
 
 IsolationType = Literal["shared", "context"]
 StorageType = Literal["dense", "sparse"]
+
+type ScopeMiddleware = Callable[["Scope"], AbstractContextManager[object]]
+"""Given the scope, returns the sync context manager to enter around one of its activations."""
+
+type AsyncScopeMiddleware = Callable[
+    ["AsyncScope"], AbstractContextManager[object] | AbstractAsyncContextManager[object]
+]
+"""Given the scope, returns the context manager, sync or async, to enter around an activation."""
 
 
 def _validate_types(name: str, isolation: IsolationType, storage: StorageType) -> None:
@@ -134,23 +235,71 @@ def _validate_threads(name: str, isolation: IsolationType, threads: bool) -> Non
         raise SharedScopeThreadsError(name)
 
 
-def _validate_requires(name: str, isolation: IsolationType, requires: "BaseScope | None") -> None:
+def _validate_requires(
+    name: str, isolation: IsolationType, requires: "BaseScope[Any] | None"
+) -> None:
     if requires and isolation == "shared" and requires.isolation == "context":
         raise SharedRequiresContextError(name, requires.name)
 
 
-class BaseScope:
+def _enterable(kind: type, asynchronous: bool) -> bool:
+    """Whether a scope can enter a context manager of type `kind`."""
+    if asynchronous and hasattr(kind, "__aenter__") and hasattr(kind, "__aexit__"):
+        return True
+    return hasattr(kind, "__enter__") and hasattr(kind, "__exit__")
+
+
+def _validate_middleware[M](
+    name: str, middleware: tuple[M, ...], asynchronous: bool
+) -> tuple[M, ...]:
+    """
+    Return the middleware as a tuple, refusing a lone callable and a class it can't enter.
+
+    Only a class can be checked before it's called; any other callable is checked on each
+    activation, when entering what it returns fails.
+    """
+    if callable(middleware) or isinstance(middleware, str):
+        raise MiddlewareNotTupleError(name)
+    frozen = tuple(middleware)
+    for item in frozen:
+        if isinstance(item, type) and not _enterable(item, asynchronous):
+            raise MiddlewareNotEnterableError(name, item)
+    return frozen
+
+
+def _held(manager: AbstractContextManager[object]) -> Generator[None, None, None]:
+    """
+    Hold a middleware's context manager entered, as a resource of the activation.
+
+    Entered with the activation, it sits beneath every resource the activation enters later,
+    so closing the activation exits it last, with the activation's error, as nested `with`
+    statements would.
+    """
+    with manager:
+        yield
+
+
+async def _held_async(manager: AbstractAsyncContextManager[object]) -> AsyncGenerator[None]:
+    """Hold an async middleware's context manager entered, as {py:func}`_held` does."""
+    async with manager:
+        yield
+
+
+class BaseScope[M]:
     """
     Shared state and validation behind Scope and AsyncScope.
 
-    See {py:class}`Scope` and {py:class}`AsyncScope` for the concrete, usable classes.
+    See {py:class}`Scope` and {py:class}`AsyncScope` for the concrete, usable classes. `M` is
+    the kind of middleware the scope takes.
     """
 
     __slots__ = (
         "_isolation",
         "_lock",
+        "_middleware",
         "_new_slots",
         "_parent_lock",
+        "_plain",
         "_requires",
         "_slots",
         "_storage",
@@ -162,7 +311,12 @@ class BaseScope:
     _isolation: IsolationType
     _storage: StorageType
     _threads: bool
-    _requires: "BaseScope | None"
+    _requires: "BaseScope[Any] | None"
+    _middleware: tuple[M, ...]
+    _plain: bool
+    """Whether activation is only setting the scope active: no parent to count, no middleware."""
+    _asynchronous: ClassVar[bool]
+    """Whether the scope can enter async context managers."""
     _slots: SlotStore
     _var: ScopeVar
     _new_slots: Callable[[], SlotStorage]
@@ -174,8 +328,9 @@ class BaseScope:
         name: str,
         isolation: IsolationType = "context",
         storage: StorageType = "dense",
-        requires: "BaseScope | None" = None,
+        requires: "BaseScope[Any] | None" = None,
         threads: bool = False,
+        middleware: tuple[M, ...] = (),
     ) -> None:
         """
         Create a scope.
@@ -189,12 +344,17 @@ class BaseScope:
             scope can't require a context scope.
         :param threads: Compute each entry once even when threads share an activation of this
             context scope. Slows each entry's first computation.
+        :param middleware: Callables each returning a context manager to enter around every
+            activation, outermost first. Each is called with the scope. See the module docs.
         :raises LifecycleConfigurationError: If `isolation` or `storage` is invalid, a shared
-            scope requires a context scope, or a shared scope takes `threads=True`.
+            scope requires a context scope, a shared scope takes `threads=True`, `middleware`
+            isn't a tuple, or a middleware class isn't a context manager the scope can enter.
         """
         _validate_types(name, isolation, storage)
         _validate_threads(name, isolation, threads)
         _validate_requires(name, isolation, requires)
+        self._middleware = _validate_middleware(name, middleware, self._asynchronous)
+        self._plain = requires is None and not self._middleware
 
         self.name = name
         self._isolation = isolation
@@ -227,7 +387,12 @@ class BaseScope:
         return self._threads
 
     @property
-    def requires(self) -> "BaseScope | None":
+    def middleware(self) -> tuple[M, ...]:
+        """The middleware entered around each activation, outermost first."""
+        return self._middleware
+
+    @property
+    def requires(self) -> "BaseScope[Any] | None":
         """The scope that must be active before this one can activate, if any."""
         return self._requires
 
@@ -383,10 +548,12 @@ class AsyncActivation:
         return await self.scope.deactivate(self, exc)
 
 
-class Scope(BaseScope):
+class Scope(BaseScope[ScopeMiddleware]):
     """A sync-flavored scope - activated with `with`, caches sync functions."""
 
     __slots__ = ()
+
+    _asynchronous = False
 
     def __enter__(self) -> None:
         """
@@ -394,13 +561,15 @@ class Scope(BaseScope):
 
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        # Inlined _activate for a scope without a parent: `with scope:` is the hot path.
-        if self._requires is None:
+        # Inlined _activate for a plain scope: `with scope:` is the hot path.
+        if self._plain:
             slots = self._new_slots()
             slots[0] = []  # slot 0: entered resources
             slots[2] = self._var.set(slots)  # slot 2: reset token
         else:
-            self._activate()
+            slots = self._activate()
+            if self._middleware:
+                self._enter_middleware(slots)
 
     def __exit__(
         self,
@@ -408,7 +577,7 @@ class Scope(BaseScope):
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool | None:
-        """Deactivate this scope's current activation, closing its entered resources."""
+        """Deactivate this scope's current activation, closing its resources, then middleware."""
         # Inlined deactivate: `with scope:` is the hot path.
         slots = self._end(None)
         contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
@@ -419,16 +588,35 @@ class Scope(BaseScope):
             if parent_slots is not None:
                 _release(parent_slots, self._parent_lock)
 
+    def _enter_middleware(self, slots: SlotStorage) -> None:
+        """
+        Enter the middleware around a new activation, as its first resources.
+
+        One that raises refuses the activation: it ends with that error, exiting the
+        middleware already entered, and the error propagates.
+        """
+        try:
+            for middleware in self._middleware:
+                enter_generator(slots, _held(middleware(self)))
+        except BaseException as refusal:
+            self.deactivate(None, refusal)
+            raise
+
     def activate(self) -> Activation:
         """
         Activate this scope, returning a token to pass to `deactivate()`.
 
-        Prefer `with scope:` for a plain block; it's faster.
+        Prefer `with scope:` for a plain block; it's faster. The scope's middleware is entered
+        before this returns.
 
         :returns: An {py:class}`Activation` token.
         :raises ScopeActivationError: If `requires` is set and not currently active.
+        :raises Exception: Whatever a middleware raises on entry, refusing the activation.
         """
-        return Activation(self, self._activate())
+        slots = self._activate()
+        if self._middleware:
+            self._enter_middleware(slots)
+        return Activation(self, slots)
 
     def deactivate(
         self, activation: Activation | None = None, exc: BaseException | None = None
@@ -438,7 +626,8 @@ class Scope(BaseScope):
 
         :param activation: The token from {py:meth}`Scope.activate`, or `None` for the current
             activation.
-        :param exc: The exception ending the activation, passed to each resource's cleanup.
+        :param exc: The exception ending the activation, passed to each resource's cleanup and
+            then to the middleware's exits.
         :returns: Whether `exc` was suppressed.
         :raises ScopeActivationError: If the scope isn't active, `activation` isn't current, or
             a scope requiring this one is still active.
@@ -480,10 +669,12 @@ class Scope(BaseScope):
         return CacheDecorator(self._slots, cache_key, ignore_params)
 
 
-class AsyncScope(BaseScope):
+class AsyncScope(BaseScope[AsyncScopeMiddleware]):
     """An async-flavored scope - activated with `async with`, caches sync and async functions."""
 
     __slots__ = ()
+
+    _asynchronous = True
 
     async def __aenter__(self) -> None:
         """
@@ -491,13 +682,15 @@ class AsyncScope(BaseScope):
 
         :raises ScopeActivationError: If `requires` is set and not currently active.
         """
-        # Inlined _activate for a scope without a parent: `async with scope:` is the hot path.
-        if self._requires is None:
+        # Inlined _activate for a plain scope: `async with scope:` is the hot path.
+        if self._plain:
             slots = self._new_slots()
             slots[0] = []  # slot 0: entered resources
             slots[2] = self._var.set(slots)  # slot 2: reset token
         else:
-            self._activate()
+            slots = self._activate()
+            if self._middleware:
+                await self._enter_middleware(slots)
 
     async def __aexit__(
         self,
@@ -505,7 +698,7 @@ class AsyncScope(BaseScope):
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> bool | None:
-        """Deactivate this scope's current activation, closing its entered resources."""
+        """Deactivate this scope's current activation, closing its resources, then middleware."""
         # Inlined deactivate: `async with scope:` is the hot path; this saves a coroutine.
         slots = self._end(None)
         contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
@@ -516,16 +709,40 @@ class AsyncScope(BaseScope):
             if parent_slots is not None:
                 _release(parent_slots, self._parent_lock)
 
-    def activate(self) -> AsyncActivation:
+    async def _enter_middleware(self, slots: SlotStorage) -> None:
+        """
+        Enter the middleware around a new activation, as its first resources.
+
+        Async context managers are awaited, sync ones entered directly. One that raises
+        refuses the activation: it ends with that error, exiting the middleware already
+        entered, and the error propagates.
+        """
+        try:
+            for middleware in self._middleware:
+                manager = middleware(self)
+                if isinstance(manager, AbstractAsyncContextManager):
+                    await enter_async_generator(slots, _held_async(manager))
+                else:
+                    enter_generator(slots, _held(manager))
+        except BaseException as refusal:
+            await self.deactivate(None, refusal)
+            raise
+
+    async def activate(self) -> AsyncActivation:
         """
         Activate this scope, returning a token to pass to `deactivate()`.
 
-        Prefer `async with scope:` for a plain block; it's faster.
+        Prefer `async with scope:` for a plain block; it's faster. The scope's middleware is
+        entered before this returns, so it's awaited, as `deactivate()` is.
 
         :returns: An {py:class}`AsyncActivation` token.
         :raises ScopeActivationError: If `requires` is set and not currently active.
+        :raises Exception: Whatever a middleware raises on entry, refusing the activation.
         """
-        return AsyncActivation(self, self._activate())
+        slots = self._activate()
+        if self._middleware:
+            await self._enter_middleware(slots)
+        return AsyncActivation(self, slots)
 
     async def deactivate(
         self, activation: AsyncActivation | None = None, exc: BaseException | None = None
@@ -535,7 +752,8 @@ class AsyncScope(BaseScope):
 
         :param activation: The token from {py:meth}`AsyncScope.activate`, or `None` for the
             current activation.
-        :param exc: The exception ending the activation, passed to each resource's cleanup.
+        :param exc: The exception ending the activation, passed to each resource's cleanup and
+            then to the middleware's exits.
         :returns: Whether `exc` was suppressed.
         :raises ScopeActivationError: If the scope isn't active, `activation` isn't current, or
             a scope requiring this one is still active.

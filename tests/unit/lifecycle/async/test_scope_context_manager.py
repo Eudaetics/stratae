@@ -128,7 +128,7 @@ async def test_deactivate_returns_whether_exception_was_suppressed():
         with suppress(ValueError):
             yield 1
 
-    activation = scope.activate()
+    activation = await scope.activate()
     await get_value()
 
     # Act
