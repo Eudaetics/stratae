@@ -14,7 +14,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hash
 from inspect import isasyncgenfunction, isgeneratorfunction, unwrap
 from typing import Any, Literal, overload
 
-from stratae._callables import is_async_callable
+from stratae.callables import is_async_callable
 from stratae.lifecycle._slots import SlotStore
 from stratae.lifecycle._wrappers import (
     Cached,

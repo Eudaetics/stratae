@@ -52,7 +52,7 @@ from inspect import isawaitable
 from types import CoroutineType
 from typing import Any, Literal, Self, cast, overload
 
-from stratae._callables import is_async_callable
+from stratae.callables import is_async_callable
 
 type CheckMode = Literal["all", "gather", "any"]
 

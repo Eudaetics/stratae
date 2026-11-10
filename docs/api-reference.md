@@ -224,6 +224,35 @@ access denied: not an admin
 
 {doc}`Full reference <apidocs/stratae.checks/stratae.checks>`
 
+### Callables
+
+Tell whether calling something gives a coroutine, with `is_async_callable`. Stratae decides this the same way everywhere it treats sync and async callables differently. Libraries built on Stratae can use it too.
+
+````{example} Telling sync and async callables apart
+```{code-block} python
+from functools import partial
+from stratae.callables import is_async_callable
+
+class Client:
+    async def __call__(self) -> str:
+        return "sent"
+
+async def send(to: str) -> str:
+    return f"sent to {to}"
+
+print(is_async_callable(partial(send, "ops")))
+print(is_async_callable(Client()))
+print(is_async_callable(Client))
+```
+```{output}
+True
+True
+False
+```
+````
+
+{doc}`Full reference <apidocs/stratae.callables/stratae.callables>`
+
 ### Integrations
 
 Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. RabbitMQ gets async publish and consume adapters. OpenTelemetry traces emits and handlers across them.
@@ -294,6 +323,7 @@ depends <apidocs/stratae.depends/stratae.depends>
 lifecycle <apidocs/stratae.lifecycle/stratae.lifecycle>
 events <apidocs/stratae.events/stratae.events>
 checks <apidocs/stratae.checks/stratae.checks>
+callables <apidocs/stratae.callables/stratae.callables>
 context <apidocs/stratae.context/stratae.context>
 middleware <apidocs/stratae.middleware/stratae.middleware>
 integrations <apidocs/stratae.integrations/stratae.integrations>

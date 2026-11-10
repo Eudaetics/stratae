@@ -4,7 +4,7 @@ from threading import RLock
 from typing import Any, ClassVar, Self
 from weakref import WeakValueDictionary
 
-from stratae._callables import is_async_callable
+from stratae.callables import is_async_callable
 from stratae.depends.exceptions import UnhashableDependencyError
 
 _UNSET = object()

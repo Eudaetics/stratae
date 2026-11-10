@@ -410,3 +410,33 @@ def test_injected_call_method_on_callable_object():
     # Act & Assert
     assert handler() == 42
     assert consumer() == 42
+
+
+def test_class_with_async_call_is_a_sync_dependency():
+    """
+    A class whose instances have an async __call__ is a sync dependency.
+
+    Calling the class builds an instance; it doesn't give a coroutine. So a sync function
+    can depend on it.
+
+    Given: A class whose instances have an async __call__, used as a provider
+    When: A sync function depending on it is injected and called
+    Then: A new instance is injected, without AsyncDependencyError
+    """
+
+    # Arrange
+    class Client:
+        async def __call__(self) -> int:
+            await asyncio.sleep(0)
+            return 7
+
+    @inject
+    def handler(client: Annotated[Client, Depends(Client)]) -> Client:
+        return client
+
+    # Act
+    client = handler()
+
+    # Assert
+    assert isinstance(client, Client)
+    assert asyncio.run(client()) == 7
