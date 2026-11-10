@@ -82,7 +82,7 @@ async def test_reused_slot_wrapper_ignores_dead_wrappers_value(
     scope = AsyncScope("request", isolation, storage)
     calls: list[int] = []
     other = copy_context()
-    activation = other.run(scope.activate)
+    activation = await asyncio.create_task(scope.activate(), context=other)
     old = _make_cached(scope, kind, keyed, 1, calls)
     assert await _call_in(other, old) == 1
 

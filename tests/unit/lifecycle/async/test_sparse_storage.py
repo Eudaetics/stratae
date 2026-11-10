@@ -262,11 +262,11 @@ async def test_async_sparse_storage_manual_activate_deactivate(
         return SimpleObject(x)
 
     # Act
-    activation = scope.activate()
+    activation = await scope.activate()
     obj1 = get_object(1)
     await scope.deactivate(activation)
 
-    activation = scope.activate()
+    activation = await scope.activate()
     obj2 = get_object(2)
     await scope.deactivate(activation)
 

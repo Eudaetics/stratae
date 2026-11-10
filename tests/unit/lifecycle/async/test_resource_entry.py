@@ -266,7 +266,7 @@ async def test_async_entry_finishing_after_deactivation_is_exited(decorate: bool
     # Arrange
     events: list[str] = []
     scope = AsyncScope("request")
-    activation = scope.activate()
+    activation = await scope.activate()
 
     async def generator():
         await scope.deactivate(activation)
