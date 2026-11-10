@@ -195,7 +195,7 @@ import threading
 from collections.abc import AsyncGenerator, Callable, Generator, Hashable
 from contextlib import AbstractAsyncContextManager, AbstractContextManager
 from types import CoroutineType, TracebackType
-from typing import Any, ClassVar, Literal, NoReturn, cast, get_args
+from typing import Any, ClassVar, Literal, NoReturn, cast, get_args, overload
 
 from stratae._middleware import (
     frozen,
@@ -653,6 +653,16 @@ class Scope(BaseScope[ScopeMiddleware]):
             if parent_slots is not None:
                 _release(parent_slots, self._parent_lock)
 
+    @overload
+    def cache(
+        self,
+        *,
+        cache_key: Callable[..., Hashable] | None = None,
+        ignore_params: Literal[False] = False,
+    ) -> CacheDecorator: ...
+    @overload
+    def cache(self, *, cache_key: None = None, ignore_params: bool) -> CacheDecorator: ...
+
     def cache(
         self,
         *,
@@ -674,7 +684,8 @@ class Scope(BaseScope[ScopeMiddleware]):
             arguments themselves.
         :param ignore_params: Cache one value per activation regardless of arguments.
         :returns: A decorator, applied to the function whose result should be cached.
-        :raises CacheKeyConflictError: If both `cache_key` and `ignore_params` are given.
+        :raises CacheKeyConflictError: If both `cache_key` and `ignore_params` are given. Type
+            checkers refuse that call too.
         """
         if ignore_params and cache_key is not None:
             raise CacheKeyConflictError()
@@ -779,6 +790,16 @@ class AsyncScope(BaseScope[AsyncScopeMiddleware]):
             if parent_slots is not None:
                 _release(parent_slots, self._parent_lock)
 
+    @overload
+    def cache(
+        self,
+        *,
+        cache_key: Callable[..., Hashable] | None = None,
+        ignore_params: Literal[False] = False,
+    ) -> AsyncCacheDecorator: ...
+    @overload
+    def cache(self, *, cache_key: None = None, ignore_params: bool) -> AsyncCacheDecorator: ...
+
     def cache(
         self,
         *,
@@ -795,7 +816,8 @@ class AsyncScope(BaseScope[AsyncScopeMiddleware]):
             arguments themselves.
         :param ignore_params: Cache one value per activation regardless of arguments.
         :returns: A decorator, applied to the function whose result should be cached.
-        :raises CacheKeyConflictError: If both `cache_key` and `ignore_params` are given.
+        :raises CacheKeyConflictError: If both `cache_key` and `ignore_params` are given. Type
+            checkers refuse that call too.
         """
         if ignore_params and cache_key is not None:
             raise CacheKeyConflictError()

@@ -4,7 +4,8 @@ Structural protocols for the event system.
 {py:class}`EventType` is what every event pattern implements, and what buses type against;
 {py:data}`AnyEvent`, {py:data}`PayloadEvent` and {py:data}`SignalEvent` abbreviate it.
 {py:class}`Producer` and {py:class}`Consumer` describe the emit and handle sides of a bus
-adapter. {py:class}`EmitCallable` describes a single emitter with a concrete return type.
+adapter. {py:class}`PubSubProducer` describes the emit side of one that emits only PubSub
+events. {py:class}`EmitCallable` describes a single emitter with a concrete return type.
 {py:class}`Serializer` and {py:class}`Deserializer` describe the codecs an adapter takes for
 payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
 one such pair. {py:class}`Routed` describes a routing config that says where its messages go,
@@ -18,7 +19,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from stratae.events.hooks import Hooks
-from stratae.events.patterns import NoPayload
+from stratae.events.patterns import NoPayload, PubSub
 
 
 class EventType[S, EmitR, HandleR, Signal: bool](Protocol):
@@ -116,6 +117,42 @@ class Producer(Protocol):
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
             `bind` passes it only when hooks are given, so an untyped emitter without it still
             works until someone binds with hooks, then fails loudly.
+        :returns: Adapter-defined result, or a coroutine resolving to it.
+        """
+        ...
+
+
+@runtime_checkable
+class PubSubProducer(Protocol):
+    """
+    Structural protocol for the emit side of a bus adapter that emits only PubSub events.
+
+    Its `emit` takes {py:class}`PubSub <stratae.events.patterns.PubSub>` events alone, so
+    emitting a request on it is a type error. A request without a reply has the same shape as
+    a PubSub event, so the pattern is matched by its class.
+
+    Every {py:class}`Producer` matches it too, since a `Producer` emits any event.
+    {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.RabbitMQPublisher>` and
+    {py:class}`OutboxProducer <stratae.events.outbox.OutboxProducer>` match only this one.
+    """
+
+    def emit[S](
+        self,
+        event: PubSub[S, Any],
+        config: Any,
+        payload: S,
+        *,
+        serializer: Callable[[S], Any] | None = None,
+        hooks: Hooks[S, None] | None = None,
+    ) -> Any:
+        """
+        Dispatch a payload.
+
+        :param event: The PubSub event being emitted.
+        :param config: Adapter-specific routing config.
+        :param payload: The payload to dispatch.
+        :param serializer: Encodes the payload; defaults to the adapter's own.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
         :returns: Adapter-defined result, or a coroutine resolving to it.
         """
         ...
