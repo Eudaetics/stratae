@@ -5,6 +5,10 @@ Starlette integration for lifecycle management.
 {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>` around each request. Use it in
 place of `Route`.
 
+The request scope closes once the response is fully sent, on success and on error alike. It
+closes with the error the endpoint raised, including one Starlette turns into a response, such
+as `HTTPException`. So its cleanup runs after the response, and exception handlers can use it.
+
 Work that must finish before the response, like committing a transaction, belongs in a
 nested `handler` scope. It ends when the endpoint returns, so a failed commit becomes a 500.
 
@@ -194,10 +198,9 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route, WebSocketRoute
-from starlette.websockets import WebSocket
 
 from stratae.callables import is_async_callable
-from stratae.integrations._activation import ActivatingRoute, close_activation
+from stratae.integrations._activation import ActivatingRoute, recording_errors, within
 from stratae.lifecycle import AsyncScope
 
 
@@ -267,7 +270,8 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
     Build a Route subclass that activates `scope` around every request.
 
     :param scope: Active until the response is fully sent, including streaming and
-        background tasks.
+        background tasks. It closes with the error the endpoint raised, if any, including one
+        Starlette turns into a response, such as `HTTPException`.
     :param handler: An optional nested scope, active only while the endpoint runs. Use it
         for work like commits that must finish before the response.
     :returns: A Route subclass. Its endpoints must be functions or methods; others raise
@@ -285,42 +289,11 @@ def scoped_route(scope: AsyncScope, *, handler: AsyncScope | None = None) -> typ
             **kwargs: Any,
         ) -> None:
             call = _as_async(endpoint)
-
-            @wraps(endpoint)
-            async def scoped_endpoint(request: Request) -> Response:
-                if handler_scope is not None:
-                    async with handler_scope:
-                        return await call(request)
-                try:
-                    return await call(request)
-                except BaseException as exc:
-                    await close_activation(request.scope, exc)
-                    raise
-
-            super().__init__(path, scoped_endpoint, **kwargs)
+            if handler_scope is not None:
+                call = within(handler_scope, call)
+            super().__init__(path, wraps(endpoint)(recording_errors(call)), **kwargs)
 
     return ScopedRoute
-
-
-def _scoped_websocket_endpoint(
-    endpoint: Callable[[WebSocket], Awaitable[None]],
-) -> Callable[[WebSocket], Awaitable[None]]:
-    """
-    Wrap a function endpoint so the exception it raises closes the connection's activation.
-
-    Starlette handles exceptions like `WebSocketException` inside the route, so without this
-    the activation would close as though the connection had ended cleanly.
-    """
-
-    @wraps(endpoint)
-    async def scoped_endpoint(websocket: WebSocket) -> None:
-        try:
-            await endpoint(websocket)
-        except BaseException as exc:
-            await close_activation(websocket.scope, exc)
-            raise
-
-    return scoped_endpoint
 
 
 def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
@@ -343,7 +316,7 @@ def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
             if isfunction(target) or ismethod(target):
                 if not is_async_callable(target):
                     raise SyncWebSocketEndpointError(endpoint)
-                endpoint = _scoped_websocket_endpoint(endpoint)
+                endpoint = wraps(endpoint)(recording_errors(endpoint))
             super().__init__(path, endpoint, **kwargs)
 
     return ScopedWebSocketRoute
