@@ -210,8 +210,8 @@ class Dispatch:
         :param pattern: The pattern class. Its subclasses are dispatched the same way.
         :param dispatcher: Delivers an event of that pattern to its handlers.
         """
-        self.pattern = pattern
-        self.dispatcher = dispatcher
+        self.pattern: type[AnyEvent] = pattern
+        self.dispatcher: Callable[[Any, Handlers[Handler[Any, Any, Any]], Any], Any] = dispatcher
 
 
 _SYNC_DEFAULTS = (Dispatch(Request, dispatch_request), Dispatch(PubSub, fan_out))
@@ -268,7 +268,7 @@ class BaseDirectBus(ABC):
 
     def _resolve(self, event: _AnyEvent) -> Callable[..., Any]:
         """Return the dispatcher for the event's pattern, or raise TypeError if there's none."""
-        dispatcher = self._dispatcher.dispatch(type(event))
+        dispatcher = self._dispatcher(type(event))
         if dispatcher is no_dispatcher:
             raise TypeError(
                 _UNSUPPORTED_PATTERN.format(bus=type(self).__name__, pattern=type(event).__name__)

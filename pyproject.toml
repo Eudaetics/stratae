@@ -89,6 +89,7 @@ lint.select = [
     "E", "F", "B", "I", "D", "S", "W",
     "ASYNC", "RUF", "UP", "SIM", "PT", "ARG", "TRY", "DTZ",
     "RUF029", # preview: async functions that never await
+    "ANN201", "ANN202", "ANN204",
 ]
 # Not BLE: isolating failures raised by user code (handlers, hooks, checks, resources) is
 # the library's job, so its catch-alls are deliberate.
@@ -101,6 +102,7 @@ line-length = 100
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
+    "ANN", # test functions return None; their types aren't public
     # at least these three should be fine in tests:
     "S101", # asserts allowed in tests...
     "ARG", # Unused function args -> fixtures nevertheless are functionally relevant...

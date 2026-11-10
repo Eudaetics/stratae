@@ -60,7 +60,7 @@ from=notifications@example.com to=jane@example.com subject='Welcome!'
 ````
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Generator
 from contextvars import Token
 from typing import Any, overload
 from weakref import finalize
@@ -81,7 +81,7 @@ class _Held:
     def __init__(self, value: Any) -> None:
         self.value = value
 
-    def __await__(self):
+    def __await__(self) -> Generator[None, None, Any]:
         if False:  # noqa: S5797
             yield
         return self.value
@@ -93,8 +93,8 @@ class _Override[T]:
     __slots__ = ("dep", "tokens", "value")
 
     def __init__(self, dep: Provider, value: T) -> None:
-        self.dep = dep
-        self.value = value
+        self.dep: Provider = dep
+        self.value: T = value
         self.tokens: list[Token[Any]] = []
 
     def __enter__(self) -> None:

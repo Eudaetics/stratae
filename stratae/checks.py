@@ -121,7 +121,7 @@ class AsyncCheckOnSyncError(TypeError):
         )
 
 
-def _settle(exc: Exception, mode: CheckMode, exceptions: list[Exception]):
+def _settle(exc: Exception, mode: CheckMode, exceptions: list[Exception]) -> None:
     """Record exc for "gather" or "any" mode, or raise it for "all"."""
     if mode == "all":
         raise exc
@@ -134,7 +134,7 @@ def _raise_gathered(exceptions: list[Exception], label: str) -> None:
         raise CheckFailures(label, exceptions)
 
 
-def check(*checks: _Check, mode: CheckMode = "all"):
+def check(*checks: _Check, mode: CheckMode = "all") -> None:
     """
     Run sync checks in order.
 
@@ -162,7 +162,7 @@ def check(*checks: _Check, mode: CheckMode = "all"):
     _raise_gathered(exceptions, "check")
 
 
-async def check_async(*checks: _Check, mode: CheckMode = "all"):
+async def check_async(*checks: _Check, mode: CheckMode = "all") -> None:
     """
     Run sync or async checks in order, awaiting the async ones.
 

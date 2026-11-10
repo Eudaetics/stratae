@@ -44,7 +44,7 @@ def _render_call_arguments(params: list[Parameter], resolved_deps: dict[str, Pro
     return render_arguments(params, value)
 
 
-def _get_annotations(params: list[Parameter]):
+def _get_annotations(params: list[Parameter]) -> dict[str, Any]:
     """Return an __annotations__ mapping for the kept parameters."""
     return {
         param.name: param.annotation for param in params if param.annotation is not Parameter.empty
@@ -85,7 +85,7 @@ def _build_wrapper(
     resolved_deps: dict[str, Provider],
     is_async: bool,
     write_body: Callable[[Writer, str], None],
-):
+) -> Callable[..., Any]:
     """Share the setup common to every wrapper kind."""
     sig = read_signature(func)
     params = list(sig.parameters.values())

@@ -3,6 +3,7 @@
 import asyncio
 import re
 from contextvars import Token
+from typing import assert_type
 
 import pytest
 
@@ -277,6 +278,24 @@ def test_context_manager():
 
     assert test() == 1
     test.reset(token)
+
+
+def test_context_manager_gives_value_typed():
+    """
+    Verify `use` gives its value, typed as the context's value type.
+
+    Given: A `Context[int]`.
+    When: A value is set with `with context.use(value) as bound:`.
+    Then: `bound` is the value, and type checkers see it as `int`, not inferred or `Any`.
+    """
+    # Arrange
+    test = Context[int]("test")
+
+    # Act
+    with test.use(5) as bound:
+        # Assert
+        assert_type(bound, int)
+        assert bound == 5
 
 
 def test_context_manager_exception():

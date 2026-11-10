@@ -371,7 +371,7 @@ class BaseScope[M]:
         refuse_unenterable(self._middleware, owner, self._asynchronous)
         self._plain = requires is None and not self._middleware
 
-        self.name = name
+        self.name: str = name
         self._requires = requires
         slots = SlotStore(
             name, shared=isolation == "shared", dense=storage == "dense", threads=threads
@@ -511,7 +511,7 @@ class Activation:
 
     def __init__(self, scope: "Scope", slots: SlotStorage) -> None:
         """Construct the token for one activation of `scope`."""
-        self.scope = scope
+        self.scope: Scope = scope
         self.slots = slots
 
     def __enter__(self) -> "Activation":
@@ -543,7 +543,7 @@ class AsyncActivation:
 
     def __init__(self, scope: "AsyncScope", slots: SlotStorage) -> None:
         """Construct the token for one activation of `scope`."""
-        self.scope = scope
+        self.scope: AsyncScope = scope
         self.slots = slots
 
     async def __aenter__(self) -> "AsyncActivation":

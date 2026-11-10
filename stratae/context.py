@@ -101,18 +101,18 @@ class _ContextScope[T]:
 
     __slots__ = ("_provider", "_token", "_value")
 
-    def __init__(self, provider: "Context[T]", value: T):
+    def __init__(self, provider: "Context[T]", value: T) -> None:
         """Initialize the context scope with provider and value."""
         self._provider = provider
         self._value = value
         self._token: Token[T]
 
-    def __enter__(self):
+    def __enter__(self) -> T:
         """Enter the context, setting the value."""
         self._token = self._provider.set(self._value)
         return self._value
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: object) -> None:
         """Exit the context, resetting the value."""
         self._provider.reset(self._token)
 
@@ -122,7 +122,7 @@ class Context[T]:
 
     __slots__ = ("_default", "_name", "_var")
 
-    def __init__(self, name: str, default: T | _NoDefault = _NO_DEFAULT):
+    def __init__(self, name: str, default: T | _NoDefault = _NO_DEFAULT) -> None:
         """
         Create a context.
 
