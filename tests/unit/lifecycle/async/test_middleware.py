@@ -12,6 +12,11 @@ AsyncScope middleware:
   and the middleware already entered is exited with the error.
 - An async context manager class is accepted as middleware.
 - middleware= refuses a class that isn't a context manager.
+- An exit, async or sync, can't swallow the activation's error: trying raises MiddlewareError
+  from it, grouped with the error in CleanupErrors.
+- Trying to swallow the task's own cancellation raises the cancellation again.
+- A middleware returning something that isn't a context manager refuses the activation, and
+  an async def middleware's coroutine is closed.
 """
 
 import asyncio
@@ -21,8 +26,13 @@ from typing import ClassVar
 
 import pytest
 
-from stratae.lifecycle.exceptions import MiddlewareNotEnterableError
+from stratae.lifecycle.exceptions import CleanupErrors
 from stratae.lifecycle.scope import AsyncScope
+from stratae.middleware import (
+    MiddlewareError,
+    MiddlewareNotEnterableError,
+    MiddlewareResultError,
+)
 
 
 class _Refused(RuntimeError):
@@ -231,3 +241,119 @@ def test_unenterable_middleware_class_refused():
     # Act / Assert
     with pytest.raises(MiddlewareNotEnterableError, match="_NotAManager"):
         AsyncScope("work", middleware=(_NotAManager,))  # pyright: ignore[reportArgumentType]
+
+
+class _AsyncSwallow:
+    """An async context manager whose exit returns true for anything."""
+
+    def __init__(self, scope: AsyncScope) -> None: ...
+
+    async def __aenter__(self) -> None: ...
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return True
+
+
+class _SyncSwallow:
+    """A sync context manager whose exit returns true for anything."""
+
+    def __init__(self, scope: AsyncScope) -> None: ...
+
+    def __enter__(self) -> None: ...
+
+    def __exit__(self, *exc: object) -> bool:
+        return True
+
+
+@pytest.mark.parametrize("middleware", [_AsyncSwallow, _SyncSwallow], ids=["async", "sync"])
+async def test_exit_cannot_swallow_activation_error(middleware: type):
+    """
+    A middleware's exit, async or sync, shouldn't be able to swallow the activation's error.
+
+    Given: An async scope whose middleware's exit returns true
+    When: The block raises
+    Then: CleanupErrors holds the block's error and a MiddlewareError raised from it, and the
+        scope isn't active
+    """
+    # Arrange
+    scope = AsyncScope("work", middleware=(middleware,))
+
+    # Act
+    with pytest.raises(CleanupErrors) as raised:
+        async with scope:
+            raise _Failed
+
+    # Assert
+    (failed,) = [error for error in raised.value.exceptions if isinstance(error, _Failed)]
+    (refusal,) = [error for error in raised.value.exceptions if isinstance(error, MiddlewareError)]
+    assert refusal.__cause__ is failed
+    assert not scope.is_active()
+
+
+@pytest.mark.parametrize("middleware", [_AsyncSwallow, _SyncSwallow], ids=["async", "sync"])
+async def test_swallowing_task_cancellation_raises_it_again(middleware: type):
+    """
+    A middleware trying to swallow the task's own cancellation should raise it again.
+
+    Given: An async scope whose middleware's exit returns true, active in a task
+    When: The task is cancelled while its block waits
+    Then: The task ends cancelled, rather than with MiddlewareError
+    """
+    # Arrange
+    scope = AsyncScope("work", middleware=(middleware,))
+    started = asyncio.Event()
+
+    async def work() -> None:
+        async with scope:
+            started.set()
+            await asyncio.sleep(10)
+
+    task = asyncio.create_task(work())
+    await started.wait()
+
+    # Act
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Assert
+    assert task.cancelled()
+
+
+async def test_middleware_not_returning_context_manager_refuses():
+    """
+    A middleware returning something that isn't a context manager should refuse the activation.
+
+    Given: An async scope whose middleware returns a plain value
+    When: The scope is activated
+    Then: MiddlewareResultError propagates and the scope isn't active
+    """
+    # Arrange
+    scope = AsyncScope("work", middleware=(lambda scope: "not a context manager",))  # pyright: ignore[reportArgumentType]
+
+    # Act / Assert
+    with pytest.raises(MiddlewareResultError, match="isn't a context manager"):
+        async with scope:
+            pass
+    assert not scope.is_active()
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+async def test_async_def_middleware_coroutine_closed():
+    """
+    An async def middleware's coroutine should be closed when it's refused.
+
+    Given: An async scope whose middleware is an async def, so calling it gives a coroutine
+    When: The scope is activated
+    Then: MiddlewareResultError propagates, and the coroutine isn't left unawaited
+    """
+
+    # Arrange
+    async def middleware(scope: AsyncScope) -> None: ...
+
+    scope = AsyncScope("work", middleware=(middleware,))  # pyright: ignore[reportArgumentType]
+
+    # Act / Assert
+    with pytest.raises(MiddlewareResultError):
+        async with scope:
+            pass

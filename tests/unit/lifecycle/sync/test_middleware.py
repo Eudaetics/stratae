@@ -14,10 +14,15 @@ Scope middleware:
   the error propagates.
 - A refused activation releases its required parent.
 - A middleware returning something that isn't a context manager refuses the activation.
-- An exit can suppress the activation's error, as an outer `with` statement can.
+- An exit can't swallow the activation's error: trying raises MiddlewareError from it,
+  grouped with the error in CleanupErrors as an exit's error is. A BaseException that isn't
+  an Exception, such as KeyboardInterrupt, propagates as it is.
+- A sync context manager with an async __enter__ or __exit__ is refused, and its coroutine
+  closed.
 - An error raised on exit propagates as a resource's cleanup error does: alone after a clean
   activation, or grouped with the activation's error in CleanupErrors.
-- middleware= refuses a lone callable, and a class that isn't a sync context manager.
+- middleware= refuses a lone callable, a string, an item that isn't callable, and a class
+  that isn't a sync context manager.
 - The middleware is kept as a tuple, given in any sequence.
 """
 
@@ -27,13 +32,16 @@ from typing import Any
 
 import pytest
 
-from stratae.lifecycle.exceptions import (
-    CleanupErrors,
+from stratae.lifecycle.exceptions import CleanupErrors, ScopeActivationError
+from stratae.lifecycle.scope import Scope
+from stratae.middleware import (
+    MiddlewareAsyncMethodError,
+    MiddlewareError,
+    MiddlewareNotCallableError,
     MiddlewareNotEnterableError,
     MiddlewareNotTupleError,
-    ScopeActivationError,
+    MiddlewareResultError,
 )
-from stratae.lifecycle.scope import Scope
 
 
 class _Refused(RuntimeError):
@@ -281,24 +289,28 @@ def test_middleware_not_returning_context_manager_refuses():
 
     Given: A scope whose middleware returns a plain value
     When: The scope is activated
-    Then: TypeError propagates and the scope isn't active
+    Then: MiddlewareResultError propagates and the scope isn't active
     """
     # Arrange
     scope = Scope("work", middleware=(lambda scope: "not a context manager",))  # pyright: ignore[reportArgumentType]
 
     # Act / Assert
-    with pytest.raises(TypeError), scope:
+    with pytest.raises(MiddlewareResultError, match="isn't a sync context manager"), scope:
         pass
     assert not scope.is_active()
 
 
-def test_exit_can_suppress_activation_error():
+def test_exit_cannot_swallow_activation_error():
     """
-    A middleware's exit should be able to suppress the activation's error, as `with` can.
+    A middleware's exit shouldn't be able to swallow the activation's error.
+
+    Middleware is held as the activation's first resources, so the refusal is grouped with
+    the activation's error, as any error an exit raises is.
 
     Given: A scope whose middleware suppresses the error its block raises
     When: The block raises
-    Then: The error doesn't propagate
+    Then: CleanupErrors holds the block's error and a MiddlewareError raised from it, and the
+        scope isn't active
     """
 
     # Arrange
@@ -310,11 +322,153 @@ def test_exit_can_suppress_activation_error():
     scope = Scope("work", middleware=(swallow,))
 
     # Act
-    with scope:
+    with pytest.raises(CleanupErrors) as raised, scope:
         raise _Failed
 
     # Assert
+    (failed,) = [error for error in raised.value.exceptions if isinstance(error, _Failed)]
+    (refusal,) = [error for error in raised.value.exceptions if isinstance(error, MiddlewareError)]
+    assert refusal.__cause__ is failed
     assert not scope.is_active()
+
+
+class _Interrupt(BaseException):
+    """A BaseException that isn't an Exception, as KeyboardInterrupt is."""
+
+
+def test_swallowing_base_exception_raises_it_again():
+    """
+    A middleware trying to swallow a BaseException that isn't an Exception should re-raise it.
+
+    Given: A scope whose middleware's exit returns true for anything
+    When: The block raises a BaseException that isn't an Exception
+    Then: That error propagates as it is, not as MiddlewareError
+    """
+
+    # Arrange
+    class SwallowAll:
+        def __init__(self, scope: Scope) -> None: ...
+
+        def __enter__(self) -> None: ...
+
+        def __exit__(self, *exc: object) -> bool:
+            return True
+
+    scope = Scope("work", middleware=(SwallowAll,))
+
+    # Act / Assert
+    with pytest.raises(_Interrupt), scope:
+        raise _Interrupt
+    assert not scope.is_active()
+
+
+def test_clean_exit_returning_true_is_allowed():
+    """
+    An exit returning true after a clean activation should be allowed: there's no error.
+
+    Given: A scope whose middleware's exit returns true for anything
+    When: The block ends cleanly
+    Then: Nothing is raised
+    """
+
+    # Arrange
+    class SwallowAll:
+        def __init__(self, scope: Scope) -> None: ...
+
+        def __enter__(self) -> None: ...
+
+        def __exit__(self, *exc: object) -> bool:
+            return True
+
+    scope = Scope("work", middleware=(SwallowAll,))
+
+    # Act
+    with scope:
+        pass
+
+    # Assert
+    assert not scope.is_active()
+
+
+class _AsyncEnter:
+    """A sync context manager whose __enter__ is mistakenly an async def."""
+
+    def __init__(self, scope: Scope) -> None: ...
+
+    async def __enter__(self) -> None: ...
+
+    def __exit__(self, *exc: object) -> None: ...
+
+
+class _AsyncExit:
+    """A sync context manager whose __exit__ is mistakenly an async def."""
+
+    def __init__(self, scope: Scope) -> None: ...
+
+    def __enter__(self) -> None: ...
+
+    async def __exit__(self, *exc: object) -> None: ...
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_async_enter_refused():
+    """
+    A sync context manager with an async __enter__ should refuse the activation.
+
+    Given: A scope whose middleware's __enter__ is an async def
+    When: The scope is activated
+    Then: MiddlewareAsyncMethodError propagates, the scope isn't active, and the coroutine is
+        closed rather than left unawaited
+    """
+    # Arrange
+    scope = Scope("work", middleware=(_AsyncEnter,))
+
+    # Act / Assert
+    with pytest.raises(MiddlewareAsyncMethodError), scope:
+        pass
+    assert not scope.is_active()
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_async_exit_refused_after_clean_activation():
+    """
+    A sync context manager with an async __exit__ should be refused when it exits cleanly.
+
+    Given: A scope whose middleware's __exit__ is an async def
+    When: The block ends cleanly
+    Then: MiddlewareAsyncMethodError is raised, and the coroutine is closed rather than left
+        unawaited
+    """
+    # Arrange
+    scope = Scope("work", middleware=(_AsyncExit,))  # pyright: ignore[reportArgumentType]
+
+    # Act / Assert
+    with pytest.raises(MiddlewareAsyncMethodError), scope:
+        pass
+
+
+@pytest.mark.filterwarnings("error::RuntimeWarning")
+def test_async_exit_refused_after_error():
+    """
+    A sync context manager with an async __exit__ should be refused when the block raises.
+
+    Given: A scope whose middleware's __exit__ is an async def
+    When: The block raises
+    Then: CleanupErrors holds the block's error and MiddlewareAsyncMethodError, and the
+        coroutine is closed rather than left unawaited
+    """
+    # Arrange
+    scope = Scope("work", middleware=(_AsyncExit,))  # pyright: ignore[reportArgumentType]
+
+    # Act
+    with pytest.raises(CleanupErrors) as raised, scope:
+        raise _Failed
+
+    # Assert
+    assert {type(error) for error in raised.value.exceptions} == {
+        MiddlewareAsyncMethodError,
+        _Failed,
+    }
 
 
 def test_error_raised_on_exit_after_clean_activation_propagates():
@@ -380,6 +534,34 @@ def test_lone_middleware_refused():
     # Act / Assert
     with pytest.raises(MiddlewareNotTupleError, match="'work'"):
         Scope("work", middleware=_recording([], "lone"))  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize("middleware", ["trace", b"trace"], ids=["str", "bytes"])
+def test_string_middleware_refused(middleware: object):
+    """
+    middleware= should refuse a string, rather than splitting it into characters.
+
+    Given: A string, or bytes, in place of a tuple
+    When: A scope is built with it as middleware
+    Then: A TypeError is raised: MiddlewareNotTupleError for a string, and
+        MiddlewareNotCallableError for bytes, whose items are ints
+    """
+    # Act / Assert
+    with pytest.raises((MiddlewareNotTupleError, MiddlewareNotCallableError), match="'work'"):
+        Scope("work", middleware=middleware)  # pyright: ignore[reportArgumentType]
+
+
+def test_uncallable_middleware_refused():
+    """
+    middleware= should refuse an item that isn't callable when the scope is built.
+
+    Given: A tuple holding None
+    When: A scope is built with it as middleware
+    Then: MiddlewareNotCallableError names the scope and the item
+    """
+    # Act / Assert
+    with pytest.raises(MiddlewareNotCallableError, match=r"'work' middleware= .* holds None"):
+        Scope("work", middleware=(None,))  # pyright: ignore[reportArgumentType]
 
 
 class _AsyncOnly:

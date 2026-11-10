@@ -50,14 +50,6 @@ class HandlerErrors(BaseHandlerErrors, ExceptionGroup[Exception]):
     """Raised with the failures of an event's handlers."""
 
 
-class MiddlewareError(EventDispatchError):
-    """
-    Raised when a bus middleware tries to swallow the call's error.
-
-    Raised from that error, which middleware can observe on exit, but not suppress.
-    """
-
-
 class NotConnectedError(EventDispatchError):
     """Raised when using an adapter whose connection isn't open."""
 
