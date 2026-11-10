@@ -16,9 +16,8 @@ to add to, and sends them with the message. It handles a message inside
 Only handle middleware reads them, so an adapter without any can skip `receiving`.
 """
 
-from collections.abc import Awaitable, Callable, Generator, Mapping
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar, Token
 from types import MappingProxyType
 from typing import Any
 
@@ -39,21 +38,38 @@ _NO_HEADERS: Mapping[str, str] = MappingProxyType({})
 _received: ContextVar[Mapping[str, str]] = ContextVar("_received_headers")
 
 
-@contextmanager
-def receiving(headers: Mapping[str, str]) -> Generator[None, None, None]:
+class _Receiving:
+    """
+    The context manager {py:func}`receiving` returns.
+
+    A class rather than a `contextlib.contextmanager` generator: a bus with handle middleware
+    opens one per emit, and a generator costs about twice as much to enter and exit.
+    """
+
+    __slots__ = ("_headers", "_token")
+
+    def __init__(self, headers: Mapping[str, str]) -> None:
+        self._headers = headers
+        self._token: Token[Mapping[str, str]]
+
+    def __enter__(self) -> None:
+        self._token = _received.set(MappingProxyType(dict(self._headers)))
+
+    def __exit__(self, *_: object) -> None:
+        _received.reset(self._token)
+
+
+def receiving(headers: Mapping[str, str]) -> _Receiving:
     """
     Make `headers` the headers handle middleware sees, for a block that handles a message.
 
     Handle middleware outside any `receiving` block sees no headers.
 
     :param headers: The headers the message arrived with. Handle middleware gets a read-only
-        copy, taken now.
+        copy, taken when the block is entered.
+    :returns: A context manager for the block.
     """
-    token = _received.set(MappingProxyType(dict(headers)))
-    try:
-        yield
-    finally:
-        _received.reset(token)
+    return _Receiving(headers)
 
 
 def run_emit(

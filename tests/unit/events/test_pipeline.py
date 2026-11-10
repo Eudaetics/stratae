@@ -18,6 +18,10 @@ wrap_handler:
 - Adapts a payload-less event's handler to take the payload.
 - Handle middleware, sync or async, reads the headers of the enclosing receiving block, as a
   copy taken when it was entered; outside one, it reads none.
+
+receiving:
+- A nested block's headers replace the outer block's, which are restored when it exits,
+  including when it raises.
 """
 
 import asyncio
@@ -259,3 +263,45 @@ async def test_wrap_handler_middleware_reads_received_headers(asynchronous: bool
 
     # Assert
     assert seen == [{"x-tenant": "acme"}, {}]
+
+
+def test_receiving_restores_outer_headers_on_exit_and_error() -> None:
+    """
+    A nested receiving block should restore the outer block's headers when it exits or raises.
+
+    Given: Handle middleware recording the headers it reads, inside an outer receiving block
+    When: It's called inside a nested block, after that block exits, inside a nested block
+        that raises, and after that one
+    Then: It read the nested headers inside each nested block, and the outer ones after each
+    """
+    # Arrange
+    seen: list[dict[str, str]] = []
+
+    @contextmanager
+    def record(call: HandleCall) -> Generator[None, None, None]:
+        seen.append(dict(call.headers))
+        yield
+
+    call, _ = wrap_handler(_order_placed, None, _shout, None, (record,), False)
+
+    def handle_then_fail() -> None:
+        with receiving({"x-tenant": "failing"}):
+            call(_Order("lamp"))
+            raise RuntimeError("boom")
+
+    # Act
+    with receiving({"x-tenant": "outer"}):
+        with receiving({"x-tenant": "inner"}):
+            call(_Order("lamp"))
+        call(_Order("lamp"))
+        with pytest.raises(RuntimeError, match="boom"):
+            handle_then_fail()
+        call(_Order("lamp"))
+
+    # Assert
+    assert seen == [
+        {"x-tenant": "inner"},
+        {"x-tenant": "outer"},
+        {"x-tenant": "failing"},
+        {"x-tenant": "outer"},
+    ]

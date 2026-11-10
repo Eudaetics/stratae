@@ -122,6 +122,9 @@ type _Route = tuple[Callable[..., Any], Handlers[Handler[Any, _AnyEvent, Any]]]
 _NO_HANDLERS: Handlers[Handler[Any, _AnyEvent, Any]] = Handlers()
 """The handlers of an event nothing handles."""
 
+_NO_ENVELOPE = nullcontext()
+"""Stands in for an envelope on a bus without them: stateless, so one serves every emit."""
+
 _UNSUPPORTED_PATTERN = (
     "{bus} has no dispatcher for {pattern} events; register one with dispatchers="
 )
@@ -467,7 +470,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
     ) -> Any:
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
         publish, headers = self._middleware.publish, MessageHeaders()
-        with Envelope.scope() if self._use_envelope else nullcontext():
+        with Envelope.scope() if self._use_envelope else _NO_ENVELOPE:
             if self._middleware.handle:
                 call, args = self._receive, (headers, dispatcher, event, handlers, payload)
             else:
@@ -626,7 +629,7 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
     ) -> Any:
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
         publish, headers = self._middleware.publish, MessageHeaders()
-        with Envelope.scope() if self._use_envelope else nullcontext():
+        with Envelope.scope() if self._use_envelope else _NO_ENVELOPE:
             if self._middleware.handle:
                 call, args = self._receive, (headers, dispatcher, event, handlers, payload)
             else:

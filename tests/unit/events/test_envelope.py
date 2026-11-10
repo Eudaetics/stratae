@@ -348,6 +348,24 @@ def test_scope_restores_context_on_exception():
         assert Envelope.current() is outer
 
 
+def test_scope_takes_parent_when_entered():
+    """
+    A default scope should take its parent when it's entered, not when it's made.
+
+    Given: A default Envelope.scope() made outside any scope
+    When: It's entered inside another scope
+    Then: Its envelope is a child of that scope's envelope
+    """
+    # Arrange
+    scope = Envelope.scope()
+
+    # Act
+    with Envelope.scope() as outer, scope as inner:
+        # Assert
+        assert inner.causation_id == outer.message_id
+        assert inner.correlation_id == outer.correlation_id
+
+
 async def test_async_context_isolation():
     """
     Concurrent tasks each maintain their own envelope without bleeding into each other.
