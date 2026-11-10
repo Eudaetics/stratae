@@ -49,6 +49,13 @@ OutboxRelay:
 - Entering it twice raises RuntimeError; exiting stops it.
 - In the background, a store failure is logged and relaying carries on.
 - A full batch is followed straight away by the next.
+- With max_in_flight above one, records of different keys, and records with no key, are
+  published concurrently up to the limit; records of one key never overlap and go in order.
+- With max_in_flight above one, an outage puts back the failing record and every record not
+  started, counting no attempt, while publishes already in flight finish and are marked sent;
+  a record being retried holds back its key's later records.
+- A batch cancelled mid-flight cancels its publishes and marks sent what finished.
+- max_in_flight below one raises ValueError.
 """
 
 import asyncio
@@ -1037,3 +1044,214 @@ async def test_record_ids_come_from_producer_source(store: InMemoryOutboxStore):
     (record,) = store.pending()
     assert record.id == UUID(int=1)
     assert record.envelope.correlation_id == UUID(int=2)
+
+
+class _OverlapPublisher:
+    """
+    Publishes after yielding to the loop a few times, recording how many publishes overlap.
+
+    Queued outcomes, by payload, raise instead of publishing; one that's an Event blocks the
+    publish until it's set.
+    """
+
+    def __init__(self, outcomes: dict[bytes, BaseException | asyncio.Event] | None = None) -> None:
+        self.outcomes = outcomes or {}
+        self.published: list[bytes] = []
+        self.cancelled: list[bytes] = []
+        self.active: dict[str | None, int] = {}
+        self.peak = 0
+        self.peak_per_key = 0
+        self.first_published = asyncio.Event()
+
+    async def emit(self, event: Any, config: Any, payload: Any, **kwargs: Any) -> None:
+        body = kwargs["serializer"](payload)
+        key = body.decode().split(":")[0] or None
+        self.active[key] = self.active.get(key, 0) + 1
+        self.peak = max(self.peak, sum(self.active.values()))
+        if key is not None:
+            self.peak_per_key = max(self.peak_per_key, self.active[key])
+        try:
+            outcome = self.outcomes.get(body)
+            if isinstance(outcome, asyncio.Event):
+                await outcome.wait()
+            for _ in range(3):
+                await asyncio.sleep(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            self.published.append(body)
+            self.first_published.set()
+        except asyncio.CancelledError:
+            self.cancelled.append(body)
+            raise
+        finally:
+            self.active[key] -= 1
+
+
+def _keyed(store: InMemoryOutboxStore, *keys: str | None) -> list[OutboxRecord]:
+    """Add one record per key, in order, each with body `key:index`."""
+    start = datetime.now(UTC) - timedelta(seconds=10)
+    return [
+        _record(
+            store,
+            index,
+            key=key,
+            body=f"{key or ''}:{index}".encode(),
+            created_at=start + timedelta(seconds=index),
+        )
+        for index, key in enumerate(keys)
+    ]
+
+
+async def test_concurrent_publishes_keep_each_key_in_order(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    With max_in_flight above one, different keys should publish concurrently, each in order.
+
+    Given: Records for keys a, b, a, c, a, and three with no key, under a limit of 4
+    When: The relay runs once
+    Then: Up to four publish at once, never two of one key, and a's records go in order
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    _keyed(store, "a", "b", "a", "c", "a", None, None, None)
+    publisher = _OverlapPublisher()
+    relay = OutboxRelay(store, publisher, outbox, max_in_flight=4)
+
+    # Act
+    sent = await relay.run_once()
+
+    # Assert
+    assert sent == 8
+    assert publisher.peak == 4
+    assert publisher.peak_per_key == 1
+    assert [body for body in publisher.published if body.startswith(b"a:")] == [
+        b"a:0",
+        b"a:2",
+        b"a:4",
+    ]
+    assert store.pending() == []
+
+
+async def test_unkeyed_records_publish_concurrently(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    Records with no key should publish concurrently, up to the limit.
+
+    Given: Five records with no key, under a limit of 3
+    When: The relay runs once
+    Then: Three publish at once, and all five are sent
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    _keyed(store, None, None, None, None, None)
+    publisher = _OverlapPublisher()
+    relay = OutboxRelay(store, publisher, outbox, max_in_flight=3)
+
+    # Act
+    sent = await relay.run_once()
+
+    # Assert
+    assert (sent, publisher.peak) == (5, 3)
+
+
+async def test_concurrent_outage_puts_back_what_hasnt_finished(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    An outage should put back what hasn't started, while publishes in flight finish.
+
+    Given: Four records with different keys under a limit of 2, the first failing with an
+        outage
+    When: The relay runs once
+    Then: The second, in flight with it, is sent; the first, third and fourth go back with
+        no attempt counted
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    records = _keyed(store, "a", "b", "c", "d")
+    publisher = _OverlapPublisher({b"a:0": ConnectionError("broker gone")})
+    relay = OutboxRelay(store, publisher, outbox, max_in_flight=2)
+
+    # Act
+    sent = await relay.run_once()
+
+    # Assert
+    assert sent == 1
+    assert publisher.published == [b"b:1"]
+    assert {(r.id, r.attempts) for r in store.pending()} == {
+        (records[0].id, 0),
+        (records[2].id, 0),
+        (records[3].id, 0),
+    }
+
+
+async def test_concurrent_retry_holds_back_its_key(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    With max_in_flight above one, a record being retried should still hold back its key.
+
+    Given: Records for keys a, a, b under a limit of 3, the first failing
+    When: The relay runs once
+    Then: b is published; the second a goes back with no attempt counted
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    records = _keyed(store, "a", "a", "b")
+    publisher = _OverlapPublisher({b"a:0": RuntimeError("refused")})
+    relay = OutboxRelay(store, publisher, outbox, max_in_flight=3)
+
+    # Act
+    await relay.run_once()
+
+    # Assert
+    assert publisher.published == [b"b:2"]
+    assert {(r.id, r.attempts) for r in store.pending()} == {
+        (records[0].id, 1),
+        (records[1].id, 0),
+    }
+
+
+async def test_cancelled_batch_cancels_publishes_in_flight(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    Cancelling a batch should cancel its publishes in flight, and mark sent what finished.
+
+    Given: Two records under a limit of 2, the first blocked until released
+    When: The second has been published, and the batch is cancelled
+    Then: The first publish is cancelled and stays pending; the second is marked sent
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    records = _keyed(store, "a", "b")
+    publisher = _OverlapPublisher({b"a:0": asyncio.Event()})
+    relay = OutboxRelay(store, publisher, outbox, max_in_flight=2)
+    batch = asyncio.create_task(relay.run_once())
+    async with asyncio.timeout(1):
+        await publisher.first_published.wait()
+
+    # Act
+    batch.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await batch
+
+    # Assert
+    assert publisher.cancelled == [b"a:0"]
+    assert [r.id for r in store.sent()] == [records[1].id]
+    assert [r.id for r in store.pending()] == [records[0].id]
+
+
+def test_max_in_flight_below_one_refused(outbox: OutboxProducer, store: InMemoryOutboxStore):
+    """
+    A relay should refuse a max_in_flight below one.
+
+    Given: A max_in_flight of 0
+    When: A relay is built with it
+    Then: ValueError names the value
+    """
+    # Act / Assert
+    with pytest.raises(ValueError, match="at least 1, got 0"):
+        OutboxRelay(store, _OverlapPublisher(), outbox, max_in_flight=0)

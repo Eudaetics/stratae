@@ -91,7 +91,7 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import KW_ONLY, dataclass, replace
+from dataclasses import KW_ONLY, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from inspect import isawaitable
@@ -125,6 +125,8 @@ _ROUTE_TAKEN = (
 )
 
 _UNKNOWN_ROUTE = "no outbox binding for route {!r}; bind it before the relay starts"
+
+_IN_FLIGHT = "max_in_flight must be at least 1, got {}"
 
 _ALREADY_RUNNING = "the relay is already running; exit it before entering it again"
 
@@ -480,6 +482,23 @@ class OutboxPublisher(Protocol):
         ...
 
 
+@dataclass(slots=True)
+class _Batch:
+    """What a batch's lanes share: the publish slots, what was sent, and if there's an outage."""
+
+    slots: asyncio.Semaphore
+    sent: list[OutboxRecord] = field(default_factory=list[OutboxRecord])
+    outage: bool = False
+
+
+def _lanes(records: Sequence[OutboxRecord]) -> list[list[OutboxRecord]]:
+    """Split a batch into lanes: one per key, in claim order, and one per record with no key."""
+    lanes: dict[str | UUID, list[OutboxRecord]] = {}
+    for record in records:
+        lanes.setdefault(record.id if record.key is None else record.key, []).append(record)
+    return list(lanes.values())
+
+
 class OutboxRelay:
     """
     Publishes an outbox's committed records, and marks them sent.
@@ -494,6 +513,12 @@ class OutboxRelay:
     back as it was and waits for the broker. A record that will be retried holds back the rest
     of its key's records in the batch: they go back unchanged, without counting an attempt, so
     none is published before it. One parked as failed holds nothing back.
+
+    By default it publishes one record at a time. With `max_in_flight` above one, it keeps up
+    to that many publishes waiting on the broker at once, which lifts throughput from about
+    one record per round trip. Either way, records with the same key go one at a time, in
+    order. Records with different keys, or no key, may be published in any order, as the
+    outbox promises them none.
     """
 
     def __init__(
@@ -508,6 +533,7 @@ class OutboxRelay:
         max_attempts: int | None = 10,
         retry_delay: float = 30.0,
         max_retry_delay: float = 3600.0,
+        max_in_flight: int = 1,
     ) -> None:
         """
         Create a relay.
@@ -522,7 +548,11 @@ class OutboxRelay:
             retry forever.
         :param retry_delay: Seconds before a record's first retry. Each retry doubles it.
         :param max_retry_delay: The longest wait before a retry.
+        :param max_in_flight: Publishes waiting on the broker at once. At most one per key.
+        :raises ValueError: If `max_in_flight` is less than one.
         """
+        if max_in_flight < 1:
+            raise ValueError(_IN_FLIGHT.format(max_in_flight))
         self._store = store
         self._publisher = publisher
         self._routes = outbox.routes
@@ -532,6 +562,7 @@ class OutboxRelay:
         self._max_attempts = max_attempts
         self._retry_delay = retry_delay
         self._max_retry_delay = max_retry_delay
+        self._max_in_flight = max_in_flight
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
@@ -592,30 +623,41 @@ class OutboxRelay:
         """
         Relay one batch, returning how many were claimed and sent, and if it hit an outage.
 
-        A record goes back unchanged, counting no attempt, once the broker is out of reach, or
-        while a record of its key is being retried.
+        The batch is split into lanes: one per key, in the order its records were claimed,
+        and one per record with no key. Lanes run at once, with at most `max_in_flight`
+        publishes in flight between them.
         """
         records = await _settle(self._store.claim(self._batch_size))
-        sent: list[OutboxRecord] = []
-        retrying: set[str] = set()
-        outage = False
+        batch = _Batch(asyncio.Semaphore(self._max_in_flight))
         try:
-            for record in records:
-                if outage or record.key in retrying:
-                    await _settle(self._store.reschedule(record))
-                    continue
-                outcome = await self._attempt(record)
-                if outcome == "sent":
-                    sent.append(record)
-                elif outcome == "outage":
-                    outage = True
-                    await _settle(self._store.reschedule(record))
-                elif outcome == "retrying" and record.key is not None:
-                    retrying.add(record.key)
+            async with asyncio.TaskGroup() as lanes:
+                for lane in _lanes(records):
+                    lanes.create_task(self._relay_lane(lane, batch))
         finally:
-            if sent:
-                await _settle(self._store.mark_sent(sent))
-        return len(records), len(sent), outage
+            if batch.sent:
+                await _settle(self._store.mark_sent(batch.sent))
+        return len(records), len(batch.sent), batch.outage
+
+    async def _relay_lane(self, lane: list[OutboxRecord], batch: _Batch) -> None:
+        """
+        Publish a lane's records one by one, in order.
+
+        Once the broker is out of reach, no record anywhere in the batch is attempted: each
+        goes back unchanged, counting no attempt. A record that will be retried sends the rest
+        of its lane back the same way, so none of its key goes first.
+        """
+        for index, record in enumerate(lane):
+            async with batch.slots:
+                outcome = "outage" if batch.outage else await self._attempt(record)
+            if outcome == "sent":
+                batch.sent.append(record)
+            elif outcome == "outage":
+                batch.outage = True
+                await _settle(self._store.reschedule(record))
+            elif outcome == "retrying":
+                for waiting in lane[index + 1 :]:
+                    await _settle(self._store.reschedule(waiting))
+                return
 
     async def _attempt(self, record: OutboxRecord) -> _Outcome:
         """Publish one record, and return what it came to, settling a failed attempt."""
