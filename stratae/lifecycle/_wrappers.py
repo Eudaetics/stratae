@@ -22,7 +22,15 @@ from typing import (
     cast,
 )
 
-from stratae.codegen import Writer, compile_wrapper, read_signature, render_parameters
+from stratae.codegen import (
+    Writer,
+    compile_wrapper,
+    defaults,
+    kwdefaults,
+    read_signature,
+    render_arguments,
+    render_parameters,
+)
 from stratae.lifecycle._inflight import (
     AsyncPending,
     Pending,
@@ -157,21 +165,6 @@ def _is_slot_eligible(
     return ignore_params or (cache_key is None and not params)
 
 
-def _render_forward_arguments(params: list[Parameter]) -> str:
-    """Render the call arguments that forward parameters to the wrapped function."""
-    args: list[str] = []
-    for param in params:
-        if param.kind is Parameter.VAR_POSITIONAL:
-            args.append(f"*{param.name}")
-        elif param.kind is Parameter.VAR_KEYWORD:
-            args.append(f"**{param.name}")
-        elif param.kind is Parameter.KEYWORD_ONLY:
-            args.append(f"{param.name}={param.name}")
-        else:
-            args.append(param.name)
-    return ", ".join(args)
-
-
 def _render_key_single_param(param: Parameter) -> str:
     """Render the cache-key source for a function with exactly one parameter."""
     if param.kind is Parameter.VAR_KEYWORD:
@@ -203,7 +196,7 @@ def _render_key_expression(
     `**kwargs` needs `frozenset(items())`.
     """
     if cache_key is not None:
-        return f"__cache_key__({_render_forward_arguments(params)})"
+        return f"__cache_key__({render_arguments(params)})"
     if len(params) == 1:
         return _render_key_single_param(params[0])
     parts = _aggregate_key_param_strs(params)
@@ -563,36 +556,14 @@ def _write_slot_body(
     writer.write("return __value__")
 
 
-def _aggregate_defaults(params: list[Parameter]):
-    """Build the wrapper's __defaults__ from its positional parameters."""
-    return (
-        tuple(
-            param.default
-            for param in params
-            if param.kind in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD)
-            and param.default is not Parameter.empty
-        )
-        or None
-    )
-
-
-def _aggregate_kwdefaults(params: list[Parameter]):
-    """Build the wrapper's __kwdefaults__ from its keyword-only parameters."""
-    return {
-        param.name: param.default
-        for param in params
-        if param.kind is Parameter.KEYWORD_ONLY and param.default is not Parameter.empty
-    } or None
-
-
 def _finalize(
     writer: Writer, func: Callable[..., Any], params: list[Parameter], namespace: dict[str, Any]
 ) -> Callable[..., Any]:
     """Compile the wrapper source and restore its metadata and defaults."""
     wrapper = compile_wrapper(writer.render(), func, namespace)
     wraps(func)(wrapper)
-    wrapper.__defaults__ = _aggregate_defaults(params)
-    wrapper.__kwdefaults__ = _aggregate_kwdefaults(params)
+    wrapper.__defaults__ = defaults(params)
+    wrapper.__kwdefaults__ = kwdefaults(params)
     wrapper.uncached = func
     return wrapper
 
@@ -621,7 +592,7 @@ def _create_wrapper(
     """
     params = _read_params(func, store)
     slot = _allocate_slot(store)
-    call = f"__func__({_render_forward_arguments(params)})"
+    call = f"__func__({render_arguments(params)})"
 
     writer = Writer()
     writer.write(f"{'async def' if is_async else 'def'} wrapper({render_parameters(params)}):")

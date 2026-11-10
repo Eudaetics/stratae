@@ -7,10 +7,18 @@ tooling can introspect them.
 
 from collections.abc import Callable
 from functools import wraps
-from inspect import Parameter, Signature, isclass, markcoroutinefunction
+from inspect import Parameter, Signature, markcoroutinefunction
 from typing import Any
 
-from stratae.codegen import Writer, compile_wrapper, read_signature, render_parameters
+from stratae.codegen import (
+    Writer,
+    compile_wrapper,
+    defaults,
+    kwdefaults,
+    read_signature,
+    render_arguments,
+    render_parameters,
+)
 from stratae.depends._provide import Provider
 
 
@@ -26,32 +34,14 @@ def _render_dependency_source(name: str, dep: Provider) -> str:
     return f"{'await ' if dep.is_async else ''}__dep_{name}__.provide()"
 
 
-def _render_argument_source(value: Any, param: Parameter):
-    """Render one call argument in its parameter's calling convention."""
-    if param.kind is Parameter.VAR_POSITIONAL:
-        return f"*{value}"
-    elif param.kind is Parameter.VAR_KEYWORD:
-        return f"**{value}"
-    elif param.kind is Parameter.KEYWORD_ONLY:
-        return f"{param.name}={value}"
-    else:
-        return value
-
-
 def _render_call_arguments(params: list[Parameter], resolved_deps: dict[str, Provider]) -> str:
-    """Build the exact call expression baked into the generated wrapper body."""
-    args: list[str] = []
-    for param in params:
+    """Build the call's arguments: each injected parameter's provider, or the parameter."""
+
+    def value(param: Parameter) -> str:
         dep = resolved_deps.get(param.name)
-        value = _render_dependency_source(param.name, dep) if dep is not None else param.name
-        args.append(_render_argument_source(value, param))
+        return param.name if dep is None else _render_dependency_source(param.name, dep)
 
-    return ", ".join(args)
-
-
-def _get_source(func: Callable[..., Any]):
-    """Return the callable carrying func's metadata: `__init__` for a class."""
-    return func.__init__ if isclass(func) else func
+    return render_arguments(params, value)
 
 
 def _get_annotations(params: list[Parameter]):
@@ -77,13 +67,13 @@ def _finalize(
         **{f"__dep_{name}__": dep for name, dep in resolved_deps.items()},
     }
     wrapper = compile_wrapper(writer.render(), func, namespace)
-    metadata_source: Callable[..., Any] = _get_source(func)
+    kept_params = list(kept.parameters.values())
 
     wraps(func)(wrapper)
     wrapper.__signature__ = kept
-    wrapper.__defaults__ = metadata_source.__defaults__
-    wrapper.__kwdefaults__ = metadata_source.__kwdefaults__
-    wrapper.__annotations__ = _get_annotations(list(kept.parameters.values()))
+    wrapper.__defaults__ = defaults(kept_params)
+    wrapper.__kwdefaults__ = kwdefaults(kept_params)
+    wrapper.__annotations__ = _get_annotations(kept_params)
     if kept.return_annotation is not Signature.empty:
         wrapper.__annotations__["return"] = kept.return_annotation
     wrapper.__stratae_resolved__ = True

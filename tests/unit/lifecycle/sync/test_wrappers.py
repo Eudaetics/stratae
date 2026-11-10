@@ -735,3 +735,29 @@ def test_callable_without_a_readable_signature_is_refused(target: Callable[..., 
     # Act & Assert
     with pytest.raises(UnreadableSignatureError, match="Wrap it in a function"):
         Scope("request").cache()(target)
+
+
+def test_cached_wrapper_keeps_defaults_of_every_kind(scope: Scope):
+    """
+    A cached wrapper should keep the defaults of every parameter kind.
+
+    Given: A cached function with positional-only, positional-or-keyword and keyword-only
+        defaults, *args and **kwargs
+    When: Its wrapper is read, and called without the defaulted arguments
+    Then: The wrapper's defaults are the function's, and the call uses them
+    """
+
+    # Arrange
+    @scope.cache()
+    def compute(a: int = 1, /, b: int = 2, *args: int, c: int = 3, **kwargs: int) -> int:
+        return a + b + sum(args) + c + sum(kwargs.values())
+
+    # Act
+    with scope:
+        result = compute()
+
+    # Assert
+    wrapper: Any = compute  # Cached doesn't declare a function's attributes.
+    assert wrapper.__defaults__ == (1, 2)
+    assert wrapper.__kwdefaults__ == {"c": 3}
+    assert result == 6

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from stratae.codegen import render_parameters
+from stratae.codegen import defaults, kwdefaults, render_arguments, render_parameters
 from stratae.codegen.exceptions import InvalidTransitionError
 
 
@@ -155,3 +155,81 @@ def test_render_parameters_invalid_transition(parameters: list[Parameter]):
     # Act & Assert
     with pytest.raises(InvalidTransitionError):
         render_parameters(parameters)
+
+
+def _every_kind(a: int = 1, /, b: int = 2, *args: int, c: int = 3, d: int, **kwargs: int) -> None:
+    """Take a parameter of every kind, some with defaults."""
+
+
+def _no_defaults(a: int, /, b: int, *, c: int) -> None:
+    """Take parameters without defaults."""
+
+
+def _parameters(func: Callable[..., Any]) -> list[Parameter]:
+    return list(signature(func).parameters.values())
+
+
+def test_render_arguments_forwards_every_kind():
+    """
+    render_arguments should forward each parameter in its calling convention.
+
+    Given: A function taking a parameter of every kind
+    When: Its call arguments are rendered
+    Then: Positional ones are passed bare, *args and **kwargs unpacked, and keyword-only ones
+        by name
+    """
+    # Act
+    rendered = render_arguments(_parameters(_every_kind))
+
+    # Assert
+    assert rendered == "a, b, *args, c=c, d=d, **kwargs"
+
+
+def test_render_arguments_takes_each_source_from_value():
+    """
+    render_arguments should take each argument's source from `value`, keeping its convention.
+
+    Given: A function taking a parameter of every kind, and a value renderer
+    When: Its call arguments are rendered with the renderer
+    Then: Each argument is the renderer's source, unpacked or named as its kind requires
+    """
+    # Act
+    rendered = render_arguments(_parameters(_every_kind), lambda param: f"v_{param.name}")
+
+    # Assert
+    assert rendered == "v_a, v_b, *v_args, c=v_c, d=v_d, **v_kwargs"
+
+
+def test_defaults_read_every_kind():
+    """
+    Defaults and kwdefaults should read a function's defaults from its parameters.
+
+    Given: A function with positional-only, positional-or-keyword and keyword-only defaults,
+        and parameters without them
+    When: Its defaults and keyword defaults are read from its parameters
+    Then: They match the function's own __defaults__ and __kwdefaults__
+    """
+    # Act
+    params = _parameters(_every_kind)
+
+    # Assert
+    assert defaults(params) == _every_kind.__defaults__ == (1, 2)
+    assert kwdefaults(params) == _every_kind.__kwdefaults__ == {"c": 3}
+
+
+def test_defaults_none_without_defaults():
+    """
+    Defaults and kwdefaults should be None for parameters without defaults.
+
+    Given: A function whose parameters have no defaults
+    When: Its defaults and keyword defaults are read
+    Then: Both are None, as the function's own are
+    """
+    # Act
+    params = _parameters(_no_defaults)
+
+    # Assert
+    assert defaults(params) is None
+    assert _no_defaults.__defaults__ is None
+    assert kwdefaults(params) is None
+    assert _no_defaults.__kwdefaults__ is None
