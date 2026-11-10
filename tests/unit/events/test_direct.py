@@ -1499,7 +1499,10 @@ def test_observing_hook_returning_awaitable_is_logged(
         completed.append(error)
 
     bus.handle(_find_book, lambda query: _BookResult(query.query))
-    hooks: Hooks[_BookQuery, _BookResult] = Hooks(success=(returns_coroutine,), complete=(record,))
+    hooks: Hooks[_BookQuery, _BookResult] = Hooks(
+        success=(returns_coroutine,),  # pyright: ignore[reportArgumentType]
+        complete=(record,),
+    )
 
     # Act
     reply = bus.emit(_find_book, None, _BookQuery("dune"), hooks=hooks)

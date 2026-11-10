@@ -18,6 +18,10 @@ typed by the event they're passed with: `S` is its payload and `R` the reply the
 raises is logged rather than changing the call's outcome: its reply, or its error, stands.
 Use `before`, or bus middleware, for anything that should be able to fail the call.
 
+A hook returns `None`, or on an async bus an awaitable resolving to `None`. Nothing reads what
+a hook returns, so any other result is a mistake, and is refused with `TypeError`: a `before`
+hook's refusal stops the call, and an observing hook's is logged.
+
 On an async bus, the observing hooks in a slot run concurrently, so a slow one doesn't hold
 up the others; `complete` still runs after `success` or `failure`. `before` hooks, and every
 hook on a sync bus, run one after another, in order.
@@ -78,10 +82,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any
+from types import CoroutineType
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from stratae._callables import is_async_callable
-from stratae.events._awaitables import reject_awaitable
 from stratae.events._frozen import freeze_tuples
 
 if TYPE_CHECKING:
@@ -95,6 +99,11 @@ _ASYNC_HOOK_ON_SYNC_PATH = (
     "hook {!r} returned an awaitable, but these hooks run synchronously; use an async bus"
 )
 
+_RETURNED_VALUE = "hook {!r} returned {!r}, but a hook returns None"
+
+type _Returns = Awaitable[None] | None
+"""What a hook returns: `None`, or on an async bus an awaitable resolving to it."""
+
 
 @dataclass(frozen=True, slots=True)
 class Hooks[S, R]:
@@ -105,13 +114,13 @@ class Hooks[S, R]:
     for publish hooks, what the handler returns for handle hooks.
     """
 
-    before: tuple[Callable[["AnyEvent", S], object], ...] = ()
+    before: tuple[Callable[["AnyEvent", S], _Returns], ...] = ()
     """Run before the call; one raising stops it."""
-    success: tuple[Callable[["AnyEvent", S, R], object], ...] = ()
+    success: tuple[Callable[["AnyEvent", S, R], _Returns], ...] = ()
     """Run with the reply after the call returns; errors are logged."""
-    failure: tuple[Callable[["AnyEvent", S, Exception], object], ...] = ()
+    failure: tuple[Callable[["AnyEvent", S, Exception], _Returns], ...] = ()
     """Run with the error after the call raises an `Exception`; errors are logged."""
-    complete: tuple[Callable[["AnyEvent", S, BaseException | None], object], ...] = ()
+    complete: tuple[Callable[["AnyEvent", S, BaseException | None], _Returns], ...] = ()
     """Run last, always, with the call's error or `None`; errors are logged."""
     has_async: bool = field(init=False, repr=False, compare=False)
     """Whether any hook is async, so a sync bus can refuse them."""
@@ -123,11 +132,32 @@ class Hooks[S, R]:
         object.__setattr__(self, "has_async", is_async)
 
 
-def _observe(hooks: tuple[Callable[..., object], ...], event: Any, *args: Any) -> None:
+def _refuse(result: object, hook: object) -> NoReturn:
+    """
+    Raise TypeError for a sync path's hook result that isn't `None`.
+
+    An awaitable is closed first, if it can be, so it isn't left unawaited. Callers test for
+    `None` themselves, since nearly every hook returns it and a call costs more than the test.
+    """
+    if isawaitable(result):
+        close = getattr(result, "close", None)
+        if close is not None:
+            close()
+        raise TypeError(_ASYNC_HOOK_ON_SYNC_PATH.format(hook))
+    _refuse_value(result, hook)
+
+
+def _refuse_value(result: object, hook: object) -> NoReturn:
+    """Raise TypeError for a hook that returned, or resolved to, a value instead of `None`."""
+    raise TypeError(_RETURNED_VALUE.format(hook, result))
+
+
+def _observe(hooks: tuple[Callable[..., _Returns], ...], event: Any, *args: Any) -> None:
     """Run every observing hook, logging any that raises instead of propagating it."""
     for hook in hooks:
         try:
-            reject_awaitable(hook(event, *args), _ASYNC_HOOK_ON_SYNC_PATH, hook)
+            if (result := hook(event, *args)) is not None:
+                _refuse(result, hook)
         except Exception:
             _log.exception("hook %r for event '%s' failed", hook, event.name)
 
@@ -148,10 +178,11 @@ def run_hooks[**P, T](
     :param payload: The payload, passed to every hook.
     :param call: The publish or handler call the hooks observe.
     :returns: What `call` returns.
-    :raises TypeError: If a hook returns an awaitable.
+    :raises TypeError: If a before hook returns anything but `None`.
     """
     for hook in hooks.before:
-        reject_awaitable(hook(event, payload), _ASYNC_HOOK_ON_SYNC_PATH, hook)
+        if (result := hook(event, payload)) is not None:
+            _refuse(result, hook)
     try:
         reply = call(*args, **kwargs)
     except Exception as exc:
@@ -166,17 +197,22 @@ def run_hooks[**P, T](
     return reply
 
 
-async def _observe_one(hook: Callable[..., object], event: Any, *args: Any) -> None:
+async def _observe_one(hook: Callable[..., _Returns], event: Any, *args: Any) -> None:
     """Run one observing hook, sync or async, logging it if it raises."""
     try:
-        result = hook(event, *args)
-        if isawaitable(result):
-            await result
+        result: object = hook(event, *args)
+        # None and coroutines skip isawaitable, which costs several times either test.
+        if result is not None and (isinstance(result, CoroutineType) or isawaitable(result)):
+            result = await result
+        if result is not None:
+            _refuse_value(result, hook)
     except Exception:
         _log.exception("hook %r for event '%s' failed", hook, event.name)
 
 
-async def _observe_async(hooks: tuple[Callable[..., object], ...], event: Any, *args: Any) -> None:
+async def _observe_async(
+    hooks: tuple[Callable[..., _Returns], ...], event: Any, *args: Any
+) -> None:
     """Run every observing hook concurrently, so a slow one doesn't hold up the rest."""
     if len(hooks) == 1:
         await _observe_one(hooks[0], event, *args)
@@ -200,11 +236,15 @@ async def run_hooks_async[**P, T](
     :param payload: The payload, passed to every hook.
     :param call: The publish or handler call the hooks observe.
     :returns: What `call` resolves to.
+    :raises TypeError: If a before hook returns, or resolves to, anything but `None`.
     """
     for hook in hooks.before:
-        result = hook(event, payload)
-        if isawaitable(result):
-            await result
+        result: object = hook(event, payload)
+        # None and coroutines skip isawaitable, which costs several times either test.
+        if result is not None and (isinstance(result, CoroutineType) or isawaitable(result)):
+            result = await result
+        if result is not None:
+            _refuse_value(result, hook)
     try:
         reply = await call(*args, **kwargs)
     except Exception as exc:
