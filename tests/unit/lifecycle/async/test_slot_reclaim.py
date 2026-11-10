@@ -82,7 +82,9 @@ async def test_hot_loop_template_growth_is_bounded(async_scope: AsyncScope):
             del get_value
             gc.collect()
 
-    assert len(async_scope._slots.template) == 5  # pyright: ignore[reportPrivateUsage]
+    template = async_scope._slots.template  # pyright: ignore[reportPrivateUsage]
+    assert template is not None
+    assert len(template) == 5
 
 
 def test_context_scope_template_growth_is_bounded(async_context_scope: AsyncScope):
@@ -103,7 +105,9 @@ def test_context_scope_template_growth_is_bounded(async_context_scope: AsyncScop
         del foo
         gc.collect()
 
-    assert len(async_context_scope._slots.template) == 5  # pyright: ignore[reportPrivateUsage]
+    template = async_context_scope._slots.template  # pyright: ignore[reportPrivateUsage]
+    assert template is not None
+    assert len(template) == 5
 
 
 async def test_reclaimed_slot_is_cleared_in_a_concurrent_request(async_context_scope: AsyncScope):

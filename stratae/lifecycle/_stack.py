@@ -64,10 +64,6 @@ def _settle(pending: list[BaseException], received: BaseException | None) -> boo
     raise CleanupErrors(errors)
 
 
-def _closed_error() -> EndedDuringEntryError:
-    return EndedDuringEntryError()
-
-
 def exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) -> bool:
     """
     Finish a resource generator as `contextlib.contextmanager`'s `__exit__` would.
@@ -162,7 +158,7 @@ def enter_generator[T](slots: SlotStorage, gen: Generator[T, None, None]) -> T:
         raise ResourceDidNotYieldError() from None
     if not slots:
         exit_generator(gen, None)
-        raise _closed_error()
+        raise EndedDuringEntryError()
     slots[0].append((False, gen))  # slot 0: entered resources
     return result
 
@@ -181,7 +177,7 @@ async def enter_async_generator[T](slots: SlotStorage, gen: AsyncGenerator[T, No
         raise ResourceDidNotYieldError() from None
     if not slots:
         await exit_async_generator(gen, None)
-        raise _closed_error()
+        raise EndedDuringEntryError()
     slots[0].append((True, gen))  # slot 0: entered resources
     return result
 

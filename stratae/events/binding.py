@@ -288,14 +288,16 @@ def abind(
 
         return _typed(passthrough, _payload_parameters(event), event)
 
-    async_factory = factory if is_async_callable(factory) else None
+    if is_async_callable(factory):
+
+        async def construct_async(*args: Any, **kwargs: Any) -> Any:
+            payload = await factory(*args, **kwargs)
+            return await emit(event, config, payload, serializer=serializer)
+
+        return _typed(construct_async, _factory_parameters(factory), event)
 
     async def construct(*args: Any, **kwargs: Any) -> Any:
-        if async_factory is not None:
-            payload = await async_factory(*args, **kwargs)
-        else:
-            payload = factory(*args, **kwargs)
-        return await emit(event, config, payload, serializer=serializer)
+        return await emit(event, config, factory(*args, **kwargs), serializer=serializer)
 
     return _typed(construct, _factory_parameters(factory), event)
 
@@ -328,11 +330,13 @@ class BindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _check_event(self, event: AnyEvent) -> None:
+    def _prepare_event(self, event: AnyEvent) -> None:
         """
-        Raise if this adapter can't emit the event's pattern.
+        Get ready to emit the event, raising if this adapter can't emit its pattern.
 
-        Called by `bind`, so an unsupported event is refused before anything emits it.
+        Called by `bind`, so an unsupported event is refused before anything emits it. An
+        adapter may also record what it needs to emit the event, as the direct buses record
+        its route.
         """
         ...
 
@@ -386,7 +390,7 @@ class BindMixin[C](ABC):
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: A callable that dispatches through this adapter.
         """
-        self._check_event(event)
+        self._prepare_event(event)
         if hooks is not None and hooks.has_async:
             raise TypeError(_SYNC_BIND_ASYNC_HOOKS.format(type(self).__name__, event.name))
         return bind(
@@ -421,11 +425,13 @@ class AsyncBindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _check_event(self, event: AnyEvent) -> None:
+    def _prepare_event(self, event: AnyEvent) -> None:
         """
-        Raise if this adapter can't emit the event's pattern.
+        Get ready to emit the event, raising if this adapter can't emit its pattern.
 
-        Called by `bind`, so an unsupported event is refused before anything emits it.
+        Called by `bind`, so an unsupported event is refused before anything emits it. An
+        adapter may also record what it needs to emit the event, as the direct buses record
+        its route.
         """
         ...
 
@@ -479,7 +485,7 @@ class AsyncBindMixin[C](ABC):
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: An async callable that dispatches through this adapter.
         """
-        self._check_event(event)
+        self._prepare_event(event)
         return abind(
             event, self.emit, factory=factory, config=config, serializer=serializer, hooks=hooks
         )

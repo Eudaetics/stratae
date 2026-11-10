@@ -262,8 +262,8 @@ class BaseDirectBus(ABC):
         # Without handle middleware, nothing reads them, so `_run` delivers without them.
         self._plain = not middleware.publish and not middleware.handle and envelope is None
 
-    def _check_event(self, event: _AnyEvent) -> None:
-        """Raise TypeError for an event with no dispatcher, and record its route if it has one."""
+    def _prepare_event(self, event: _AnyEvent) -> None:
+        """Record the event's route, raising TypeError if it has no dispatcher."""
         self._route(event)
 
     def _resolve(self, event: _AnyEvent) -> Callable[..., Any]:
