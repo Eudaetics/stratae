@@ -100,7 +100,7 @@ from inspect import markcoroutinefunction
 from types import CoroutineType
 from typing import Any, ClassVar, NoReturn, Protocol, overload, override
 
-from stratae._callables import is_async_callable
+from stratae.callables import is_async_callable
 from stratae.events._dispatch import (
     build_dispatcher,
     dispatch_request,

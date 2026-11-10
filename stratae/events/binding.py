@@ -72,7 +72,7 @@ from inspect import Parameter, Signature, signature
 from types import NoneType
 from typing import Any, Literal, cast, overload
 
-from stratae._callables import is_async_callable
+from stratae.callables import is_async_callable
 from stratae.events.hooks import Hooks
 from stratae.events.patterns import NoPayload, PubSub
 from stratae.events.protocols import (

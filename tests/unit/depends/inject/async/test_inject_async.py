@@ -463,3 +463,30 @@ async def test_async_callable_object_dependency_is_awaited():
 
     # Assert
     assert result == 7
+
+
+async def test_class_with_async_call_is_a_sync_dependency():
+    """
+    A class whose instances have an async __call__ is called, not awaited, as a dependency.
+
+    Calling the class builds an instance; it doesn't give a coroutine.
+
+    Given: A class whose instances have an async __call__, used as a provider
+    When: An async function depending on it is injected and awaited
+    Then: A new instance is injected, which can itself be awaited
+    """
+
+    # Arrange
+    class Client:
+        async def __call__(self) -> int:
+            return 7
+
+    @inject
+    async def handler(client: Annotated[Client, Depends(Client)]) -> int:
+        return await client()
+
+    # Act
+    result = await handler()
+
+    # Assert
+    assert result == 7

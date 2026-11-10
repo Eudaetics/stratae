@@ -21,7 +21,7 @@ from contextvars import ContextVar, Token
 from types import MappingProxyType
 from typing import Any
 
-from stratae._callables import is_async_callable
+from stratae.callables import is_async_callable
 from stratae.events.handler import WithoutPayload
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
 from stratae.events.middleware import (

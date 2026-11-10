@@ -85,7 +85,7 @@ from inspect import isawaitable
 from types import CoroutineType
 from typing import TYPE_CHECKING, Any, NoReturn
 
-from stratae._callables import is_async_callable
+from stratae.callables import is_async_callable
 from stratae.events._frozen import freeze_tuples
 
 if TYPE_CHECKING:
