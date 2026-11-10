@@ -112,7 +112,7 @@ from stratae.events.hooks import Hooks
 from stratae.events.middleware import MessageHeaders, Middleware
 from stratae.events.patterns import NoPayload, PubSub
 from stratae.events.pipeline import run_emit_async
-from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
+from stratae.events.protocols import AnyEvent, EventType
 
 _log = logging.getLogger(__name__)
 
@@ -281,8 +281,11 @@ class OutboxProducer:
     Binding registers the route, so a relay knows every route before anything is emitted.
     Emitting writes a record. Hooks given to `bind` or `emit` run around that write, inside
     the record's envelope, and publish middleware around them. Headers the middleware adds
-    are stored with the record, and the relay publishes it with them. Binding a request event
-    raises `TypeError`.
+    are stored with the record, and the relay publishes it with them.
+
+    An outbox can't wait for a reply, so it takes PubSub events only and matches
+    {py:class}`PubSubProducer <stratae.events.protocols.PubSubProducer>`. Binding or emitting a
+    request is a type error, and raises `TypeError`.
     """
 
     def __init__(
@@ -319,35 +322,35 @@ class OutboxProducer:
         return MappingProxyType(self._routes)
 
     @overload
-    def bind[**P, S, R](
+    def bind[**P, S](
         self,
-        event: PayloadEvent[S, R, Any],
+        event: PubSub[S, Literal[False]],
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
         config: OutboxConfig[Any],
         serializer: Callable[[S], Any] | None = None,
-        hooks: Hooks[S, R] | None = None,
-    ) -> Callable[P, Awaitable[R]]: ...
+        hooks: Hooks[S, None] | None = None,
+    ) -> Callable[P, Awaitable[None]]: ...
     @overload
-    def bind[R](
+    def bind(
         self,
-        event: SignalEvent[R, Any],
+        event: PubSub[NoPayload, Literal[True]],
         *,
         factory: None = None,
         config: OutboxConfig[Any],
         serializer: None = None,
-        hooks: Hooks[NoPayload, R] | None = None,
-    ) -> Callable[[], Awaitable[R]]: ...
+        hooks: Hooks[NoPayload, None] | None = None,
+    ) -> Callable[[], Awaitable[None]]: ...
     @overload
-    def bind[S, R](
+    def bind[S](
         self,
-        event: PayloadEvent[S, R, Any],
+        event: PubSub[S, Literal[False]],
         *,
         factory: None = None,
         config: OutboxConfig[Any],
         serializer: Callable[[S], Any] | None = None,
-        hooks: Hooks[S, R] | None = None,
-    ) -> Callable[[S], Awaitable[R]]: ...
+        hooks: Hooks[S, None] | None = None,
+    ) -> Callable[[S], Awaitable[None]]: ...
 
     def bind(
         self,
@@ -379,19 +382,19 @@ class OutboxProducer:
             event, emit, factory=factory, config=config, serializer=serializer, hooks=hooks
         )
 
-    async def emit[S, R](
+    async def emit[S](
         self,
-        event: EventType[S, R, Any, Any],
+        event: PubSub[S, Any],
         config: OutboxConfig[Any],
         payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
-        hooks: Hooks[S, R] | None = None,
-    ) -> R:
+        hooks: Hooks[S, None] | None = None,
+    ) -> None:
         """
         Write a payload to the outbox as a record.
 
-        :param event: The event being emitted.
+        :param event: The PubSub event being emitted.
         :param config: The binding's {py:class}`OutboxConfig`.
         :param payload: The payload to write.
         :param serializer: Overrides the producer's serializer for this emit.
@@ -402,21 +405,24 @@ class OutboxProducer:
         """
         _require_pubsub(event)
         route = self._register(event, config)
-        return await self._emit_routed(
-            route, event, config, payload, serializer=serializer, hooks=hooks
-        )
+        await self._emit_routed(route, event, config, payload, serializer=serializer, hooks=hooks)
 
-    async def _emit_routed[S, R](
+    async def _emit_routed[S](
         self,
         route: str,
-        event: EventType[S, R, Any, Any],
+        event: EventType[S, Any, Any, Any],
         config: OutboxConfig[Any],
         payload: S,
         *,
         serializer: Callable[[S], Any] | None = None,
-        hooks: Hooks[S, R] | None = None,
-    ) -> R:
-        """Write a payload to the outbox under a route that's already registered."""
+        hooks: Hooks[S, Any] | None = None,
+    ) -> None:
+        """
+        Write a payload to the outbox under a route that's already registered.
+
+        Typed for any event, so `bind` can hand it to `abind`. Only PubSub events reach it:
+        `bind` and `emit` take nothing else, and refuse anything else at runtime.
+        """
         headers = MessageHeaders()
         with Envelope.scope(new_id=self._new_id) as envelope:
             args = (event, config, payload, serializer, envelope, route, headers)
@@ -427,7 +433,6 @@ class OutboxProducer:
                 await run_emit_async(
                     hooks, middleware, event, config, payload, headers, self._write, *args
                 )
-        return cast(R, None)
 
     def _register(self, event: AnyEvent, config: OutboxConfig[Any]) -> str:
         """Record the route's event and publisher config, refusing a clash."""

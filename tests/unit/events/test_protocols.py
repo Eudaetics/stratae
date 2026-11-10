@@ -7,6 +7,9 @@ Producer:
 - A sync implementation satisfies the Producer protocol.
 - An async implementation satisfies the Producer protocol.
 
+PubSubProducer:
+- Every Producer, such as the direct buses, also satisfies PubSubProducer.
+
 Consumer:
 - An implementation satisfies the Consumer protocol.
 
@@ -23,7 +26,17 @@ from typing import Any
 
 import msgspec
 
-from stratae.events import Consumer, Deserializer, EmitCallable, EventType, Producer, Serializer
+from stratae.events import (
+    AsyncDirectBus,
+    Consumer,
+    Deserializer,
+    DirectBus,
+    EmitCallable,
+    EventType,
+    Producer,
+    PubSubProducer,
+    Serializer,
+)
 
 
 class _SyncProducer:
@@ -129,3 +142,21 @@ def test_codecs_of_the_wrong_shape_are_refused():
     # Act / Assert
     _serializer: Serializer[object] = to_text  # pyright: ignore[reportAssignmentType]
     _deserializer: Deserializer = untyped_decode  # pyright: ignore[reportAssignmentType]
+
+
+def test_every_producer_is_a_pubsub_producer():
+    """
+    A Producer emits any event, so it should match PubSubProducer too.
+
+    Given: A DirectBus and an AsyncDirectBus, which emit any event
+    When: Each is assigned to Producer, and to PubSubProducer
+    Then: Both assignments type-check, and isinstance agrees
+    """
+    for bus in (DirectBus(), AsyncDirectBus()):
+        # Act
+        producer: Producer = bus
+        pubsub_producer: PubSubProducer = bus
+
+        # Assert
+        assert isinstance(producer, Producer)
+        assert isinstance(pubsub_producer, PubSubProducer)

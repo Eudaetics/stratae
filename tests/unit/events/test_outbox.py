@@ -61,11 +61,11 @@ OutboxRelay:
 import asyncio
 import dataclasses
 import logging
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast, override
+from typing import Any, assert_type, cast, override
 from uuid import UUID
 
 import pytest
@@ -76,8 +76,10 @@ from stratae.events import (
     Hooks,
     Middleware,
     NoPayload,
+    Producer,
     PublishCall,
     PubSub,
+    PubSubProducer,
     Request,
 )
 from stratae.events.exceptions import NotConnectedError
@@ -413,18 +415,72 @@ async def test_request_events_refused(outbox: OutboxProducer):
     """
     The outbox should refuse a request event, which needs its reply straight away.
 
-    Given: A request event
-    When: It's bound, and emitted directly
-    Then: Both raise TypeError
+    Each `# pyright: ignore[...]` marks an expected type error: the project enables
+    `reportUnnecessaryTypeIgnoreComment`, so if one stops being an error, the type check fails.
+
+    Given: A request event, and a command (a request without a reply)
+    When: Each is bound, and emitted directly
+    Then: Each call is a type error, and raises TypeError at runtime
     """
     # Arrange
     request = Request(_Order, reply=str)
+    command = Request(_Order)
 
     # Act / Assert
+    for event in (request, command):
+        with pytest.raises(TypeError, match="fire-and-forget"):
+            outbox.bind(  # pyright: ignore[reportCallIssue]
+                event,  # pyright: ignore[reportArgumentType]
+                config=OutboxConfig("orders"),
+            )
     with pytest.raises(TypeError, match="fire-and-forget"):
-        outbox.bind(request, config=OutboxConfig("orders"))
+        await outbox.emit(
+            request,  # pyright: ignore[reportArgumentType]
+            OutboxConfig("orders"),
+            _Order(1),
+        )
     with pytest.raises(TypeError, match="fire-and-forget"):
-        await outbox.emit(request, OutboxConfig("orders"), _Order(1))
+        await outbox.emit(
+            command,  # pyright: ignore[reportArgumentType]
+            OutboxConfig("orders"),
+            _Order(1),
+        )
+
+
+def test_outbox_matches_pubsub_producer_only(outbox: OutboxProducer):
+    """
+    OutboxProducer should match PubSubProducer, and not Producer, which emits any event.
+
+    The `# pyright: ignore[...]` marks an expected type error.
+
+    Given: An outbox producer
+    When: It's assigned to PubSubProducer, and to Producer
+    Then: The first type-checks, and the second is a type error
+    """
+    # Act
+    pubsub_producer: PubSubProducer = outbox
+    producer: Producer = outbox  # pyright: ignore[reportAssignmentType]
+
+    # Assert
+    assert isinstance(pubsub_producer, PubSubProducer)
+    assert producer is outbox
+
+
+def test_bound_pubsub_events_are_typed_as_giving_none(outbox: OutboxProducer):
+    """
+    A PubSub event bound to the outbox should be typed as giving `None`.
+
+    Given: A PubSub event with a payload, and one without
+    When: Each is bound to the outbox
+    Then: The bound callables are typed as taking the payload, or nothing, and giving `None`
+    """
+    # Act
+    bound = outbox.bind(PubSub(_Order), config=OutboxConfig("orders"))
+    signal = outbox.bind(PubSub(name="ping"), config=OutboxConfig("pings"))
+
+    # Assert
+    assert_type(bound, Callable[[_Order], Awaitable[None]])
+    assert_type(signal, Callable[[], Awaitable[None]])
 
 
 def test_outbox_config_is_an_immutable_value():

@@ -74,9 +74,9 @@ Connection health and reconnecting:
 import asyncio
 import dataclasses
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any, cast
+from typing import Any, assert_type, cast
 from unittest.mock import AsyncMock, call
 from uuid import UUID
 
@@ -94,8 +94,10 @@ from stratae.events import (
     Hooks,
     Middleware,
     NoPayload,
+    Producer,
     PublishCall,
     PubSub,
+    PubSubProducer,
     Request,
 )
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
@@ -320,32 +322,90 @@ async def test_emit_without_connection_raises(publisher: RabbitMQPublisher):
 
 async def test_emit_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
     """
-    ``emit`` should raise NotImplementedError for a request/reply event.
+    ``emit`` should refuse a request/reply event, for type checkers and at runtime.
 
-    Given: A publisher and an event using the Request dispatch pattern
-    When: emit is awaited with that event
-    Then: A NotImplementedError should be raised
+    The `# pyright: ignore[...]` marks an expected type error: the project enables
+    `reportUnnecessaryTypeIgnoreComment`, so if it stops being an error, the type check fails.
+
+    Given: A publisher, a Request event, and a command (a Request without a reply)
+    When: emit is awaited with each
+    Then: Each call is a type error, and raises NotImplementedError
     """
     request_event = Request(_OrderPlaced, reply=_OrderPlaced)
+    command_event = Request(_OrderPlaced)
 
     with pytest.raises(NotImplementedError):
-        await publisher.emit(request_event, _config, _OrderPlaced(1))
+        await publisher.emit(
+            request_event,  # pyright: ignore[reportArgumentType]
+            _config,
+            _OrderPlaced(1),
+        )
+    with pytest.raises(NotImplementedError):
+        await publisher.emit(
+            command_event,  # pyright: ignore[reportArgumentType]
+            _config,
+            _OrderPlaced(1),
+        )
 
 
 def test_bind_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
     """
     ``bind`` should refuse a request/reply event before anything emits it.
 
-    Given: A publisher and a Request event
-    When: The event is bound
-    Then: A NotImplementedError should be raised
+    The `# pyright: ignore[...]` comments mark expected type errors.
+
+    Given: A publisher, a Request event, and a command (a Request without a reply)
+    When: Each is bound
+    Then: Each call is a type error, and raises NotImplementedError
     """
     # Arrange
     request_event = Request(_OrderPlaced, reply=_OrderPlaced)
+    command_event = Request(_OrderPlaced)
 
     # Act / Assert
-    with pytest.raises(NotImplementedError, match="PubSub events only"):
-        publisher.bind(request_event, factory=_OrderPlaced, config=_config)
+    for event in (request_event, command_event):
+        with pytest.raises(NotImplementedError, match="PubSub events only"):
+            publisher.bind(  # pyright: ignore[reportCallIssue]
+                event,  # pyright: ignore[reportArgumentType]
+                factory=_OrderPlaced,
+                config=_config,
+            )
+
+
+def test_publisher_matches_pubsub_producer_only(publisher: RabbitMQPublisher):
+    """
+    RabbitMQPublisher should match PubSubProducer, and not Producer, which emits any event.
+
+    The `# pyright: ignore[...]` marks an expected type error.
+
+    Given: A publisher
+    When: It's assigned to PubSubProducer, and to Producer
+    Then: The first type-checks, and the second is a type error
+    """
+    # Act
+    pubsub_producer: PubSubProducer = publisher
+    producer: Producer = publisher  # pyright: ignore[reportAssignmentType]
+
+    # Assert
+    assert isinstance(pubsub_producer, PubSubProducer)
+    assert producer is publisher
+
+
+def test_bound_pubsub_events_are_typed_as_giving_none(publisher: RabbitMQPublisher):
+    """
+    A PubSub event bound to the publisher should be typed as giving `None`.
+
+    Given: A PubSub event with a payload, and one without
+    When: Each is bound to the publisher
+    Then: The bound callables are typed as taking the payload, or nothing, and giving `None`
+    """
+    # Act
+    bound = publisher.bind(_order_placed, config=_config)
+    signal = publisher.bind(PubSub(name="ping"), config=_config)
+
+    # Assert
+    assert_type(bound, Callable[[_OrderPlaced], Awaitable[None]])
+    assert_type(signal, Callable[[], Awaitable[None]])
 
 
 async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, channel: AsyncMock):

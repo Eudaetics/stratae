@@ -459,17 +459,20 @@ def test_cache_invalid_params(async_scope: AsyncScope):
     """
     Test that providing both ignore_params and cache_key raises a ValueError.
 
+    The `# pyright: ignore[...]` comments mark the expected type error: the project enables
+    `reportUnnecessaryTypeIgnoreComment`, so if it stops being one, the type check fails.
+
     Given: An AsyncScope.
     When: Attempting to create a cache decorator with both ignore_params=True and a
           cache_key.
-    Then: A ValueError is raised.
+    Then: The call is a type error, and a ValueError is raised.
     """
     with pytest.raises(
         ValueError, match=re.escape("Cannot use both ignore_params and cache_key together.")
     ):
-        async_scope.cache(
+        async_scope.cache(  # pyright: ignore[reportCallIssue]
             cache_key=lambda *args, **kwargs: (args[0], kwargs.get("x", None)),
-            ignore_params=True,
+            ignore_params=True,  # pyright: ignore[reportArgumentType]
         )
 
 

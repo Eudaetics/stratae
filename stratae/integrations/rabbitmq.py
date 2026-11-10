@@ -151,13 +151,12 @@ from stratae.events import (
     Destination,
     Envelope,
     EnvelopeConfig,
-    EventType,
     Handler,
     NoPayload,
     PubSub,
     Serializer,
 )
-from stratae.events.binding import AsyncBindMixin
+from stratae.events.binding import AsyncPubSubBindMixin
 from stratae.events.envelope import ENVELOPE_HEADERS
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
 from stratae.events.handler import invoke
@@ -484,14 +483,15 @@ class _Link:
             await connection.close()
 
 
-class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
+class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
     """
     Async RabbitMQ publisher for pub/sub events.
 
     Holds one connection and channel for the `async with` block. Bind events with `bind`
-    from {py:class}`AsyncBindMixin <stratae.events.binding.AsyncBindMixin>`. It implements
-    {py:class}`PubSub <stratae.events.patterns.PubSub>` and its subclasses only: binding or
-    emitting any other event raises `NotImplementedError`.
+    from {py:class}`AsyncPubSubBindMixin <stratae.events.binding.AsyncPubSubBindMixin>`. It
+    implements {py:class}`PubSub <stratae.events.patterns.PubSub>` and its subclasses only, so
+    it matches {py:class}`PubSubProducer <stratae.events.protocols.PubSubProducer>`. Binding or
+    emitting any other event is a type error, and raises `NotImplementedError`.
 
     Publishing uses publisher confirms: `emit` returns only once the broker has taken
     responsibility for the message, and raises if the broker refuses it or the channel closes
@@ -588,21 +588,21 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
         for config in self._topology:
             await _declare(channel, config)
 
-    async def emit[S, R](
+    async def emit[S](
         self,
-        event: EventType[S, R, Any, Any],
+        event: PubSub[S, Any],
         config: RabbitMQConfig,
         payload: S,
         *,
         serializer: Serializer[S] | None = None,
-        hooks: Hooks[S, R] | None = None,
+        hooks: Hooks[S, None] | None = None,
         envelope: Envelope | None = None,
         headers: Mapping[str, str] | None = None,
-    ) -> R:
+    ) -> None:
         """
         Serialize a payload and publish it.
 
-        :param event: The event being emitted.
+        :param event: The PubSub event being emitted.
         :param config: The exchange and routing key.
         :param payload: The payload to publish.
         :param serializer: Overrides the publisher's serializer for this call.
@@ -645,7 +645,6 @@ class RabbitMQPublisher(AsyncBindMixin[RabbitMQConfig]):
                     sent,
                     stamped,
                 )
-        return cast(R, None)
 
     async def _publish(
         self,
