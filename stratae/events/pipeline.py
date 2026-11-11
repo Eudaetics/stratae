@@ -134,77 +134,65 @@ async def run_emit_async(
     return await call(*args)
 
 
-def _run_handle(
+def _hooked(
+    hooks: Hooks[Any, Any], event: AnyEvent, call: Callable[[Any], Any]
+) -> Callable[[Any], Any]:
+    """Return `call` run inside sync hooks."""
+
+    def hooked(payload: Any, /) -> Any:
+        return run_hooks(hooks, event, payload, call, payload)
+
+    return hooked
+
+
+def _hooked_async(
+    hooks: Hooks[Any, Any], event: AnyEvent, call: Callable[[Any], Awaitable[Any]]
+) -> Callable[[Any], Awaitable[Any]]:
+    """Return `call` run inside hooks, sync or async, as an awaitable."""
+
+    def hooked(payload: Any, /) -> Awaitable[Any]:
+        return run_hooks_async(hooks, event, payload, call, payload)
+
+    return hooked
+
+
+def _handled(
     middleware: tuple[Callable[..., object], ...],
     event: AnyEvent,
     config: Any,
-    payload: Any,
-    call: Callable[..., Any],
-    *args: Any,
-) -> Any:
-    """Run a handler call inside sync handle middleware, with the received headers."""
-    seen = HandleCall(event, config, payload, _received.get(_NO_HEADERS))
-    return run_middleware(middleware, seen, call, *args)
+    call: Callable[[Any], Any],
+) -> Callable[[Any], Any]:
+    """Return `call` run inside sync handle middleware, which sees the received headers."""
+
+    def handled(payload: Any, /) -> Any:
+        seen = HandleCall(event, config, payload, _received.get(_NO_HEADERS))
+        return run_middleware(middleware, seen, call, payload)
+
+    return handled
 
 
-def _run_handle_async(
+def _handled_async(
     middleware: tuple[Callable[..., object], ...],
     event: AnyEvent,
     config: Any,
-    payload: Any,
-    call: Callable[..., Awaitable[Any]],
-    *args: Any,
-) -> Awaitable[Any]:
-    """Run a handler call inside async handle middleware, with the received headers."""
-    seen = HandleCall(event, config, payload, _received.get(_NO_HEADERS))
-    return run_middleware_async(middleware, seen, call, *args)
+    call: Callable[[Any], Awaitable[Any]],
+) -> Callable[[Any], Awaitable[Any]]:
+    """Return `call` run inside async handle middleware, which sees the received headers."""
 
+    def handled(payload: Any, /) -> Awaitable[Any]:
+        seen = HandleCall(event, config, payload, _received.get(_NO_HEADERS))
+        return run_middleware_async(middleware, seen, call, payload)
 
-class _Wrapped:
-    """
-    A sync handler call wrapped by a runner, such as hooks or handle middleware.
-
-    The runner is called as `runner(*context, payload, call, payload)`, the shape
-    {py:func}`run_hooks <stratae.events.hooks.run_hooks>` and the handle middleware runner
-    share.
-    """
-
-    __slots__ = ("call", "context", "runner")
-
-    def __init__(
-        self, runner: Callable[..., Any], context: tuple[Any, ...], call: Callable[[Any], Any]
-    ) -> None:
-        self.runner = runner
-        self.context = context
-        self.call = call
-
-    def __call__(self, payload: Any, /) -> Any:
-        return self.runner(*self.context, payload, self.call, payload)
-
-
-class _AsyncWrapped:
-    """A handler call, sync or async, wrapped by an async runner, such as hooks or middleware."""
-
-    __slots__ = ("call", "context", "runner")
-
-    def __init__(
-        self,
-        runner: Callable[..., Awaitable[Any]],
-        context: tuple[Any, ...],
-        call: Callable[[Any], Any],
-        is_async: bool,
-    ) -> None:
-        self.runner = runner
-        self.context = context
-        # Adapted once here, so a delivery doesn't decide again whether to await.
-        self.call = call if is_async else _Awaitable(call)
-
-    def __call__(self, payload: Any, /) -> Awaitable[Any]:
-        return self.runner(*self.context, payload, self.call, payload)
+    return handled
 
 
 class _Awaitable:
-    """A sync handler call, made awaitable for an async runner."""
+    """
+    A sync handler call, made awaitable for an async runner. It runs when awaited.
+
+    A class, since an awaitable call with nothing to await is a method: a function would be an
+    `async def` that never awaits.
+    """
 
     __slots__ = ("call",)
 
@@ -238,13 +226,14 @@ def wrap_handler(
     is_async = is_async_callable(fn)
     if hooks is not None:
         if is_async or hooks.has_async:
-            call, is_async = _AsyncWrapped(run_hooks_async, (hooks, event), call, is_async), True
+            call = _hooked_async(hooks, event, call if is_async else _Awaitable(call))
+            is_async = True
         else:
-            call = _Wrapped(run_hooks, (hooks, event), call)
+            call = _hooked(hooks, event, call)
     if middleware:
-        context = (middleware, event, config)
         if asynchronous:
-            call, is_async = _AsyncWrapped(_run_handle_async, context, call, is_async), True
+            call = _handled_async(middleware, event, config, call if is_async else _Awaitable(call))
+            is_async = True
         else:
-            call = _Wrapped(_run_handle, context, call)
+            call = _handled(middleware, event, config, call)
     return call, is_async
