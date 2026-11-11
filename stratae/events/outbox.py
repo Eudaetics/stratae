@@ -41,7 +41,7 @@ The guarantees:
 ```{code-block} python
 import asyncio
 from typing import Any
-from stratae.events import Envelope, PubSub
+from stratae.events import Encoded, Envelope, PubSub
 from stratae.events.outbox import (
     InMemoryOutboxStore,
     OutboxConfig,
@@ -54,9 +54,15 @@ class OrderPlaced:
         self.order_id = order_id
 
 class PrintingPublisher:
-    async def emit(self, event: Any, config: Any, payload: Any, *, serializer: Any = None,
-                   envelope: Envelope | None = None, headers: Any = None) -> None:
-        print(f"published {serializer(payload)!r} to {config} as {event.name}")
+    def __init__(self) -> None:
+        self.routes: dict[Any, Any] = {}
+
+    def route(self, event: Any, config: Any) -> None:
+        self.routes[event] = config
+
+    async def emit(self, event: Any, payload: Encoded, *, envelope: Envelope | None = None,
+                   headers: Any = None) -> None:
+        print(f"published {payload.body!r} to {self.routes[event]} as {event.name}")
 
 order_placed = PubSub(OrderPlaced)
 store = InMemoryOutboxStore()
@@ -88,7 +94,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass, field, replace
@@ -109,10 +115,10 @@ from stratae.events.binding import abind
 from stratae.events.envelope import ENVELOPE_HEADERS, Envelope, EnvelopeConfig
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.hooks import Hooks
-from stratae.events.middleware import MessageHeaders, Middleware
+from stratae.events.middleware import Middleware
 from stratae.events.patterns import NoPayload, PubSub
-from stratae.events.pipeline import run_emit_async
-from stratae.events.protocols import AnyEvent, EventType
+from stratae.events.pipeline import Outgoing, Publishing, Send, publish_async, received
+from stratae.events.protocols import Addressed, AnyEvent, Encoded, EventType, Serializing
 
 _log = logging.getLogger(__name__)
 
@@ -125,6 +131,10 @@ _ROUTE_TAKEN = (
 )
 
 _UNKNOWN_ROUTE = "no outbox binding for route {!r}; bind it before the relay starts"
+
+_NO_ROUTE = "no outbox route for {!r}; route or bind it to an OutboxConfig before emitting it"
+
+_EVENT_ROUTED = "{!r} is already routed to another OutboxConfig; give it one route per outbox"
 
 _IN_FLIGHT = "max_in_flight must be at least 1, got {}"
 
@@ -143,11 +153,6 @@ _OUTAGES = (NotConnectedError, ConnectionError)
 def _now() -> datetime:
     """Return the current time, timezone-aware in UTC."""
     return datetime.now(UTC)
-
-
-def _raw(body: bytes) -> bytes:
-    """Return a stored body unchanged, as the relay's serializer."""
-    return body
 
 
 def _added(headers: Mapping[str, str]) -> dict[str, str]:
@@ -192,6 +197,13 @@ class OutboxRecord:
 
     available_at: datetime
     """When it can next be claimed. Later than `created_at` after a failed attempt."""
+
+    address: str | None = None
+    """
+    Where its route addressed it, such as a routing key, if the route addresses each message
+    from its payload. The relay publishes it there; see
+    {py:class}`Addressed <stratae.events.protocols.Addressed>`.
+    """
 
     key: str | None = None
     """
@@ -300,7 +312,11 @@ class OutboxProducer:
         Create an outbox producer.
 
         :param store: Where records are added.
-        :param serializer: Encodes payloads to bytes. A binding's own serializer overrides it.
+        :param serializer: Encodes payloads to bytes. A route whose publisher config has its
+            own serializer, such as a
+            {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.RabbitMQConfig>`, uses
+            that one instead; see
+            {py:class}`Serializing <stratae.events.protocols.Serializing>`.
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `publish` half runs around every write, inside the record's envelope;
             its `handle` half is a consumer's.
@@ -310,16 +326,43 @@ class OutboxProducer:
         :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
-        self._new_id = envelope.new_id
-        self._publish_middleware = middleware.publish
+        self._publishing = Publishing(middleware.publish, envelope.new_id)
         self._store = store
         self._serializer = serializer
         self._routes: dict[str, tuple[AnyEvent, Any]] = {}
+        self._writers: dict[str, Send] = {}
+        self._by_event: dict[AnyEvent, tuple[str, OutboxConfig[Any]]] = {}
 
     @property
     def routes(self) -> Mapping[str, tuple[AnyEvent, Any]]:
         """Each route's event and publisher config, for the relay."""
         return MappingProxyType(self._routes)
+
+    def route(self, event: PubSub[Any, Any], config: OutboxConfig[Any]) -> None:
+        """
+        Route an event's records, registering the route for the relay.
+
+        `bind` routes the event it binds. Routing it again to an equal config does nothing.
+
+        :param event: The {py:class}`PubSub <stratae.events.patterns.PubSub>` event to route.
+        :param config: The route's {py:class}`OutboxConfig`.
+        :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
+        :raises ValueError: If the event, or the route's name, is already routed elsewhere.
+        """
+        _require_pubsub(event)
+        routed = self._by_event.get(event)
+        if routed is not None:
+            if routed[1] != config:
+                raise ValueError(_EVENT_ROUTED.format(event.name))
+            return
+        name = config.route or event.name
+        if self._routes.setdefault(name, (event, config.config)) != (event, config.config):
+            raise ValueError(_ROUTE_TAKEN.format(name))
+        target = config.config
+        serializer = target.serializer if isinstance(target, Serializing) else None
+        address = target.address if isinstance(target, Addressed) else None
+        self._writers[name] = partial(self._write, name, serializer or self._serializer, address)
+        self._by_event[event] = (name, config)
 
     @overload
     def bind[**P, S](
@@ -328,7 +371,6 @@ class OutboxProducer:
         *,
         factory: Callable[P, S] | Callable[P, Awaitable[S]],
         config: OutboxConfig[Any],
-        serializer: Callable[[S], Any] | None = None,
         hooks: Hooks[S, None] | None = None,
     ) -> Callable[P, Awaitable[None]]: ...
     @overload
@@ -338,7 +380,6 @@ class OutboxProducer:
         *,
         factory: None = None,
         config: OutboxConfig[Any],
-        serializer: None = None,
         hooks: Hooks[NoPayload, None] | None = None,
     ) -> Callable[[], Awaitable[None]]: ...
     @overload
@@ -348,7 +389,6 @@ class OutboxProducer:
         *,
         factory: None = None,
         config: OutboxConfig[Any],
-        serializer: Callable[[S], Any] | None = None,
         hooks: Hooks[S, None] | None = None,
     ) -> Callable[[S], Awaitable[None]]: ...
 
@@ -358,132 +398,114 @@ class OutboxProducer:
         *,
         factory: Callable[..., Any] | None = None,
         config: OutboxConfig[Any],
-        serializer: Callable[[Any], Any] | None = None,
         hooks: Hooks[Any, Any] | None = None,
     ) -> Callable[..., Awaitable[Any]]:
         """
-        Bind an event to the outbox, registering its route.
+        Bind an event to the outbox, routing it.
 
         See {py:func}`abind <stratae.events.binding.abind>`.
 
         :param event: The {py:class}`PubSub <stratae.events.patterns.PubSub>` event to bind.
         :param factory: Builds the payload from the call's arguments, sync or async.
-        :param config: The binding's {py:class}`OutboxConfig`.
-        :param serializer: Encodes the payload; defaults to the producer's.
+        :param config: The route's {py:class}`OutboxConfig`.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each write.
         :returns: An async callable that writes a record.
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
-        :raises ValueError: If the route is taken by another binding.
+        :raises ValueError: If the event, or the route's name, is already routed elsewhere.
         """
-        _require_pubsub(event)
-        # Registered once here, so the bound callable writes without registering again.
-        emit = partial(self._emit_routed, self._register(event, config))
-        return abind(
-            event, emit, factory=factory, config=config, serializer=serializer, hooks=hooks
-        )
+        self.route(cast(PubSub[Any, Any], event), config)
+        name, routed = self._by_event[event]
+        return abind(event, partial(self._emit_on, name, routed), factory=factory, hooks=hooks)
 
     async def emit[S](
-        self,
-        event: PubSub[S, Any],
-        config: OutboxConfig[Any],
-        payload: S,
-        *,
-        serializer: Callable[[S], Any] | None = None,
-        hooks: Hooks[S, None] | None = None,
+        self, event: PubSub[S, Any], payload: S, *, hooks: Hooks[S, None] | None = None
     ) -> None:
         """
-        Write a payload to the outbox as a record.
+        Write a payload to the outbox as a record, on the event's route.
 
         :param event: The PubSub event being emitted.
-        :param config: The binding's {py:class}`OutboxConfig`.
         :param payload: The payload to write.
-        :param serializer: Overrides the producer's serializer for this emit.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around the write,
             inside the record's envelope.
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
-        :raises ValueError: If the route is taken by another binding.
+        :raises LookupError: If the event has no route.
         """
         _require_pubsub(event)
-        route = self._register(event, config)
-        await self._emit_routed(route, event, config, payload, serializer=serializer, hooks=hooks)
+        routed = self._by_event.get(event)
+        if routed is None:
+            raise LookupError(_NO_ROUTE.format(event.name))
+        await self._emit_on(*routed, event, payload, hooks=hooks)
 
-    async def _emit_routed[S](
+    def _emit_on[S](
         self,
-        route: str,
-        event: EventType[S, Any, Any, Any],
+        name: str,
         config: OutboxConfig[Any],
+        event: EventType[S, Any, Any, Any],
         payload: S,
         *,
-        serializer: Callable[[S], Any] | None = None,
         hooks: Hooks[S, Any] | None = None,
-    ) -> None:
+    ) -> Coroutine[Any, Any, None]:
         """
-        Write a payload to the outbox under a route that's already registered.
+        Write a payload to the outbox on a route that's already registered.
 
         Typed for any event, so `bind` can hand it to `abind`. Only PubSub events reach it:
         `bind` and `emit` take nothing else, and refuse anything else at runtime.
         """
-        headers = MessageHeaders()
-        with Envelope.scope(new_id=self._new_id) as envelope:
-            args = (event, config, payload, serializer, envelope, route, headers)
-            if hooks is None and not self._publish_middleware:
-                await self._write(*args)
-            else:
-                middleware = self._publish_middleware
-                await run_emit_async(
-                    hooks, middleware, event, config, payload, headers, self._write, *args
-                )
-
-    def _register(self, event: AnyEvent, config: OutboxConfig[Any]) -> str:
-        """Record the route's event and publisher config, refusing a clash."""
-        route = config.route or event.name
-        if self._routes.setdefault(route, (event, config.config)) != (event, config.config):
-            raise ValueError(_ROUTE_TAKEN.format(route))
-        return route
+        return publish_async(self._publishing, self._writers[name], event, payload, config, hooks)
 
     async def _write(
         self,
-        event: AnyEvent,
-        config: OutboxConfig[Any],
-        payload: Any,
-        serializer: Callable[[Any], Any] | None,
-        envelope: Envelope,
         route: str,
-        headers: MessageHeaders,
+        serializer: Callable[[Any], bytes],
+        address: Callable[[Any], str | None] | None,
+        message: Outgoing,
     ) -> None:
-        """Serialize the payload and add it to the store as a record, with its headers."""
-        body = b"" if event.is_signal else (serializer or self._serializer)(payload)
+        """Serialize a message's payload and add it to the store as a record, with its headers."""
+        event, config, payload = message.event, message.config, message.payload
+        envelope = cast(Envelope, message.envelope)
+        body = b"" if event.is_signal else serializer(payload)
         now = _now()
         record = OutboxRecord(
             id=envelope.message_id,
             route=route,
             body=body,
-            headers=headers.to_dict() | envelope.to_headers(),
+            headers={**received(message.headers), **envelope.to_headers()},
             created_at=now,
             available_at=now,
             key=config.key(payload) if config.key is not None else None,
+            address=address(payload) if address is not None else None,
         )
         await _settle(self._store.add(record))
 
 
 class OutboxPublisher(Protocol):
     """
-    A publisher the relay can use: one that publishes under a given envelope and headers.
+    A publisher the relay can use.
+
+    It routes events, and publishes an already-encoded payload under a given envelope and
+    headers.
 
     {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.RabbitMQPublisher>` is one.
     """
 
+    def route(self, event: Any, config: Any) -> None:
+        """Route an event's messages; routing it again to an equal config does nothing."""
+        ...
+
     def emit(
         self,
         event: Any,
-        config: Any,
         payload: Any,
         *,
-        serializer: Any = ...,
         envelope: Envelope | None = ...,
         headers: Mapping[str, str] | None = ...,
     ) -> Awaitable[Any]:
-        """Publish a payload under `envelope` with `headers`, returning once the broker has it."""
+        """
+        Publish a payload under `envelope` with `headers`, returning once the broker has it.
+
+        The relay passes an {py:class}`Encoded <stratae.events.protocols.Encoded>` payload,
+        which the publisher sends as its bytes.
+        """
         ...
 
 
@@ -524,6 +546,11 @@ class OutboxRelay:
     one record per round trip. Either way, records with the same key go one at a time, in
     order. Records with different keys, or no key, may be published in any order, as the
     outbox promises them none.
+
+    It routes each of the outbox's events on the publisher, when it's built and again before
+    each publish, so routes added later are relayed too. A publisher the app also emits on
+    shares those routes. If the app routes an event there to a different config, building the
+    relay raises `ValueError`, or a later route's records fail.
     """
 
     def __init__(
@@ -554,10 +581,13 @@ class OutboxRelay:
         :param retry_delay: Seconds before a record's first retry. Each retry doubles it.
         :param max_retry_delay: The longest wait before a retry.
         :param max_in_flight: Publishes waiting on the broker at once. At most one per key.
-        :raises ValueError: If `max_in_flight` is less than one.
+        :raises ValueError: If `max_in_flight` is less than one, or the publisher already
+            routes one of the outbox's events to a different config.
         """
         if max_in_flight < 1:
             raise ValueError(_IN_FLIGHT.format(max_in_flight))
+        for event, config in outbox.routes.values():
+            publisher.route(event, config)
         self._store = store
         self._publisher = publisher
         self._routes = outbox.routes
@@ -681,11 +711,10 @@ class OutboxRelay:
         if route is None:
             raise LookupError(_UNKNOWN_ROUTE.format(record.route))
         event, config = route
+        self._publisher.route(event, config)
         await self._publisher.emit(
             event,
-            config,
-            record.body,
-            serializer=_raw,
+            Encoded(record.body, record.address),
             envelope=record.envelope,
             headers=_added(record.headers),
         )

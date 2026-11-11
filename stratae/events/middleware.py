@@ -290,8 +290,10 @@ class _Call:
         """The event being emitted or handled."""
         self.config: Any = config
         """
-        The adapter's routing config for the call: an emit's `config`, or the registration's
-        on a consumer, such as RabbitMQ's exchange and routing key. `None` on a direct bus.
+        The adapter's routing config for the call, such as RabbitMQ's exchange and routing key.
+        On a publisher, it's the config of the event's route. A route that makes each message's
+        routing key from its payload gives one with that message's key. On a consumer, it's the
+        registration's. It's `None` on a direct bus.
         """
         self.payload: Any = payload
         """The payload being emitted or handled."""

@@ -8,7 +8,9 @@ This test suite verifies the following behaviors:
 DirectBus and AsyncDirectBus (headers):
 - An emit with an envelope or hooks but no middleware builds no headers, and still reaches
   its handler.
-- An emit with publish or handle middleware builds its headers, once.
+- An emit with publish middleware builds its headers, once.
+- An emit with only handle middleware builds none: nothing writes them, so handle middleware
+  reads an empty mapping.
 """
 
 from collections.abc import Callable
@@ -19,7 +21,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import stratae.events.direct as direct_module
+import stratae.events.pipeline as pipeline_module
 from stratae.events import (
     AsyncDirectBus,
     DirectBus,
@@ -63,13 +65,13 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list[MessageHeaders]:
         made.append(headers)
         return headers
 
-    monkeypatch.setattr(direct_module, "MessageHeaders", recording)
+    monkeypatch.setattr(pipeline_module, "MessageHeaders", recording)
     return made
 
 
 async def _emit(bus: DirectBus | AsyncDirectBus, hooks: Hooks[Any, Any] | None) -> None:
     """Emit on either bus, awaiting the async bus's result."""
-    result = bus.emit(_placed, None, _Placed(1), hooks=hooks)
+    result = bus.emit(_placed, _Placed(1), hooks=hooks)
     if isawaitable(result):
         await result
 
@@ -108,27 +110,19 @@ async def test_emit_without_middleware_builds_no_headers(
     assert built == []
 
 
-@pytest.mark.parametrize(
-    "middleware",
-    [
-        pytest.param(Middleware(publish=(_nothing,)), id="publish"),
-        pytest.param(Middleware(handle=(_nothing,)), id="handle"),
-    ],
-)
-async def test_emit_with_middleware_builds_headers_once(
+async def test_emit_with_publish_middleware_builds_headers_once(
     kind: Callable[..., DirectBus | AsyncDirectBus],
     built: list[MessageHeaders],
-    middleware: Middleware,
 ) -> None:
     """
-    An emit whose middleware reads headers should build them once.
+    An emit whose publish middleware can write headers should build them once.
 
-    Given: A bus with publish or handle middleware
+    Given: A bus with publish middleware
     When: An event is emitted
     Then: Its handler is called, and one MessageHeaders was built
     """
     # Arrange
-    bus = kind(middleware=middleware)
+    bus = kind(middleware=Middleware(publish=(_nothing,)))
     handler = Mock()
     bus.handle(_placed, handler)
 
@@ -138,3 +132,27 @@ async def test_emit_with_middleware_builds_headers_once(
     # Assert
     handler.assert_called_once()
     assert len(built) == 1
+
+
+async def test_emit_with_only_handle_middleware_builds_no_headers(
+    kind: Callable[..., DirectBus | AsyncDirectBus],
+    built: list[MessageHeaders],
+) -> None:
+    """
+    An emit with nothing to write headers should build none, even for handle middleware.
+
+    Given: A bus with handle middleware and no publish middleware
+    When: An event is emitted
+    Then: Its handler is called, and no MessageHeaders was built
+    """
+    # Arrange
+    bus = kind(middleware=Middleware(handle=(_nothing,)))
+    handler = Mock()
+    bus.handle(_placed, handler)
+
+    # Act
+    await _emit(bus, None)
+
+    # Assert
+    handler.assert_called_once()
+    assert built == []

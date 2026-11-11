@@ -435,7 +435,8 @@ async def test_middleware_header_crosses_the_broker(broker: _Broker):
             _URL, serializer=msgspec.json.encode, middleware=Middleware(publish=(_tag_tenant,))
         ) as publisher:
             with Envelope.scope() as envelope:
-                await publisher.emit(message_event, RabbitMQConfig("", queue), Message("hi"))
+                publisher.route(message_event, RabbitMQConfig("", queue))
+                await publisher.emit(message_event, Message("hi"))
         await seen.wait_for_length(1)
 
     # Assert
@@ -703,9 +704,8 @@ async def test_republished_envelope_keeps_message_id(broker: _Broker):
     async with consumer:
         async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
             for _ in range(2):
-                await publisher.emit(
-                    message_event, RabbitMQConfig("", queue), Message("again"), envelope=held
-                )
+                publisher.route(message_event, RabbitMQConfig("", queue))
+                await publisher.emit(message_event, Message("again"), envelope=held)
         await seen.wait_for_length(2)
 
     # Assert
@@ -746,7 +746,8 @@ async def test_redelivered_message_keeps_message_id(broker: _Broker):
     # Act
     async with first:
         async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
-            await publisher.emit(message_event, RabbitMQConfig("", queue), Message("once"))
+            publisher.route(message_event, RabbitMQConfig("", queue))
+            await publisher.emit(message_event, Message("once"))
         await seen.wait_for_length(1)
     async with second:
         await seen.wait_for_length(2)
@@ -774,9 +775,8 @@ async def _publish(queue: str, body: bytes = b'{"text": "work"}') -> Envelope:
     """Publish a raw body straight to a queue, returning the envelope it was sent with."""
     envelope = Envelope()
     async with RabbitMQPublisher(_URL, serializer=lambda payload: body) as publisher:
-        await publisher.emit(
-            message_event, RabbitMQConfig("", queue), Message("work"), envelope=envelope
-        )
+        publisher.route(message_event, RabbitMQConfig("", queue))
+        await publisher.emit(message_event, Message("work"), envelope=envelope)
     return envelope
 
 
@@ -967,7 +967,8 @@ async def test_topology_keeps_messages_published_before_consumers(broker: _Broke
     """
     A publisher's topology should keep messages sent before any consumer has run.
 
-    Given: A publisher whose topology is a queue, and one bound to a topic exchange
+    Given: A publisher whose topology is a queue, and one bound to a topic exchange, with an
+           event routed to each
     When: A message is published to each, then consumers start
     Then: Both consumers receive their message
     """
@@ -981,17 +982,20 @@ async def test_topology_keeps_messages_published_before_consumers(broker: _Broke
     bound_config = RabbitMQConsumeConfig(
         bound, exchange=exchange, binding_key="job.*", exchange_type="topic"
     )
+    bound_event = PubSub(Message, name="BoundMessage")
     received = _Log[Message]()
 
     # Act
     async with RabbitMQPublisher(
         _URL, serializer=msgspec.json.encode, topology=[direct_config, bound_config]
     ) as publisher:
-        await publisher.emit(message_event, RabbitMQConfig("", direct), Message("direct"))
-        await publisher.emit(message_event, RabbitMQConfig(exchange, "job.run"), Message("bound"))
+        publisher.route(message_event, RabbitMQConfig("", direct))
+        publisher.route(bound_event, RabbitMQConfig(exchange, "job.run"))
+        await publisher.emit(message_event, Message("direct"))
+        await publisher.emit(bound_event, Message("bound"))
     consumer = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode)
     consumer.handle(message_event, received.append, config=direct_config)
-    consumer.handle(message_event, received.append, config=bound_config)
+    consumer.handle(bound_event, received.append, config=bound_config)
     async with consumer:
         await received.wait_for_length(2)
 
@@ -1020,7 +1024,8 @@ async def test_publisher_and_consumer_declare_alike(broker: _Broker, publisher_f
 
     # Act
     async with first, second:
-        await publisher.emit(message_event, RabbitMQConfig("", queue), Message("alike"))
+        publisher.route(message_event, RabbitMQConfig("", queue))
+        await publisher.emit(message_event, Message("alike"))
         await received.wait_for_length(1)
 
     # Assert
@@ -1050,8 +1055,9 @@ async def test_conflicting_topology_raises_on_enter(broker: _Broker):
             pass
 
     # Assert
+    publisher.route(message_event, RabbitMQConfig("", queue))
     with pytest.raises(NotConnectedError):
-        await publisher.emit(message_event, RabbitMQConfig("", queue), Message("lost"))
+        await publisher.emit(message_event, Message("lost"))
 
 
 async def test_mandatory_publish_requires_a_queue(broker: _Broker):
@@ -1059,8 +1065,8 @@ async def test_mandatory_publish_requires_a_queue(broker: _Broker):
     A mandatory publish should raise when no queue matches, and deliver when one does.
 
     Given: A topic exchange with one queue bound for "job.*"
-    When: Mandatory messages are published with "job.run" and "report.run", and a plain one
-          with "report.run"
+    When: Mandatory messages are published with "job.run" and "report.run", each message's
+          routing key coming from its payload, and a plain one with "report.run"
     Then: "job.run" is delivered, the mandatory "report.run" raises UnroutableError, and the
           plain one is dropped without an error
     """
@@ -1078,19 +1084,21 @@ async def test_mandatory_publish_requires_a_queue(broker: _Broker):
 
     # Act
     async with consumer:
-        async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
-            await publisher.emit(
-                message_event, RabbitMQConfig(exchange, "job.run", mandatory=True), Message("ok")
+        async with (
+            RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as mandatory,
+            RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as plain,
+        ):
+            by_text = RabbitMQConfig(
+                exchange,
+                lambda message: "job.run" if message.text == "ok" else "report.run",
+                mandatory=True,
             )
+            mandatory.route(message_event, by_text)
+            plain.route(message_event, RabbitMQConfig(exchange, "report.run"))
+            await mandatory.emit(message_event, Message("ok"))
             with pytest.raises(UnroutableError, match=re.escape("report.run")):
-                await publisher.emit(
-                    message_event,
-                    RabbitMQConfig(exchange, "report.run", mandatory=True),
-                    Message("lost"),
-                )
-            await publisher.emit(
-                message_event, RabbitMQConfig(exchange, "report.run"), Message("dropped")
-            )
+                await mandatory.emit(message_event, Message("lost"))
+            await plain.emit(message_event, Message("dropped"))
         await received.wait_for_length(1)
         await asyncio.sleep(0.2)
 
@@ -1111,8 +1119,9 @@ async def test_publish_to_missing_exchange_raises(broker: _Broker):
 
     # Act / Assert
     async with RabbitMQPublisher(_URL, serializer=msgspec.json.encode) as publisher:
+        publisher.route(message_event, RabbitMQConfig(missing, "any"))
         with pytest.raises(ChannelClosed, match="NOT_FOUND"):
-            await publisher.emit(message_event, RabbitMQConfig(missing, "any"), Message("x"))
+            await publisher.emit(message_event, Message("x"))
 
 
 class _Proxy:
@@ -1238,12 +1247,13 @@ async def test_publisher_publishes_after_outage(broker: _Broker, proxy: _Proxy):
         await proxy.outage()
         await _wait_for_state(publisher, ConnectionState.RECONNECTING)
         started = loop.time()
+        publisher.route(message_event, RabbitMQConfig("", queue))
         with pytest.raises(NotConnectedError, match="reconnecting"):
-            await publisher.emit(message_event, RabbitMQConfig("", queue), Message("lost"))
+            await publisher.emit(message_event, Message("lost"))
         failed_after = loop.time() - started
         await proxy.start()
         await _wait_for_state(publisher, ConnectionState.CONNECTED)
-        await publisher.emit(message_event, RabbitMQConfig("", queue), Message("sent"))
+        await publisher.emit(message_event, Message("sent"))
 
     # Assert
     assert failed_after < 0.1
@@ -1481,7 +1491,8 @@ async def test_trace_spans_request_publish_and_handler(broker: _Broker):
     )
 
     async def place_order(request: Request) -> PlainTextResponse:
-        await publisher.emit(message_event, RabbitMQConfig("", queue), Message("lamp"))
+        publisher.route(message_event, RabbitMQConfig("", queue))
+        await publisher.emit(message_event, Message("lamp"))
         return PlainTextResponse("placed")
 
     app = OpenTelemetryMiddleware(

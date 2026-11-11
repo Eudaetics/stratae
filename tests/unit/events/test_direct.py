@@ -353,7 +353,7 @@ def test_equal_event_reaches_handler(bus: DirectBus):
     registered = bus.handle(handled_event, handler)
 
     # Act
-    bus.emit(emitted_event, None, _TaskCreated(4))
+    bus.emit(emitted_event, _TaskCreated(4))
 
     # Assert
     handler.assert_called_once_with(_TaskCreated(4))
@@ -447,7 +447,7 @@ def test_remove_ignores_handler_from_another_bus(bus: DirectBus):
     bus.remove(foreign)
 
     # Assert
-    other.emit(_task_created, None, _TaskCreated(1))
+    other.emit(_task_created, _TaskCreated(1))
     handler.assert_called_once_with(_TaskCreated(1))
 
 
@@ -461,13 +461,13 @@ def test_handler_registered_after_first_emits_receives_next(bus: DirectBus):
     """
     # Arrange
     first, second = Mock(), Mock()
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
     bus.handle(_task_created, first)
-    bus.emit(_task_created, None, _TaskCreated(2))
+    bus.emit(_task_created, _TaskCreated(2))
     bus.handle(_task_created, second)
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(3))
+    bus.emit(_task_created, _TaskCreated(3))
 
     # Assert
     assert first.call_count == 2
@@ -483,7 +483,7 @@ def test_emit_without_handlers_reaches_none(bus: DirectBus):
     Then: The emit returns None, and the bus still has no handlers for it
     """
     # Act
-    result = bus.emit(_task_created, None, _TaskCreated(1))
+    result = bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert result is None
@@ -643,7 +643,7 @@ def test_dispatcher_receives_registered_handlers_as_given():
     bus.handle(_task_created, Mock())
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert len(received) == 1
@@ -670,9 +670,9 @@ def test_handler_registered_during_emit_waits_for_next_emit(bus: DirectBus):
     bus.handle(_task_created, register_late)
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
     late.assert_not_called()
-    bus.emit(_task_created, None, _TaskCreated(2))
+    bus.emit(_task_created, _TaskCreated(2))
 
     # Assert
     late.assert_called_once_with(_TaskCreated(2))
@@ -692,8 +692,8 @@ def test_handler_removed_during_emit_still_runs_in_that_emit(bus: DirectBus):
     bus.handle(_task_created, lambda _: bus.remove(removed))
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
-    bus.emit(_task_created, None, _TaskCreated(2))
+    bus.emit(_task_created, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(2))
 
     # Assert
     removed_mock.assert_called_once_with(_TaskCreated(1))
@@ -769,7 +769,7 @@ def test_emit_dispatches_payload(bus: DirectBus):
     payload = _TaskCreated(6)
 
     # Act
-    bus.emit(_task_created, None, payload)
+    bus.emit(_task_created, payload)
 
     # Assert
     handler.assert_called_once_with(payload)
@@ -791,7 +791,7 @@ def test_emit_invokes_all_handlers(bus: DirectBus):
     payload = _TaskCreated(7)
 
     # Act
-    bus.emit(_task_created, None, payload)
+    bus.emit(_task_created, payload)
 
     # Assert
     handler_a.assert_called_once_with(payload)
@@ -823,7 +823,7 @@ def test_handler_removing_registration_during_dispatch_does_not_break_other_hand
     payload = _TaskCreated(12)
 
     # Act
-    bus.emit(_task_created, None, payload)
+    bus.emit(_task_created, payload)
 
     # Assert
     for handler in other_handlers:
@@ -868,7 +868,7 @@ def test_request_emit_returns_responder_reply(bus: DirectBus):
     payload = _BookQuery("dune")
 
     # Act
-    result = bus.emit(_find_book, None, payload)
+    result = bus.emit(_find_book, payload)
 
     # Assert
     assert result is reply
@@ -903,7 +903,7 @@ def test_request_emit_raises_without_responder(bus: DirectBus):
     Then: A NoResponderError should be raised
     """
     with pytest.raises(NoResponderError):
-        bus.emit(_find_book, None, _BookQuery("dune"))
+        bus.emit(_find_book, _BookQuery("dune"))
 
 
 def test_request_emit_raises_with_multiple_responders(bus: DirectBus):
@@ -920,7 +920,7 @@ def test_request_emit_raises_with_multiple_responders(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(MultipleRespondersError):
-        bus.emit(_find_book, None, _BookQuery("dune"))
+        bus.emit(_find_book, _BookQuery("dune"))
 
 
 def test_request_responder_exception_propagates_directly(bus: DirectBus):
@@ -937,7 +937,7 @@ def test_request_responder_exception_propagates_directly(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(ValueError, match="boom") as exc_info:
-        bus.emit(_find_book, None, _BookQuery("dune"))
+        bus.emit(_find_book, _BookQuery("dune"))
 
     assert exc_info.value is error
 
@@ -958,7 +958,7 @@ def test_request_responder_registered_via_decorator(bus: DirectBus):
         return reply
 
     # Act
-    result = bus.emit(_find_book, None, _BookQuery("dune"))
+    result = bus.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -1114,7 +1114,7 @@ def test_request_reply_returned_with_envelope(bus_with_envelope: DirectBus):
     bus_with_envelope.handle(_find_book, Mock(return_value=reply))
 
     # Act
-    result = bus_with_envelope.emit(_find_book, None, _BookQuery("dune"))
+    result = bus_with_envelope.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -1155,7 +1155,7 @@ def test_custom_pattern_dispatched_via_dispatchers_argument():
     bus.handle(_quotes, lambda query: 2 * len(query.query))
 
     # Act
-    replies = bus.emit(_quotes, None, _BookQuery("dune"))
+    replies = bus.emit(_quotes, _BookQuery("dune"))
 
     # Assert
     assert sorted(replies) == [4, 8]
@@ -1182,7 +1182,7 @@ def test_dispatchers_argument_replaces_default():
     bus.handle(_task_created, handler)
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert dispatched == [_TaskCreated(1)]
@@ -1203,7 +1203,7 @@ def test_request_subclass_dispatched_as_request(bus: DirectBus):
     bus.handle(command, Mock(return_value=reply))
 
     # Act
-    result = bus.emit(command, None, _BookQuery("dune"))
+    result = bus.emit(command, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -1246,7 +1246,7 @@ def test_unsupported_pattern_refused_at_emit(bus: DirectBus):
     """
     # Act / Assert
     with pytest.raises(TypeError, match="no dispatcher for _Gather"):
-        bus.emit(_quotes, None, _BookQuery("dune"))
+        bus.emit(_quotes, _BookQuery("dune"))
 
 
 # endregion
@@ -1307,7 +1307,7 @@ def test_emit_and_handle_hooks_on_pubsub(bus: DirectBus):
     bus.handle(_task_created, lambda task: None)
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(4), hooks=_log_hooks(log, "publish"))
+    bus.emit(_task_created, _TaskCreated(4), hooks=_log_hooks(log, "publish"))
 
     # Assert
     assert log == [
@@ -1336,7 +1336,7 @@ def test_handle_hooks_see_responder_failure(bus: DirectBus):
 
     # Act
     with pytest.raises(LookupError, match="no such book"):
-        bus.emit(_find_book, None, _BookQuery("dune"))
+        bus.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert log == ["handle before _BookQuery", "handle failure no such book"]
@@ -1386,7 +1386,7 @@ def test_hooks_run_inside_envelope(bus_with_envelope: DirectBus):
     )
 
     # Act
-    bus_with_envelope.emit(_task_created, None, _TaskCreated(1), hooks=Hooks(before=(record,)))
+    bus_with_envelope.emit(_task_created, _TaskCreated(1), hooks=Hooks(before=(record,)))
 
     # Assert
     assert len(seen) == 3
@@ -1435,7 +1435,7 @@ def test_async_publish_hooks_refused_at_emit(bus: DirectBus):
     """
     # Act / Assert
     with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
-        bus.emit(_task_created, None, _TaskCreated(1), hooks=Hooks(before=(_async_before,)))
+        bus.emit(_task_created, _TaskCreated(1), hooks=Hooks(before=(_async_before,)))
 
 
 def test_observing_hook_returning_awaitable_is_logged(
@@ -1467,7 +1467,7 @@ def test_observing_hook_returning_awaitable_is_logged(
     )
 
     # Act
-    reply = bus.emit(_find_book, None, _BookQuery("dune"), hooks=hooks)
+    reply = bus.emit(_find_book, _BookQuery("dune"), hooks=hooks)
 
     # Assert
     assert reply.title == "dune"
@@ -1527,7 +1527,7 @@ def test_middleware_wraps_hooks_and_handlers():
     bus.handle(_task_created, lambda task: log.append("handler"), hooks=_labelled_hooks(log, "h"))
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1), hooks=_labelled_hooks(log, "p"))
+    bus.emit(_task_created, _TaskCreated(1), hooks=_labelled_hooks(log, "p"))
 
     # Assert
     assert log == [
@@ -1563,7 +1563,7 @@ def test_handle_middleware_sees_event_and_reply():
     bus.handle(_find_book, lambda query: _BookResult(query.query))
 
     # Act
-    reply = bus.emit(_find_book, None, _BookQuery("dune"))
+    reply = bus.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert reply.title == "dune"
@@ -1590,7 +1590,7 @@ def test_publish_middleware_inside_envelope():
     bus.handle(_task_created, lambda task: seen.append(Envelope.current()))
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert seen[0] is not None
@@ -1622,7 +1622,7 @@ def test_handle_middleware_raising_on_entry_refuses_handler():
 
     # Act / Assert
     with pytest.raises(PermissionError, match="rate limited"):
-        bus.emit(_find_book, None, _BookQuery("dune"))
+        bus.emit(_find_book, _BookQuery("dune"))
     assert calls == []
 
 
@@ -1656,7 +1656,7 @@ def test_swallowed_interrupt_stops_fan_out():
 
     # Act / Assert
     with pytest.raises(KeyboardInterrupt):
-        bus.emit(_task_created, None, _TaskCreated(1))
+        bus.emit(_task_created, _TaskCreated(1))
     assert ran == ["handler"]
 
 
@@ -1696,7 +1696,7 @@ def test_unsupported_pattern_fails_before_middleware():
 
     # Act / Assert
     with pytest.raises(TypeError, match="no dispatcher for _Gather"):
-        bus.emit(_quotes, None, _BookQuery("dune"))
+        bus.emit(_quotes, _BookQuery("dune"))
     assert log == []
 
 
@@ -1718,7 +1718,7 @@ def test_kept_call_does_not_keep_bus_alive():
 
     bus = DirectBus(middleware=Middleware(publish=(keep,)))
     bus.handle(_find_book, lambda query: _BookResult(query.query))
-    bus.emit(_find_book, None, _BookQuery("dune"))
+    bus.emit(_find_book, _BookQuery("dune"))
     collected = weakref.ref(bus)
 
     # Act
@@ -1774,7 +1774,7 @@ def test_handle_middleware_reads_publish_headers():
     bus.handle(_task_created, lambda task: None)
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert seen == [{"x-tenant": "acme"}, "read-only"]
@@ -1801,12 +1801,12 @@ def test_nested_emit_has_own_headers():
     bus.handle(_find_book, lambda query: _BookResult(query.query))
 
     def ask(_: _TaskCreated) -> None:
-        bus.emit(_find_book, None, _BookQuery("dune"))
+        bus.emit(_find_book, _BookQuery("dune"))
 
     bus.handle(_task_created, ask)
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     outer = ("_TaskCreated", {"x-event": "_TaskCreated"})
@@ -1836,7 +1836,7 @@ def test_reserved_header_refuses_emit(name: str):
 
     # Act / Assert
     with pytest.raises(ValueError, match=f"'{name}' is a header the bus sets itself"):
-        bus.emit(_task_created, None, _TaskCreated(1))
+        bus.emit(_task_created, _TaskCreated(1))
     assert ran == []
 
 
@@ -1855,7 +1855,7 @@ def test_handle_middleware_without_publish_middleware_sees_no_headers():
 
     # Act
     with receiving({"x-tenant": "acme"}):
-        bus.emit(_task_created, None, _TaskCreated(1))
+        bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert seen == [("_TaskCreated", {}), ("_TaskCreated", {})]
@@ -1892,12 +1892,12 @@ def test_envelope_ids_come_from_bus_source():
     @bus.handle(_task_created)
     def outer(_: _TaskCreated) -> None:
         seen.append(cast(Envelope, Envelope.current()))
-        bus.emit(inner, None, NoPayload())
+        bus.emit(inner, NoPayload())
 
     bus.handle(inner, lambda: seen.append(cast(Envelope, Envelope.current())))
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     root, child = seen
@@ -1929,7 +1929,7 @@ def test_handler_context_changes_stay_with_handler(bus: DirectBus):
     bus.handle(_task_created, handler)
 
     # Act
-    bus.emit(_task_created, None, _TaskCreated(1))
+    bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert seen == ["unset", "unset"]
@@ -1952,7 +1952,7 @@ def test_handlers_see_emitter_context(bus: DirectBus):
 
     # Act
     try:
-        bus.emit(_task_created, None, _TaskCreated(1))
+        bus.emit(_task_created, _TaskCreated(1))
     finally:
         _marker.reset(token)
 

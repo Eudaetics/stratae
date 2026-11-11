@@ -11,7 +11,6 @@ DirectBus and AsyncDirectBus (routes):
 - A handler removed after binding doesn't receive the bound callable's next emit.
 - Two separately built equal events share their handlers, whichever is bound and whichever is
   handled, in either order.
-- A serializer given to bind is ignored, as emit ignores it.
 """
 
 from collections.abc import Callable
@@ -160,26 +159,3 @@ async def test_equal_events_share_handlers(bus: _Bus, bind_first: bool) -> None:
 
     # Assert
     handler.assert_called_once_with(payload)
-
-
-async def test_serializer_given_to_bind_is_ignored(bus: _Bus) -> None:
-    """
-    A serializer given to bind should be ignored, as emit ignores it: nothing is serialized.
-
-    Given: A handler, and a callable bound with a serializer
-    When: The bound callable is called
-    Then: The handler receives the payload itself, and the serializer isn't called
-    """
-    # Arrange
-    event = PubSub(_Placed)
-    handler, serializer = Mock(), Mock()
-    bus.handle(event, handler)
-    bound = bus.bind(event, serializer=serializer)
-    payload = _Placed(5)
-
-    # Act
-    await _call(bound, payload)
-
-    # Assert
-    handler.assert_called_once_with(payload)
-    serializer.assert_not_called()

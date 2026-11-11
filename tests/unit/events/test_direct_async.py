@@ -498,7 +498,7 @@ async def test_dispatcher_receives_registered_handlers_as_given():
     bus.handle(_task_created, AsyncMock())
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(1))
+    await bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert len(received) == 1
@@ -526,9 +526,9 @@ async def test_handler_registered_during_emit_waits_for_next_emit(bus: AsyncDire
     bus.handle(_task_created, register_late)
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(1))
+    await bus.emit(_task_created, _TaskCreated(1))
     late.assert_not_called()
-    await bus.emit(_task_created, None, _TaskCreated(2))
+    await bus.emit(_task_created, _TaskCreated(2))
 
     # Assert
     late.assert_awaited_once_with(_TaskCreated(2))
@@ -555,8 +555,8 @@ async def test_handler_removed_during_emit_still_runs_in_that_emit(
     bus.handle(_task_created, remove)
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(1))
-    await bus.emit(_task_created, None, _TaskCreated(2))
+    await bus.emit(_task_created, _TaskCreated(1))
+    await bus.emit(_task_created, _TaskCreated(2))
 
     # Assert
     removed_mock.assert_called_once_with(_TaskCreated(1))
@@ -640,7 +640,7 @@ async def test_emit_dispatches_directly(bus: AsyncDirectBus):
     payload = _TaskCreated(8)
 
     # Act
-    await bus.emit(_task_created, None, payload)
+    await bus.emit(_task_created, payload)
 
     # Assert
     handler.assert_called_once_with(payload)
@@ -662,7 +662,7 @@ async def test_raising_handler_does_not_prevent_other_handlers(bus: AsyncDirectB
 
     # Act
     with pytest.raises(ExceptionGroup):
-        await bus.emit(_task_created, None, payload)
+        await bus.emit(_task_created, payload)
 
     # Assert
     second_handler.assert_called_once_with(payload)
@@ -685,7 +685,7 @@ async def test_handler_exceptions_collected_into_exception_group(bus: AsyncDirec
 
     # Act / Assert
     with pytest.raises(ExceptionGroup) as exc_info:
-        await bus.emit(_task_created, None, payload)
+        await bus.emit(_task_created, payload)
 
     assert set(exc_info.value.exceptions) == {error_a, error_b}
 
@@ -706,7 +706,7 @@ async def test_handler_cancelled_error_is_not_swallowed(bus: AsyncDirectBus):
 
     # Act / Assert
     with pytest.raises(BaseExceptionGroup) as exc_info:
-        await bus.emit(_task_created, None, _TaskCreated(12))
+        await bus.emit(_task_created, _TaskCreated(12))
 
     assert not isinstance(exc_info.value, ExceptionGroup)
     assert {type(exc) for exc in exc_info.value.exceptions} == {asyncio.CancelledError, ValueError}
@@ -742,7 +742,7 @@ async def test_handler_context_changes_stay_with_handler(bus: AsyncDirectBus):
     bus.handle(_task_created, async_handler)
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(1))
+    await bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert before == ["unset", "unset", "unset"]
@@ -773,7 +773,7 @@ async def test_several_async_handlers_run_concurrently_in_own_contexts(bus: Asyn
     bus.handle(_task_created, handler)
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(2))
+    await bus.emit(_task_created, _TaskCreated(2))
 
     # Assert
     assert before == ["unset", "unset"]
@@ -795,7 +795,7 @@ async def test_lone_async_handler_cancelled_error_is_grouped(bus: AsyncDirectBus
 
     # Act / Assert
     with pytest.raises(BaseExceptionGroup) as exc_info:
-        await bus.emit(_task_created, None, _TaskCreated(3))
+        await bus.emit(_task_created, _TaskCreated(3))
 
     assert not isinstance(exc_info.value, ExceptionGroup)
     assert {type(exc) for exc in exc_info.value.exceptions} == {asyncio.CancelledError, ValueError}
@@ -822,7 +822,7 @@ async def test_cancelling_emit_cancels_lone_async_handler(bus: AsyncDirectBus):
             raise
 
     bus.handle(_task_created, handler)
-    emitting = asyncio.create_task(bus.emit(_task_created, None, _TaskCreated(4)))
+    emitting = asyncio.create_task(bus.emit(_task_created, _TaskCreated(4)))
     await started.wait()
 
     # Act
@@ -859,7 +859,7 @@ def test_closing_emit_closes_lone_async_handler(bus: AsyncDirectBus):
             closed.append(task.task_id)
 
     bus.handle(_task_created, handler)
-    emit = bus.emit(_task_created, None, _TaskCreated(5))
+    emit = bus.emit(_task_created, _TaskCreated(5))
 
     # Act
     emit.send(None)
@@ -931,7 +931,7 @@ async def test_request_emit_returns_async_responder_reply(bus: AsyncDirectBus):
     bus.handle(_find_book, AsyncMock(return_value=reply))
 
     # Act
-    result = await bus.emit(_find_book, None, _BookQuery("dune"))
+    result = await bus.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -950,7 +950,7 @@ async def test_request_emit_returns_sync_responder_reply(bus: AsyncDirectBus):
     bus.handle(_find_book, Mock(return_value=reply))
 
     # Act
-    result = await bus.emit(_find_book, None, _BookQuery("dune"))
+    result = await bus.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -985,7 +985,7 @@ async def test_request_emit_raises_without_responder(bus: AsyncDirectBus):
     Then: A NoResponderError should be raised
     """
     with pytest.raises(NoResponderError):
-        await bus.emit(_find_book, None, _BookQuery("dune"))
+        await bus.emit(_find_book, _BookQuery("dune"))
 
 
 async def test_request_emit_raises_with_multiple_responders(bus: AsyncDirectBus):
@@ -1002,7 +1002,7 @@ async def test_request_emit_raises_with_multiple_responders(bus: AsyncDirectBus)
 
     # Act / Assert
     with pytest.raises(MultipleRespondersError):
-        await bus.emit(_find_book, None, _BookQuery("dune"))
+        await bus.emit(_find_book, _BookQuery("dune"))
 
 
 async def test_request_responder_exception_propagates_directly(bus: AsyncDirectBus):
@@ -1019,7 +1019,7 @@ async def test_request_responder_exception_propagates_directly(bus: AsyncDirectB
 
     # Act / Assert
     with pytest.raises(ValueError, match="boom") as exc_info:
-        await bus.emit(_find_book, None, _BookQuery("dune"))
+        await bus.emit(_find_book, _BookQuery("dune"))
 
     assert exc_info.value is error
 
@@ -1041,7 +1041,7 @@ async def test_request_responder_registered_via_decorator(bus: AsyncDirectBus):
         return reply
 
     # Act
-    result = await bus.emit(_find_book, None, _BookQuery("dune"))
+    result = await bus.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -1220,7 +1220,7 @@ async def test_request_reply_returned_with_envelope(bus_with_envelope: AsyncDire
     bus_with_envelope.handle(_find_book, AsyncMock(return_value=reply))
 
     # Act
-    result = await bus_with_envelope.emit(_find_book, None, _BookQuery("dune"))
+    result = await bus_with_envelope.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -1247,7 +1247,7 @@ async def test_async_callable_object_handler_is_awaited(bus: AsyncDirectBus):
     bus.handle(_task_created, handler)
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(13))
+    await bus.emit(_task_created, _TaskCreated(13))
 
     # Assert
     assert handler.received == [_TaskCreated(13)]
@@ -1271,7 +1271,7 @@ async def test_async_callable_object_responder_reply_is_awaited(bus: AsyncDirect
     bus.handle(_find_book, Responder())
 
     # Act
-    result = await bus.emit(_find_book, None, _BookQuery("dune"))
+    result = await bus.emit(_find_book, _BookQuery("dune"))
 
     # Assert
     assert result is reply
@@ -1304,7 +1304,7 @@ async def test_custom_pattern_dispatched_via_async_dispatcher():
     bus.handle(_quotes, double_length)
 
     # Act
-    replies = await bus.emit(_quotes, None, _BookQuery("dune"))
+    replies = await bus.emit(_quotes, _BookQuery("dune"))
 
     # Assert
     assert sorted(replies) == [4, 8]
@@ -1409,7 +1409,7 @@ async def test_sync_handler_with_async_handle_hooks_awaited(bus: AsyncDirectBus)
     bus.handle(_task_created, lambda task: None, hooks=hooks)
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(7))
+    await bus.emit(_task_created, _TaskCreated(7))
 
     # Assert
     assert log == ["before _TaskCreated", "success None"]
@@ -1433,9 +1433,7 @@ async def test_publish_hooks_run_inside_envelope(bus_with_envelope: AsyncDirectB
     bus_with_envelope.handle(_task_created, lambda task: seen.append(Envelope.current()))
 
     # Act
-    await bus_with_envelope.emit(
-        _task_created, None, _TaskCreated(1), hooks=Hooks(before=(record,))
-    )
+    await bus_with_envelope.emit(_task_created, _TaskCreated(1), hooks=Hooks(before=(record,)))
 
     # Assert
     assert len(seen) == 2
@@ -1508,9 +1506,7 @@ async def test_middleware_wraps_hooks_inside_envelope():
     )
 
     # Act
-    await bus.emit(
-        _task_created, None, _TaskCreated(1), hooks=Hooks(before=(_alog(log, "p before"),))
-    )
+    await bus.emit(_task_created, _TaskCreated(1), hooks=Hooks(before=(_alog(log, "p before"),)))
 
     # Assert
     assert log == [
@@ -1544,7 +1540,7 @@ async def test_publish_middleware_without_hooks():
     bus.handle(find_book, respond)
 
     # Act
-    reply = await bus.emit(find_book, None, _BookQuery("dune"))
+    reply = await bus.emit(find_book, _BookQuery("dune"))
 
     # Assert
     assert reply == "Dune"
@@ -1572,7 +1568,7 @@ async def test_sync_middleware_entered_alongside_async():
     bus.handle(_task_created, lambda task: log.append("handler"))
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(1))
+    await bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert log == ["sync in", "async in False", "handler", "async out", "sync out"]
@@ -1636,8 +1632,8 @@ async def test_handle_middleware_reads_publish_headers():
 
     # Act
     await asyncio.gather(
-        bus.emit(_task_created, None, _TaskCreated(1)),
-        bus.emit(_task_created, None, _TaskCreated(2)),
+        bus.emit(_task_created, _TaskCreated(1)),
+        bus.emit(_task_created, _TaskCreated(2)),
     )
 
     # Assert
@@ -1669,7 +1665,7 @@ async def test_reserved_header_refuses_emit():
 
     # Act / Assert
     with pytest.raises(ValueError, match="'x-correlation-id' is a header the bus sets itself"):
-        await bus.emit(_find_book, None, _BookQuery("dune"))
+        await bus.emit(_find_book, _BookQuery("dune"))
     assert ran == []
 
 
@@ -1707,7 +1703,7 @@ async def test_envelope_ids_come_from_bus_source():
     bus.handle(_task_created, record)
 
     # Act
-    await bus.emit(_task_created, None, _TaskCreated(1))
+    await bus.emit(_task_created, _TaskCreated(1))
 
     # Assert
     [envelope] = seen
@@ -1738,8 +1734,8 @@ async def test_emit_raises_only_when_awaited(bus: AsyncDirectBus):
     Then: Each call returns a coroutine without raising, and awaiting it raises
     """
     # Act
-    no_responder = bus.emit(_find_book, None, _BookQuery("dune"))
-    unsupported = bus.emit(_quotes, None, _BookQuery("dune"))
+    no_responder = bus.emit(_find_book, _BookQuery("dune"))
+    unsupported = bus.emit(_quotes, _BookQuery("dune"))
 
     # Assert
     assert inspect.iscoroutine(no_responder)
@@ -1768,7 +1764,7 @@ async def test_sync_responder_runs_when_awaited(bus: AsyncDirectBus):
     bus.handle(_find_book, respond)
 
     # Act
-    emitted = bus.emit(_find_book, None, _BookQuery("dune"))
+    emitted = bus.emit(_find_book, _BookQuery("dune"))
     before = list(calls)
     reply = await emitted
 
@@ -1797,7 +1793,7 @@ async def test_custom_dispatcher_awaitable_emit_is_coroutine():
     bus.handle(_quotes, lambda query: 1)
 
     # Act
-    emitted = bus.emit(_quotes, None, _BookQuery("dune"))
+    emitted = bus.emit(_quotes, _BookQuery("dune"))
     result = await asyncio.create_task(emitted)
 
     # Assert

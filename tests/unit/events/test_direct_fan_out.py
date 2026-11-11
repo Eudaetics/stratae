@@ -51,7 +51,7 @@ def bus(request: pytest.FixtureRequest) -> _Bus:
 
 async def _emit(bus: _Bus, event: Any, payload: Any) -> Any:
     """Emit on either bus, awaiting the async bus's result."""
-    result = bus.emit(event, None, payload)
+    result = bus.emit(event, payload)
     if isawaitable(result):
         return await result
     return result

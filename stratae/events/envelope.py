@@ -262,8 +262,8 @@ class EnvelopeConfig:
     def on_audit(order: OrderPlaced) -> None:
         print(f"audit: version {Envelope.current().message_id.version}")
 
-    orders.emit(order_placed, None, OrderPlaced(1))
-    audit.emit(order_placed, None, OrderPlaced(1))
+    orders.emit(order_placed, OrderPlaced(1))
+    audit.emit(order_placed, OrderPlaced(1))
     ```
     ```{output}
     orders: version 7

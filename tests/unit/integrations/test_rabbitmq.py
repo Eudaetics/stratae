@@ -19,7 +19,18 @@ RabbitMQPublisher:
 - emit raises NotConnectedError before the context is entered.
 - emit publishes the serialized payload to the configured exchange
   and routing key.
-- emit uses the binding's serializer when one is provided.
+- emit uses the route's serializer when its config has one.
+- The outbox encodes a record with its RabbitMQ config's serializer, if it has one.
+- emit refuses an event with no route, and publishes nothing.
+- An event keeps one route: routing or binding it again to an equal config is accepted, and to
+  a different config raises ValueError.
+- A config whose routing key is a function addresses each payload, gives a message's config
+  with its key, has its exchange as its destination, and is Addressed.
+- A routing-key function publishes each message with its own key, and publish middleware sees
+  that message's concrete config.
+- An Encoded payload is published as its bytes, at its address if it has one; on a
+  routing-key function route, one without an address raises ValueError and isn't published.
+- The outbox stores a record's routing key as its address, and the relay publishes it there.
 - Awaiting a factory-bound callable produced by bind constructs and publishes the payload.
 - emit declares an exchange_type-carrying config's exchange once, before
   its first publish.
@@ -76,6 +87,7 @@ import dataclasses
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any, assert_type, cast
 from unittest.mock import AsyncMock, call
 from uuid import UUID
@@ -89,6 +101,8 @@ from stratae.events import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
+    Addressed,
+    Encoded,
     Envelope,
     EnvelopeConfig,
     Hooks,
@@ -101,7 +115,7 @@ from stratae.events import (
     Request,
 )
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
-from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer
+from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer, OutboxRelay
 from stratae.integrations.rabbitmq import (
     ConnectionState,
     RabbitMQConfig,
@@ -192,7 +206,7 @@ def test_outbox_accepts_equal_configs_on_one_route():
     outbox.bind(_order_placed, config=OutboxConfig(RabbitMQConfig("events", "order.placed")))
 
     outbox.bind(_order_placed, config=OutboxConfig(RabbitMQConfig("events", "order.placed")))
-    with pytest.raises(ValueError, match="already bound"):
+    with pytest.raises(ValueError, match="already routed"):
         outbox.bind(_order_placed, config=OutboxConfig(RabbitMQConfig("events", "other")))
 
 
@@ -304,8 +318,9 @@ async def test_failed_close_leaves_publisher_disconnected(
             pass
 
     # Assert
+    publisher.route(_order_placed, _config)
     with pytest.raises(NotConnectedError):
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
 
 async def test_emit_without_connection_raises(publisher: RabbitMQPublisher):
@@ -316,8 +331,9 @@ async def test_emit_without_connection_raises(publisher: RabbitMQPublisher):
     When: emit is awaited
     Then: A NotConnectedError should be raised
     """
+    publisher.route(_order_placed, _config)
     with pytest.raises(NotConnectedError):
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
 
 async def test_emit_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
@@ -337,13 +353,11 @@ async def test_emit_raises_not_implemented_for_request(publisher: RabbitMQPublis
     with pytest.raises(NotImplementedError):
         await publisher.emit(
             request_event,  # pyright: ignore[reportArgumentType]
-            _config,
             _OrderPlaced(1),
         )
     with pytest.raises(NotImplementedError):
         await publisher.emit(
             command_event,  # pyright: ignore[reportArgumentType]
-            _config,
             _OrderPlaced(1),
         )
 
@@ -421,8 +435,9 @@ async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, chann
     payload = _OrderPlaced(7)
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(_order_placed, _config, payload)
+        await publisher.emit(_order_placed, payload)
 
     # Assert
     call = channel.basic_publish.await_args
@@ -445,20 +460,205 @@ async def test_emit_publishes_empty_body_for_signal_event(
     heartbeat_event = PubSub(name="heartbeat")
 
     # Act
+    publisher.route(heartbeat_event, _config)
     async with publisher:
-        await publisher.emit(heartbeat_event, _config, NoPayload())
+        await publisher.emit(heartbeat_event, NoPayload())
 
     # Assert
     call = channel.basic_publish.await_args
     assert call.args[0] == b""
 
 
+async def test_emit_refuses_an_unrouted_event(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    ``emit`` should refuse an event with no route, and publish nothing.
+
+    Given: A connected publisher with nothing routed
+    When: An event is emitted
+    Then: LookupError names the event, and nothing is published
+    """
+    # Act / Assert
+    async with publisher:
+        with pytest.raises(LookupError, match="no route for '_OrderPlaced'"):
+            await publisher.emit(_order_placed, _OrderPlaced(1))
+    channel.basic_publish.assert_not_awaited()
+
+
+def test_route_refuses_a_second_config(publisher: RabbitMQPublisher):
+    """
+    An event should keep one route per publisher, however it's routed.
+
+    Given: An event routed to a config
+    When: It's routed again to an equal config, and bound to it; then routed and bound to a
+          different config
+    Then: The equal config is accepted both ways, and the different one raises ValueError
+    """
+    # Arrange
+    publisher.route(_order_placed, _config)
+    other = RabbitMQConfig("audit", "order.placed")
+
+    # Act / Assert
+    publisher.route(_order_placed, RabbitMQConfig("events", "order.placed"))
+    publisher.bind(_order_placed, config=_config)
+    with pytest.raises(ValueError, match="already routed to another RabbitMQConfig"):
+        publisher.route(_order_placed, other)
+    with pytest.raises(ValueError, match="already routed to another RabbitMQConfig"):
+        publisher.bind(_order_placed, config=other)
+
+
+def test_config_with_routing_key_function():
+    """
+    A config whose routing key is a function should address each payload, and have a destination.
+
+    Given: A config whose routing key comes from the payload, and one with a fixed key
+    When: Each is asked for a payload's address, and the first gives a message's config
+    Then: The first gives the payload's key, and the fixed one gives None. The message's config
+          equals a config built with that key. The function config's destination is its
+          exchange, and it's Addressed
+    """
+    # Arrange
+    by_order = RabbitMQConfig("events", lambda order: f"order.{order.order_id}")
+
+    # Act / Assert
+    assert by_order.address(_OrderPlaced(3)) == "order.3"
+    assert _config.address(_OrderPlaced(3)) is None
+    assert by_order.at("order.3") == RabbitMQConfig("events", "order.3")
+    assert by_order.messaging_destination.name == "events"
+    assert isinstance(by_order, Addressed)
+
+
+async def test_emit_routes_by_payload(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    A routing-key function should give each message its own key, which middleware sees.
+
+    Given: An event routed to a config whose routing key comes from the payload, and publish
+           middleware recording each call's config
+    When: Two payloads with different keys are emitted
+    Then: Each is published with its own key, and middleware saw each one's concrete config
+    """
+    # Arrange
+    seen: list[tuple[object, str | None]] = []
+
+    @asynccontextmanager
+    async def record(call: PublishCall) -> AsyncGenerator[None]:
+        seen.append((call.config.routing_key, call.config.messaging_destination.name))
+        yield
+
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=Middleware(publish=(record,))
+    )
+    publisher.route(
+        _order_placed, RabbitMQConfig("events", lambda order: f"order.{order.order_id}")
+    )
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(2))
+
+    # Assert
+    keys = [call.kwargs["routing_key"] for call in channel.basic_publish.await_args_list]
+    assert keys == ["order.1", "order.2"]
+    assert seen == [("order.1", "events:order.1"), ("order.2", "events:order.2")]
+
+
+async def test_emit_sends_encoded_payloads_as_they_are(
+    publisher: RabbitMQPublisher, channel: AsyncMock
+):
+    """
+    An Encoded payload should be published as its bytes, at its address if it has one.
+
+    Given: One event routed to a fixed key, and another to a routing-key function
+    When: Encoded payloads are emitted: on the fixed route, then on the function route with an
+          address, then without one
+    Then: Both addressed bodies are published unchanged, the second at its address; the one
+          without an address raises ValueError and isn't published
+    """
+    # Arrange
+    by_order = PubSub(_OrderPlaced, name="by_order")
+    publisher.route(_order_placed, _config)
+    publisher.route(by_order, RabbitMQConfig("events", lambda order: "never.used"))
+
+    # Act
+    async with publisher:
+        await publisher.emit(_order_placed, Encoded(b"fixed"))
+        await publisher.emit(by_order, Encoded(b"addressed", "order.7"))
+        with pytest.raises(ValueError, match="needs its address"):
+            await publisher.emit(by_order, Encoded(b"lost"))
+
+    # Assert
+    published = [
+        (call.args[0], call.kwargs["routing_key"]) for call in channel.basic_publish.await_args_list
+    ]
+    assert published == [(b"fixed", "order.placed"), (b"addressed", "order.7")]
+
+
+async def test_outbox_relays_to_each_records_address(
+    publisher: RabbitMQPublisher, channel: AsyncMock
+):
+    """
+    The outbox should store each record's routing key, and the relay should publish it there.
+
+    Given: An outbox binding routed by a config whose routing key comes from the payload
+    When: A payload is written, and the relay publishes it
+    Then: The record stores its key as its address, and is published there, with its stored
+          body and message id
+    """
+    # Arrange
+    store = InMemoryOutboxStore()
+    outbox = OutboxProducer(store, serializer=_encode)
+    by_order = RabbitMQConfig("events", lambda order: f"order.{order.order_id}")
+    place = outbox.bind(_order_placed, factory=_OrderPlaced, config=OutboxConfig(by_order))
+
+    # Act
+    await place(order_id=4)
+    (record,) = store.pending()
+    async with publisher:
+        await OutboxRelay(store, publisher, outbox).run_once()
+
+    # Assert
+    published = channel.basic_publish.await_args
+    assert record.address == "order.4"
+    assert published.kwargs["routing_key"] == "order.4"
+    assert published.args[0] == record.body
+    assert published.kwargs["properties"].message_id == str(record.id)
+
+
+async def test_outbox_encodes_with_the_configs_serializer(
+    publisher: RabbitMQPublisher, channel: AsyncMock
+):
+    """
+    The outbox should encode a record with its RabbitMQ config's serializer, if it has one.
+
+    Given: An outbox binding routed by a config with its own serializer
+    When: A payload is written, and the relay publishes it
+    Then: The record's body, as published, comes from the config's serializer
+    """
+    # Arrange
+    store = InMemoryOutboxStore()
+    outbox = OutboxProducer(store, serializer=_encode)
+
+    def custom(_: _OrderPlaced) -> bytes:
+        return b"custom"
+
+    config = replace(_config, serializer=custom)
+    place = outbox.bind(_order_placed, factory=_OrderPlaced, config=OutboxConfig(config))
+
+    # Act
+    await place(order_id=4)
+    async with publisher:
+        await OutboxRelay(store, publisher, outbox).run_once()
+
+    # Assert
+    assert channel.basic_publish.await_args.args[0] == b"custom"
+
+
 async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel: AsyncMock):
     """
-    ``emit`` should use the supplied serializer instead of the publisher's.
+    ``emit`` should use the route's serializer instead of the publisher's.
 
-    Given: A connected publisher and a custom serializer
-    When: emit is awaited with the serializer
+    Given: A connected publisher, and an event routed to a config with its own serializer
+    When: emit is awaited
     Then: The serializer's bytes should be published
     """
 
@@ -467,8 +667,9 @@ async def test_emit_uses_custom_serializer(publisher: RabbitMQPublisher, channel
         return b"custom"
 
     # Act
+    publisher.route(_order_placed, replace(_config, serializer=to_bytes))
     async with publisher:
-        await publisher.emit(_order_placed, _config, _OrderPlaced(7), serializer=to_bytes)
+        await publisher.emit(_order_placed, _OrderPlaced(7))
 
     # Assert
     call = channel.basic_publish.await_args
@@ -489,9 +690,10 @@ async def test_emit_declares_exchange_once(publisher: RabbitMQPublisher, channel
     config = RabbitMQConfig("events", "order.placed", exchange_type="fanout")
 
     # Act
+    publisher.route(_order_placed, config)
     async with publisher:
-        await publisher.emit(_order_placed, config, _OrderPlaced(1))
-        await publisher.emit(_order_placed, config, _OrderPlaced(2))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(2))
 
     # Assert
     channel.exchange_declare.assert_awaited_once_with(
@@ -511,8 +713,9 @@ async def test_emit_skips_declaration_without_exchange_type(
     Then: No exchange should be declared
     """
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     channel.exchange_declare.assert_not_awaited()
@@ -532,8 +735,9 @@ async def test_emit_publishes_with_properties(publisher: RabbitMQPublisher, chan
     config = RabbitMQConfig("events", "order.placed", properties=properties)
 
     # Act
+    publisher.route(_order_placed, config)
     async with publisher:
-        await publisher.emit(_order_placed, config, _OrderPlaced(7))
+        await publisher.emit(_order_placed, _OrderPlaced(7))
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]
@@ -553,9 +757,10 @@ async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: Async
           envelope; same correlation chain, caused by the active envelope
     """
     # Act
+    publisher.route(_order_placed, _config)
     with Envelope.scope() as envelope:
         async with publisher:
-            await publisher.emit(_order_placed, _config, _OrderPlaced(7))
+            await publisher.emit(_order_placed, _OrderPlaced(7))
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]
@@ -609,8 +814,9 @@ async def test_failed_channel_allocation_closes_connection(
 
     # Assert
     connection.close.assert_awaited_once()
+    publisher.route(_order_placed, _config)
     with pytest.raises(NotConnectedError):
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
 
 def _logging_hooks(log: list[str]) -> Hooks[Any, Any]:
@@ -647,8 +853,9 @@ async def test_emit_runs_publish_hooks_around_publish(
     channel.basic_publish.side_effect = record_publish
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1), hooks=_logging_hooks(log))
+        await publisher.emit(_order_placed, _OrderPlaced(1), hooks=_logging_hooks(log))
 
     # Assert
     assert log == ["before _OrderPlaced", "publish", "success None"]
@@ -666,8 +873,9 @@ async def test_failed_publish_reaches_failure_hook(publisher: RabbitMQPublisher)
     log: list[str] = []
 
     # Act
+    publisher.route(_order_placed, _config)
     with pytest.raises(NotConnectedError):
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1), hooks=_logging_hooks(log))
+        await publisher.emit(_order_placed, _OrderPlaced(1), hooks=_logging_hooks(log))
 
     # Assert
     assert log == ["before _OrderPlaced", "failure NotConnectedError"]
@@ -689,11 +897,10 @@ async def test_publish_hooks_see_sent_envelope(publisher: RabbitMQPublisher, cha
         seen.append(Envelope.current())
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
         with Envelope.scope() as caller:
-            await publisher.emit(
-                _order_placed, _config, _OrderPlaced(1), hooks=Hooks(before=(record,))
-            )
+            await publisher.emit(_order_placed, _OrderPlaced(1), hooks=Hooks(before=(record,)))
 
     # Assert
     (envelope,) = seen
@@ -733,8 +940,9 @@ async def test_publish_middleware_wraps_hooks_inside_envelope(
     )
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1), hooks=Hooks(before=(before,)))
+        await publisher.emit(_order_placed, _OrderPlaced(1), hooks=Hooks(before=(before,)))
 
     # Assert
     assert log == ["mw in", "hook", "mw out"]
@@ -770,8 +978,9 @@ async def test_publish_middleware_without_hooks(connect_mock: AsyncMock, channel
     )
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     assert log == ["mw in", "publish", "mw out"]
@@ -843,8 +1052,9 @@ async def test_publish_middleware_sees_config(connect_mock: AsyncMock, channel: 
     )
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     assert seen == [_config]
@@ -865,9 +1075,10 @@ async def test_emit_sends_given_envelope(publisher: RabbitMQPublisher, channel: 
     held = Envelope().child()
 
     # Act
+    publisher.route(_order_placed, _config)
     with Envelope.scope():
         async with publisher:
-            await publisher.emit(_order_placed, _config, _OrderPlaced(7), envelope=held)
+            await publisher.emit(_order_placed, _OrderPlaced(7), envelope=held)
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]
@@ -891,9 +1102,10 @@ async def test_republishing_keeps_message_id(publisher: RabbitMQPublisher, chann
     held = Envelope()
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(_order_placed, _config, _OrderPlaced(7), envelope=held)
-        await publisher.emit(_order_placed, _config, _OrderPlaced(7), envelope=held)
+        await publisher.emit(_order_placed, _OrderPlaced(7), envelope=held)
+        await publisher.emit(_order_placed, _OrderPlaced(7), envelope=held)
 
     # Assert
     sent = [call.kwargs["properties"].message_id for call in channel.basic_publish.await_args_list]
@@ -926,10 +1138,10 @@ async def test_middleware_and_hooks_see_given_envelope(connect_mock: AsyncMock, 
     )
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
         await publisher.emit(
             _order_placed,
-            _config,
             _OrderPlaced(1),
             hooks=Hooks(before=(before,)),
             envelope=held,
@@ -963,10 +1175,12 @@ async def test_middleware_headers_sent(connect_mock: AsyncMock, channel: AsyncMo
     plain = RabbitMQPublisher(_URL, serializer=_encode)
 
     # Act
+    publisher.route(_order_placed, config)
     async with publisher:
-        await publisher.emit(_order_placed, config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
+    plain.route(_order_placed, _config)
     async with plain:
-        await plain.emit(_order_placed, _config, _OrderPlaced(2))
+        await plain.emit(_order_placed, _OrderPlaced(2))
 
     # Assert
     tagged, untagged = (c.kwargs["properties"] for c in channel.basic_publish.await_args_list)
@@ -996,10 +1210,9 @@ async def test_emit_given_headers(connect_mock: AsyncMock, channel: AsyncMock):
     )
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(
-            _order_placed, _config, _OrderPlaced(1), headers={"traceparent": "00-trace"}
-        )
+        await publisher.emit(_order_placed, _OrderPlaced(1), headers={"traceparent": "00-trace"})
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]
@@ -1028,11 +1241,13 @@ async def test_reserved_header_refused(connect_mock: AsyncMock, channel: AsyncMo
     message = f"'{name}' is a header the bus sets itself"
 
     # Act / Assert
+    plain.route(_order_placed, _config)
+    publisher.route(_order_placed, _config)
     async with publisher, plain:
         with pytest.raises(ValueError, match=message):
-            await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+            await publisher.emit(_order_placed, _OrderPlaced(1))
         with pytest.raises(ValueError, match=message):
-            await plain.emit(_order_placed, _config, _OrderPlaced(1), headers={name: "forged"})
+            await plain.emit(_order_placed, _OrderPlaced(1), headers={name: "forged"})
     channel.basic_publish.assert_not_awaited()
 
 
@@ -1119,8 +1334,9 @@ async def test_failed_topology_declaration_disconnects(
 
     # Assert
     connection.close.assert_awaited_once()
+    publisher.route(_order_placed, _config)
     with pytest.raises(NotConnectedError):
-        await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
 
 async def test_no_topology_declares_nothing(publisher: RabbitMQPublisher, channel: AsyncMock):
@@ -1181,8 +1397,9 @@ async def test_emit_passes_mandatory(publisher: RabbitMQPublisher, channel: Asyn
     config = RabbitMQConfig("events", "order.placed", mandatory=True)
 
     # Act
+    publisher.route(_order_placed, config)
     async with publisher:
-        await publisher.emit(_order_placed, config, _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     assert channel.basic_publish.await_args.kwargs["mandatory"] is True
@@ -1202,9 +1419,10 @@ async def test_returned_message_raises_unroutable(publisher: RabbitMQPublisher, 
     config = RabbitMQConfig("events", "order.lost", mandatory=True)
 
     # Act
+    publisher.route(_order_placed, config)
     async with publisher:
         with pytest.raises(UnroutableError, match=r"'events'.*'order\.lost'") as raised:
-            await publisher.emit(_order_placed, config, _OrderPlaced(1))
+            await publisher.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     assert raised.value.__cause__ is returned
@@ -1226,8 +1444,9 @@ async def test_emit_waits_for_confirm(publisher: RabbitMQPublisher, channel: Asy
 
     channel.basic_publish.side_effect = publish
 
+    publisher.route(_order_placed, _config)
     async with publisher:
-        emitting = asyncio.ensure_future(publisher.emit(_order_placed, _config, _OrderPlaced(1)))
+        emitting = asyncio.ensure_future(publisher.emit(_order_placed, _OrderPlaced(1)))
         await asyncio.sleep(0.01)
         waiting = not emitting.done()
 
@@ -1356,6 +1575,7 @@ async def test_publisher_reconnects_after_channel_loss(
         reconnect=RabbitMQReconnect(0.05, 0.05),
     )
 
+    publisher.route(_order_placed, _config)
     async with publisher:
         # Act
         channels[0].closing.set_exception(ConnectionError("broker gone"))
@@ -1364,10 +1584,10 @@ async def test_publisher_reconnects_after_channel_loss(
         # Assert
         assert publisher.state is ConnectionState.RECONNECTING
         with pytest.raises(NotConnectedError, match="reconnecting"):
-            await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+            await publisher.emit(_order_placed, _OrderPlaced(1))
         async with asyncio.timeout(1):
             await publisher.wait_for_state(ConnectionState.CONNECTED)
-        await publisher.emit(_order_placed, _config, _OrderPlaced(2))
+        await publisher.emit(_order_placed, _OrderPlaced(2))
 
     assert connect_mock.await_count == 2
     channels[1].queue_declare.assert_awaited()
@@ -1452,6 +1672,7 @@ async def test_lost_channel_without_reconnect_closes(
     # Arrange
     publisher = RabbitMQPublisher(_URL, serializer=_encode, reconnect=None)
 
+    publisher.route(_order_placed, _config)
     async with publisher:
         # Act
         closed = asyncio.Event()
@@ -1463,7 +1684,7 @@ async def test_lost_channel_without_reconnect_closes(
         # Assert
         assert publisher.state is ConnectionState.CLOSED
         with pytest.raises(NotConnectedError, match="not connected"):
-            await publisher.emit(_order_placed, _config, _OrderPlaced(1))
+            await publisher.emit(_order_placed, _OrderPlaced(1))
 
     connect_mock.assert_awaited_once()
 
@@ -1528,8 +1749,9 @@ async def test_emit_draws_envelope_ids_from_publisher_source(
     publisher = RabbitMQPublisher(_URL, serializer=_encode, envelope=EnvelopeConfig(new_id=_Ids()))
 
     # Act
+    publisher.route(_order_placed, _config)
     async with publisher:
-        await publisher.emit(_order_placed, _config, _OrderPlaced(7))
+        await publisher.emit(_order_placed, _OrderPlaced(7))
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]

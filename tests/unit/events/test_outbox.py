@@ -8,14 +8,16 @@ OutboxProducer:
   a given route.
 - Emitting writes a record carrying the envelope's message id and headers, the serialized
   body, an ordering key from the payload, and its creation time.
-- A binding's serializer overrides the producer's; a payload-less event writes an empty body.
+- A publisher config's serializer overrides the producer's; a payload-less event writes an
+  empty body.
 - Hooks run around the write, inside the record's envelope.
 - Publish middleware runs around the write, and the headers it adds are stored with the
   record's envelope headers; middleware setting an envelope header writes nothing.
 - A middleware class that isn't a context manager is refused when the producer is built.
 - Emitting returns None, and publishes nothing.
 - Binding or emitting a request event raises TypeError.
-- Emitting without binding registers the route, and refuses a route bound to another event.
+- Emitting an event with no route raises LookupError and writes nothing; route registers one,
+  and refuses a route name bound to another event, or a second config for the same event.
 - A route bound to another event or config raises ValueError; the same config object, or an
   equal one, binds again.
 - OutboxConfig is an immutable value: assignment is refused, and configs with the same fields
@@ -31,9 +33,13 @@ InMemoryOutboxStore:
 - mark_sent, reschedule and mark_failed move a record to sent, pending and failed.
 
 OutboxRelay:
+- Built, it routes each of the outbox's events on its publisher, raising ValueError if the
+  publisher routes one elsewhere. An event bound after it's built is relayed too.
 - run_once publishes each claimed record under its envelope, with its route's event and
   config and its stored body, then marks them sent.
 - A record is published with the headers its middleware added, without its envelope's.
+- A route that addresses each payload stores each record's address, and the relay
+  publishes the record as an Encoded payload carrying it.
 - A failed publish is an attempt: the record is rescheduled with its error, after a delay
   that doubles up to a cap, and isn't claimed before then.
 - Once out of attempts, a record is parked as failed with its error; without a limit, never.
@@ -71,11 +77,11 @@ from uuid import UUID
 import pytest
 
 from stratae.events import (
+    Encoded,
     Envelope,
     EnvelopeConfig,
     Hooks,
     Middleware,
-    NoPayload,
     Producer,
     PublishCall,
     PubSub,
@@ -126,29 +132,37 @@ def _encode(order: _Order) -> bytes:
     return str(order.order_id).encode()
 
 
+_ROUTED_ELSEWHERE = "{} is routed elsewhere"
+
+
 class _Publisher:
     """Records each publish. Queued outcomes come first: None publishes, an error raises."""
 
     def __init__(self, *outcomes: Exception | None) -> None:
         self.published: list[tuple[Any, Any, bytes, Envelope | None]] = []
         self.headers: list[Mapping[str, str] | None] = []
+        self.addresses: list[str | None] = []
+        self.routes: dict[Any, Any] = {}
         self.outcomes = list(outcomes)
+
+    def route(self, event: Any, config: Any) -> None:
+        if self.routes.setdefault(event, config) != config:
+            raise ValueError(_ROUTED_ELSEWHERE.format(event.name))
 
     async def emit(
         self,
         event: Any,
-        config: Any,
-        payload: Any,
+        payload: Encoded,
         *,
-        serializer: Any = None,
         envelope: Envelope | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> None:
         outcome = self.outcomes.pop(0) if self.outcomes else None
         if outcome is not None:
             raise outcome
-        self.published.append((event, config, serializer(payload), envelope))
+        self.published.append((event, self.routes[event], payload.body, envelope))
         self.headers.append(headers)
+        self.addresses.append(payload.address)
 
 
 def _record(store: InMemoryOutboxStore, order_id: int = 1, **changes: Any) -> OutboxRecord:
@@ -291,31 +305,40 @@ async def test_emit_writes_record(outbox: OutboxProducer, store: InMemoryOutboxS
     assert record.attempts == 0
 
 
-async def test_binding_serializer_and_signal_body(
+@dataclasses.dataclass(frozen=True)
+class _Encoding:
+    """A publisher config with its own serializer."""
+
+    serializer: Callable[[Any], bytes] | None
+
+
+async def test_route_config_serializer_and_signal_body(
     outbox: OutboxProducer, store: InMemoryOutboxStore
 ):
     """
-    A binding's serializer should override the producer's; a payload-less event has no body.
+    A publisher config's serializer should override the producer's; a signal has no body.
 
-    Given: An event bound with its own serializer, and a payload-less event
-    When: Both are emitted
-    Then: The first body comes from the binding's serializer, and the second is empty
+    Given: An event routed by a publisher config with its own serializer, one routed by a
+        config whose serializer is None, and a payload-less event
+    When: Each is emitted
+    Then: The first body comes from the config's serializer, the second from the producer's,
+        and the third is empty
     """
     # Arrange
     place = outbox.bind(
-        _order_placed,
-        factory=_Order,
-        config=OutboxConfig("orders"),
-        serializer=lambda order: b"custom",
+        _order_placed, factory=_Order, config=OutboxConfig(_Encoding(lambda order: b"custom"))
     )
+    other = PubSub(_Order, name="other")
+    place_other = outbox.bind(other, factory=_Order, config=OutboxConfig(_Encoding(None)))
     ping = outbox.bind(_heartbeat, config=OutboxConfig("pings"))
 
     # Act
     await place(order_id=1)
+    await place_other(order_id=2)
     await ping()
 
     # Assert
-    assert [record.body for record in store.pending()] == [b"custom", b""]
+    assert [record.body for record in store.pending()] == [b"custom", b"2", b""]
 
 
 async def test_hooks_run_inside_record_envelope(outbox: OutboxProducer, store: InMemoryOutboxStore):
@@ -386,10 +409,11 @@ async def test_middleware_reserved_header_writes_nothing(store: InMemoryOutboxSt
         yield
 
     outbox = OutboxProducer(store, _encode, middleware=Middleware(publish=(forge,)))
+    outbox.route(_order_placed, OutboxConfig("orders"))
 
     # Act / Assert
     with pytest.raises(ValueError, match="'x-message-id' is a header the bus sets itself"):
-        await outbox.emit(_order_placed, OutboxConfig("orders"), _Order(1))
+        await outbox.emit(_order_placed, _Order(1))
     assert store.pending() == []
 
 
@@ -419,7 +443,7 @@ async def test_request_events_refused(outbox: OutboxProducer):
     `reportUnnecessaryTypeIgnoreComment`, so if one stops being an error, the type check fails.
 
     Given: A request event, and a command (a request without a reply)
-    When: Each is bound, and emitted directly
+    When: Each is bound, routed, and emitted directly
     Then: Each call is a type error, and raises TypeError at runtime
     """
     # Arrange
@@ -433,18 +457,10 @@ async def test_request_events_refused(outbox: OutboxProducer):
                 event,  # pyright: ignore[reportArgumentType]
                 config=OutboxConfig("orders"),
             )
-    with pytest.raises(TypeError, match="fire-and-forget"):
-        await outbox.emit(
-            request,  # pyright: ignore[reportArgumentType]
-            OutboxConfig("orders"),
-            _Order(1),
-        )
-    with pytest.raises(TypeError, match="fire-and-forget"):
-        await outbox.emit(
-            command,  # pyright: ignore[reportArgumentType]
-            OutboxConfig("orders"),
-            _Order(1),
-        )
+        with pytest.raises(TypeError, match="fire-and-forget"):
+            outbox.route(event, OutboxConfig("orders"))  # pyright: ignore[reportArgumentType]
+        with pytest.raises(TypeError, match="fire-and-forget"):
+            await outbox.emit(event, _Order(1))  # pyright: ignore[reportArgumentType]
 
 
 def test_outbox_matches_pubsub_producer_only(outbox: OutboxProducer):
@@ -515,28 +531,30 @@ def test_route_clash_refused(outbox: OutboxProducer):
     # Act / Assert
     with pytest.raises(ValueError, match="'orders' is already bound"):
         outbox.bind(_heartbeat, config=OutboxConfig("orders-config", route="orders"))
-    with pytest.raises(ValueError, match="'orders' is already bound"):
+    with pytest.raises(ValueError, match="already routed to another OutboxConfig"):
         outbox.bind(_order_placed, config=OutboxConfig("other-config", route="orders"))
     outbox.bind(_order_placed, config=config)
     outbox.bind(_order_placed, config=OutboxConfig("orders-config", route="orders"))
 
 
-async def test_direct_emit_registers_route(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_emit_needs_a_route(outbox: OutboxProducer, store: InMemoryOutboxStore):
     """
-    Emitting without binding should still register the route, and refuse a clashing one.
+    Emitting should write on the event's route, and refuse an event with none.
 
-    Given: An outbox producer with nothing bound
-    When: An event is emitted directly, then another event is emitted to the same route
-    Then: The first registers its route and writes a record; the second raises ValueError
-        and writes nothing
+    Given: An outbox producer with nothing routed
+    When: An event is emitted, then routed and emitted again
+    Then: The first emit raises LookupError and writes nothing; the second registers the route
+        and writes a record
     """
-    # Act
-    await outbox.emit(_order_placed, OutboxConfig("orders", route="orders"), _Order(1))
+    # Act / Assert
+    with pytest.raises(LookupError, match="no outbox route for '_Order'"):
+        await outbox.emit(_order_placed, _Order(1))
+    assert store.pending() == []
 
-    # Assert
+    outbox.route(_order_placed, OutboxConfig("orders", route="orders"))
+    await outbox.emit(_order_placed, _Order(1))
+
     assert dict(outbox.routes) == {"orders": (_order_placed, "orders")}
-    with pytest.raises(ValueError, match="'orders' is already bound"):
-        await outbox.emit(_heartbeat, OutboxConfig("orders", route="orders"), NoPayload())
     assert len(store.pending()) == 1
 
 
@@ -735,6 +753,38 @@ async def test_run_once_publishes_and_marks_sent(
     assert store.sent() == records
 
 
+async def test_relay_publishes_at_each_records_address(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    A route that addresses each payload should have its records relayed to their addresses.
+
+    Given: An event routed by a config that addresses each payload, and one with a plain config
+    When: A payload of each is written, and the relay runs once
+    Then: The first record stores its payload's address and the second none, and each is
+          published as an Encoded payload carrying its address
+    """
+
+    # Arrange
+    class _ByOrder:
+        def address(self, payload: _Order, /) -> str:
+            return f"order.{payload.order_id}"
+
+    by_order = _ByOrder()
+    ping = outbox.bind(_heartbeat, config=OutboxConfig("pings"))
+    place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig(by_order))
+    await place(order_id=7)
+    await ping()
+    publisher = _Publisher()
+
+    # Act
+    await OutboxRelay(store, publisher, outbox).run_once()
+
+    # Assert
+    assert [record.address for record in store.sent()] == ["order.7", None]
+    assert publisher.addresses == ["order.7", None]
+
+
 async def test_relay_publishes_added_headers(store: InMemoryOutboxStore):
     """
     The relay should publish a record with the headers its middleware added.
@@ -895,6 +945,51 @@ async def test_parked_failure_holds_nothing_back(
     # Assert
     assert [record.id for record in store.failed()] == [first.id]
     assert [payload for _, _, payload, _ in publisher.published] == [b"2"]
+
+
+def test_relay_routes_the_outbox_when_built(outbox: OutboxProducer, store: InMemoryOutboxStore):
+    """
+    A relay should route each of the outbox's events on its publisher when it's built.
+
+    Given: An outbox with a bound event, and a publisher routing it to a different config
+    When: A relay is built on that publisher, and on a fresh one
+    Then: The first raises ValueError; the second publisher routes the event, before any
+          record is relayed
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    taken, fresh = _Publisher(), _Publisher()
+    taken.route(_order_placed, "audit")
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="routed elsewhere"):
+        OutboxRelay(store, taken, outbox)
+    OutboxRelay(store, fresh, outbox)
+    assert fresh.routes == {_order_placed: "orders"}
+
+
+async def test_relay_routes_events_bound_after_it(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    A relay should relay an event bound after it was built.
+
+    Given: A relay built before an event is bound
+    When: The event is bound and emitted, and the relay runs once
+    Then: The record is published on the event's route
+    """
+    # Arrange
+    publisher = _Publisher()
+    relay = OutboxRelay(store, publisher, outbox)
+    place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    await place(order_id=1)
+
+    # Act
+    sent = await relay.run_once()
+
+    # Assert
+    assert sent == 1
+    assert publisher.published[0][:3] == (_order_placed, "orders", b"1")
 
 
 async def test_unknown_route_fails_attempt(outbox: OutboxProducer, store: InMemoryOutboxStore):
@@ -1119,8 +1214,11 @@ class _OverlapPublisher:
         self.peak_per_key = 0
         self.first_published = asyncio.Event()
 
-    async def emit(self, event: Any, config: Any, payload: Any, **kwargs: Any) -> None:
-        body = kwargs["serializer"](payload)
+    def route(self, event: Any, config: Any) -> None:
+        return None
+
+    async def emit(self, event: Any, payload: Encoded, **kwargs: Any) -> None:
+        body = payload.body
         key = body.decode().split(":")[0] or None
         self.active[key] = self.active.get(key, 0) + 1
         self.peak = max(self.peak, sum(self.active.values()))

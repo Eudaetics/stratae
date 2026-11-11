@@ -182,7 +182,7 @@ work = Scope("work", middleware=(logged,))
 bus = DirectBus(middleware=Middleware(publish=(logged,)))
 
 with work:
-    bus.emit(ping, None, Ping())
+    bus.emit(ping, Ping())
 ```
 ```{output}
 enter Scope
