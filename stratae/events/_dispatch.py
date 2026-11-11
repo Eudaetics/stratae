@@ -99,11 +99,7 @@ def fan_out[S](
         `CancelledError`.
     """
     failures: list[BaseException] = []
-    for handler in handlers:
-        try:
-            copy_context().run(handler.call, payload)
-        except _HANDLER_FAILURES as failure:
-            failures.append(failure)
+    _run_sync_handlers(handlers, payload, failures)
     if failures:
         _raise_failures(failures)
 
