@@ -231,6 +231,12 @@ def _stamp(
     return stamped
 
 
+def _require_pubsub(event: AnyEvent) -> None:
+    """Raise NotImplementedError for an event that isn't PubSub."""
+    if not isinstance(event, PubSub):
+        raise NotImplementedError(_REQUEST_REPLY_NOT_IMPLEMENTED)
+
+
 def _envelope_from(message: DeliveredMessage, new_id: Callable[[], UUID]) -> Envelope | None:
     """Rebuild the Envelope carried by a delivered message, making any missing id with `new_id`."""
     properties = message.header.properties
@@ -623,7 +629,7 @@ class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
         :raises aiormq.exceptions.ChannelClosed: If the channel closes before the broker
             confirms, e.g. because the exchange doesn't exist.
         """
-        self._prepare_event(event)
+        _require_pubsub(event)
         stamped = MessageHeaders(headers or {}, reserved=_RESERVED)
         # The message's own envelope, current while middleware and hooks run, so they see it.
         with Envelope.scope(envelope, new_id=self._new_id) as sent:
@@ -673,10 +679,10 @@ class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
         except PublishError as exc:
             raise UnroutableError(_UNROUTABLE.format(config.exchange, config.routing_key)) from exc
 
-    def _prepare_event(self, event: AnyEvent) -> None:
-        """Raise NotImplementedError for an event that isn't PubSub."""
-        if not isinstance(event, PubSub):
-            raise NotImplementedError(_REQUEST_REPLY_NOT_IMPLEMENTED)
+    def _emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
+        """Return `emit`, raising NotImplementedError for an event that isn't PubSub."""
+        _require_pubsub(event)
+        return self.emit
 
     async def _declare_exchange(self, channel: AbstractChannel, config: RabbitMQConfig) -> None:
         """Declare config's exchange once, if it carries a type."""

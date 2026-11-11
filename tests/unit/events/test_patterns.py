@@ -25,6 +25,7 @@ Equality:
   equal and share a hash.
 - Changing the pattern, name, payload type or reply type makes events unequal, including a
   subclass of a pattern.
+- An event's hash is made once, when it's built.
 - An event's repr shows its name, payload type and, for a request, its reply type.
 """
 
@@ -335,6 +336,50 @@ def test_equal_definitions_are_equal() -> None:
     assert request_a == request_b
     assert hash(request_a) == hash(request_b)
     assert len({pubsub_a, pubsub_b, request_a, request_b}) == 2
+
+
+_schema_hashes: list[type] = []
+"""Records each time a _CountedSchema class is hashed."""
+
+
+class _CountsHashes(type):
+    """A metaclass recording each time one of its classes is hashed."""
+
+    def __hash__(cls) -> int:
+        _schema_hashes.append(cls)
+        return id(cls)
+
+
+class _CountedSchema(metaclass=_CountsHashes):
+    """A payload type recording each time it's hashed."""
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda: PubSub(_CountedSchema), id="PubSub"),
+        pytest.param(lambda: Request(_CountedSchema, reply=_BookFound), id="Request"),
+    ],
+)
+def test_hash_is_made_once(build: Any) -> None:
+    """
+    An event's hash should be made when it's built, not each time it's hashed.
+
+    Given: An event whose payload type records each time it's hashed
+    When: The event is hashed three times
+    Then: The payload type was hashed once, while the event was built, and the event's hash
+        is the same each time
+    """
+    # Arrange
+    _schema_hashes.clear()
+    event = build()
+
+    # Act
+    hashes = {hash(event) for _ in range(3)}
+
+    # Assert
+    assert len(hashes) == 1
+    assert _schema_hashes == [_CountedSchema]
 
 
 class _Command(Request[_OrderPlaced, None, Literal[False]]):

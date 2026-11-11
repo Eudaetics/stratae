@@ -85,7 +85,9 @@ class EmitCallable[S, C, R, Signal: bool](Protocol):
         :param event: The event being emitted.
         :param config: Adapter-specific routing config.
         :param payload: The payload to dispatch.
-        :param serializer: Encodes the payload; defaults to the adapter's own.
+        :param serializer: Encodes the payload; defaults to the adapter's own. `bind` passes
+            it only when one is given, so an untyped emitter without it still works until
+            someone binds with one, then fails loudly.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
             `bind` passes it only when hooks are given, so an untyped emitter without it still
             works until someone binds with hooks, then fails loudly.
@@ -113,7 +115,9 @@ class Producer(Protocol):
         :param event: The event being emitted.
         :param config: Adapter-specific routing config.
         :param payload: The payload to dispatch.
-        :param serializer: Encodes the payload; defaults to the adapter's own.
+        :param serializer: Encodes the payload; defaults to the adapter's own. `bind` passes
+            it only when one is given, so an untyped emitter without it still works until
+            someone binds with one, then fails loudly.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
             `bind` passes it only when hooks are given, so an untyped emitter without it still
             works until someone binds with hooks, then fails loudly.

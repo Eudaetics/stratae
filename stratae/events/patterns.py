@@ -19,7 +19,7 @@ Subclassing a pattern means "this is the same pattern": a `class Command(Request
 delivered exactly as a `Request` everywhere, unless a direct bus is given a dispatcher for it.
 A subclass is never equal to its base, so the two are still separate events.
 
-Write a new pattern as its own class instead. Declare it as `PubSub` is: a dataclass with
+Write a new pattern as its own class instead. Declare it as a dataclass with
 `init=False, unsafe_hash=True, slots=True`, using {py:class}`Immutable` to refuse changes. It
 then compares by value, as buses expect. A pattern declared any other way still works, but
 only the same object matches it. Don't use `frozen=True`: buses need the fields to be plain
@@ -112,7 +112,7 @@ class Immutable:
         raise AttributeError(_IMMUTABLE.format(type(self).__name__))
 
 
-@dataclass(init=False, unsafe_hash=True, slots=True)
+@dataclass(init=False, slots=True)
 class Request[S, R, Signal: bool](Immutable):
     """
     Request/reply event: exactly one responder, whose `reply` the emitter receives.
@@ -130,6 +130,7 @@ class Request[S, R, Signal: bool](Immutable):
     """The reply type, as {py:class}`EventType <stratae.events.protocols.EventType>` needs it."""
     handler_returns: type[R] = field(compare=False, repr=False)
     """The reply type, as {py:class}`EventType <stratae.events.protocols.EventType>` needs it."""
+    _hash: int = field(compare=False, repr=False)
 
     @overload
     def __init__(
@@ -172,13 +173,19 @@ class Request[S, R, Signal: bool](Immutable):
         :raises TypeError: If a payload-less event has no `name`.
         """
         reply_type = NoneType if reply is None else reply
+        event_name = _event_name("Request", schema, name)
         self._assign(
-            name=_event_name("Request", schema, name),
+            name=event_name,
             schema=schema,
             is_signal=schema is NoPayload,
             emit_returns=reply_type,
             handler_returns=reply_type,
+            _hash=hash((event_name, schema, reply_type)),
         )
+
+    def __hash__(self) -> int:
+        """Return the hash of the name, payload type and reply type, made once."""
+        return self._hash
 
     @property
     def reply(self) -> type[R]:
@@ -186,7 +193,7 @@ class Request[S, R, Signal: bool](Immutable):
         return self.emit_returns
 
 
-@dataclass(init=False, unsafe_hash=True, slots=True)
+@dataclass(init=False, slots=True)
 class PubSub[S, Signal: bool](Immutable):
     """
     Fire-and-forget event: every handler runs, and returns `None`.
@@ -206,6 +213,7 @@ class PubSub[S, Signal: bool](Immutable):
     """`NoneType`: emitting a pub/sub event returns nothing."""
     handler_returns: type[None] = field(compare=False, repr=False)
     """`NoneType`: a pub/sub handler returns nothing."""
+    _hash: int = field(compare=False, repr=False)
 
     @overload
     def __init__(self: "PubSub[NoPayload, Literal[True]]", *, name: str) -> None: ...
@@ -222,10 +230,16 @@ class PubSub[S, Signal: bool](Immutable):
             a schema.
         :raises TypeError: If a payload-less event has no `name`.
         """
+        event_name = _event_name("PubSub", schema, name)
         self._assign(
-            name=_event_name("PubSub", schema, name),
+            name=event_name,
             schema=schema,
             is_signal=schema is NoPayload,
             emit_returns=NoneType,
             handler_returns=NoneType,
+            _hash=hash((event_name, schema)),
         )
+
+    def __hash__(self) -> int:
+        """Return the hash of the name and payload type, made once."""
+        return self._hash

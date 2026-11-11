@@ -16,7 +16,9 @@ bind without a factory:
 
 bind with hooks:
 - The hooks are forwarded to the emitter.
+- A serializer and hooks given together are both forwarded.
 - An emitter without a hooks parameter works without hooks, and refuses them loudly.
+- An emitter without a serializer parameter works without one, and refuses one loudly.
 
 bound callable signatures:
 - Without a factory, the signature is a payload of the event's schema, returning its reply
@@ -75,7 +77,7 @@ def test_bind_with_factory_calling_constructs_schema_and_invokes_emitter(
 
     # Assert
     spy.assert_called_once_with(mocker.ANY, 1, "pending")
-    emitter.assert_called_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)
+    emitter.assert_called_once_with(ev, None, _OrderCreated(1, "pending"))
 
 
 def test_bind_with_factory_returns_emitter_result() -> None:
@@ -175,7 +177,7 @@ def test_bind_without_factory_calling_forwards_payload_to_emitter() -> None:
     bound(payload)
 
     # Assert
-    emitter.assert_called_once_with(ev, None, payload, serializer=None)
+    emitter.assert_called_once_with(ev, None, payload)
 
 
 def test_bind_without_factory_returns_emitter_result() -> None:
@@ -276,7 +278,7 @@ def test_bind_forwards_hooks_to_emitter() -> None:
     bound(payload)
 
     # Assert
-    emitter.assert_called_once_with(ev, None, payload, serializer=None, hooks=hooks)
+    emitter.assert_called_once_with(ev, None, payload, hooks=hooks)
 
 
 def test_emitter_without_hooks_parameter() -> None:
@@ -305,6 +307,56 @@ def test_emitter_without_hooks_parameter() -> None:
     assert received == [payload]
     with pytest.raises(TypeError, match="hooks"):
         hooked(payload)
+
+
+def test_bind_forwards_serializer_and_hooks_together() -> None:
+    """
+    A callable bound with both a serializer and hooks should pass both to the emitter.
+
+    Given: A callable bound with a serializer and hooks
+    When: It's called
+    Then: The emitter receives the payload, the serializer and the hooks
+    """
+    # Arrange
+    emitter = Mock()
+    hooks: Hooks[_OrderCreated, None] = Hooks()
+    ev = PubSub(_OrderCreated)
+    payload = _OrderCreated(1, "pending")
+    bound = bind(ev, emitter, config=None, serializer=repr, hooks=hooks)
+
+    # Act
+    bound(payload)
+
+    # Assert
+    emitter.assert_called_once_with(ev, None, payload, serializer=repr, hooks=hooks)
+
+
+def test_emitter_without_serializer_parameter() -> None:
+    """
+    An emitter that doesn't take a serializer should work until one is bound with it.
+
+    Given: An emitter with no serializer parameter
+    When: It's bound without a serializer and called, then bound with one and called
+    Then: The first call reaches the emitter; the second raises TypeError
+    """
+    # Arrange
+    received: list[object] = []
+
+    def emitter(event: object, config: object, payload: object) -> None:
+        received.append(payload)
+
+    # An untyped adapter: typed ones accept a serializer, as EmitCallable declares.
+    untyped_emitter = cast(Any, emitter)
+    ev = PubSub(_OrderCreated)
+    payload = _OrderCreated(1, "pending")
+    plain = bind(ev, untyped_emitter, config=None)
+    serialized = bind(ev, untyped_emitter, config=None, serializer=repr)
+
+    # Act / Assert
+    plain(payload)
+    assert received == [payload]
+    with pytest.raises(TypeError, match="serializer"):
+        serialized(payload)
 
 
 # region: Bound Callable Signatures

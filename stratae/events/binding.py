@@ -123,15 +123,22 @@ def _typed[F: Callable[..., Any]](bound: F, parameters: list[Parameter], event: 
     return bound
 
 
-def _with_hooks[E: Callable[..., Any]](emitter: E, hooks: Hooks[Any, Any] | None) -> E:
+def _with_options[E: Callable[..., Any]](
+    emitter: E, serializer: Callable[[Any], Any] | None, hooks: Hooks[Any, Any] | None
+) -> E:
     """
-    Return the emitter a bound callable calls: `emitter`, with `hooks` given if there are any.
+    Return the emitter a bound callable calls: `emitter`, given the options it was bound with.
 
-    `hooks` is passed only when given, so an emitter that doesn't support hooks still works
-    until someone binds with them, then refuses loudly. Fixed when binding, so each emit
-    passes its options as plain keywords rather than unpacking a dict.
+    `serializer` and `hooks` are passed only when given, so an emitter that doesn't take one
+    still works until someone binds with it, then refuses loudly. Fixed when binding, so an
+    emit without options passes none.
     """
-    return emitter if hooks is None else cast(E, partial(emitter, hooks=hooks))
+    options: dict[str, Any] = {}
+    if serializer is not None:
+        options["serializer"] = serializer
+    if hooks is not None:
+        options["hooks"] = hooks
+    return cast(E, partial(emitter, **options)) if options else emitter
 
 
 @overload
@@ -187,24 +194,25 @@ def bind(
     :param factory: A sync callable building the payload from the call's arguments. If
         omitted, the payload is passed directly.
     :param config: The adapter's routing config.
-    :param serializer: Encodes the payload; defaults to the emitter's own.
+    :param serializer: Encodes the payload; defaults to the emitter's own. Passed to
+        `emitter` only when given.
     :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit,
         passed to `emitter` only when given.
     :returns: A callable that dispatches through `emitter`.
     :raises TypeError: If `factory` is async.
     """
-    emit = _with_hooks(emitter, hooks)
+    emit = _with_options(emitter, serializer, hooks)
     if factory is None and event.is_signal:
 
         def signal() -> Any:
-            return emit(event, config, _NO_PAYLOAD, serializer=serializer)
+            return emit(event, config, _NO_PAYLOAD)
 
         return _typed(signal, [], event)
 
     if factory is None:
 
         def passthrough(payload: Any) -> Any:
-            return emit(event, config, payload, serializer=serializer)
+            return emit(event, config, payload)
 
         return _typed(passthrough, _payload_parameters(event), event)
 
@@ -212,7 +220,7 @@ def bind(
         raise TypeError(_SYNC_FACTORY_REQUIRED)
 
     def construct(*args: Any, **kwargs: Any) -> Any:
-        return emit(event, config, factory(*args, **kwargs), serializer=serializer)
+        return emit(event, config, factory(*args, **kwargs))
 
     return _typed(construct, _factory_parameters(factory), event)
 
@@ -270,8 +278,10 @@ def abind(
     :param factory: A sync or async callable building the payload from the call's
         arguments. If omitted, the payload is passed directly.
     :param config: The adapter's routing config.
-    :param serializer: Encodes the payload; defaults to the emitter's own.
-    :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
+    :param serializer: Encodes the payload; defaults to the emitter's own. Passed to
+        `emitter` only when given.
+    :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit,
+        passed to `emitter` only when given.
     :returns: An async callable that dispatches through `emitter`.
     """
     return _abind(event, emitter, factory, config, serializer, hooks)
@@ -291,18 +301,18 @@ def _abind(
     The callers state the types: `abind` for an emitter of any event, and
     {py:class}`AsyncPubSubBindMixin` for one taking only PubSub events.
     """
-    emit = _with_hooks(emitter, hooks)
+    emit = _with_options(emitter, serializer, hooks)
     if factory is None and event.is_signal:
 
         async def signal() -> Any:
-            return await emit(event, config, _NO_PAYLOAD, serializer=serializer)
+            return await emit(event, config, _NO_PAYLOAD)
 
         return _typed(signal, [], event)
 
     if factory is None:
 
         async def passthrough(payload: Any) -> Any:
-            return await emit(event, config, payload, serializer=serializer)
+            return await emit(event, config, payload)
 
         return _typed(passthrough, _payload_parameters(event), event)
 
@@ -310,12 +320,12 @@ def _abind(
 
         async def construct_async(*args: Any, **kwargs: Any) -> Any:
             payload = await factory(*args, **kwargs)
-            return await emit(event, config, payload, serializer=serializer)
+            return await emit(event, config, payload)
 
         return _typed(construct_async, _factory_parameters(factory), event)
 
     async def construct(*args: Any, **kwargs: Any) -> Any:
-        return await emit(event, config, factory(*args, **kwargs), serializer=serializer)
+        return await emit(event, config, factory(*args, **kwargs))
 
     return _typed(construct, _factory_parameters(factory), event)
 
@@ -348,13 +358,14 @@ class BindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _prepare_event(self, event: AnyEvent) -> None:
+    def _emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
         """
-        Get ready to emit the event, raising if this adapter can't emit its pattern.
+        Return what `bind` calls to emit the event, raising if this adapter can't emit it.
 
-        Called by `bind`, so an unsupported event is refused before anything emits it. An
-        adapter may also record what it needs to emit the event, as the direct buses record
-        its route.
+        Called once by `bind`, so an unsupported event is refused before anything emits it.
+        It's called as `emit` is, and is usually `emit` itself. An adapter may return one
+        ready for this event instead, as the direct buses return one holding the event's
+        route.
         """
         ...
 
@@ -408,11 +419,11 @@ class BindMixin[C](ABC):
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: A callable that dispatches through this adapter.
         """
-        self._prepare_event(event)
+        emitter = self._emitter_for(event)
         if hooks is not None and hooks.has_async:
             raise TypeError(_SYNC_BIND_ASYNC_HOOKS.format(type(self).__name__, event.name))
         return bind(
-            event, self.emit, factory=factory, config=config, serializer=serializer, hooks=hooks
+            event, emitter, factory=factory, config=config, serializer=serializer, hooks=hooks
         )
 
 
@@ -443,13 +454,14 @@ class AsyncBindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _prepare_event(self, event: AnyEvent) -> None:
+    def _emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
         """
-        Get ready to emit the event, raising if this adapter can't emit its pattern.
+        Return what `bind` calls to emit the event, raising if this adapter can't emit it.
 
-        Called by `bind`, so an unsupported event is refused before anything emits it. An
-        adapter may also record what it needs to emit the event, as the direct buses record
-        its route.
+        Called once by `bind`, so an unsupported event is refused before anything emits it.
+        It's called as `emit` is, and is usually `emit` itself. An adapter may return one
+        ready for this event instead, as the direct buses return one holding the event's
+        route.
         """
         ...
 
@@ -503,9 +515,9 @@ class AsyncBindMixin[C](ABC):
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: An async callable that dispatches through this adapter.
         """
-        self._prepare_event(event)
+        emitter = self._emitter_for(event)
         return abind(
-            event, self.emit, factory=factory, config=config, serializer=serializer, hooks=hooks
+            event, emitter, factory=factory, config=config, serializer=serializer, hooks=hooks
         )
 
 
@@ -515,7 +527,7 @@ class AsyncPubSubBindMixin[C](ABC):
 
     As {py:class}`AsyncBindMixin`, but `emit` and `bind` take only
     {py:class}`PubSub <stratae.events.patterns.PubSub>` events and give `None`. Binding or
-    emitting a request is a type error, and `_prepare_event` still refuses one at runtime for
+    emitting a request is a type error, and `_emitter_for` still refuses one at runtime for
     untyped callers. The adapter matches
     {py:class}`PubSubProducer <stratae.events.protocols.PubSubProducer>`.
     """
@@ -540,12 +552,13 @@ class AsyncPubSubBindMixin[C](ABC):
         ...
 
     @abstractmethod
-    def _prepare_event(self, event: AnyEvent) -> None:
+    def _emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
         """
-        Get ready to emit the event, raising if it isn't a PubSub event.
+        Return what `bind` calls to emit the event, raising if it isn't a PubSub event.
 
-        Called by `bind`, so a request is refused before anything emits it, even from code a
-        type checker doesn't see.
+        Called once by `bind`, so a request is refused before anything emits it, even from
+        code a type checker doesn't see. It's called as `emit` is, and is usually `emit`
+        itself.
         """
         ...
 
@@ -599,5 +612,4 @@ class AsyncPubSubBindMixin[C](ABC):
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
         :returns: An async callable that dispatches through this adapter.
         """
-        self._prepare_event(event)
-        return _abind(event, self.emit, factory, config, serializer, hooks)
+        return _abind(event, self._emitter_for(event), factory, config, serializer, hooks)
