@@ -112,7 +112,7 @@ from stratae.events._dispatch import (
 from stratae.events.binding import AsyncBindMixin, BindMixin
 from stratae.events.envelope import Envelope, EnvelopeConfig
 from stratae.events.handler import Handler, Handlers
-from stratae.events.hooks import Hooks
+from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
 from stratae.events.middleware import MessageHeaders, Middleware
 from stratae.events.patterns import NoPayload, PubSub, Request
 from stratae.events.pipeline import receiving, run_emit, run_emit_async, wrap_handler
@@ -275,10 +275,8 @@ class BaseDirectBus(ABC):
         self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
         self._envelope = envelope
-        # Chosen once: with no middleware and no envelope, an emit without hooks can call its
-        # dispatcher directly. Handle middleware needs the emit's headers, even if none are set.
-        # Without handle middleware, nothing reads them, so `_run` delivers without them.
-        self._plain = not middleware.publish and not middleware.handle and envelope is None
+        self._reads_headers = bool(middleware.publish or middleware.handle)
+        self._plain = not self._reads_headers and envelope is None
 
     def _emitter_for(self, event: _AnyEvent) -> Callable[..., Any]:
         """
@@ -540,13 +538,18 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         hooks: Hooks[Any, Any] | None,
     ) -> Any:
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
-        publish, headers = self._middleware.publish, MessageHeaders()
         envelope = self._envelope
         with Envelope.scope(new_id=envelope.new_id) if envelope is not None else _NO_ENVELOPE:
+            if not self._reads_headers:
+                if hooks is None:
+                    return dispatcher(event, handlers, payload)
+                return run_hooks(hooks, event, payload, dispatcher, event, handlers, payload)
+            headers = MessageHeaders()
             if self._middleware.handle:
                 call, args = self._receive, (headers, dispatcher, event, handlers, payload)
             else:
                 call, args = dispatcher, (event, handlers, payload)
+            publish = self._middleware.publish
             return run_emit(hooks, publish, event, None, payload, headers, call, *args)
 
     def _receive(
@@ -711,13 +714,20 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         hooks: Hooks[Any, Any] | None,
     ) -> Any:
         """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
-        publish, headers = self._middleware.publish, MessageHeaders()
         envelope = self._envelope
         with Envelope.scope(new_id=envelope.new_id) if envelope is not None else _NO_ENVELOPE:
+            if not self._reads_headers:
+                if hooks is None:
+                    return await dispatcher(event, handlers, payload)
+                return await run_hooks_async(
+                    hooks, event, payload, dispatcher, event, handlers, payload
+                )
+            headers = MessageHeaders()
             if self._middleware.handle:
                 call, args = self._receive, (headers, dispatcher, event, handlers, payload)
             else:
                 call, args = dispatcher, (event, handlers, payload)
+            publish = self._middleware.publish
             return await run_emit_async(hooks, publish, event, None, payload, headers, call, *args)
 
     async def _receive(

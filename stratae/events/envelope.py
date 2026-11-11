@@ -59,7 +59,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Self
+from typing import Any, Self
 from uuid import UUID
 
 MESSAGE_ID_HEADER = "x-message-id"
@@ -99,12 +99,21 @@ def _uuid(value: object | None) -> UUID | None:
     return None if value is None else UUID(str(value))
 
 
+def _now() -> datetime:
+    """Return the current time, timezone-aware in UTC."""
+    return datetime.now(UTC)
+
+
 def _when(value: object | None) -> datetime:
     """Parse an optional header timestamp, defaulting to the current time."""
-    return datetime.now(UTC) if value is None else datetime.fromisoformat(str(value))
+    return _now() if value is None else datetime.fromisoformat(str(value))
 
 
-@dataclass(frozen=True, slots=True)
+_MADE: Any = object()
+"""Stands in for a field not given to `Envelope`, which makes it."""
+
+
+@dataclass(frozen=True, slots=True, init=False)
 class Envelope:
     """
     Immutable correlation and causation ids for one message in a causal chain.
@@ -115,7 +124,30 @@ class Envelope:
     message_id: UUID = field(default_factory=_new_uuid4)
     correlation_id: UUID = field(default_factory=_new_uuid4)
     causation_id: UUID | None = None
-    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    timestamp: datetime = field(default_factory=_now)
+
+    def __init__(
+        self,
+        message_id: UUID = _MADE,
+        correlation_id: UUID = _MADE,
+        causation_id: UUID | None = None,
+        timestamp: datetime = _MADE,
+    ) -> None:
+        """
+        Make an envelope, making any id or timestamp not given.
+
+        Sets each field through its slot directly. A frozen dataclass's own constructor goes
+        through `object.__setattr__` for each, which costs more on this per-emit path.
+
+        :param message_id: This message's id. A new random one if omitted.
+        :param correlation_id: The chain's id. A new random one if omitted.
+        :param causation_id: The id of the message that caused this one, if any.
+        :param timestamp: When the message was made. The current time if omitted.
+        """
+        _set_message_id(self, _new_uuid4() if message_id is _MADE else message_id)
+        _set_correlation_id(self, _new_uuid4() if correlation_id is _MADE else correlation_id)
+        _set_causation_id(self, causation_id)
+        _set_timestamp(self, _now() if timestamp is _MADE else timestamp)
 
     @classmethod
     def root(cls, new_id: _NewId = _new_uuid4) -> Self:
@@ -189,6 +221,11 @@ class Envelope:
         """
         return _Scope(cls, envelope, new_id)
 
+
+_set_message_id = Envelope.__dict__["message_id"].__set__
+_set_correlation_id = Envelope.__dict__["correlation_id"].__set__
+_set_causation_id = Envelope.__dict__["causation_id"].__set__
+_set_timestamp = Envelope.__dict__["timestamp"].__set__
 
 _current: ContextVar[Envelope] = ContextVar("_current_envelope")
 

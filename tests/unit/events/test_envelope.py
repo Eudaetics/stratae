@@ -172,6 +172,66 @@ def test_envelope_is_slotted_immutable_and_compared_by_value():
         envelope.message_id = uuid4()  # pyright: ignore[reportAttributeAccessIssue]
 
 
+def test_envelope_keeps_its_dataclass_interface():
+    """
+    An envelope is still a dataclass, with the same fields, defaults, repr and replace.
+
+    Given: An envelope with a causation id.
+    When: Its fields are listed, it's replaced, deleted from and shown.
+    Then: The fields and defaults are as declared, replace changes only what's given, deleting
+        raises, and the repr names each field.
+    """
+    # Arrange
+    envelope = Envelope(causation_id=uuid4())
+    fields = dataclasses.fields(envelope)
+
+    # Act
+    replaced = dataclasses.replace(envelope, causation_id=None)
+
+    # Assert
+    assert [f.name for f in fields] == [
+        "message_id",
+        "correlation_id",
+        "causation_id",
+        "timestamp",
+    ]
+    assert [f.default_factory is not dataclasses.MISSING for f in fields] == [
+        True,
+        True,
+        False,
+        True,
+    ]
+    assert fields[2].default is None
+    assert replaced.causation_id is None
+    assert replaced.message_id == envelope.message_id
+    assert replaced.timestamp == envelope.timestamp
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        del envelope.causation_id  # pyright: ignore[reportAttributeAccessIssue]
+    assert repr(envelope) == (
+        f"Envelope(message_id={envelope.message_id!r}, "
+        f"correlation_id={envelope.correlation_id!r}, "
+        f"causation_id={envelope.causation_id!r}, timestamp={envelope.timestamp!r})"
+    )
+
+
+def test_scope_keeps_the_subclass():
+    """
+    A scope opened on a subclass makes its root and child envelopes of that subclass.
+
+    Given: A subclass of Envelope.
+    When: Scopes are nested on it.
+    Then: The root and the child are instances of the subclass.
+    """
+    # Act
+    with _TracedEnvelope.scope() as root, _TracedEnvelope.scope() as child:
+        pass
+
+    # Assert
+    assert type(root) is _TracedEnvelope
+    assert type(child) is _TracedEnvelope
+    assert child.causation_id == root.message_id
+
+
 def test_headers_round_trip():
     """
     from_headers reconstructs the envelope to_headers serialized.
