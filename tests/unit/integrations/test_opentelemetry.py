@@ -156,7 +156,7 @@ def test_direct_bus_spans(provider: TracerProvider, exporter: InMemorySpanExport
     bus.handle(_order_placed, lambda order: seen.append(Envelope.current()))
 
     # Act
-    bus.emit(_order_placed, None, _OrderPlaced(1))
+    bus.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     spans = _spans(exporter)
@@ -193,7 +193,7 @@ def test_direct_bus_spans_nest(provider: TracerProvider, exporter: InMemorySpanE
 
     # Act
     with tracer.start_as_current_span("request"):
-        bus.emit(_order_placed, None, _OrderPlaced(1))
+        bus.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     spans = _spans(exporter)
@@ -230,7 +230,7 @@ async def test_async_bus_concurrent_emits(provider: TracerProvider, exporter: In
 
     async def request(order_id: int) -> None:
         with tracer.start_as_current_span(f"request {order_id}"):
-            await bus.emit(_order_placed, None, _OrderPlaced(order_id))
+            await bus.emit(_order_placed, _OrderPlaced(order_id))
 
     # Act
     await asyncio.gather(request(1), request(2))
@@ -263,7 +263,7 @@ def test_failing_handler_recorded(provider: TracerProvider, exporter: InMemorySp
 
     # Act
     with pytest.raises(ExceptionGroup):
-        bus.emit(_order_placed, None, _OrderPlaced(1))
+        bus.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     handle = _spans(exporter)["handle _OrderPlaced"]
@@ -293,7 +293,7 @@ def test_builtin_error_named_bare(provider: TracerProvider, exporter: InMemorySp
 
     # Act
     with pytest.raises(ExceptionGroup):
-        bus.emit(_order_placed, None, _OrderPlaced(1))
+        bus.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     handle = _spans(exporter)["handle _OrderPlaced"]
@@ -333,10 +333,9 @@ async def test_publish_span(
     publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=tracing(provider))
 
     # Act
+    publisher.route(_order_placed, RabbitMQConfig("events", "order.placed"))
     async with publisher:
-        await publisher.emit(
-            _order_placed, RabbitMQConfig("events", "order.placed"), _OrderPlaced(1)
-        )
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     span = _spans(exporter)["publish events:order.placed"]
@@ -380,8 +379,9 @@ async def test_publish_span_default_exchange(
     publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=tracing(provider))
 
     # Act
+    publisher.route(_order_placed, RabbitMQConfig(exchange, routing_key))
     async with publisher:
-        await publisher.emit(_order_placed, RabbitMQConfig(exchange, routing_key), _OrderPlaced(1))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     assert [span.name for span in exporter.get_finished_spans()] == [name]
@@ -408,8 +408,9 @@ async def test_republish_links_to_creation(
         propagate.inject(created)
 
     # Act
+    publisher.route(_order_placed, _config())
     async with publisher:
-        await publisher.emit(_order_placed, _config(), _OrderPlaced(1), headers=created)
+        await publisher.emit(_order_placed, _OrderPlaced(1), headers=created)
 
     # Assert
     span = _spans(exporter)["publish events:order.placed"]
@@ -539,7 +540,8 @@ async def test_outbox_write_is_create_span(
     outbox = OutboxProducer(store, lambda order: b"{}", middleware=tracing(provider))
 
     # Act
-    await outbox.emit(_order_placed, OutboxConfig(_config()), _OrderPlaced(1))
+    outbox.route(_order_placed, OutboxConfig(_config()))
+    await outbox.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
     span = _spans(exporter)["create events:order.placed"]
@@ -573,9 +575,10 @@ async def test_no_sdk_changes_nothing(connect_mock: AsyncMock, channel: AsyncMoc
     bus.handle(_order_placed, lambda order: ran.append(order.order_id))
 
     # Act
+    publisher.route(_order_placed, _config())
     async with publisher:
-        await publisher.emit(_order_placed, _config(), _OrderPlaced(1))
-    bus.emit(_order_placed, None, _OrderPlaced(2))
+        await publisher.emit(_order_placed, _OrderPlaced(1))
+    bus.emit(_order_placed, _OrderPlaced(2))
 
     # Assert
     headers = channel.basic_publish.await_args.kwargs["properties"].headers

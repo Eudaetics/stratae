@@ -155,7 +155,7 @@ def notify(order: OrderPlaced) -> None:
     print(f"Order {order.order_id} placed")
 
 
-bus.emit(order_placed, None, OrderPlaced(42))
+bus.emit(order_placed, OrderPlaced(42))
 # Order 42 placed
 ```
 
@@ -168,7 +168,7 @@ place_order(order_id=42)
 # Order 42 placed
 ```
 
-The event is the shareable definition. What `bind` and `handle` take beyond that is adapter-specific, and the two sides are independent: the direct buses need no routing config and use the event definition itself as the handler key, while a broker adapter might bind an emitter with an exchange and routing key and register handlers against a queue.
+The event is the shareable definition. What `bind` and `handle` take beyond that is adapter-specific, and the two sides are independent. The direct buses need no routing config, and use the event definition itself as the handler key. A broker adapter routes each event once, to an exchange and routing key, and registers handlers against a queue.
 
 Request events block until their responder returns, and the reply is fully typed:
 
@@ -194,7 +194,7 @@ def price(order: PriceOrder) -> Quote:
     return Quote(total=100)
 
 
-quote = bus.emit(price_order, None, PriceOrder(42))  # typed as Quote
+quote = bus.emit(price_order, PriceOrder(42))  # typed as Quote
 ```
 
 `AsyncDirectBus` offers the same surface for async code, accepting both sync and async handlers. Handlers are ordinary functions, so `@inject` and lifecycle-cached dependencies compose with them unchanged.

@@ -34,7 +34,7 @@ import pytest
 
 from stratae.events import HandleCall, Hooks, PublishCall, PubSub, Request
 from stratae.events.middleware import MessageHeaders
-from stratae.events.pipeline import receiving, run_emit, wrap_handler
+from stratae.events.pipeline import Outgoing, receiving, run_emit, wrap_handler
 
 
 class _Order:
@@ -68,9 +68,9 @@ def test_run_emit_nests_middleware_outside_hooks(
     # Arrange
     log: list[str] = []
 
-    def call(order: _Order) -> str:
+    def call(message: Outgoing) -> str:
         log.append("call")
-        return order.item
+        return message.payload.item
 
     def hook(event: Any, payload: Any) -> None:
         log.append("hook")
@@ -85,7 +85,8 @@ def test_run_emit_nests_middleware_outside_hooks(
 
     # Act
     order = _Order("lamp")
-    reply = run_emit(hooks, stack, _order_placed, None, order, MessageHeaders(), call, order)
+    message = Outgoing(_order_placed, None, order, None, MessageHeaders())
+    reply = run_emit(hooks, stack, message, call)
 
     # Assert
     assert reply == "lamp"
@@ -265,7 +266,8 @@ def test_run_emit_middleware_adds_headers() -> None:
         yield
 
     # Act
-    run_emit(None, (trace,), _order_placed, None, _Order("lamp"), headers, lambda: None)
+    message = Outgoing(_order_placed, None, _Order("lamp"), None, headers)
+    run_emit(None, (trace,), message, lambda _: None)
 
     # Assert
     assert dict(headers) == {"x-tenant": "acme", "traceparent": "00-trace"}

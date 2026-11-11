@@ -3,25 +3,29 @@ Compose hooks and middleware around an adapter's emits and handlers.
 
 Every adapter runs these, so hooks and middleware behave the same on every bus: middleware
 wraps hooks, which wrap the call itself. An adapter of your own, such as one for another
-broker, uses them the same way. Its `emit` runs the publish with {py:func}`run_emit` or
-{py:func}`run_emit_async`, inside the message's envelope. Its `handle` registers the call
-{py:func}`wrap_handler` builds, which takes the payload whatever the event, as a
-{py:class}`Handler <stratae.events.handler.Handler>`, and calls it with
-{py:func}`invoke <stratae.events.handler.invoke>`.
+broker, uses them the same way.
 
-Headers travel with the message. An adapter gives its emit a
-{py:class}`MessageHeaders <stratae.events.middleware.MessageHeaders>` for publish middleware
-to add to, and sends them with the message. It handles a message inside
+Its `emit` calls {py:func}`publish` or {py:func}`publish_async` with its `send`. That opens
+the message's envelope, and builds the headers publish middleware can add to. It runs the
+middleware and hooks, then calls `send` with the {py:class}`Outgoing` message. The adapter
+writes only `send`: it delivers the message, with its headers, however its transport does.
+
+Its `handle` registers the call {py:func}`wrap_handler` builds, which takes the payload
+whatever the event, as a {py:class}`Handler <stratae.events.handler.Handler>`, and calls it
+with {py:func}`invoke <stratae.events.handler.invoke>`. It handles a message inside
 {py:func}`receiving`, with the headers it arrived with, so handle middleware can read them.
 Only handle middleware reads them, so an adapter without any can skip `receiving`.
 """
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
+from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from types import MappingProxyType
-from typing import Any
+from typing import Any, NamedTuple, cast
+from uuid import UUID
 
 from stratae.callables import is_async_callable
+from stratae.events.envelope import ENVELOPE_HEADERS, Envelope
 from stratae.events.handler import WithoutPayload
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
 from stratae.events.middleware import (
@@ -72,66 +76,197 @@ def receiving(headers: Mapping[str, str]) -> _Receiving:
     return _Receiving(headers)
 
 
+class Outgoing(NamedTuple):
+    """One message on its way out: what an adapter's `send` receives."""
+
+    event: AnyEvent
+    """The event being emitted."""
+    config: Any
+    """The config of the route it's sent on, or `None` on a bus that doesn't route."""
+    payload: Any
+    """The payload being emitted."""
+    envelope: Envelope | None
+    """The envelope it's sent under, or `None` on a bus without envelopes."""
+    headers: Mapping[str, str]
+    """The headers to send with it: those given, plus any publish middleware added."""
+
+
+type Send = Callable[[Outgoing], Any]
+"""Sends one message: the only part of an emit an adapter writes."""
+
+_message: Callable[[type[Outgoing], tuple[Any, ...]], Outgoing] = tuple[Any, ...].__new__
+"""Builds an `Outgoing` from a tuple of its fields."""
+
+
 def run_emit(
     hooks: Hooks[Any, Any] | None,
     middleware: tuple[Callable[..., object], ...],
-    event: Any,
-    config: Any,
-    payload: Any,
-    headers: MessageHeaders,
-    call: Callable[..., Any],
-    *args: Any,
+    message: Outgoing,
+    send: Send,
 ) -> Any:
     """
-    Run `call(*args)` inside the emit's sync hooks, then the bus's sync publish middleware.
+    Send `message` inside the emit's sync hooks, then the bus's sync publish middleware.
 
     :param hooks: The emit's hooks, or `None`.
     :param middleware: The bus's publish middleware, outermost first.
-    :param event: The event being emitted.
-    :param config: The emit's routing config, which middleware sees as `call.config`.
-    :param payload: The payload being emitted.
-    :param headers: The message's headers, which middleware adds to as `call.headers`. `call`
-        sends them.
-    :param call: The emit itself, such as a dispatch.
-    :returns: What `call` returns.
+    :param message: The message, which middleware sees as a {py:class}`PublishCall
+        <stratae.events.middleware.PublishCall>`.
+    :param send: Sends the message.
+    :returns: What `send` returns.
     """
-    if hooks is not None:
-        call, args = run_hooks, (hooks, event, payload, call, *args)
     if middleware:
-        seen = PublishCall(event, config, payload, headers)
-        call, args = run_middleware, (middleware, seen, call, *args)
-    return call(*args)
+        seen = _publish_call(message)
+        return run_middleware(middleware, seen, _hooked_send, hooks, send, message)
+    if hooks is not None:
+        return run_hooks(hooks, message.event, message.payload, send, message)
+    return send(message)
 
 
-async def run_emit_async(
+def _hooked_send(hooks: Hooks[Any, Any] | None, send: Send, message: Outgoing) -> Any:
+    """Send `message` inside the emit's sync hooks, if it has any."""
+    if hooks is None:
+        return send(message)
+    return run_hooks(hooks, message.event, message.payload, send, message)
+
+
+def run_emit_async(
     hooks: Hooks[Any, Any] | None,
     middleware: tuple[Callable[..., object], ...],
-    event: Any,
-    config: Any,
+    message: Outgoing,
+    send: Callable[[Outgoing], Awaitable[Any]],
+) -> Awaitable[Any]:
+    """Return `send(message)` inside the emit's hooks, then async publish middleware, to await."""
+    if middleware:
+        seen = _publish_call(message)
+        return run_middleware_async(middleware, seen, _hooked_send_async, hooks, send, message)
+    if hooks is not None:
+        return run_hooks_async(hooks, message.event, message.payload, send, message)
+    return send(message)
+
+
+def _hooked_send_async(
+    hooks: Hooks[Any, Any] | None, send: Callable[[Outgoing], Awaitable[Any]], message: Outgoing
+) -> Awaitable[Any]:
+    """Send `message` inside the emit's hooks, sync or async, if it has any."""
+    if hooks is None:
+        return send(message)
+    return run_hooks_async(hooks, message.event, message.payload, send, message)
+
+
+def _publish_call(message: Outgoing) -> PublishCall:
+    """Describe the message for publish middleware, which can add to its headers."""
+    headers = cast(MessageHeaders, message.headers)
+    return PublishCall(message.event, message.config, message.payload, headers)
+
+
+class Publishing:
+    """How an adapter emits: its publish middleware, envelopes and reserved header names."""
+
+    __slots__ = ("middleware", "new_id", "reserved")
+
+    middleware: tuple[Callable[..., object], ...]
+    """The adapter's publish middleware, outermost first."""
+    new_id: Callable[[], UUID] | None
+    """Makes the ids of each emit's new envelope; `None` opens none unless one is given."""
+    reserved: Collection[str]
+    """Header names the adapter sets itself, in lower case."""
+
+    def __init__(
+        self,
+        middleware: tuple[Callable[..., object], ...] = (),
+        new_id: Callable[[], UUID] | None = None,
+        reserved: Collection[str] = ENVELOPE_HEADERS,
+    ) -> None:
+        """
+        Describe how an adapter emits.
+
+        :param middleware: The adapter's publish middleware, outermost first.
+        :param new_id: Makes the ids of each emit's new envelope. `None` opens no envelope
+            unless one is given.
+        :param reserved: Header names the adapter sets itself, in lower case.
+        """
+        self.middleware = middleware
+        self.new_id = new_id
+        self.reserved = reserved
+
+    def opened(self, envelope: Envelope | None) -> AbstractContextManager[Envelope] | None:
+        """
+        Return the envelope scope an emit runs in, or `None` if it runs in none.
+
+        It's `envelope` if one is given, else a new envelope if the adapter opens them.
+        """
+        if envelope is not None:
+            return Envelope.scope(envelope)
+        new_id = self.new_id
+        if new_id is None:
+            return None
+        return Envelope.scope(new_id=new_id)
+
+    def stamped(self, headers: Mapping[str, str] | None) -> Mapping[str, str]:
+        """Return the headers an emit sends: writable only if something can write them."""
+        if headers is None and not self.middleware:
+            return _NO_HEADERS
+        return MessageHeaders(headers or _NO_HEADERS, reserved=self.reserved)
+
+
+def publish(
+    publishing: Publishing,
+    send: Send,
+    event: AnyEvent,
     payload: Any,
-    headers: MessageHeaders,
-    call: Callable[..., Awaitable[Any]],
-    *args: Any,
+    config: Any = None,
+    hooks: Hooks[Any, Any] | None = None,
+    envelope: Envelope | None = None,
+    headers: Mapping[str, str] | None = None,
 ) -> Any:
     """
-    Await `call(*args)` inside the emit's hooks, then the bus's async publish middleware.
+    Emit through a sync adapter: open the envelope, run middleware and hooks, then `send`.
 
-    :param hooks: The emit's hooks, or `None`.
-    :param middleware: The bus's publish middleware, outermost first.
+    :param publishing: How the adapter emits.
+    :param send: Sends the message.
     :param event: The event being emitted.
-    :param config: The emit's routing config, which middleware sees as `call.config`.
     :param payload: The payload being emitted.
-    :param headers: The message's headers, which middleware adds to as `call.headers`. `call`
-        sends them.
-    :param call: The emit itself, such as a dispatch or a publish.
-    :returns: What `call` resolves to.
+    :param config: The config of the route the message is sent on.
+    :param hooks: The emit's hooks, or `None`.
+    :param envelope: Sends under this envelope, unchanged, instead of a new one.
+    :param headers: Headers to send with the message, which publish middleware can add to.
+    :returns: What `send` returns.
+    :raises ValueError: If a given header is reserved.
     """
-    if hooks is not None:
-        call, args = run_hooks_async, (hooks, event, payload, call, *args)
-    if middleware:
-        seen = PublishCall(event, config, payload, headers)
-        call, args = run_middleware_async, (middleware, seen, call, *args)
-    return await call(*args)
+    middleware, stamped = publishing.middleware, publishing.stamped(headers)
+    scope = publishing.opened(envelope)
+    if scope is None:
+        message = _message(Outgoing, (event, config, payload, None, stamped))
+        return run_emit(hooks, middleware, message, send)
+    with scope as opened:
+        message = _message(Outgoing, (event, config, payload, opened, stamped))
+        return run_emit(hooks, middleware, message, send)
+
+
+async def publish_async(
+    publishing: Publishing,
+    send: Callable[[Outgoing], Awaitable[Any]],
+    event: AnyEvent,
+    payload: Any,
+    config: Any = None,
+    hooks: Hooks[Any, Any] | None = None,
+    envelope: Envelope | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> Any:
+    """Emit through an async adapter, as {py:func}`publish` does, awaiting `send`."""
+    middleware, stamped = publishing.middleware, publishing.stamped(headers)
+    scope = publishing.opened(envelope)
+    if scope is None:
+        message = _message(Outgoing, (event, config, payload, None, stamped))
+        return await run_emit_async(hooks, middleware, message, send)
+    with scope as opened:
+        message = _message(Outgoing, (event, config, payload, opened, stamped))
+        return await run_emit_async(hooks, middleware, message, send)
+
+
+def received(headers: Mapping[str, str]) -> Mapping[str, str]:
+    """Return a sent message's headers as handle middleware reads them: fixed from now on."""
+    return headers if headers is _NO_HEADERS else cast(MessageHeaders, headers).to_dict()
 
 
 def _hooked(

@@ -20,6 +20,10 @@ AsyncDirectBus:
 - emit and bound callables resolve to a request's reply type, and None for pub/sub.
 - A payload-less event binds to a zero-argument coroutine function.
 
+Binding:
+- bind and abind take an emitter for the events it takes: a PubSub-only emitter binds PubSub
+  events, typed by their payload, and refuses a request or hooks for another payload.
+
 Hooks:
 - Hooks passed to handle, bind and emit are typed by the event's payload and reply.
 - A hook typed loosely, for any event, fits every event.
@@ -45,6 +49,8 @@ from stratae.events import (
     NoPayload,
     PubSub,
     Request,
+    abind,
+    bind,
 )
 from stratae.events._dispatch import (
     dispatch_request,
@@ -156,9 +162,9 @@ def test_direct_bus_types() -> None:
     beat = bus.bind(_heartbeat)
 
     # Act
-    order = bus.emit(_place_order, None, _PlaceOrder("lamp"))
-    cancelled = bus.emit(_cancel_order, None, _PlaceOrder("lamp"))
-    published = bus.emit(_order_placed, None, _OrderPlaced("lamp"))
+    order = bus.emit(_place_order, _PlaceOrder("lamp"))
+    cancelled = bus.emit(_cancel_order, _PlaceOrder("lamp"))
+    published = bus.emit(_order_placed, _OrderPlaced("lamp"))
 
     # Assert
     assert_type(order, _Order)
@@ -198,8 +204,8 @@ async def test_async_direct_bus_types() -> None:
     ping = bus.bind(_ping)
 
     # Act
-    order = await bus.emit(_place_order, None, _PlaceOrder("lamp"))
-    published = await bus.emit(_order_placed, None, _OrderPlaced("lamp"))
+    order = await bus.emit(_place_order, _PlaceOrder("lamp"))
+    published = await bus.emit(_order_placed, _OrderPlaced("lamp"))
 
     # Assert
     assert_type(order, _Order)
@@ -269,14 +275,50 @@ def test_hooks_typed_by_event() -> None:
     # Act
     bus.handle(_place_order, _make_order, hooks=order_hooks)
     place = bus.bind(_place_order, factory=_PlaceOrder, hooks=order_hooks)
-    order = bus.emit(_place_order, None, _PlaceOrder("lamp"), hooks=order_hooks)
+    order = bus.emit(_place_order, _PlaceOrder("lamp"), hooks=order_hooks)
     bus.handle(_order_placed, _on_placed, hooks=Hooks(success=(_audit_any,)))
-    bus.emit(_order_placed, None, _OrderPlaced("lamp"), hooks=any_hooks)
+    bus.emit(_order_placed, _OrderPlaced("lamp"), hooks=any_hooks)
     bus.handle(_ping, _pong, hooks=Hooks(success=(_audit_any,)))
 
     # Assert
     assert_type(place(item="desk"), _Order)
     assert_type(order, _Order)
+
+
+def _publish[S](event: PubSub[S, Any], payload: S, *, hooks: Hooks[S, None] | None = None) -> None:
+    return None
+
+
+async def _publish_async[S](
+    event: PubSub[S, Any], payload: S, *, hooks: Hooks[S, None] | None = None
+) -> None:
+    await asyncio.sleep(0)
+
+
+async def test_binding_typed_by_the_emitter() -> None:
+    """
+    Bind and abind should take an emitter for the events it takes, and refuse any other.
+
+    Given: A sync and an async emitter that take PubSub events only
+    When: PubSub events, and a request, are bound to each
+    Then: The PubSub bindings are typed by the event's payload; the requests, and hooks for
+        another payload, are type errors
+    """
+    # Arrange
+    order_hooks: Hooks[_PlaceOrder, _Order] = Hooks(success=(_audit_order,))
+
+    # Act
+    placed = bind(_order_placed, _publish)
+    beat = bind(_heartbeat, _publish)
+    place = abind(_order_placed, _publish_async, factory=_OrderPlaced)
+    bind(_place_order, _publish)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    abind(_place_order, _publish_async)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    bind(_order_placed, _publish, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
+
+    # Assert
+    assert_type(placed(_OrderPlaced("lamp")), None)
+    assert_type(beat(), None)
+    assert_type(await place(item="lamp"), None)
 
 
 def test_pubsub_handlers_return_none() -> None:

@@ -126,7 +126,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping
 from contextlib import suppress
 from copy import copy
-from dataclasses import KW_ONLY, InitVar, dataclass, field
+from dataclasses import KW_ONLY, InitVar, dataclass, field, replace
 from enum import StrEnum
 from typing import (
     TYPE_CHECKING,
@@ -149,6 +149,7 @@ from stratae.events import (
     AnyEvent,
     Deserializer,
     Destination,
+    Encoded,
     Envelope,
     EnvelopeConfig,
     Handler,
@@ -156,13 +157,20 @@ from stratae.events import (
     PubSub,
     Serializer,
 )
-from stratae.events.binding import AsyncPubSubBindMixin
+from stratae.events.binding import abind
 from stratae.events.envelope import ENVELOPE_HEADERS
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
 from stratae.events.handler import invoke
 from stratae.events.hooks import Hooks
-from stratae.events.middleware import MessageHeaders, Middleware
-from stratae.events.pipeline import receiving, run_emit_async, wrap_handler
+from stratae.events.middleware import Middleware
+from stratae.events.pipeline import (
+    Outgoing,
+    Publishing,
+    publish_async,
+    received,
+    receiving,
+    wrap_handler,
+)
 from stratae.lifecycle import AsyncScope
 
 if TYPE_CHECKING:
@@ -188,6 +196,12 @@ _CHANNEL_OPTIONS: dict[str, Any] = {"publisher_confirms": True, "on_return_raise
 """Every channel waits for the broker's confirm on publish, and raises for a returned message."""
 
 _UNROUTABLE = "message to exchange {!r} with routing key {!r} reached no queue"
+
+_NO_ADDRESS = "{!r} is routed by a function of its payload, so an Encoded payload needs its address"
+
+_NO_ROUTE = "no route for {!r}; route or bind it to a RabbitMQConfig before emitting it"
+
+_ROUTE_TAKEN = "{!r} is already routed to another RabbitMQConfig; give it one route per publisher"
 
 _NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
 
@@ -220,11 +234,14 @@ _ROUTING_KEY = "messaging.rabbitmq.destination.routing_key"
 
 
 def _stamp(
-    properties: Basic.Properties | None, envelope: Envelope, headers: MessageHeaders
+    properties: Basic.Properties | None, envelope: Envelope, headers: Mapping[str, str]
 ) -> Basic.Properties:
     """Copy properties, stamped with the message's headers, envelope ids, and timestamp."""
     stamped = copy(properties) if properties is not None else Basic.Properties()
-    stamped.headers = (stamped.headers or {}) | headers.to_dict() | envelope.to_headers()
+    merged = dict(stamped.headers or {})
+    if headers:
+        merged |= received(headers)
+    stamped.headers = merged | envelope.to_headers()
     stamped.message_id = str(envelope.message_id)
     stamped.correlation_id = str(envelope.correlation_id)
     stamped.timestamp = envelope.timestamp
@@ -280,15 +297,19 @@ def _failed(message: DeliveredMessage, attempts: int, exc: Exception) -> Basic.P
 @dataclass(frozen=True, slots=True)
 class RabbitMQConfig:
     """
-    Exchange and routing key for a {py:class}`RabbitMQPublisher` binding.
+    Exchange and routing key for an event's route on a {py:class}`RabbitMQPublisher`.
+
+    The routing key is a string, or a function giving each message's routing key from its
+    payload. Each emit publishes with a config whose routing key is a string: this one, or the
+    one {py:meth}`at` makes for the message's key. So middleware sees where each message went.
 
     An immutable value: configs with the same fields are equal.
     """
 
     exchange: str
     """The exchange to publish to."""
-    routing_key: str
-    """The message's routing key."""
+    routing_key: str | Callable[[Any], str]
+    """The messages' routing key, or a function giving each message's key from its payload."""
     _: KW_ONLY
     exchange_type: str | None = None
     """If given, declare the exchange with this type before the first publish. Leave unset
@@ -302,6 +323,11 @@ class RabbitMQConfig:
     """Whether a message must reach a queue. If it matches none, `emit` raises
     {py:exc}`UnroutableError <stratae.events.exceptions.UnroutableError>`; otherwise the broker
     drops it, and `emit` still succeeds."""
+    serializer: Serializer[Any] | None = None
+    """
+    Encodes this route's payloads, in place of the publisher's serializer. An outbox route to
+    this config encodes its records with it too, in place of the producer's.
+    """
     messaging_destination: Destination = field(init=False, repr=False, compare=False)
     """
     Where messages published with this config go, for tracing.
@@ -312,11 +338,29 @@ class RabbitMQConfig:
 
     def __post_init__(self) -> None:
         """Work out the destination once, since the config can't change."""
-        exchange, key = self.exchange, self.routing_key
+        exchange = self.exchange
+        key = self.routing_key if isinstance(self.routing_key, str) else ""
         name = ":".join(part for part in (exchange, key) if part) or "amq.default"
         attributes = {_ROUTING_KEY: key} if key else {}
         destination = Destination(_SYSTEM, name, attributes=attributes)
         object.__setattr__(self, "messaging_destination", destination)
+
+    def address(self, payload: Any, /) -> str | None:
+        """
+        Return the payload's routing key, or `None` if every message shares this config's.
+
+        :param payload: The payload being emitted.
+        """
+        key = self.routing_key
+        return None if isinstance(key, str) else key(payload)
+
+    def at(self, routing_key: str) -> RabbitMQConfig:
+        """
+        Return this config with one message's routing key.
+
+        :param routing_key: The message's routing key.
+        """
+        return replace(self, routing_key=routing_key)
 
 
 class ConnectionState(StrEnum):
@@ -489,12 +533,12 @@ class _Link:
             await connection.close()
 
 
-class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
+class RabbitMQPublisher:
     """
     Async RabbitMQ publisher for pub/sub events.
 
-    Holds one connection and channel for the `async with` block. Bind events with `bind`
-    from {py:class}`AsyncPubSubBindMixin <stratae.events.binding.AsyncPubSubBindMixin>`. It
+    Holds one connection and channel for the `async with` block. Each event is routed to one
+    {py:class}`RabbitMQConfig`, by `bind` or by `route`, and `emit` publishes on that route. It
     implements {py:class}`PubSub <stratae.events.patterns.PubSub>` and its subclasses only, so
     it matches {py:class}`PubSubProducer <stratae.events.protocols.PubSubProducer>`. Binding or
     emitting any other event is a type error, and raises `NotImplementedError`.
@@ -527,7 +571,7 @@ class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
 
         :param url: AMQP connection URL, e.g. `"amqp://guest:guest@localhost/"`.
         :param serializer: Default payload serializer, such as `msgspec.json.encode`. A
-            binding's own serializer overrides it.
+            route's own serializer, on its {py:class}`RabbitMQConfig`, overrides it.
         :param topology: Consume configs whose queues, exchanges, bindings and failure queues
             are declared on entering the context, before anything is published. Each needs a
             named `queue`. They're declared again after each reconnect.
@@ -543,13 +587,13 @@ class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
         :raises ValueError: If a `topology` config has no named `queue`.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
-        self._new_id = envelope.new_id
         self._topology = tuple(topology)
         for config in self._topology:
             if config.queue is None:
                 raise ValueError(_TOPOLOGY_NEEDS_QUEUE)
-        self._publish_middleware = middleware.publish
+        self._publishing = Publishing(middleware.publish, envelope.new_id, _RESERVED)
         self._serializer = serializer
+        self._routes: dict[AnyEvent, RabbitMQConfig] = {}
         self._declared: set[str] = set()
         self._link = _Link(
             "publisher", url, reconnect, self._declare_topology, self._declared.clear
@@ -594,24 +638,36 @@ class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
         for config in self._topology:
             await _declare(channel, config)
 
+    def route(self, event: PubSub[Any, Any], config: RabbitMQConfig) -> None:
+        """
+        Route an event's messages to an exchange and routing key.
+
+        `bind` routes the event it binds. Routing it again to an equal config does nothing.
+
+        :param event: The PubSub event to route.
+        :param config: Where its messages go.
+        :raises NotImplementedError: If the event isn't
+            {py:class}`PubSub <stratae.events.patterns.PubSub>`.
+        :raises ValueError: If the event is already routed to a different config.
+        """
+        _require_pubsub(event)
+        if self._routes.setdefault(event, config) != config:
+            raise ValueError(_ROUTE_TAKEN.format(event.name))
+
     async def emit[S](
         self,
         event: PubSub[S, Any],
-        config: RabbitMQConfig,
-        payload: S,
+        payload: S | Encoded,
         *,
-        serializer: Serializer[S] | None = None,
         hooks: Hooks[S, None] | None = None,
         envelope: Envelope | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> None:
         """
-        Serialize a payload and publish it.
+        Serialize a payload and publish it on the event's route.
 
         :param event: The PubSub event being emitted.
-        :param config: The exchange and routing key.
         :param payload: The payload to publish.
-        :param serializer: Overrides the publisher's serializer for this call.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around the publish,
             inside the message's envelope, so they see the ids it's sent with.
         :param envelope: Sends the message with this envelope's ids and timestamp, unchanged,
@@ -622,6 +678,7 @@ class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
         :raises ValueError: If a header is one the publisher sets itself: an envelope header,
             {py:data}`ATTEMPTS_HEADER` or {py:data}`FAILURE_HEADER`.
         :raises NotConnectedError: If the publisher isn't connected.
+        :raises LookupError: If the event has no route.
         :raises NotImplementedError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises UnroutableError: If `config.mandatory` is set and the message reached no queue.
@@ -630,59 +687,94 @@ class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
             confirms, e.g. because the exchange doesn't exist.
         """
         _require_pubsub(event)
-        stamped = MessageHeaders(headers or {}, reserved=_RESERVED)
-        # The message's own envelope, current while middleware and hooks run, so they see it.
-        with Envelope.scope(envelope, new_id=self._new_id) as sent:
-            if hooks is None and not self._publish_middleware:
-                await self._publish(event, config, payload, serializer, sent, stamped)
-            else:
-                await run_emit_async(
-                    hooks,
-                    self._publish_middleware,
-                    event,
-                    config,
-                    payload,
-                    stamped,
-                    self._publish,
-                    event,
-                    config,
-                    payload,
-                    serializer,
-                    sent,
-                    stamped,
-                )
+        config = self._routes.get(event)
+        if config is None:
+            raise LookupError(_NO_ROUTE.format(event.name))
+        if payload.__class__ is Encoded:
+            address = cast(Encoded, payload).address
+            if address is not None:
+                config = config.at(address)
+            elif config.routing_key.__class__ is not str:
+                raise ValueError(_NO_ADDRESS.format(event.name))
+        elif config.routing_key.__class__ is not str:
+            config = config.at(cast(Callable[[Any], str], config.routing_key)(payload))
+        await publish_async(
+            self._publishing, self._send, event, payload, config, hooks, envelope, headers
+        )
 
-    async def _publish(
-        self,
-        event: AnyEvent,
-        config: RabbitMQConfig,
-        payload: Any,
-        serializer: Serializer[Any] | None,
-        envelope: Envelope,
-        headers: MessageHeaders,
-    ) -> None:
-        """Serialize a payload and publish it to config's exchange, with its headers."""
+    async def _send(self, message: Outgoing) -> None:
+        """Serialize a message's payload and publish it to its config's exchange."""
+        event, config, payload = message.event, message.config, message.payload
+        envelope, headers = cast(Envelope, message.envelope), message.headers
         channel = self._link.channel
         if channel is None:
             reconnecting = self._link.state is ConnectionState.RECONNECTING
             raise NotConnectedError(_RECONNECTING if reconnecting else _NOT_CONNECTED)
         await self._declare_exchange(channel, config)
-        body = self._encode(event, payload, serializer)
+        body = self._encode(event, payload, config)
         try:
             await channel.basic_publish(
                 body,
                 exchange=config.exchange,
-                routing_key=config.routing_key,
+                routing_key=cast(str, config.routing_key),
                 properties=_stamp(config.properties, envelope, headers),
                 mandatory=config.mandatory,
             )
         except PublishError as exc:
             raise UnroutableError(_UNROUTABLE.format(config.exchange, config.routing_key)) from exc
 
-    def _emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
-        """Return `emit`, raising NotImplementedError for an event that isn't PubSub."""
-        _require_pubsub(event)
-        return self.emit
+    @overload
+    def bind[**P, S](
+        self,
+        event: PubSub[S, Literal[False]],
+        *,
+        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+        config: RabbitMQConfig,
+        hooks: Hooks[S, None] | None = None,
+    ) -> Callable[P, Awaitable[None]]: ...
+    @overload
+    def bind(
+        self,
+        event: PubSub[NoPayload, Literal[True]],
+        *,
+        factory: None = None,
+        config: RabbitMQConfig,
+        hooks: Hooks[NoPayload, None] | None = None,
+    ) -> Callable[[], Awaitable[None]]: ...
+    @overload
+    def bind[S](
+        self,
+        event: PubSub[S, Literal[False]],
+        *,
+        factory: None = None,
+        config: RabbitMQConfig,
+        hooks: Hooks[S, None] | None = None,
+    ) -> Callable[[S], Awaitable[None]]: ...
+
+    def bind(
+        self,
+        event: PubSub[Any, Any],
+        *,
+        factory: Callable[..., Any] | None = None,
+        config: RabbitMQConfig,
+        hooks: Hooks[Any, None] | None = None,
+    ) -> Callable[..., Awaitable[None]]:
+        """
+        Route a PubSub event to `config`, and bind it to this publisher.
+
+        See {py:func}`abind <stratae.events.binding.abind>`.
+
+        :param event: The PubSub event to bind.
+        :param factory: Builds the payload from the call's arguments, sync or async.
+        :param config: Where its messages go.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each publish.
+        :returns: An async callable that publishes the event.
+        :raises NotImplementedError: If the event isn't
+            {py:class}`PubSub <stratae.events.patterns.PubSub>`.
+        :raises ValueError: If the event is already routed to a different config.
+        """
+        self.route(event, config)
+        return abind(event, self.emit, factory=factory, hooks=hooks)
 
     async def _declare_exchange(self, channel: AbstractChannel, config: RabbitMQConfig) -> None:
         """Declare config's exchange once, if it carries a type."""
@@ -693,11 +785,13 @@ class RabbitMQPublisher(AsyncPubSubBindMixin[RabbitMQConfig]):
         )
         self._declared.add(config.exchange)
 
-    def _encode(self, event: AnyEvent, payload: Any, serializer: Serializer[Any] | None) -> bytes:
-        """Serialize payload, or return an empty body for a schema-less event."""
+    def _encode(self, event: AnyEvent, payload: Any, config: RabbitMQConfig) -> bytes:
+        """Serialize payload with the route's serializer or the publisher's, or pass bytes on."""
+        if payload.__class__ is Encoded:
+            return payload.body
         if event.is_signal:
             return b""
-        return serializer(payload) if serializer is not None else self._serializer(payload)
+        return (config.serializer or self._serializer)(payload)
 
 
 class RabbitMQFailurePolicy:

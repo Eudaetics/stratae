@@ -8,7 +8,7 @@ The outbox only works if a record and its data commit together. So the store mus
 
 ## The table and the unit of work
 
-The application's own table, `orders`, sits beside the outbox table. One outbox row per record. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. The session recipe is the same as in [A database session per scope](database.md).
+The application's own table, `orders`, sits beside the outbox table. One outbox row per record. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. The session recipe is the same as in [A database session per scope](database.md).
 
 ````{example} The outbox table, the engine, and a session per unit of work
 ```{code-block} python
@@ -60,6 +60,7 @@ class OutboxRow(Base):
     body: Mapped[bytes] = mapped_column(LargeBinary)
     headers: Mapped[dict[str, str]] = mapped_column(JSON)
     key: Mapped[str | None] = mapped_column(String(200), index=True)
+    address: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -75,6 +76,7 @@ class OutboxRow(Base):
             body=record.body,
             headers=dict(record.headers),
             key=record.key,
+            address=record.address,
             created_at=record.created_at,
             available_at=record.available_at,
             attempts=record.attempts,
@@ -90,6 +92,7 @@ class OutboxRow(Base):
             created_at=utc(self.created_at),
             available_at=utc(self.available_at),
             key=self.key,
+            address=self.address,
             attempts=self.attempts,
             error=self.error,
         )
@@ -224,7 +227,7 @@ import asyncio
 from typing import Annotated
 from sqlalchemy import func
 from stratae.depends import Depends, inject
-from stratae.events import Envelope, PubSub
+from stratae.events import Encoded, Envelope, PubSub
 from stratae.events.outbox import OutboxConfig, OutboxProducer, OutboxRelay
 
 class OrderPlaced:
@@ -233,9 +236,15 @@ class OrderPlaced:
         self.item = item
 
 class PrintingPublisher:
-    async def emit(self, event: Any, config: Any, payload: Any, *, serializer: Any = None,
-                   envelope: Envelope | None = None, headers: Any = None) -> None:
-        print(f"published {serializer(payload)!r} to {config}")
+    def __init__(self) -> None:
+        self.routes: dict[Any, Any] = {}
+
+    def route(self, event: Any, config: Any) -> None:
+        self.routes[event] = config
+
+    async def emit(self, event: Any, payload: Encoded, *, envelope: Envelope | None = None,
+                   headers: Any = None) -> None:
+        print(f"published {payload.body!r} to {self.routes[event]}")
 
 order_placed = PubSub(OrderPlaced)
 store = SqlAlchemyOutboxStore(get_session, get_sessionmaker)

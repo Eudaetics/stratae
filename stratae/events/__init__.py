@@ -80,17 +80,20 @@ from .hooks import Hooks
 from .middleware import HandleCall, MessageHeaders, Middleware, PublishCall
 from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
+    Addressed,
     AnyEvent,
     Consumer,
     Deserializer,
     Destination,
     EmitCallable,
+    Encoded,
     EventType,
     PayloadEvent,
     Producer,
     PubSubProducer,
     Routed,
     Serializer,
+    Serializing,
     SignalEvent,
 )
 
@@ -99,6 +102,7 @@ __all__ = [
     "CORRELATION_ID_HEADER",
     "MESSAGE_ID_HEADER",
     "TIMESTAMP_HEADER",
+    "Addressed",
     "AnyEvent",
     "AsyncDirectBus",
     "Consumer",
@@ -107,6 +111,7 @@ __all__ = [
     "DirectBus",
     "Dispatch",
     "EmitCallable",
+    "Encoded",
     "Envelope",
     "EnvelopeConfig",
     "EventType",
@@ -126,6 +131,7 @@ __all__ = [
     "Request",
     "Routed",
     "Serializer",
+    "Serializing",
     "SignalEvent",
     "WithoutPayload",
     "abind",

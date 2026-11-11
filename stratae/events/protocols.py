@@ -5,11 +5,12 @@ Structural protocols for the event system.
 {py:data}`AnyEvent`, {py:data}`PayloadEvent` and {py:data}`SignalEvent` abbreviate it.
 {py:class}`Producer` and {py:class}`Consumer` describe the emit and handle sides of a bus
 adapter. {py:class}`PubSubProducer` describes the emit side of one that emits only PubSub
-events. {py:class}`EmitCallable` describes a single emitter with a concrete return type.
+events. {py:class}`EmitCallable` describes a single emitter, typed by the events it takes.
 {py:class}`Serializer` and {py:class}`Deserializer` describe the codecs an adapter takes for
 payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
-one such pair. {py:class}`Routed` describes a routing config that says where its messages go,
-as a {py:class}`Destination`, so tracing and other observers can name it without knowing the
+one such pair. {py:class}`Serializing` describes a routing config with its own serializer.
+{py:class}`Routed` describes a routing config that says where its messages go, as a
+{py:class}`Destination`, so tracing and other observers can name it without knowing the
 adapter.
 """
 
@@ -67,27 +68,23 @@ type SignalEvent[EmitR, HandleR] = EventType[NoPayload, EmitR, HandleR, Literal[
 
 
 @runtime_checkable
-class EmitCallable[S, C, R, Signal: bool](Protocol):
-    """Structural protocol for one emitter, shaped like {py:meth}`Producer.emit`."""
+class EmitCallable[Ev, S, H, R](Protocol):
+    """
+    Structural protocol for one emitter, shaped like {py:meth}`Producer.emit`.
 
-    def __call__(
-        self,
-        event: EventType[S, Any, Any, Signal],
-        config: C,
-        payload: S,
-        *,
-        serializer: Callable[[S], Any] | None = None,
-        hooks: Hooks[S, Any] | None = None,
-    ) -> R:
+    `Ev` is the event type it takes, `S` its payload type, `H` the hooks it takes and `R` what
+    it returns. Binding an event to it checks the emitter takes that event. So an emitter for
+    PubSub events only, such as
+    {py:meth}`RabbitMQPublisher.emit <stratae.integrations.rabbitmq.RabbitMQPublisher.emit>`,
+    binds PubSub events and refuses a request.
+    """
+
+    def __call__(self, event: Ev, payload: S, *, hooks: H | None = None) -> R:
         """
-        Dispatch a payload.
+        Emit a payload on the event's route.
 
         :param event: The event being emitted.
-        :param config: Adapter-specific routing config.
-        :param payload: The payload to dispatch.
-        :param serializer: Encodes the payload; defaults to the adapter's own. `bind` passes
-            it only when one is given, so an untyped emitter without it still works until
-            someone binds with one, then fails loudly.
+        :param payload: The payload to emit.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
             `bind` passes it only when hooks are given, so an untyped emitter without it still
             works until someone binds with hooks, then fails loudly.
@@ -98,29 +95,26 @@ class EmitCallable[S, C, R, Signal: bool](Protocol):
 
 @runtime_checkable
 class Producer(Protocol):
-    """Structural protocol for the emit side of a bus adapter, sync or async."""
+    """
+    Structural protocol for the emit side of a bus adapter, sync or async.
+
+    Where a message goes isn't chosen per emit. An adapter that routes, such as a broker's,
+    holds a route for each event, registered by `bind` or by its own `route` method.
+    """
 
     def emit[S](
         self,
         event: EventType[S, Any, Any, Any],
-        config: Any,
         payload: S,
         *,
-        serializer: Callable[[S], Any] | None = None,
         hooks: Hooks[S, Any] | None = None,
     ) -> Any:
         """
-        Dispatch a payload.
+        Emit a payload on the event's route.
 
         :param event: The event being emitted.
-        :param config: Adapter-specific routing config.
-        :param payload: The payload to dispatch.
-        :param serializer: Encodes the payload; defaults to the adapter's own. `bind` passes
-            it only when one is given, so an untyped emitter without it still works until
-            someone binds with one, then fails loudly.
+        :param payload: The payload to emit.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
-            `bind` passes it only when hooks are given, so an untyped emitter without it still
-            works until someone binds with hooks, then fails loudly.
         :returns: Adapter-defined result, or a coroutine resolving to it.
         """
         ...
@@ -143,21 +137,54 @@ class PubSubProducer(Protocol):
     def emit[S](
         self,
         event: PubSub[S, Any],
-        config: Any,
         payload: S,
         *,
-        serializer: Callable[[S], Any] | None = None,
         hooks: Hooks[S, None] | None = None,
     ) -> Any:
         """
-        Dispatch a payload.
+        Emit a payload on the event's route.
 
         :param event: The PubSub event being emitted.
-        :param config: Adapter-specific routing config.
-        :param payload: The payload to dispatch.
-        :param serializer: Encodes the payload; defaults to the adapter's own.
+        :param payload: The payload to emit.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
         :returns: Adapter-defined result, or a coroutine resolving to it.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class Encoded:
+    """
+    A payload that's already serialized, sent as its bytes instead of being encoded again.
+
+    An adapter that serializes payloads sends an `Encoded` payload's `body` unchanged. The
+    outbox relay re-publishes stored records this way. A route that addresses each message from
+    its payload can't read an encoded one, so the address worked out when it was encoded comes
+    with it.
+    """
+
+    body: bytes
+    """The serialized payload."""
+    address: str | None = None
+    """The address its route gave the payload, such as a routing key, or `None` for a route
+    that sends every message to the same place."""
+
+
+@runtime_checkable
+class Addressed(Protocol):
+    """
+    Structural protocol for a routing config that can address each message from its payload.
+
+    A RabbitMQ config whose routing key is a function of the payload is one. The outbox records
+    each message's address when it writes it, since the relay only has the encoded body, and
+    passes it back with the body as an {py:class}`Encoded` payload.
+    """
+
+    def address(self, payload: Any, /) -> str | None:
+        """
+        Return the payload's address, or `None` if the route sends every message to one place.
+
+        :param payload: The payload being emitted.
         """
         ...
 
@@ -190,6 +217,21 @@ class Serializer[T](Protocol):
         :param obj: The payload to serialize.
         :returns: The serialized payload.
         """
+        ...
+
+
+@runtime_checkable
+class Serializing(Protocol):
+    """
+    Structural protocol for a routing config that can carry its own serializer.
+
+    A RabbitMQ config is one. The outbox encodes each payload when it writes it, on the
+    publisher's behalf. So it uses the serializer of the route's config, if it has one.
+    """
+
+    @property
+    def serializer(self) -> Serializer[Any] | None:
+        """Encodes this route's payloads, or `None` to use the adapter's serializer."""
         ...
 
 

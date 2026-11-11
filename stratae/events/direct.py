@@ -95,10 +95,9 @@ scheduled shipment for order 1
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator
-from contextlib import nullcontext
 from inspect import markcoroutinefunction
 from types import CoroutineType
-from typing import Any, ClassVar, NoReturn, Protocol, overload, override
+from typing import Any, ClassVar, NoReturn, Protocol, overload
 
 from stratae.callables import is_async_callable
 from stratae.events._dispatch import (
@@ -109,22 +108,28 @@ from stratae.events._dispatch import (
     fan_out_async,
     no_dispatcher,
 )
-from stratae.events.binding import AsyncBindMixin, BindMixin
-from stratae.events.envelope import Envelope, EnvelopeConfig
+from stratae.events.binding import abind, bind
+from stratae.events.envelope import EnvelopeConfig
 from stratae.events.handler import Handler, Handlers
-from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
-from stratae.events.middleware import MessageHeaders, Middleware
+from stratae.events.hooks import Hooks
+from stratae.events.middleware import Middleware
 from stratae.events.patterns import NoPayload, PubSub, Request
-from stratae.events.pipeline import receiving, run_emit, run_emit_async, wrap_handler
+from stratae.events.pipeline import (
+    Outgoing,
+    Publishing,
+    Send,
+    publish,
+    publish_async,
+    received,
+    receiving,
+    wrap_handler,
+)
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
 
 _AnyEvent = AnyEvent
 
 _NO_HANDLERS: Handlers[Handler[Any, _AnyEvent, Any]] = Handlers()
 """The handlers of an event nothing handles."""
-
-_NO_ENVELOPE = nullcontext()
-"""Stands in for an envelope on a bus without them: stateless, so one serves every emit."""
 
 _UNSUPPORTED_PATTERN = (
     "{bus} has no dispatcher for {pattern} events; register one with dispatchers="
@@ -188,7 +193,10 @@ class _Route:
     the handlers current then without looking the event up.
     """
 
-    __slots__ = ("dispatcher", "handlers")
+    __slots__ = ("dispatcher", "handlers", "send")
+
+    send: Send
+    """Delivers one message to the handlers current when it's sent."""
 
     def __init__(
         self, dispatcher: Callable[..., Any], handlers: Handlers[Handler[Any, _AnyEvent, Any]]
@@ -256,6 +264,9 @@ class BaseDirectBus(ABC):
     _defaults: ClassVar[tuple[Dispatch, ...]]
     """The patterns the bus supports before any `dispatchers=`."""
 
+    _publish: ClassVar[Callable[..., Any]]
+    """The shared emit the bus runs a checked emit through, sync or async."""
+
     def __init__(
         self,
         *,
@@ -274,9 +285,10 @@ class BaseDirectBus(ABC):
         pairs = (*self._defaults, *dispatchers)
         self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
-        self._envelope = envelope
-        self._reads_headers = bool(middleware.publish or middleware.handle)
-        self._plain = not self._reads_headers and envelope is None
+        self._publishing = Publishing(
+            middleware.publish, None if envelope is None else envelope.new_id
+        )
+        self._plain = not (middleware.publish or middleware.handle) and envelope is None
 
     def _emitter_for(self, event: _AnyEvent) -> Callable[..., Any]:
         """
@@ -285,24 +297,19 @@ class BaseDirectBus(ABC):
         The route is found by value once, here, and recorded. So a bound call reads the event's
         current handlers without looking it up, and an equal event handled or bound elsewhere
         shares the same route. Hooks the binding was given come in each call, as they do to
-        `emit`; they were checked when it was bound. A serializer it was given is ignored, as
-        `emit` ignores one: nothing is serialized in process.
+        `emit`; they were checked when it was bound.
 
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
-        route, run, plain = self._route(event), self._run, self._plain
+        route, plain = self._route(event), self._plain
+        publish_, publishing = self._publish, self._publishing
 
         def emit_routed(
-            event: _AnyEvent,
-            _config: None,
-            payload: Any,
-            *,
-            hooks: Hooks[Any, Any] | None = None,
-            **_serializer: Callable[[Any], Any],
+            event: _AnyEvent, payload: Any, *, hooks: Hooks[Any, Any] | None = None
         ) -> Any:
             if hooks is None and plain:
                 return route.dispatcher(event, route.handlers, payload)
-            return run(route.dispatcher, route.handlers, event, payload, hooks)
+            return publish_(publishing, route.send, event, payload, None, hooks)
 
         return emit_routed
 
@@ -323,8 +330,18 @@ class BaseDirectBus(ABC):
         """
         route = self._routes.get(event)
         if route is None:
-            route = self._routes.setdefault(event, _Route(self._resolve(event), _NO_HANDLERS))
+            route = self._routes.setdefault(event, self._new_route(self._resolve(event)))
         return route
+
+    def _new_route(self, dispatcher: Callable[..., Any]) -> _Route:
+        """Make a route with no handlers yet, and the `send` that delivers to them."""
+        route = _Route(dispatcher, _NO_HANDLERS)
+        route.send = self._sender(route)
+        return route
+
+    @abstractmethod
+    def _sender(self, route: _Route) -> Send:
+        """Return what delivers a message to the route's handlers, as the shared emit calls."""
 
     def _check_hooks(self, event: _AnyEvent, hooks: Hooks[Any, Any]) -> None:
         """Raise TypeError for async hooks on a sync bus, which can't await them."""
@@ -352,29 +369,20 @@ class BaseDirectBus(ABC):
 
         An event that was handled or bound is found with one lookup, and its route passed on.
         Any other has no handlers. Its dispatcher is resolved, but its route isn't recorded, so
-        emitting events made on the fly doesn't grow the registry.
+        emitting events made on the fly doesn't grow the registry. Its route is built only if
+        the emit goes through the pipeline.
         """
         route = self._routes.get(event)
         if route is None:
-            dispatcher, handlers = self._resolve(event), _NO_HANDLERS
-        else:
-            dispatcher, handlers = route.dispatcher, route.handlers
+            dispatcher = self._resolve(event)
+            if hooks is None and self._plain:
+                return dispatcher(event, _NO_HANDLERS, payload)
+            route = self._new_route(dispatcher)
         if hooks is not None:
             self._check_hooks(event, hooks)
         elif self._plain:
-            return dispatcher(event, handlers, payload)
-        return self._run(dispatcher, handlers, event, payload, hooks)
-
-    @abstractmethod
-    def _run(
-        self,
-        dispatcher: Callable[..., Any],
-        handlers: Collection[Handler[Any, _AnyEvent, Any]],
-        event: _AnyEvent,
-        payload: Any,
-        hooks: Hooks[Any, Any] | None,
-    ) -> Any:
-        """Run a checked emit inside the middleware and hooks: its result, or an awaitable."""
+            return route.dispatcher(event, route.handlers, payload)
+        return self._publish(self._publishing, route.send, event, payload, None, hooks)
 
     def remove(self, handler: Handler[Any, _AnyEvent, Any]) -> None:
         """
@@ -403,7 +411,7 @@ class BaseDirectBus(ABC):
         return _NO_HANDLERS if route is None else route.handlers
 
 
-class DirectBus(BaseDirectBus, BindMixin[None]):
+class DirectBus(BaseDirectBus):
     """
     In-process, synchronous event bus.
 
@@ -428,15 +436,13 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
 
     _asynchronous = False
     _defaults = _SYNC_DEFAULTS
+    _publish = staticmethod(publish)
 
-    @override
     def emit[S, R](
         self,
         event: EventType[S, R, Any, Any],
-        config: None,  # noqa: S1172
         payload: S,
         *,
-        serializer: Callable[[S], Any] | None = None,  # noqa: S1172
         hooks: Hooks[S, R] | None = None,
     ) -> R:
         """
@@ -448,9 +454,7 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         `CancelledError`. A responder's exception propagates directly.
 
         :param event: The event to dispatch.
-        :param config: Unused.
         :param payload: The payload to dispatch.
-        :param serializer: Unused.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
         :returns: The responder's reply for a request event, otherwise `None`.
         :raises NoResponderError: If a request event has no responder.
@@ -459,6 +463,52 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
             includes an async hook.
         """
         return self._emit(event, payload, hooks)
+
+    @overload
+    def bind[**P, S, R](
+        self,
+        event: PayloadEvent[S, R, Any],
+        *,
+        factory: Callable[P, S],
+        hooks: Hooks[S, R] | None = None,
+    ) -> Callable[P, R]: ...
+    @overload
+    def bind[R](
+        self,
+        event: SignalEvent[R, Any],
+        *,
+        factory: None = None,
+        hooks: Hooks[NoPayload, R] | None = None,
+    ) -> Callable[[], R]: ...
+    @overload
+    def bind[S, R](
+        self,
+        event: PayloadEvent[S, R, Any],
+        *,
+        factory: None = None,
+        hooks: Hooks[S, R] | None = None,
+    ) -> Callable[[S], R]: ...
+
+    def bind(
+        self,
+        event: _AnyEvent,
+        *,
+        factory: Callable[..., Any] | None = None,
+        hooks: Hooks[Any, Any] | None = None,
+    ) -> Callable[..., Any]:
+        """
+        Bind an event to this bus. See {py:func}`bind <stratae.events.binding.bind>`.
+
+        :param event: The event to bind.
+        :param factory: A sync callable building the payload from the call's arguments.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
+        :returns: A callable that emits the event on this bus.
+        :raises TypeError: If the bus has no dispatcher for the event's pattern, the factory is
+            async, or `hooks` includes an async hook.
+        """
+        if hooks is not None:
+            self._check_hooks(event, hooks)
+        return bind(event, self._emitter_for(event), factory=factory, hooks=hooks)
 
     @overload
     def handle[R](
@@ -529,43 +579,24 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
             raise TypeError(_ASYNC_HANDLER_REJECTED)
         return super()._register(config, fn, hooks)
 
-    def _run(
-        self,
-        dispatcher: Callable[..., Any],
-        handlers: Collection[Handler[Any, _AnyEvent, Any]],
-        event: _AnyEvent,
-        payload: Any,
-        hooks: Hooks[Any, Any] | None,
-    ) -> Any:
-        """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
-        envelope = self._envelope
-        with Envelope.scope(new_id=envelope.new_id) if envelope is not None else _NO_ENVELOPE:
-            if not self._reads_headers:
-                if hooks is None:
-                    return dispatcher(event, handlers, payload)
-                return run_hooks(hooks, event, payload, dispatcher, event, handlers, payload)
-            headers = MessageHeaders()
-            if self._middleware.handle:
-                call, args = self._receive, (headers, dispatcher, event, handlers, payload)
-            else:
-                call, args = dispatcher, (event, handlers, payload)
-            publish = self._middleware.publish
-            return run_emit(hooks, publish, event, None, payload, headers, call, *args)
+    def _sender(self, route: _Route) -> Send:
+        """Return what dispatches a message, with its headers if handle middleware reads them."""
+        dispatcher = route.dispatcher
+        if not self._middleware.handle:
 
-    def _receive(
-        self,
-        headers: MessageHeaders,
-        dispatcher: Callable[..., Any],
-        event: _AnyEvent,
-        handlers: Collection[Handler[Any, _AnyEvent, Any]],
-        payload: Any,
-    ) -> Any:
-        """Dispatch payload to the event's handlers, with the headers it was published with."""
-        with receiving(headers.to_dict()):
-            return dispatcher(event, handlers, payload)
+            def send(message: Outgoing) -> Any:
+                return dispatcher(message.event, route.handlers, message.payload)
+
+            return send
+
+        def send_received(message: Outgoing) -> Any:
+            with receiving(received(message.headers)):
+                return dispatcher(message.event, route.handlers, message.payload)
+
+        return send_received
 
 
-class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
+class AsyncDirectBus(BaseDirectBus):
     """
     In-process, asynchronous event bus.
 
@@ -588,16 +619,14 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
 
     _asynchronous = True
     _defaults = _ASYNC_DEFAULTS
+    _publish = staticmethod(publish_async)
 
-    @override
     @markcoroutinefunction
     def emit[S, R](
         self,
         event: EventType[S, R, Any, Any],
-        config: None,  # noqa: S1172
         payload: S,
         *,
-        serializer: Callable[[S], Any] | None = None,  # noqa: S1172
         hooks: Hooks[S, R] | None = None,
     ) -> Coroutine[Any, Any, R]:
         """
@@ -609,9 +638,7 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         coroutine rather than one of its own around it, which saves a coroutine per emit.
 
         :param event: The event to dispatch.
-        :param config: Unused.
         :param payload: The payload to dispatch.
-        :param serializer: Unused.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
         :returns: The responder's reply for a request event, otherwise `None`.
         :raises NoResponderError: If a request event has no responder.
@@ -625,6 +652,49 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
         if dispatched.__class__ is CoroutineType:
             return dispatched
         return _await(dispatched)
+
+    @overload
+    def bind[**P, S, R](
+        self,
+        event: PayloadEvent[S, R, Any],
+        *,
+        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+        hooks: Hooks[S, R] | None = None,
+    ) -> Callable[P, Awaitable[R]]: ...
+    @overload
+    def bind[R](
+        self,
+        event: SignalEvent[R, Any],
+        *,
+        factory: None = None,
+        hooks: Hooks[NoPayload, R] | None = None,
+    ) -> Callable[[], Awaitable[R]]: ...
+    @overload
+    def bind[S, R](
+        self,
+        event: PayloadEvent[S, R, Any],
+        *,
+        factory: None = None,
+        hooks: Hooks[S, R] | None = None,
+    ) -> Callable[[S], Awaitable[R]]: ...
+
+    def bind(
+        self,
+        event: _AnyEvent,
+        *,
+        factory: Callable[..., Any] | None = None,
+        hooks: Hooks[Any, Any] | None = None,
+    ) -> Callable[..., Awaitable[Any]]:
+        """
+        Bind an event to this bus. See {py:func}`abind <stratae.events.binding.abind>`.
+
+        :param event: The event to bind.
+        :param factory: A sync or async callable building the payload from the call's arguments.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit.
+        :returns: An async callable that emits the event on this bus.
+        :raises TypeError: If the bus has no dispatcher for the event's pattern.
+        """
+        return abind(event, self._emitter_for(event), factory=factory, hooks=hooks)
 
     @overload
     def handle[R](
@@ -705,39 +775,18 @@ class AsyncDirectBus(BaseDirectBus, AsyncBindMixin[None]):
 
         return decorator
 
-    async def _run(
-        self,
-        dispatcher: Callable[..., Any],
-        handlers: Collection[Handler[Any, _AnyEvent, Any]],
-        event: _AnyEvent,
-        payload: Any,
-        hooks: Hooks[Any, Any] | None,
-    ) -> Any:
-        """Run a checked emit inside the middleware and hooks, and the envelope if tracked."""
-        envelope = self._envelope
-        with Envelope.scope(new_id=envelope.new_id) if envelope is not None else _NO_ENVELOPE:
-            if not self._reads_headers:
-                if hooks is None:
-                    return await dispatcher(event, handlers, payload)
-                return await run_hooks_async(
-                    hooks, event, payload, dispatcher, event, handlers, payload
-                )
-            headers = MessageHeaders()
-            if self._middleware.handle:
-                call, args = self._receive, (headers, dispatcher, event, handlers, payload)
-            else:
-                call, args = dispatcher, (event, handlers, payload)
-            publish = self._middleware.publish
-            return await run_emit_async(hooks, publish, event, None, payload, headers, call, *args)
+    def _sender(self, route: _Route) -> Send:
+        """Return what dispatches a message, with its headers if handle middleware reads them."""
+        dispatcher = route.dispatcher
+        if not self._middleware.handle:
 
-    async def _receive(
-        self,
-        headers: MessageHeaders,
-        dispatcher: Callable[..., Any],
-        event: _AnyEvent,
-        handlers: Collection[Handler[Any, _AnyEvent, Any]],
-        payload: Any,
-    ) -> Any:
-        """Dispatch payload to the event's handlers, with the headers it was published with."""
-        with receiving(headers.to_dict()):
-            return await dispatcher(event, handlers, payload)
+            def send(message: Outgoing) -> Awaitable[Any]:
+                return dispatcher(message.event, route.handlers, message.payload)
+
+            return send
+
+        async def send_received(message: Outgoing) -> Any:
+            with receiving(received(message.headers)):
+                return await dispatcher(message.event, route.handlers, message.payload)
+
+        return send_received
