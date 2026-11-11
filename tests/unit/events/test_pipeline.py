@@ -15,6 +15,7 @@ wrap_handler:
 - Wraps a sync handler in sync hooks, then sync middleware, as a sync call; middleware sees
   the event and payload.
 - Wraps a handler as an async call when the handler, a hook or the middleware is async.
+- A sync handler under an async hook or async middleware runs only when its call is awaited.
 - Adapts a payload-less event's handler to take the payload.
 - Handle middleware, sync or async, reads the headers of the enclosing receiving block, as a
   copy taken when it was entered; outside one, it reads none.
@@ -187,6 +188,46 @@ async def test_wrap_handler_async(handler: Any, hook_is_async: bool, with_middle
     assert is_async is True
     assert reply == "LAMP"
     assert log == (["middleware", "hook"] if with_middleware else ["hook"])
+
+
+@pytest.mark.parametrize("through", ["async hook", "async middleware"])
+async def test_wrap_handler_sync_handler_runs_when_awaited(through: str) -> None:
+    """
+    A sync handler under an async runner should run only once its call is awaited.
+
+    Given: A sync handler wrapped with an async hook, or with async handle middleware
+    When: The built call is made, then awaited
+    Then: The handler hasn't run after the call, and has run once after the await
+    """
+    # Arrange
+    ran: list[_Order] = []
+
+    def handler(order: _Order) -> str:
+        ran.append(order)
+        return order.item.upper()
+
+    async def async_hook(event: Any, payload: _Order) -> None:
+        await asyncio.sleep(0)
+
+    @asynccontextmanager
+    async def middleware(call: HandleCall) -> AsyncGenerator[None, None]:
+        yield
+
+    hooks: Hooks[Any, Any] | None = Hooks(before=(async_hook,)) if through == "async hook" else None
+    stack = (middleware,) if through == "async middleware" else ()
+    call, is_async = wrap_handler(_order_placed, None, handler, hooks, stack, asynchronous=True)
+    order = _Order("lamp")
+
+    # Act
+    pending = call(order)
+    before_await = list(ran)
+    reply = await pending
+
+    # Assert
+    assert is_async is True
+    assert before_await == []
+    assert ran == [order]
+    assert reply == "LAMP"
 
 
 def test_wrap_handler_payload_less() -> None:
