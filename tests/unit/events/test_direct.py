@@ -29,8 +29,8 @@ DirectBus:
 - Handlers registered at the same time from several threads are all kept.
 - The same callable may be registered multiple times independently.
 - emit dispatches the payload to all registered handlers.
-- A raising handler does not prevent other handlers from running.
-- All handler exceptions are collected and re-raised as an ExceptionGroup.
+- How sync handler failures are collected is tested against both buses in
+  test_direct_fan_out.py.
 - A handler that removes a registration during dispatch does not prevent
   other handlers on the same emission from running.
 - A schema-less PubSub event's handler is called with no arguments.
@@ -796,50 +796,6 @@ def test_emit_invokes_all_handlers(bus: DirectBus):
     # Assert
     handler_a.assert_called_once_with(payload)
     handler_b.assert_called_once_with(payload)
-
-
-def test_raising_handler_does_not_prevent_other_handlers(bus: DirectBus):
-    """
-    A handler that raises should not prevent subsequent handlers from running.
-
-    Given: Two handlers registered to an event, the first of which raises
-    When: an event is emitted
-    Then: The second handler should still be called
-    """
-    # Arrange
-    second_handler = Mock()
-    bus.handle(_task_created, Mock(side_effect=ValueError("boom")))
-    bus.handle(_task_created, second_handler)
-    payload = _TaskCreated(10)
-
-    # Act
-    with pytest.raises(ExceptionGroup):
-        bus.emit(_task_created, None, payload)
-
-    # Assert
-    second_handler.assert_called_once_with(payload)
-
-
-def test_handler_exceptions_collected_into_exception_group(bus: DirectBus):
-    """
-    All handler exceptions should be collected and raised together as an ExceptionGroup.
-
-    Given: Two handlers registered to an event, both of which raise
-    When: an event is emitted
-    Then: An ExceptionGroup containing both exceptions should be raised
-    """
-    # Arrange
-    error_a = ValueError("first")
-    error_b = RuntimeError("second")
-    bus.handle(_task_created, Mock(side_effect=error_a))
-    bus.handle(_task_created, Mock(side_effect=error_b))
-    payload = _TaskCreated(11)
-
-    # Act / Assert
-    with pytest.raises(ExceptionGroup) as exc_info:
-        bus.emit(_task_created, None, payload)
-
-    assert set(exc_info.value.exceptions) == {error_a, error_b}
 
 
 def test_handler_removing_registration_during_dispatch_does_not_break_other_handlers(
