@@ -210,13 +210,13 @@ FAILURE_HEADER = "x-failure"
 """Header naming the exception a retried or dead-lettered message last failed with."""
 
 _RESERVED = ENVELOPE_HEADERS | {ATTEMPTS_HEADER, FAILURE_HEADER}
+"""The headers the adapter sets itself, which middleware and `emit` can't."""
 
 _SYSTEM = "rabbitmq"
 """The messaging system RabbitMQ destinations name, as OpenTelemetry's conventions spell it."""
 
 _ROUTING_KEY = "messaging.rabbitmq.destination.routing_key"
 """The conventions' attribute for a published message's routing key."""
-"""The headers the adapter sets itself, which middleware and `emit` can't."""
 
 
 def _stamp(

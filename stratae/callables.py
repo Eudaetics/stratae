@@ -6,6 +6,10 @@ it wherever it treats sync and async callables differently: checks, dependencies
 functions, event handlers, hooks and bindings. Libraries built on Stratae can use it to make
 the same choices the same way.
 
+{py:func}`unwrap_partial` gives the callable behind any `functools.partial` objects. That's
+the callable `is_async_callable` inspects, and the one to check for its kind, such as whether
+it's a function.
+
 ````{example} Telling sync and async callables apart
 ```{code-block} python
 from functools import partial
@@ -37,7 +41,22 @@ The last is false because calling `Client` builds an instance; it doesn't give a
 from collections.abc import Awaitable, Callable
 from functools import partial
 from inspect import iscoroutinefunction
-from typing import TypeGuard
+from typing import Any, TypeGuard
+
+
+def unwrap_partial(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """
+    Return the callable a `functools.partial` calls, through any number of them.
+
+    Anything that isn't a `functools.partial` is returned as it is.
+
+    :param fn: The callable to unwrap.
+    :returns: The callable behind every `functools.partial` around it.
+    """
+    target = fn
+    while isinstance(target, partial):
+        target = target.func
+    return target
 
 
 def is_async_callable[**P, R](
@@ -56,8 +75,6 @@ def is_async_callable[**P, R](
     :param fn: The callable to inspect.
     :returns: Whether calling `fn` gives a coroutine.
     """
-    target: object = fn
-    while isinstance(target, partial):
-        target = target.func
+    target: object = unwrap_partial(fn)
     # Python looks __call__ up on the type, so a class's own __call__ is its metaclass's.
     return iscoroutinefunction(target) or iscoroutinefunction(type(target).__call__)
