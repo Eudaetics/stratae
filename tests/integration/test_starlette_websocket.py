@@ -14,11 +14,13 @@ scoped_websocket_route:
 - A WebSocketEndpoint class ends its scope cleanly on a client disconnect, and its
   exceptions reach cleanup.
 - A sync function endpoint is rejected when the route is built.
+- A sync function endpoint wrapped in functools.partial is rejected too.
 - The route keeps its endpoint's name for URL lookups.
 """
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any
 
 import pytest
@@ -342,6 +344,26 @@ def test_sync_endpoint_is_rejected_when_route_is_built(async_request_scope: Asyn
     # Act & Assert
     with pytest.raises(TypeError, match="needs an async endpoint"):
         WebSocketRoute("/echo", echo)
+
+
+def test_partial_sync_endpoint_is_rejected_when_route_is_built(async_request_scope: AsyncScope):
+    """
+    A sync function endpoint is still refused when it's wrapped in functools.partial.
+
+    Given: A functools.partial of a sync function
+    When: A scoped WebSocket route is built for it
+    Then: A TypeError explains that the route needs an async endpoint
+    """
+
+    # Arrange
+    def echo(prefix: str, websocket: WebSocket) -> None:
+        pass
+
+    WebSocketRoute = scoped_websocket_route(async_request_scope)
+
+    # Act & Assert
+    with pytest.raises(TypeError, match="needs an async endpoint"):
+        WebSocketRoute("/echo", partial(echo, "> "))
 
 
 def test_route_keeps_endpoint_name_for_url_lookup(async_request_scope: AsyncScope):

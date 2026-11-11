@@ -7,8 +7,8 @@ for a block, creating a child of the current one by default. {py:func}`Envelope.
 and {py:func}`Envelope.from_headers` carry it across a transport.
 
 New ids are random version 4 UUIDs by default. With the `uuid` extra installed
-(`pip install stratae[uuid]`), they come from `uuid_utils.compat`, several times faster, and
-are still standard `uuid.UUID`s. A component that opens envelopes takes an
+(`pip install stratae[uuid]`), they come from `uuid_utils.compat`, about two and a half times
+faster, and are still standard `uuid.UUID`s. A component that opens envelopes takes an
 {py:class}`EnvelopeConfig`, whose `new_id` can be any function returning a `UUID`, such as a
 time-ordered `uuid7`.
 
@@ -81,8 +81,9 @@ def _default_new_id() -> _NewId:
     """
     Return the fastest random id maker available, which every component uses by default.
 
-    `uuid_utils.compat.uuid4` if the `uuid` extra is installed: several times faster than
-    `uuid.uuid4`, and still returning a standard `uuid.UUID`. Otherwise `uuid.uuid4`.
+    `uuid_utils.compat.uuid4` if the `uuid` extra is installed: about two and a half times
+    faster than `uuid.uuid4`, and still returning a standard `uuid.UUID`. Otherwise
+    `uuid.uuid4`.
     """
     try:
         from uuid_utils.compat import uuid4

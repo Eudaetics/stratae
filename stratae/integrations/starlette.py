@@ -190,7 +190,7 @@ with TestClient(app) as client, client.websocket_connect("/notes") as websocket:
 """
 
 from collections.abc import Awaitable, Callable
-from functools import partial, wraps
+from functools import wraps
 from inspect import isfunction, ismethod
 from typing import Any, cast
 
@@ -199,7 +199,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route, WebSocketRoute
 
-from stratae.callables import is_async_callable
+from stratae.callables import is_async_callable, unwrap_partial
 from stratae.integrations._activation import ActivatingRoute, recording_errors, within
 from stratae.lifecycle import AsyncScope
 
@@ -227,14 +227,6 @@ class SyncWebSocketEndpointError(UnsupportedEndpointError):
         super().__init__(f"scoped_websocket_route needs an async endpoint, got {endpoint!r}.")
 
 
-def _unwrap_partial(endpoint: Callable[..., Any]) -> Callable[..., Any]:
-    """Return the callable behind `endpoint`, unwrapping `functools.partial`."""
-    target = endpoint
-    while isinstance(target, partial):
-        target = target.func
-    return target
-
-
 def _refuse_class_endpoint(endpoint: Callable[..., Any]) -> None:
     """
     Refuse an endpoint that isn't a function or method, or a `functools.partial` of one.
@@ -242,7 +234,7 @@ def _refuse_class_endpoint(endpoint: Callable[..., Any]) -> None:
     :raises ClassEndpointError: If it's an ASGI app or `HTTPEndpoint` class, which scoped
         routes don't support.
     """
-    target = _unwrap_partial(endpoint)
+    target = unwrap_partial(endpoint)
     if not (isfunction(target) or ismethod(target)):
         raise ClassEndpointError(endpoint)
 
@@ -312,7 +304,7 @@ def scoped_websocket_route(scope: AsyncScope) -> type[WebSocketRoute]:
         activates = scope
 
         def __init__(self, path: str, endpoint: Callable[..., Any], **kwargs: Any) -> None:
-            target = _unwrap_partial(endpoint)
+            target = unwrap_partial(endpoint)
             if isfunction(target) or ismethod(target):
                 if not is_async_callable(target):
                     raise SyncWebSocketEndpointError(endpoint)

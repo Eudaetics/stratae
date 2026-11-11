@@ -944,6 +944,27 @@ def test_class_based_endpoint_is_rejected_when_route_is_built(async_request_scop
         Route("/products", ProductEndpoint)
 
 
+def test_partial_class_endpoint_is_rejected_when_route_is_built(async_request_scope: AsyncScope):
+    """
+    A class-based endpoint is still refused when it's wrapped in functools.partial.
+
+    Given: A functools.partial of an HTTPEndpoint subclass
+    When: A scoped route is built for it
+    Then: A TypeError explains that scoped routes take function or method endpoints
+    """
+
+    # Arrange
+    class ProductEndpoint(HTTPEndpoint):
+        async def get(self, request: Request) -> JSONResponse:
+            return JSONResponse({})
+
+    Route = scoped_route(async_request_scope)
+
+    # Act & Assert
+    with pytest.raises(TypeError, match="function or method endpoint"):
+        Route("/products", partial(ProductEndpoint))
+
+
 def test_asgi_app_endpoint_is_rejected_when_route_is_built(async_request_scope: AsyncScope):
     """
     A raw ASGI app endpoint fails clearly when its scoped route is built.
