@@ -120,9 +120,6 @@ from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEv
 
 _AnyEvent = AnyEvent
 
-type _Route = tuple[Callable[..., Any], Handlers[Handler[Any, _AnyEvent, Any]]]
-"""An event's dispatcher and its handlers, both replaced as a pair when a handler changes."""
-
 _NO_HANDLERS: Handlers[Handler[Any, _AnyEvent, Any]] = Handlers()
 """The handlers of an event nothing handles."""
 
@@ -181,6 +178,25 @@ async def _await[R](awaitable: Awaitable[R]) -> R:
     return await awaitable
 
 
+class _Route:
+    """
+    An event's dispatcher, and its handlers as they are now.
+
+    The dispatcher is fixed once the route is recorded. The handlers are an immutable
+    {py:class}`Handlers <stratae.events.handler.Handlers>`, replaced whole when a handler is
+    registered or removed. A callable bound to the event holds its route, so each call reads
+    the handlers current then without looking the event up.
+    """
+
+    __slots__ = ("dispatcher", "handlers")
+
+    def __init__(
+        self, dispatcher: Callable[..., Any], handlers: Handlers[Handler[Any, _AnyEvent, Any]]
+    ) -> None:
+        self.dispatcher = dispatcher
+        self.handlers = handlers
+
+
 class Dispatch:
     """
     Pair a pattern class with the dispatcher a direct bus delivers it with.
@@ -225,11 +241,13 @@ class BaseDirectBus(ABC):
     """
     Handler registry and pattern dispatch shared by the direct buses.
 
-    Every emit goes through `_emit`, which refuses an event the bus can't dispatch. A plain
-    emit, with no hooks, no middleware and no envelope, is then delivered to its handlers
-    directly; any other goes to the subclass's `_run`. That delivers it with the headers its
-    publish middleware set, for handle middleware to read. A direct bus supplies only how
-    it runs a checked emit, so it can't dispatch an event its dispatcher doesn't know.
+    An emit called directly goes through `_emit`, which looks the event up and refuses one the
+    bus can't dispatch. A bound callable emits through `_emitter_for`'s emitter instead, which
+    refused the event when it was bound, and holds its route. Either way, a plain emit, with
+    no hooks, no middleware and no envelope, is delivered to its handlers directly; any other
+    goes to the subclass's `_run`. That delivers it with the headers its publish middleware
+    set, for handle middleware to read. A direct bus supplies only how it runs a checked emit,
+    so it can't dispatch an event its dispatcher doesn't know.
     """
 
     _asynchronous: ClassVar[bool]
@@ -262,9 +280,33 @@ class BaseDirectBus(ABC):
         # Without handle middleware, nothing reads them, so `_run` delivers without them.
         self._plain = not middleware.publish and not middleware.handle and envelope is None
 
-    def _prepare_event(self, event: _AnyEvent) -> None:
-        """Record the event's route, raising TypeError if it has no dispatcher."""
-        self._route(event)
+    def _emitter_for(self, event: _AnyEvent) -> Callable[..., Any]:
+        """
+        Return what `bind` calls to emit the event: an emitter holding the event's route.
+
+        The route is found by value once, here, and recorded. So a bound call reads the event's
+        current handlers without looking it up, and an equal event handled or bound elsewhere
+        shares the same route. Hooks the binding was given come in each call, as they do to
+        `emit`; they were checked when it was bound. A serializer it was given is ignored, as
+        `emit` ignores one: nothing is serialized in process.
+
+        :raises TypeError: If the bus has no dispatcher for the event's pattern.
+        """
+        route, run, plain = self._route(event), self._run, self._plain
+
+        def emit_routed(
+            event: _AnyEvent,
+            _config: None,
+            payload: Any,
+            *,
+            hooks: Hooks[Any, Any] | None = None,
+            **_serializer: Callable[[Any], Any],
+        ) -> Any:
+            if hooks is None and plain:
+                return route.dispatcher(event, route.handlers, payload)
+            return run(route.dispatcher, route.handlers, event, payload, hooks)
+
+        return emit_routed
 
     def _resolve(self, event: _AnyEvent) -> Callable[..., Any]:
         """Return the dispatcher for the event's pattern, or raise TypeError if there's none."""
@@ -277,13 +319,13 @@ class BaseDirectBus(ABC):
 
     def _route(self, event: _AnyEvent) -> _Route:
         """
-        Return the event's dispatcher and handlers, recording them the first time.
+        Return the event's route, recording it the first time.
 
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
         route = self._routes.get(event)
         if route is None:
-            route = self._routes.setdefault(event, (self._resolve(event), _NO_HANDLERS))
+            route = self._routes.setdefault(event, _Route(self._resolve(event), _NO_HANDLERS))
         return route
 
     def _check_hooks(self, event: _AnyEvent, hooks: Hooks[Any, Any]) -> None:
@@ -295,7 +337,7 @@ class BaseDirectBus(ABC):
         self, config: _AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
     ) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn and its hooks as a Handler, and add it to the event's handlers."""
-        self._route(config)
+        route = self._route(config)
         if hooks is not None:
             self._check_hooks(config, hooks)
         call, is_async = wrap_handler(
@@ -303,8 +345,7 @@ class BaseDirectBus(ABC):
         )
         handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, is_async)
         with self._registering:
-            dispatcher, handlers = self._routes[config]
-            self._routes[config] = (dispatcher, handlers.adding(handler))
+            route.handlers = route.handlers.adding(handler)
         return handler
 
     def _emit(self, event: _AnyEvent, payload: Any, hooks: Hooks[Any, Any] | None) -> Any:
@@ -316,7 +357,10 @@ class BaseDirectBus(ABC):
         emitting events made on the fly doesn't grow the registry.
         """
         route = self._routes.get(event)
-        dispatcher, handlers = route if route is not None else (self._resolve(event), _NO_HANDLERS)
+        if route is None:
+            dispatcher, handlers = self._resolve(event), _NO_HANDLERS
+        else:
+            dispatcher, handlers = route.dispatcher, route.handlers
         if hooks is not None:
             self._check_hooks(event, hooks)
         elif self._plain:
@@ -341,11 +385,10 @@ class BaseDirectBus(ABC):
         :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
             One this bus doesn't have is ignored.
         """
-        with self._registering:
-            route = self._routes.get(handler.config)
-            if route is not None:
-                dispatcher, handlers = route
-                self._routes[handler.config] = (dispatcher, handlers.removing(handler))
+        route = self._routes.get(handler.config)
+        if route is not None:
+            with self._registering:
+                route.handlers = route.handlers.removing(handler)
 
     def handlers(self, event: _AnyEvent) -> Handlers[Handler[Any, _AnyEvent, Any]]:
         """
@@ -359,7 +402,7 @@ class BaseDirectBus(ABC):
             it has none. Later calls to `handle` or `remove` don't change it.
         """
         route = self._routes.get(event)
-        return _NO_HANDLERS if route is None else route[1]
+        return _NO_HANDLERS if route is None else route.handlers
 
 
 class DirectBus(BaseDirectBus, BindMixin[None]):

@@ -74,7 +74,7 @@ async def test_abind_with_factory_calling_constructs_schema_and_awaits_emitter()
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)
+    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"))
 
 
 async def test_abind_with_factory_returns_emitter_result() -> None:
@@ -151,7 +151,7 @@ async def test_abind_with_factory_awaits_async_factory_then_awaits_emitter() -> 
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)
+    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"))
 
 
 # endregion
@@ -177,7 +177,7 @@ async def test_abind_without_factory_calling_forwards_payload_to_emitter() -> No
     await bound(payload)
 
     # Assert
-    emitter.assert_awaited_once_with(ev, None, payload, serializer=None)
+    emitter.assert_awaited_once_with(ev, None, payload)
 
 
 async def test_abind_without_factory_returns_emitter_result() -> None:
@@ -259,7 +259,7 @@ async def test_abind_awaits_async_callable_factory() -> None:
     await bound(1, "pending")
 
     # Assert
-    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"), serializer=None)
+    emitter.assert_awaited_once_with(ev, None, _OrderCreated(1, "pending"))
 
 
 async def test_abind_forwards_hooks_to_emitter() -> None:
@@ -281,7 +281,7 @@ async def test_abind_forwards_hooks_to_emitter() -> None:
     await bound(payload)
 
     # Assert
-    emitter.assert_awaited_once_with(ev, None, payload, serializer=None, hooks=hooks)
+    emitter.assert_awaited_once_with(ev, None, payload, hooks=hooks)
 
 
 # region: Bound Callable Signatures
