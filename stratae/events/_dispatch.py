@@ -91,16 +91,21 @@ def fan_out[S](
     Call every handler in turn, each in its own copy of the context.
 
     Context variables a handler sets don't reach the other handlers or the emitter, whatever
-    order the handlers run in. Their failures are raised together as `HandlerErrors`.
+    order the handlers run in. Their failures are collected and raised together, as
+    {py:func}`fan_out_async` raises a sync handler's.
+
+    :raises BaseHandlerErrors: If any handler raises an `Exception` or `CancelledError`.
+        {py:exc}`HandlerErrors <stratae.events.exceptions.HandlerErrors>` unless one raised
+        `CancelledError`.
     """
-    exceptions: list[Exception] = []
+    failures: list[BaseException] = []
     for handler in handlers:
         try:
             copy_context().run(handler.call, payload)
-        except Exception as exc:
-            exceptions.append(exc)
-    if exceptions:
-        raise HandlerErrors(exceptions)
+        except _HANDLER_FAILURES as failure:
+            failures.append(failure)
+    if failures:
+        _raise_failures(failures)
 
 
 class _InContext:
@@ -146,7 +151,12 @@ Anything else, such as `KeyboardInterrupt`, propagates at once.
 def _run_sync_handlers(
     handlers: Iterable[Handler[[Any], Any, Any]], payload: Any, failures: list[BaseException]
 ) -> None:
-    """Call each sync handler in its own copy of the context, collecting its failure."""
+    """
+    Call each sync handler in its own copy of the context, collecting its failure.
+
+    A sync handler's `CancelledError` is its own failure, never its task's cancellation, which
+    arrives only at an `await`. So it's collected like any other.
+    """
     for handler in handlers:
         try:
             copy_context().run(handler.call, payload)

@@ -368,8 +368,11 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
 
     {py:class}`PubSub <stratae.events.patterns.PubSub>` events fan out to every handler, each
     in its own copy of the context, so context variables one sets reach neither the others nor
-    the emitter. {py:class}`Request <stratae.events.patterns.Request>` events return their one
-    responder's reply. Async handlers are rejected with `TypeError`.
+    the emitter. A handler raising an `Exception` or `CancelledError` doesn't stop the others.
+    Their failures are raised together once every handler has run. Anything else, such as
+    `KeyboardInterrupt`, propagates at once. {py:class}`Request
+    <stratae.events.patterns.Request>` events return their one responder's reply. Async
+    handlers are rejected with `TypeError`.
 
     :param envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
         each emission, made as the
@@ -399,8 +402,9 @@ class DirectBus(BaseDirectBus, BindMixin[None]):
         Dispatch a payload to the event's handlers.
 
         Pub/sub handler failures are raised together as {py:exc}`HandlerErrors
-        <stratae.events.exceptions.HandlerErrors>`, an `ExceptionGroup`. A
-        responder's exception propagates directly.
+        <stratae.events.exceptions.HandlerErrors>`, an `ExceptionGroup`, or as
+        {py:exc}`BaseHandlerErrors <stratae.events.exceptions.BaseHandlerErrors>` if one is a
+        `CancelledError`. A responder's exception propagates directly.
 
         :param event: The event to dispatch.
         :param config: Unused.
