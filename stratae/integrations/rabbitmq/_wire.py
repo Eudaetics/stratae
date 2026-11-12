@@ -12,6 +12,7 @@ from pamqp.commands import Basic
 
 from stratae.events import CORRELATION_ID_HEADER, MESSAGE_ID_HEADER, TIMESTAMP_HEADER, Envelope
 from stratae.events.envelope import ENVELOPE_HEADERS
+from stratae.events.failure import failure_reason
 from stratae.events.pipeline import received
 from stratae.integrations.rabbitmq.config import ATTEMPTS_HEADER, FAILURE_HEADER
 
@@ -74,6 +75,6 @@ def failed_properties(message: DeliveredMessage, attempts: int, exc: Exception) 
     properties = copy(message.header.properties)
     properties.headers = dict(properties.headers or {}) | {
         ATTEMPTS_HEADER: attempts,
-        FAILURE_HEADER: f"{type(exc).__name__}: {exc}",
+        FAILURE_HEADER: failure_reason(exc),
     }
     return properties

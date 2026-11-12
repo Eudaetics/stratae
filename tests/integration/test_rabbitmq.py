@@ -92,6 +92,7 @@ from starlette.routing import Route
 from stratae.backoff import Delays, Exponential
 from stratae.events import Envelope, HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.events.exceptions import NotConnectedError, UnroutableError
+from stratae.events.failure import Drop
 from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer, OutboxRelay
 from stratae.integrations.opentelemetry import tracing
 from stratae.integrations.rabbitmq import (
@@ -904,7 +905,7 @@ async def test_dropping_policy_leaves_nothing(broker: _Broker):
     Then: The handler runs once, and the queue ends empty
     """
     # Arrange
-    policy = RabbitMQFailurePolicy(dead_letter=False)
+    policy = RabbitMQFailurePolicy(give_up=Drop())
     queue = _failure_queues(broker, "stratae-it-drop", policy)
     calls = _Log[Message]()
 

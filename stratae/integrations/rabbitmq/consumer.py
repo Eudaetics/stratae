@@ -18,14 +18,7 @@ from stratae.events import (
     PubSub,
 )
 from stratae.events.exceptions import AlreadyConnectedError
-from stratae.events.failure import (
-    DeadLetter,
-    FailureAction,
-    Reject,
-    Retry,
-    describe,
-    failure_action,
-)
+from stratae.events.failure import DeadLetter, Drop, Reject, Retry, failure_action
 from stratae.events.handler import invoke
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
@@ -39,7 +32,7 @@ from stratae.integrations.rabbitmq._wire import (
     failed_properties,
     headers_from,
 )
-from stratae.integrations.rabbitmq.config import RabbitMQConsumeConfig, RabbitMQFailurePolicy
+from stratae.integrations.rabbitmq.config import RabbitMQConsumeConfig
 from stratae.integrations.rabbitmq.connection import ConnectionState
 from stratae.lifecycle import AsyncScope
 
@@ -97,9 +90,10 @@ class RabbitMQConsumer:
 
     A message is acked once its handler, its hooks and its middleware return, and its scope, if
     any, has closed. If decoding, the handler, a `before` hook, a middleware or closing the
-    scope raises, it's logged and nacked without requeue, or, if its registration has a
-    {py:class}`RabbitMQFailurePolicy <stratae.integrations.rabbitmq.config.RabbitMQFailurePolicy>`,
-    retried, dead-lettered or dropped under it. A failure inside the scope closes it with that
+    scope raises, it's logged, then retried, dead-lettered, dropped or nacked without requeue
+    under its registration's
+    {py:class}`RabbitMQFailurePolicy <stratae.integrations.rabbitmq.config.RabbitMQFailurePolicy>`.
+    By default, it's nacked at once. A failure inside the scope closes it with that
     error first, so its resources roll back. A delivery cancelled at shutdown isn't a failure:
     it stays unacked. Observing hooks in a slot run concurrently, so the ack waits for the
     slowest of them, not their sum; one that raises is logged and the message is still acked.
@@ -439,13 +433,15 @@ class RabbitMQConsumer:
     ) -> None:
         """Log a failed message, then carry out what its failure policy says to do with it."""
         config = registration.handler.config
+        policy = config.on_failure
         failures = failed_attempts(message) + 1
-        action = failure_action(config.on_failure, failures, retryable=retryable)
+        action = failure_action(policy.backoff, policy.give_up, failures, retryable=retryable)
         _log.log(
             action.level,
-            "handler for event '%s' failed; %s",
+            "handler for event '%s' failed after %d attempt(s); %s",
             registration.event.name,
-            describe(action, failures),
+            failures,
+            action.describe(),
             exc_info=exc,
         )
         tag = message.delivery_tag
@@ -465,11 +461,9 @@ class RabbitMQConsumer:
         await message.channel.basic_ack(tag)
 
 
-def _target(config: RabbitMQConsumeConfig, action: FailureAction) -> str | None:
+def _target(config: RabbitMQConsumeConfig, action: Retry | DeadLetter | Drop) -> str | None:
     """Return the queue a failed message is published to before it's acked, if any."""
     queue = cast(str, config.queue)
     if isinstance(action, Retry):
         return retry_queue_name(queue, action.delay)
-    if isinstance(action, DeadLetter):
-        return cast(RabbitMQFailurePolicy, config.on_failure).dead_letter_target(queue)
-    return None
+    return config.on_failure.dead_letter_target(queue)

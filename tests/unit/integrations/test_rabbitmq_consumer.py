@@ -93,8 +93,9 @@ RabbitMQFailurePolicy:
 - It's an immutable value: assignment is refused, and policies with the same fields are equal
   and hash alike.
 - A non-positive retry delay, or a backoff that never runs out, raises ValueError.
-- A dead-letter queue name with dead_letter=False raises ValueError.
-- A failure policy on a config without a named queue raises ValueError.
+- A dead-letter queue name when give_up isn't DeadLetter raises ValueError.
+- A failure policy that retries or dead-letters on a config without a named queue raises
+  ValueError; by default, and when rejecting or dropping without retries, none is needed.
 - retry_queue names one queue per delay and returns None past the last retry;
   dead_letter_target defaults to <queue>.dead-letter, takes a custom name, and is None
   when dropping.
@@ -105,7 +106,8 @@ RabbitMQFailurePolicy:
   envelope ids, attempt count and failure, then acked.
 - A failed message out of retries is dead-lettered with its attempt count, then acked.
 - A message that fails to decode skips its retries and is dead-lettered.
-- With dead_letter=False, a failed message out of retries is acked and dropped.
+- Giving up with Drop, a failed message out of retries is acked and dropped.
+- Giving up with Reject, a failed message out of retries is nacked without requeue.
 - A custom dead-letter queue receives the dead-lettered message.
 - An unreadable attempt count is treated as a first failure.
 - A failed message without a delivery tag is neither published nor settled.
@@ -152,6 +154,7 @@ from stratae.events import (
     Request,
 )
 from stratae.events.exceptions import AlreadyConnectedError
+from stratae.events.failure import Drop, Reject
 from stratae.integrations.rabbitmq import (
     ATTEMPTS_HEADER,
     FAILURE_HEADER,
@@ -205,6 +208,7 @@ def _decode(data: bytes, /, *, type: type[Any]) -> Any:
 
 _order_placed = PubSub(_OrderPlaced)
 _config = RabbitMQConsumeConfig("orders")
+_REJECTING = RabbitMQFailurePolicy(give_up=Reject())
 
 _heartbeat = PubSub(name="heartbeat")
 
@@ -314,7 +318,7 @@ def test_consume_configs_built_separately_compare_as_values(
         return RabbitMQConsumeConfig(
             "orders",
             arguments={"x-message-ttl": 1000} if with_arguments else None,
-            on_failure=RabbitMQFailurePolicy(Delays(1, 10)) if with_policy else None,
+            on_failure=RabbitMQFailurePolicy(Delays(1, 10)) if with_policy else _REJECTING,
         )
 
     first, second = build(), build()
@@ -2119,9 +2123,9 @@ def test_failure_policy_is_an_immutable_value():
 
     assert policy == same
     assert hash(policy) == hash(same)
-    assert policy != RabbitMQFailurePolicy(Delays(1, 10), dead_letter=False)
+    assert policy != RabbitMQFailurePolicy(Delays(1, 10), give_up=Drop())
     with pytest.raises(dataclasses.FrozenInstanceError):
-        policy.dead_letter = False  # pyright: ignore[reportAttributeAccessIssue]
+        policy.give_up = Drop()  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_failure_policy_refuses_non_positive_delay():
@@ -2152,24 +2156,46 @@ def test_failure_policy_refuses_queue_when_dropping():
     """
     RabbitMQFailurePolicy should refuse a dead-letter queue name when it drops failures.
 
-    Given: A dead-letter queue name and dead_letter=False
+    Given: A dead-letter queue name, and a policy giving up with Drop
     When: A RabbitMQFailurePolicy is created
     Then: A ValueError should be raised
     """
-    with pytest.raises(ValueError, match="drops"):
-        RabbitMQFailurePolicy(dead_letter=False, dead_letter_queue="orders.dead")
+    with pytest.raises(ValueError, match="give_up doesn't dead-letter"):
+        RabbitMQFailurePolicy(give_up=Drop(), dead_letter_queue="orders.dead")
 
 
 def test_failure_policy_needs_named_queue():
     """
-    A failure policy should need a named queue to route retries and dead letters back to.
+    A failure policy should need a named queue to route retries and dead letters from.
 
     Given: An exchange config without a queue
-    When: It's created with a failure policy
-    Then: A ValueError should be raised
+    When: It's created with a policy that dead-letters, and with one that retries then rejects
+    Then: A ValueError should be raised for each
     """
     with pytest.raises(ValueError, match="named queue"):
         RabbitMQConsumeConfig(exchange="events", on_failure=RabbitMQFailurePolicy())
+    with pytest.raises(ValueError, match="named queue"):
+        RabbitMQConsumeConfig(
+            exchange="events", on_failure=RabbitMQFailurePolicy(Delays(1), give_up=Reject())
+        )
+
+
+@pytest.mark.parametrize("give_up", [Reject(), Drop()], ids=["reject", "drop"])
+def test_policy_without_queues_needs_no_named_queue(give_up: Reject | Drop):
+    """
+    A policy that routes nothing through queues should work without a named queue.
+
+    Given: An exchange config without a queue
+    When: It's created by default, or with a policy rejecting or dropping without retries
+    Then: It's created, and the default rejects at once
+    """
+    default = RabbitMQConsumeConfig(exchange="events")
+    config = RabbitMQConsumeConfig(
+        exchange="events", on_failure=RabbitMQFailurePolicy(give_up=give_up)
+    )
+
+    assert default.on_failure == _REJECTING
+    assert config.on_failure.give_up == give_up
 
 
 def test_failure_policy_names_its_queues():
@@ -2190,7 +2216,7 @@ def test_failure_policy_names_its_queues():
     ]
     assert policy.dead_letter_target("orders") == "orders.dead-letter"
     assert RabbitMQFailurePolicy(dead_letter_queue="dlq").dead_letter_target("orders") == "dlq"
-    assert RabbitMQFailurePolicy(dead_letter=False).dead_letter_target("orders") is None
+    assert RabbitMQFailurePolicy(give_up=Drop()).dead_letter_target("orders") is None
 
 
 def test_failure_policy_takes_exponential_backoff():
@@ -2256,7 +2282,7 @@ async def test_dropping_policy_declares_no_dead_letter_queue(
     Then: Only the consumed queue is declared
     """
     # Arrange
-    config = RabbitMQConsumeConfig("orders", on_failure=RabbitMQFailurePolicy(dead_letter=False))
+    config = RabbitMQConsumeConfig("orders", on_failure=RabbitMQFailurePolicy(give_up=Drop()))
     consumer.handle(_order_placed, lambda payload: None, config=config)
 
     # Act
@@ -2378,7 +2404,7 @@ async def test_dropping_policy_acks_without_publishing(
     Then: The message is acked, nothing is published, and the drop is logged
     """
     # Arrange
-    config, message = _failing(RabbitMQFailurePolicy(dead_letter=False))
+    config, message = _failing(RabbitMQFailurePolicy(give_up=Drop()))
     consumer.handle(_order_placed, _boom, config=config)
 
     # Act
@@ -2390,6 +2416,33 @@ async def test_dropping_policy_acks_without_publishing(
     message.channel.basic_ack.assert_awaited_once_with(11)
     message.channel.basic_nack.assert_not_awaited()
     assert "dropped" in caplog.text
+
+
+async def test_rejecting_policy_nacks_once_out_of_retries(
+    consumer: RabbitMQConsumer, channel: AsyncMock, caplog: pytest.LogCaptureFixture
+):
+    """
+    A policy that rejects should nack a failed message once its retries run out.
+
+    Given: A registration retrying once, then rejecting, and a message that failed once
+    When: Its handler raises again
+    Then: The message is nacked without requeue, nothing is published, and the rejection is
+          logged with its attempts
+    """
+    # Arrange
+    policy = RabbitMQFailurePolicy(Delays(1), give_up=Reject())
+    config, message = _failing(policy, headers={ATTEMPTS_HEADER: 1})
+    consumer.handle(_order_placed, _boom, config=config)
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    message.channel.basic_publish.assert_not_awaited()
+    message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
+    message.channel.basic_ack.assert_not_awaited()
+    assert "failed after 2 attempt(s); message rejected" in caplog.text
 
 
 async def test_custom_dead_letter_queue_receives_message(
