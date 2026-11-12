@@ -31,8 +31,7 @@ async def declare(channel: AbstractChannel, config: RabbitMQConsumeConfig) -> st
     """Declare config's queue, its failure queues, and its exchange and bindings if any."""
     declared = await _declare_queue(channel, config)
     queue = config.queue or declared.queue or ""
-    if config.on_failure is not None:
-        await _declare_failure_queues(channel, queue, config.on_failure)
+    await _declare_failure_queues(channel, queue, config.on_failure)
     if config.exchange is None:
         return queue
     await channel.exchange_declare(

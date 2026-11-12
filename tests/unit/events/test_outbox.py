@@ -32,6 +32,18 @@ InMemoryOutboxStore:
 - A claimed record isn't claimed again until marked, rescheduled, or its lease runs out.
 - mark_sent, reschedule and mark_failed move a record to sent, pending and failed.
 
+Relay rules:
+- A failed publish counts one more attempt and keeps its error; while the backoff lasts, the
+  record is retried the delay after the failure.
+- Once the backoff runs out, the record is parked, its availability unchanged.
+- A failed publish is logged at its action's level, worded by the action.
+- An outage counts no attempt.
+- A batch's settlement marks sent records sent, parks or reschedules failed ones in their
+  new state, and puts back unchanged every record hit by an outage or with no outcome.
+- A retry holds back its key, an outage the batch, and a send or park nothing.
+- Lanes start in claim order; a lane goes on after a send or park, stops after a retry, and
+  an outage stops every lane.
+
 OutboxRelay:
 - Built, it routes each of the outbox's events on its publisher, raising ValueError if the
   publisher routes one elsewhere. An event bound after it's built is relayed too.
@@ -60,7 +72,8 @@ OutboxRelay:
 - With max_in_flight above one, an outage puts back the failing record and every record not
   started, counting no attempt, while publishes already in flight finish and are marked sent;
   a record being retried holds back its key's later records.
-- A batch cancelled mid-flight cancels its publishes and marks sent what finished.
+- A batch cancelled mid-flight cancels its publishes and marks sent what finished, including
+  a key's records sent before the one cancelled.
 - max_in_flight below one raises ValueError.
 - A poll backoff that runs out raises ValueError.
 - By default, a relay retries a record after 30 s, doubling up to an hour, and parks it on
@@ -96,12 +109,22 @@ from stratae.events import (
     Request,
 )
 from stratae.events.exceptions import NotConnectedError
+from stratae.events.failure import Retry
 from stratae.events.outbox import (
     InMemoryOutboxStore,
     OutboxConfig,
     OutboxProducer,
     OutboxRecord,
     OutboxRelay,
+    _Failed,  # pyright: ignore[reportPrivateUsage]
+    _failed_attempt,  # pyright: ignore[reportPrivateUsage]
+    _Hold,  # pyright: ignore[reportPrivateUsage]
+    _Lanes,  # pyright: ignore[reportPrivateUsage]
+    _Outage,  # pyright: ignore[reportPrivateUsage]
+    _Park,  # pyright: ignore[reportPrivateUsage]
+    _Sent,  # pyright: ignore[reportPrivateUsage]
+    _Settlement,  # pyright: ignore[reportPrivateUsage]
+    _settlement,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -815,6 +838,147 @@ async def test_relay_publishes_added_headers(store: InMemoryOutboxStore):
     assert publisher.headers == [{"x-tenant": "acme True"}]
 
 
+def _stored(**changes: Any) -> OutboxRecord:
+    """Return a record as a store would hold it, created at the start of 2026."""
+    created = datetime(2026, 1, 1, tzinfo=UTC)
+    record = OutboxRecord(Envelope().message_id, "_Order", b"1", {}, created, created)
+    return replace(record, **changes)
+
+
+def test_failed_attempt_retries_while_backoff_lasts():
+    """
+    A failed publish should be retried the backoff's delay after the failure.
+
+    Given: A record with one attempt, and a backoff of 10 then 20 seconds
+    When: Its second attempt fails
+    Then: It's retried in 20 seconds, with two attempts and the error
+    """
+    # Arrange
+    record = _stored(attempts=1)
+    now = record.created_at + timedelta(minutes=5)
+
+    # Act
+    outcome = _failed_attempt(record, RuntimeError("refused"), Delays(10, 20), now)
+
+    # Assert
+    retried = replace(
+        record, attempts=2, error="RuntimeError: refused", available_at=now + timedelta(seconds=20)
+    )
+    assert outcome == _Failed(retried, Retry(20))
+
+
+def test_failed_attempt_parks_once_backoff_runs_out():
+    """
+    A failed publish should park its record once the backoff runs out.
+
+    Given: A record with one attempt, and a backoff of one delay
+    When: Its second attempt fails
+    Then: It's parked with two attempts and the error, still available when it was
+    """
+    # Arrange
+    record = _stored(attempts=1)
+
+    # Act
+    outcome = _failed_attempt(
+        record, LookupError("gone"), Delays(10), record.created_at + timedelta(minutes=5)
+    )
+
+    # Assert
+    assert outcome == _Failed(replace(record, attempts=2, error="LookupError: gone"), _Park())
+
+
+@pytest.mark.parametrize("exc", [ConnectionError("refused"), NotConnectedError("closed")])
+def test_failed_attempt_outage_counts_no_attempt(exc: Exception):
+    """
+    A publish that can't reach the broker should be an outage, not an attempt.
+
+    Given: A record, and a connection error or a closed publisher
+    When: Its publish fails with it
+    Then: The outcome is an outage, carrying the record unchanged
+    """
+    # Arrange
+    record = _stored()
+
+    # Act
+    outcome = _failed_attempt(record, exc, Delays(10), record.created_at)
+
+    # Assert
+    assert outcome == _Outage(record)
+
+
+def test_settlement_writes_each_outcome():
+    """
+    A batch's settlement should write each record by its outcome, in claim order.
+
+    Given: Six claimed records: one sent, one retrying, one parked, one hit by an outage, and
+           two with no outcome
+    When: The batch is settled
+    Then: The sent one is marked sent, the parked one parked in its new state, and the
+          retrying one goes back in its new state, with the others unchanged
+    """
+    # Arrange
+    sent, retrying, parked, cut_off, held, unstarted = (
+        _stored(body=str(n).encode()) for n in range(6)
+    )
+    retried = replace(retrying, attempts=1, error="RuntimeError: refused")
+    failed = replace(parked, attempts=1, error="RuntimeError: refused")
+    outcomes = {
+        sent.id: _Sent(sent),
+        retrying.id: _Failed(retried, Retry(30)),
+        parked.id: _Failed(failed, _Park()),
+        cut_off.id: _Outage(cut_off),
+    }
+
+    # Act
+    settlement = _settlement([sent, retrying, parked, cut_off, held, unstarted], outcomes)
+
+    # Assert
+    assert settlement == _Settlement((sent,), (failed,), (retried, cut_off, held, unstarted))
+
+
+def test_outcomes_hold_back_by_kind():
+    """
+    Each outcome should say what it holds back in its batch.
+
+    Given: A sent record, a retrying one, a parked one, and an outage
+    When: What each holds back is read
+    Then: A retry holds back its key, an outage the batch, and the rest nothing
+    """
+    record = _stored()
+
+    assert _Sent(record).holds is _Hold.NOTHING
+    assert _Failed(record, Retry(30)).holds is _Hold.KEY
+    assert _Failed(record, _Park()).holds is _Hold.NOTHING
+    assert _Outage(record).holds is _Hold.BATCH
+
+
+def test_lanes_follow_what_outcomes_hold_back():
+    """
+    Lanes should go on, stop, or stop the batch, by what each outcome holds back.
+
+    Given: Lanes for keys a, a, b, b, c, c, d, d, each lane's first record taken
+    When: a's record is sent, b's retried, c's parked, then d's hits an outage
+    Then: a and c go on in turn, b goes no further, and after the outage nothing is ready
+    """
+    # Arrange
+    records = [_stored(key=key) for key in "aabbccdd"]
+    lanes = _Lanes(records)
+    taken = [lanes.take() for _ in range(4)]
+    (_, a), (_, b), (_, c), (_, d) = taken
+
+    # Act
+    lanes.follow(_Sent(records[0]), a)
+    lanes.follow(_Failed(records[2], Retry(30)), b)
+    lanes.follow(_Failed(records[4], _Park()), c)
+    following = [lanes.take()[0] for _ in range(2)]
+    lanes.follow(_Outage(records[6]), d)
+
+    # Assert
+    assert [record for record, _ in taken] == records[::2]
+    assert following == [records[1], records[5]]
+    assert (lanes.ready, lanes.stopped) == (False, True)
+
+
 async def test_failed_publish_retried_after_growing_delay(
     outbox: OutboxProducer, store: InMemoryOutboxStore
 ):
@@ -885,6 +1049,36 @@ async def test_out_of_attempts_parked_as_failed(outbox: OutboxProducer, store: I
     assert (failed.attempts, failed.error) == (1, "RuntimeError: refused")
     assert [r.attempts for r in unlimited_store.pending()] == [1]
     assert unlimited_store.failed() == []
+
+
+async def test_failed_publish_logged_by_its_action(
+    outbox: OutboxProducer, store: InMemoryOutboxStore, caplog: pytest.LogCaptureFixture
+):
+    """
+    A failed publish should be logged at its action's level, worded by the action.
+
+    Given: A relay retrying once after 5 seconds, and a publisher that fails twice
+    When: The relay runs, and runs again once the retry is due
+    Then: The retry is a warning and the park an error, each naming the record and attempts
+    """
+    # Arrange
+    place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    await place(order_id=1)
+    publisher = _Publisher(RuntimeError("refused"), RuntimeError("refused"))
+    relay = OutboxRelay(store, publisher, outbox, retry=Delays(5))
+
+    # Act
+    with caplog.at_level(logging.WARNING):
+        await relay.run_once()
+        (retried,) = store.pending()
+        store.reschedule(replace(retried, available_at=retried.created_at))
+        await relay.run_once()
+
+    # Assert
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.WARNING, f"outbox record {retried.id} failed after 1 attempt(s); retrying in 5 s"),
+        (logging.ERROR, f"outbox record {retried.id} failed after 2 attempt(s); parked as failed"),
+    ]
 
 
 async def test_failure_holds_back_rest_of_its_key(
@@ -1398,6 +1592,69 @@ async def test_cancelled_batch_cancels_publishes_in_flight(
     assert publisher.cancelled == [b"a:0"]
     assert [r.id for r in store.sent()] == [records[1].id]
     assert [r.id for r in store.pending()] == [records[0].id]
+
+
+async def test_cancelled_lane_marks_sent_what_it_sent(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    Cancelling a batch should mark sent a key's records sent before the one in flight.
+
+    Given: Two records with one key, the second blocked until released
+    When: The first has been published, and the batch is cancelled
+    Then: The first is marked sent; the second is cancelled and stays pending
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    records = _keyed(store, "a", "a")
+    publisher = _OverlapPublisher({b"a:1": asyncio.Event()})
+    relay = OutboxRelay(store, publisher, outbox)
+    batch = asyncio.create_task(relay.run_once())
+    async with asyncio.timeout(1):
+        await publisher.first_published.wait()
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # Act
+    batch.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await batch
+
+    # Assert
+    assert publisher.cancelled == [b"a:1"]
+    assert [r.id for r in store.sent()] == [records[0].id]
+    assert [r.id for r in store.pending()] == [records[1].id]
+
+
+async def test_cancelled_batch_puts_back_what_it_didnt_publish(
+    outbox: OutboxProducer, store: InMemoryOutboxStore
+):
+    """
+    Cancelling a batch should put back at once what it didn't publish, counting no attempt.
+
+    Given: Three records with one key, the first blocked until released, under a long lease
+    When: The batch is cancelled, and the store is claimed again
+    Then: All three are claimed again straight away, with no attempt counted
+    """
+    # Arrange
+    outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    records = _keyed(store, "a", "a", "a")
+    blocked = asyncio.Event()
+    publisher = _OverlapPublisher({b"a:0": blocked})
+    relay = OutboxRelay(store, publisher, outbox)
+    batch = asyncio.create_task(relay.run_once())
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    # Act
+    batch.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await batch
+    claimed = store.claim(10)
+
+    # Assert
+    assert publisher.cancelled == [b"a:0"]
+    assert [(r.id, r.attempts) for r in claimed] == [(r.id, 0) for r in records]
 
 
 def test_max_in_flight_below_one_refused(outbox: OutboxProducer, store: InMemoryOutboxStore):

@@ -11,21 +11,24 @@ from pamqp.commands import Basic
 from stratae._frozen import FrozenMapping
 from stratae.backoff import Backoff, Delays
 from stratae.events import Destination, Serializer
+from stratae.events.failure import DeadLetter, Drop, Reject
 from stratae.integrations.rabbitmq._retry import retry_delays, retry_queue_name
 
 _NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
 
 _FAILURE_POLICY_NEEDS_QUEUE = (
-    "a failure policy needs a named queue to route retries and dead letters back to"
+    "a failure policy with retries or dead letters needs a named queue to route them from"
 )
 
 _NON_POSITIVE_DELAY = "retry delays must be positive, got {!r}"
 
 _ENDLESS_RETRIES = "a failure policy's backoff must run out, since each delay names a retry queue"
 
-_DROP_WITH_QUEUE = "dead_letter_queue is set, but dead_letter=False drops failed messages"
+_QUEUE_WITHOUT_DEAD_LETTER = "dead_letter_queue is set, but give_up doesn't dead-letter"
 
 _NO_RETRIES = Delays()
+
+_DEAD_LETTER = DeadLetter()
 
 ATTEMPTS_HEADER = "x-attempts"
 """Header counting how many times a retried or dead-lettered message has failed."""
@@ -117,17 +120,19 @@ class RabbitMQFailurePolicy:
     What a RabbitMQ consumer does with a message whose handling fails.
 
     Give one to a {py:class}`RabbitMQConsumeConfig` as `on_failure`. A failed message is retried
-    after each delay of its {py:class}`Backoff <stratae.backoff.Backoff>`, then dead-lettered or
-    dropped once the backoff runs out. With no retries, it's dead-lettered or dropped on its
-    first failure. A message that fails to decode would fail every attempt, so it skips the
-    retries. It's a {py:class}`FailurePolicy <stratae.events.failure.FailurePolicy>`, so
+    after each delay of its {py:class}`Backoff <stratae.backoff.Backoff>`. Once the backoff runs
+    out, it's given up on by `give_up`: dead-lettered, dropped, or rejected for the broker to
+    handle. With no retries, it's given up on at its first failure. A message that fails to
+    decode would fail every attempt, so it skips the retries.
     {py:func}`failure_action <stratae.events.failure.failure_action>` decides each failure.
 
     Each delay gets a retry queue, `<queue>.retry.<milliseconds>`, whose message TTL routes
     the message back to the consumed queue once it expires. A dead-lettered message goes to
     `dead_letter_queue`, `<queue>.dead-letter` by default. Retries and dead letters keep the
     message's body, properties and envelope, and add {py:data}`ATTEMPTS_HEADER` and
-    {py:data}`FAILURE_HEADER`. The consumer declares these queues when it starts consuming.
+    {py:data}`FAILURE_HEADER`. The consumer declares these queues when it starts consuming. A
+    rejected message is nacked without requeue, so the queue's own dead-letter exchange, if it
+    has one, takes it.
 
     Each failed message is published to its next queue before it's acked, so a crash between
     the two delivers it twice, never zero times.
@@ -135,7 +140,7 @@ class RabbitMQFailurePolicy:
     An immutable value: policies with the same fields are equal and hash alike.
 
     :raises ValueError: If the backoff never runs out, a delay isn't positive, or
-        `dead_letter_queue` is given with `dead_letter=False`.
+        `dead_letter_queue` is given when `give_up` isn't `DeadLetter()`.
     """
 
     backoff: Backoff = _NO_RETRIES
@@ -144,8 +149,8 @@ class RabbitMQFailurePolicy:
     since each delay names a retry queue.
     """
     _: KW_ONLY
-    dead_letter: bool = True
-    """Whether a message is dead-lettered once its retries run out, or acked and dropped."""
+    give_up: Reject | DeadLetter | Drop = _DEAD_LETTER
+    """What happens to a message once its retries run out."""
     dead_letter_queue: str | None = None
     """The dead-letter queue's name; defaults to `<queue>.dead-letter`."""
 
@@ -156,8 +161,13 @@ class RabbitMQFailurePolicy:
         for delay in retry_delays(self.backoff):
             if delay <= 0:
                 raise ValueError(_NON_POSITIVE_DELAY.format(delay))
-        if not self.dead_letter and self.dead_letter_queue is not None:
-            raise ValueError(_DROP_WITH_QUEUE)
+        if self.dead_letter_queue is not None and not isinstance(self.give_up, DeadLetter):
+            raise ValueError(_QUEUE_WITHOUT_DEAD_LETTER)
+
+    @property
+    def needs_queues(self) -> bool:
+        """Whether it routes failed messages through queues: retry queues or dead letters."""
+        return bool(retry_delays(self.backoff)) or isinstance(self.give_up, DeadLetter)
 
     def retry_queue(self, queue: str, attempt: int) -> str | None:
         """
@@ -171,13 +181,17 @@ class RabbitMQFailurePolicy:
 
     def dead_letter_target(self, queue: str) -> str | None:
         """
-        Return the dead-letter queue for messages consumed from `queue`, or `None` to drop.
+        Return the dead-letter queue for `queue`'s messages, or `None` if it doesn't dead-letter.
 
         :param queue: The consumed queue.
         """
-        if not self.dead_letter:
+        if not isinstance(self.give_up, DeadLetter):
             return None
         return self.dead_letter_queue or f"{queue}.dead-letter"
+
+
+_REJECT = RabbitMQFailurePolicy(give_up=Reject())
+"""Reject a failed message at once, for the broker to dead-letter or discard."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,8 +205,8 @@ class RabbitMQConsumeConfig:
     own: private and auto-deleted if `queue` is omitted, durable if named. An immutable value:
     configs with the same fields are equal and hash alike.
 
-    :raises ValueError: If neither `queue` nor `exchange` is given, or `on_failure` is given
-        without a `queue`.
+    :raises ValueError: If neither `queue` nor `exchange` is given, or `on_failure` retries or
+        dead-letters without a `queue`.
     """
 
     queue: str | None = None
@@ -214,10 +228,10 @@ class RabbitMQConsumeConfig:
     """Overrides the inferred queue auto-delete flag."""
     arguments: Mapping[str, Any] | None = None
     """Queue declaration arguments, e.g. a message TTL. Kept as a read-only copy."""
-    on_failure: RabbitMQFailurePolicy | None = None
+    on_failure: RabbitMQFailurePolicy = _REJECT
     """
-    A {py:class}`RabbitMQFailurePolicy` retrying, dead-lettering or dropping messages whose
-    handling fails. Without one, a failed message is nacked without requeue.
+    The {py:class}`RabbitMQFailurePolicy` for messages whose handling fails. By default, a
+    failed message is rejected at once: nacked without requeue.
     """
     binding_keys: tuple[str, ...] = field(init=False)
     """The binding's routing key patterns, from `binding_key`."""
@@ -233,7 +247,7 @@ class RabbitMQConsumeConfig:
         """Check the config, and keep its binding keys and destination."""
         if self.queue is None and self.exchange is None:
             raise ValueError(_NO_CONSUME_TARGET)
-        if self.on_failure is not None and self.queue is None:
+        if self.on_failure.needs_queues and self.queue is None:
             raise ValueError(_FAILURE_POLICY_NEEDS_QUEUE)
         keys = (binding_key,) if isinstance(binding_key, str) else tuple(binding_key)
         object.__setattr__(self, "binding_keys", keys)

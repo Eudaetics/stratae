@@ -1,44 +1,38 @@
 """
-What a consumer does with a message whose handling failed, as a value.
+What to do with a message whose handling failed, as a value.
 
-{py:func}`failure_action` is the rule. It takes a {py:class}`FailurePolicy`, or `None` for no
-policy, and returns an action: {py:class}`Reject`, {py:class}`Retry`, {py:class}`DeadLetter`
-or {py:class}`Drop`. The rule does no I/O. A broker adapter carries the action out in its own
-terms. For example, the RabbitMQ consumer nacks a rejected message, and routes a retry through
-a queue whose message TTL is the delay.
+{py:func}`failure_action` is the rule. A failed message is retried after each delay of a
+{py:class}`Backoff <stratae.backoff.Backoff>`. Once the backoff runs out, it's given up on, by
+whichever action the caller gives. A failure that can't succeed on another attempt, such as
+a body that fails to decode, is given up on straight away. The rule does no I/O. An adapter
+carries the action out in its own terms. For example, the RabbitMQ consumer routes a retry
+through a queue whose message TTL is the delay.
 
-Without a policy, the message is rejected. With one, it's retried after each delay of the
-policy's {py:class}`Backoff <stratae.backoff.Backoff>`. Once the backoff runs out, it's
-dead-lettered, or dropped if the policy doesn't dead-letter. A failure that can't succeed on
-another attempt, such as a body that fails to decode, skips the retries.
+An action is any {py:class}`FailureAction`: a value with a logging `level` and a `describe`
+method that words it for a log line. An adapter logs the failure at that level, with the
+attempt count and the action's wording. So each adapter reports its outcomes the same way,
+and can add actions of its own. This module has {py:class}`Retry`, and three ways to give up
+that brokers commonly offer: {py:class}`Reject`, {py:class}`DeadLetter` and
+{py:class}`Drop`. The outbox relay gives up by parking a record, with an action of its own.
 
-Each action has a logging `level`, and {py:func}`describe` words it for a log line. So every
-adapter reports the same outcome the same way.
+{py:func}`failure_reason` words the error itself, for an adapter to store with the message.
+So a failure reads the same wherever it's kept.
 
-````{example} Decide a failed message's fate under a policy
+````{example} Decide a failed message's fate
 ```{code-block} python
-from dataclasses import dataclass
+from stratae.backoff import Delays
+from stratae.events.failure import DeadLetter, failure_action
 
-from stratae.backoff import Backoff, Delays
-from stratae.events.failure import describe, failure_action
-
-@dataclass(frozen=True)
-class Policy:
-    backoff: Backoff
-    dead_letter: bool
-
-policy = Policy(Delays(1, 10), dead_letter=True)
 for failures in (1, 2, 3):
-    print(describe(failure_action(policy, failures, retryable=True), failures))
-print(describe(failure_action(policy, 1, retryable=False), 1))
-print(describe(failure_action(None, 1, retryable=True), 1))
+    action = failure_action(Delays(1, 10), DeadLetter(), failures, retryable=True)
+    print(f"failed after {failures} attempt(s); {action.describe()}")
+print(failure_action(Delays(1, 10), DeadLetter(), 1, retryable=False).describe())
 ```
 ```{output}
-retrying in 1 s
-retrying in 10 s
-message dead-lettered after 3 attempt(s)
-message dead-lettered after 1 attempt(s)
-message rejected
+failed after 1 attempt(s); retrying in 1 s
+failed after 2 attempt(s); retrying in 10 s
+failed after 3 attempt(s); message dead-lettered
+message dead-lettered
 ```
 ````
 """
@@ -50,25 +44,15 @@ from typing import ClassVar, Protocol
 from stratae.backoff import Backoff
 
 
-class FailurePolicy(Protocol):
-    """What a consumer does with a message whose handling keeps failing."""
+class FailureAction(Protocol):
+    """What to do with a message whose handling failed, and how to log it."""
 
-    @property
-    def backoff(self) -> Backoff:
-        """The delays before each retry. Once it runs out, the message is given up on."""
+    level: ClassVar[int]
+    """The logging level to report the failure at."""
+
+    def describe(self) -> str:
+        """Word the action for a log line about the failure that led to it."""
         ...
-
-    @property
-    def dead_letter(self) -> bool:
-        """Whether a message given up on is dead-lettered; `False` drops it."""
-        ...
-
-
-@dataclass(frozen=True, slots=True)
-class Reject:
-    """Reject the message, without a policy to retry or dead-letter it."""
-
-    level: ClassVar[int] = logging.ERROR
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,12 +62,31 @@ class Retry:
     delay: float
     level: ClassVar[int] = logging.WARNING
 
+    def describe(self) -> str:
+        """Word the retry for a log line."""
+        return f"retrying in {self.delay:g} s"
+
+
+@dataclass(frozen=True, slots=True)
+class Reject:
+    """Reject the message, leaving the broker to dead-letter or discard it."""
+
+    level: ClassVar[int] = logging.ERROR
+
+    def describe(self) -> str:
+        """Word the rejection for a log line."""
+        return "message rejected"
+
 
 @dataclass(frozen=True, slots=True)
 class DeadLetter:
     """Move the message to the dead letters."""
 
     level: ClassVar[int] = logging.ERROR
+
+    def describe(self) -> str:
+        """Word the dead letter for a log line."""
+        return "message dead-lettered"
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,75 +95,53 @@ class Drop:
 
     level: ClassVar[int] = logging.ERROR
 
+    def describe(self) -> str:
+        """Word the drop for a log line."""
+        return "message dropped"
 
-type FailureAction = Reject | Retry | DeadLetter | Drop
-"""What a consumer does with a message whose handling failed."""
 
-
-def failure_action(
-    policy: FailurePolicy | None, failures: int, *, retryable: bool
-) -> FailureAction:
+def failure_action[G: FailureAction](
+    backoff: Backoff, give_up: G, failures: int, *, retryable: bool
+) -> Retry | G:
     """
     Return what to do with a message whose handling failed.
 
-    :param policy: The message's {py:class}`FailurePolicy`, or `None` to reject it.
+    :param backoff: The delays before each retry.
+    :param give_up: The action once the backoff runs out, or for a failure that can't succeed
+        on another attempt.
     :param failures: How many times the message has failed, counting this failure.
     :param retryable: Whether another attempt could succeed. `False` skips the retries.
-    :returns: The {py:class}`Reject`, {py:class}`Retry`, {py:class}`DeadLetter` or
-        {py:class}`Drop` to carry out.
+    :returns: A {py:class}`Retry` after the backoff's next delay, or `give_up`.
 
-    ````{example} A failure that can't succeed again skips the retries
+    ````{example} A failure that can't succeed again is given up on at once
     ```{code-block} python
-    from dataclasses import dataclass
+    from stratae.backoff import Delays
+    from stratae.events.failure import Drop, Retry, failure_action
 
-    from stratae.backoff import Backoff, Delays
-    from stratae.events.failure import DeadLetter, Drop, Retry, failure_action
-
-    @dataclass(frozen=True)
-    class Policy:
-        backoff: Backoff
-        dead_letter: bool
-
-    retrying = Policy(Delays(5), dead_letter=True)
-    assert failure_action(retrying, 1, retryable=True) == Retry(5)
-    assert failure_action(retrying, 1, retryable=False) == DeadLetter()
-    assert failure_action(Policy(Delays(), dead_letter=False), 1, retryable=True) == Drop()
+    assert failure_action(Delays(5), Drop(), 1, retryable=True) == Retry(5)
+    assert failure_action(Delays(5), Drop(), 2, retryable=True) == Drop()
+    assert failure_action(Delays(5), Drop(), 1, retryable=False) == Drop()
     ```
     ````
     """
-    if policy is None:
-        return Reject()
-    if retryable and (delay := policy.backoff.delay(failures)) is not None:
+    if retryable and (delay := backoff.delay(failures)) is not None:
         return Retry(delay)
-    return DeadLetter() if policy.dead_letter else Drop()
+    return give_up
 
 
-def describe(action: FailureAction, failures: int) -> str:
+def failure_reason(exc: Exception) -> str:
     """
-    Word an action for a log line about the failure that led to it.
+    Word an error for an adapter to store as the reason a message failed.
 
-    :param action: The action carried out.
-    :param failures: How many times the message has failed, counting this failure.
-    :returns: A phrase such as `"retrying in 5 s"` or `"message dropped after 3 attempt(s)"`.
+    :param exc: The error the message's handling raised.
+    :returns: The error's type name and message.
 
-    ````{example} Log a failure at its action's level
+    ````{example} Word an error as a failure's reason
     ```{code-block} python
-    import logging
+    from stratae.events.failure import failure_reason
 
-    from stratae.events.failure import Drop, describe
-
-    action = Drop()
-    assert action.level == logging.ERROR
-    assert describe(action, 3) == "message dropped after 3 attempt(s)"
+    assert failure_reason(ValueError("bad order")) == "ValueError: bad order"
     ```
     ````
     """
-    match action:
-        case Reject():
-            return "message rejected"
-        case Retry(delay):
-            return f"retrying in {delay:g} s"
-        case DeadLetter():
-            return f"message dead-lettered after {failures} attempt(s)"
-        case _:
-            return f"message dropped after {failures} attempt(s)"
+    return f"{type(exc).__name__}: {exc}"
