@@ -74,7 +74,7 @@ from .dispatch import (
     dispatch_request_async,
     fan_out,
     fan_out_async,
-    fan_out_sequential,
+    fan_out_concurrent,
     only_responder,
 )
 from .envelope import (
@@ -150,6 +150,6 @@ __all__ = [
     "dispatch_request_async",
     "fan_out",
     "fan_out_async",
-    "fan_out_sequential",
+    "fan_out_concurrent",
     "only_responder",
 ]

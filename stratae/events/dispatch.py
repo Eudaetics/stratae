@@ -10,10 +10,10 @@ promises.
 {py:func}`dispatch_request` and {py:func}`dispatch_request_async` call a
 {py:class}`Request <stratae.events.patterns.Request>` event's sole responder.
 {py:func}`fan_out` and {py:func}`fan_out_async` call every handler of a
-{py:class}`PubSub <stratae.events.patterns.PubSub>` event, the async one running several async
-handlers concurrently. {py:func}`fan_out_sequential` runs them one at a time instead, for
-handlers sharing a resource that refuses concurrent use, such as a database session. Each
-PubSub dispatcher runs every handler in its own copy of the context, and raises their failures
+{py:class}`PubSub <stratae.events.patterns.PubSub>` event, one at a time.
+{py:func}`fan_out_concurrent` runs several async handlers concurrently instead, for handlers
+that share nothing that refuses concurrent use, such as a database session. Each PubSub
+dispatcher runs every handler in its own copy of the context, and raises their failures
 together. {py:func}`only_responder` finds a request's responder, for a dispatcher of your own.
 """
 
@@ -143,7 +143,7 @@ def _run_sync_handlers(
             failures.append(failure)
 
 
-async def _await_lone_handler(
+async def _await_handler(
     handler: Handler[[Any], Any, Any], payload: Any, failures: list[BaseException]
 ) -> None:
     """
@@ -161,19 +161,6 @@ async def _await_lone_handler(
         failures.append(failure)
 
 
-async def _await_handlers(
-    handlers: tuple[Handler[[Any], Any, Any], ...], payload: Any, failures: list[BaseException]
-) -> None:
-    """Await async handlers, a lone one in place and several concurrently as tasks."""
-    if len(handlers) == 1:
-        await _await_lone_handler(handlers[0], payload, failures)
-    elif handlers:
-        results = await asyncio.gather(
-            *(handler.call(payload) for handler in handlers), return_exceptions=True
-        )
-        failures.extend(result for result in results if isinstance(result, BaseException))
-
-
 def _raise_failures(failures: list[BaseException]) -> None:
     """Raise the handlers' failures together, if there are any."""
     errors = [failure for failure in failures if isinstance(failure, Exception)]
@@ -187,33 +174,12 @@ async def fan_out_async[S](
     _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, Any]], payload: S
 ) -> None:
     """
-    Run every handler in its own copy of the context, raising their failures together.
+    Run every handler one at a time, each in its own copy of the context.
 
     Context variables a handler sets don't reach the other handlers or the emitter. Sync
-    handlers run first, one at a time. A lone async handler is awaited in place. Several run
-    concurrently, each as a task.
-
-    :raises BaseHandlerErrors: If any handler raises. {py:exc}`HandlerErrors
-        <stratae.events.exceptions.HandlerErrors>` unless one raised a `BaseException` such as
-        `CancelledError`.
-    """
-    failures: list[BaseException] = []
-    _run_sync_handlers(handlers.sync, payload, failures)
-    await _await_handlers(handlers.asynchronous, payload, failures)
-    _raise_failures(failures)
-
-
-async def fan_out_sequential[S](
-    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, Any]], payload: S
-) -> None:
-    """
-    Run every handler in its own copy of the context, one at a time.
-
-    Use it for async handlers sharing a resource that refuses concurrent use, such as a
-    database session. Give it to an {py:class}`AsyncDirectBus
-    <stratae.events.direct.AsyncDirectBus>` as `Dispatch(PubSub, fan_out_sequential)`. Sync
-    handlers run first, then each async handler is awaited before the next starts. Failures
-    are collected and raised together, as {py:func}`fan_out_async` raises them.
+    handlers run first. Then each async handler is awaited before the next starts, so handlers
+    can share a resource that refuses concurrent use, such as a database session. Failures are
+    raised together once every handler has run.
 
     :raises BaseHandlerErrors: If any handler raises. {py:exc}`HandlerErrors
         <stratae.events.exceptions.HandlerErrors>` unless one raised a `BaseException` such as
@@ -222,5 +188,30 @@ async def fan_out_sequential[S](
     failures: list[BaseException] = []
     _run_sync_handlers(handlers.sync, payload, failures)
     for handler in handlers.asynchronous:
-        await _await_lone_handler(handler, payload, failures)
+        await _await_handler(handler, payload, failures)
+    _raise_failures(failures)
+
+
+async def fan_out_concurrent[S](
+    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, Any]], payload: S
+) -> None:
+    """
+    Run every handler in its own copy of the context, several async ones concurrently.
+
+    Give it to an {py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>` as
+    `Dispatch(PubSub, fan_out_concurrent)` when its handlers share nothing that refuses
+    concurrent use. Sync handlers run first, one at a time. Then the async handlers run
+    concurrently, each as a task. Failures are raised together, as {py:func}`fan_out_async`
+    raises them.
+
+    :raises BaseHandlerErrors: If any handler raises. {py:exc}`HandlerErrors
+        <stratae.events.exceptions.HandlerErrors>` unless one raised a `BaseException` such as
+        `CancelledError`.
+    """
+    failures: list[BaseException] = []
+    _run_sync_handlers(handlers.sync, payload, failures)
+    results = await asyncio.gather(
+        *(handler.call(payload) for handler in handlers.asynchronous), return_exceptions=True
+    )
+    failures.extend(result for result in results if isinstance(result, BaseException))
     _raise_failures(failures)

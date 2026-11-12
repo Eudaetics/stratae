@@ -1,11 +1,11 @@
 """
-Unit tests for fan_out_sequential on an AsyncDirectBus.
+Unit tests for how an AsyncDirectBus runs an event's async handlers.
 
 This test suite verifies the following behaviors:
 
-fan_out_sequential:
-- Two async handlers sharing a resource that refuses concurrent use fail under the default
-  dispatcher, and succeed under fan_out_sequential.
+AsyncDirectBus (default, one at a time):
+- Two async handlers sharing a resource that refuses concurrent use succeed by default, and
+  fail under fan_out_concurrent.
 - No two async handlers of one emit run at the same time.
 - Context variables a handler sets reach neither the other handlers nor the emitter.
 - Every handler runs, and their failures are raised together in a HandlerErrors group.
@@ -13,17 +13,20 @@ fan_out_sequential:
   that isn't a HandlerErrors.
 - Cancelling an emit cancels the running handler, starts no other, and raises
   CancelledError, ungrouped.
-- Paired with a PubSub subclass, it runs only that subclass's events one at a time.
+
+AsyncDirectBus (fan_out_concurrent):
+- Several async handlers run concurrently, each in its own context.
+- Every handler runs, and their failures are raised together, a CancelledError among them in
+  a BaseHandlerErrors group.
 """
 
 import asyncio
 from contextvars import ContextVar
-from typing import Literal
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from stratae.events import AsyncDirectBus, Dispatch, PubSub, fan_out_sequential
+from stratae.events import AsyncDirectBus, Dispatch, PubSub, fan_out_concurrent
 from stratae.events.exceptions import BaseHandlerErrors, HandlerErrors
 
 
@@ -32,14 +35,7 @@ class _Placed:
         self.order_id = order_id
 
 
-class _InTransaction(PubSub[_Placed, Literal[False]]):
-    """A PubSub event whose handlers share a transaction."""
-
-    __slots__ = ()
-
-
 _placed = PubSub(_Placed)
-_placed_in_transaction = _InTransaction(_Placed, name="placed in transaction")
 
 _marker: ContextVar[str] = ContextVar("_marker", default="unset")
 
@@ -64,10 +60,8 @@ class _Connection:
         self.rows.append(row)
 
 
-def _writers(
-    bus: AsyncDirectBus, event: PubSub[_Placed, Literal[False]], connection: _Connection
-) -> None:
-    """Register two async handlers on `event` that each write through `connection`."""
+def _writers(bus: AsyncDirectBus, connection: _Connection) -> None:
+    """Register two async handlers that each write through `connection`."""
 
     async def audit(placed: _Placed) -> None:
         await connection.write(f"audit {placed.order_id}")
@@ -75,42 +69,47 @@ def _writers(
     async def count(placed: _Placed) -> None:
         await connection.write(f"count {placed.order_id}")
 
-    bus.handle(event, audit)
-    bus.handle(event, count)
+    bus.handle(_placed, audit)
+    bus.handle(_placed, count)
 
 
 @pytest.fixture
 def bus() -> AsyncDirectBus:
-    """Return an AsyncDirectBus running every PubSub event's handlers one at a time."""
-    return AsyncDirectBus(dispatchers=[Dispatch(PubSub, fan_out_sequential)])
+    """Return an AsyncDirectBus with the default dispatchers."""
+    return AsyncDirectBus()
 
 
-async def test_shared_resource_fails_concurrently_and_succeeds_sequentially(
-    bus: AsyncDirectBus,
+@pytest.fixture
+def concurrent_bus() -> AsyncDirectBus:
+    """Return an AsyncDirectBus running several async handlers concurrently."""
+    return AsyncDirectBus(dispatchers=[Dispatch(PubSub, fan_out_concurrent)])
+
+
+async def test_shared_resource_succeeds_by_default_and_fails_concurrently(
+    bus: AsyncDirectBus, concurrent_bus: AsyncDirectBus
 ) -> None:
     """
-    Handlers sharing a resource should fail concurrently, and succeed one at a time.
+    Handlers sharing a resource should succeed by default, and fail when run concurrently.
 
     Given: Two async handlers writing through one connection that refuses overlapping calls,
-        on the default bus and on a bus with fan_out_sequential
+        on a default bus and on a bus with fan_out_concurrent
     When: The event is emitted on each
-    Then: The default bus raises the connection's error, and the sequential bus writes both
-        rows
+    Then: The default bus writes both rows, and the concurrent bus raises the connection's
+        error
     """
     # Arrange
-    concurrent, sequential = _Connection(), _Connection()
-    default_bus = AsyncDirectBus()
-    _writers(default_bus, _placed, concurrent)
-    _writers(bus, _placed, sequential)
+    sequential, concurrent = _Connection(), _Connection()
+    _writers(bus, sequential)
+    _writers(concurrent_bus, concurrent)
 
     # Act
-    with pytest.raises(HandlerErrors) as exc_info:
-        await default_bus.emit(_placed, _Placed(1))
     await bus.emit(_placed, _Placed(1))
+    with pytest.raises(HandlerErrors) as exc_info:
+        await concurrent_bus.emit(_placed, _Placed(1))
 
     # Assert
-    assert [type(exc) for exc in exc_info.value.exceptions] == [_InUseError]
     assert sorted(sequential.rows) == ["audit 1", "count 1"]
+    assert [type(exc) for exc in exc_info.value.exceptions] == [_InUseError]
 
 
 async def test_async_handlers_never_overlap(bus: AsyncDirectBus) -> None:
@@ -269,26 +268,62 @@ async def test_cancelling_emit_stops_at_the_running_handler(bus: AsyncDirectBus)
     assert seen == ["started", "cancelled"]
 
 
-async def test_pubsub_subclass_runs_one_at_a_time_only_for_its_events() -> None:
+async def test_concurrent_handlers_run_together_in_own_contexts(
+    concurrent_bus: AsyncDirectBus,
+) -> None:
     """
-    Paired with a PubSub subclass, fan_out_sequential should apply only to its events.
+    Under fan_out_concurrent, async handlers should run together, each in its own context.
 
-    Given: A bus with fan_out_sequential for a PubSub subclass, and two async handlers
-        sharing a connection on an event of that subclass and on a plain PubSub event
-    When: Each event is emitted
-    Then: The subclass's event writes both rows, and the plain event still runs its
-        handlers concurrently and fails
+    Given: Two async handlers that each set a context variable, then wait for the other at a
+        barrier
+    When: The event is emitted
+    Then: Both pass the barrier, each first read the unset value, and the emitter still
+        reads the unset value
     """
     # Arrange
-    bus = AsyncDirectBus(dispatchers=[Dispatch(_InTransaction, fan_out_sequential)])
-    in_transaction, plain = _Connection(), _Connection()
-    _writers(bus, _placed_in_transaction, in_transaction)
-    _writers(bus, _placed, plain)
+    both = asyncio.Barrier(2)
+    before: list[str] = []
+
+    async def handler(placed: _Placed) -> None:
+        before.append(_marker.get())
+        _marker.set("handler")
+        await asyncio.wait_for(both.wait(), 1)
+
+    concurrent_bus.handle(_placed, handler)
+    concurrent_bus.handle(_placed, handler)
 
     # Act
-    await bus.emit(_placed_in_transaction, _Placed(7))
-    with pytest.raises(HandlerErrors):
-        await bus.emit(_placed, _Placed(7))
+    await concurrent_bus.emit(_placed, _Placed(8))
 
     # Assert
-    assert sorted(in_transaction.rows) == ["audit 7", "count 7"]
+    assert before == ["unset", "unset"]
+    assert _marker.get() == "unset"
+
+
+async def test_concurrent_failures_raised_together(concurrent_bus: AsyncDirectBus) -> None:
+    """
+    Under fan_out_concurrent, every handler should run and failures be raised together.
+
+    Given: A sync handler raising ValueError, an async handler raising CancelledError, and an
+        async handler that succeeds
+    When: The event is emitted
+    Then: Every handler was called, and a BaseHandlerErrors that isn't a HandlerErrors holds
+        both failures
+    """
+    # Arrange
+    succeeding = AsyncMock()
+    concurrent_bus.handle(_placed, Mock(side_effect=ValueError("sync")))
+    concurrent_bus.handle(_placed, AsyncMock(side_effect=asyncio.CancelledError()))
+    concurrent_bus.handle(_placed, succeeding)
+
+    # Act
+    with pytest.raises(BaseHandlerErrors) as exc_info:
+        await concurrent_bus.emit(_placed, _Placed(9))
+
+    # Assert
+    succeeding.assert_awaited_once()
+    assert not isinstance(exc_info.value, HandlerErrors)
+    assert {type(exc) for exc in exc_info.value.exceptions} == {
+        ValueError,
+        asyncio.CancelledError,
+    }

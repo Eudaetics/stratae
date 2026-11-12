@@ -2,9 +2,9 @@
 In-process event buses that dispatch straight to registered handlers, with no broker.
 
 {py:class}`DirectBus` dispatches synchronously and rejects async handlers.
-{py:class}`AsyncDirectBus` accepts both, and runs several async handlers concurrently. Both
-run each {py:class}`PubSub <stratae.events.patterns.PubSub>` handler in its own copy of the
-context, so one handler's context variables never reach another, nor the emitter.
+{py:class}`AsyncDirectBus` accepts both. Both run each
+{py:class}`PubSub <stratae.events.patterns.PubSub>` handler in its own copy of the context, so
+one handler's context variables never reach another, nor the emitter.
 
 Register handlers with `handle`, keyed by event, and create emitters with `bind`. A
 {py:class}`Request <stratae.events.patterns.Request>` event needs exactly one responder, which
@@ -19,54 +19,11 @@ of an unsupported pattern raises `TypeError`. With
 `envelope=EnvelopeConfig()`, each emission opens an
 {py:class}`Envelope <stratae.events.envelope.Envelope>`.
 
-Concurrent async handlers share whatever their scopes have cached. A pool or client allows
-that. A resource that is one connection, such as a database session or an open transaction,
-refuses overlapping calls.
-{py:func}`fan_out_sequential <stratae.events.dispatch.fan_out_sequential>` runs async
-handlers one at a time, for handlers that share such a resource. Pass
-`Dispatch(PubSub, fan_out_sequential)` for every PubSub event on the bus, or pair it with a
-PubSub subclass for only that subclass's events.
-
-````{example} Handlers sharing a connection run one at a time
-```{code-block} python
-import asyncio
-from stratae.events import AsyncDirectBus, Dispatch, PubSub, fan_out_sequential
-
-class Connection:
-    def __init__(self) -> None:
-        self.busy = False
-
-    async def write(self, row: str) -> None:
-        if self.busy:
-            raise RuntimeError("connection in use")
-        self.busy = True
-        await asyncio.sleep(0)
-        self.busy = False
-        print(f"wrote {row}")
-
-class OrderPlaced:
-    def __init__(self, item: str) -> None:
-        self.item = item
-
-order_placed = PubSub(OrderPlaced)
-bus = AsyncDirectBus(dispatchers=[Dispatch(PubSub, fan_out_sequential)])
-connection = Connection()
-
-@bus.handle(order_placed)
-async def record_audit(placed: OrderPlaced) -> None:
-    await connection.write(f"audit {placed.item}")
-
-@bus.handle(order_placed)
-async def count_sale(placed: OrderPlaced) -> None:
-    await connection.write(f"sale {placed.item}")
-
-asyncio.run(bus.emit(order_placed, OrderPlaced("widget")))
-```
-```{output}
-wrote audit widget
-wrote sale widget
-```
-````
+Both buses run an event's handlers one at a time. So handlers can share a resource that
+refuses concurrent use, such as the database session of the unit of work they run in. An
+{py:class}`AsyncDirectBus` whose handlers share nothing like that can run several async
+handlers concurrently. Pass it `Dispatch(PubSub, fan_out_concurrent)`, using
+{py:func}`fan_out_concurrent <stratae.events.dispatch.fan_out_concurrent>`.
 
 ````{example} Sending events over a DirectBus
 ```{code-block} python

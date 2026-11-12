@@ -171,11 +171,11 @@ committed
 
 An event handler running inside the unit of work gets the same session. Its writes commit or roll back with the rest. Emitting on an [`AsyncDirectBus`](../apidocs/stratae.events/stratae.events.direct) runs handlers in the emitter's context, inside its scope.
 
-By default, the bus runs several async handlers at once. They all get the same session, and a session refuses overlapping calls. So give the bus `fan_out_sequential`, which runs them one at a time.
+The bus runs an event's handlers one at a time, so several handlers can share the session. A session refuses overlapping calls, so don't give this bus `fan_out_concurrent`.
 
 ````{example} Two audit handlers' writes commit and roll back with the order
 ```{code-block} python
-from stratae.events import AsyncDirectBus, Dispatch, PubSub, fan_out_sequential
+from stratae.events import AsyncDirectBus, PubSub
 
 class AuditEntry(Base):
     __tablename__ = "audit"
@@ -187,7 +187,7 @@ class OrderPlaced:
         self.item = item
 
 order_placed = PubSub(OrderPlaced)
-bus = AsyncDirectBus(dispatchers=[Dispatch(PubSub, fan_out_sequential)])
+bus = AsyncDirectBus()
 announce_order = bus.bind(order_placed, factory=OrderPlaced)
 
 @bus.handle(order_placed)
