@@ -120,7 +120,8 @@ class RabbitMQFailurePolicy:
     after each delay of its {py:class}`Backoff <stratae.backoff.Backoff>`, then dead-lettered or
     dropped once the backoff runs out. With no retries, it's dead-lettered or dropped on its
     first failure. A message that fails to decode would fail every attempt, so it skips the
-    retries.
+    retries. It's a {py:class}`FailurePolicy <stratae.events.failure.FailurePolicy>`, so
+    {py:func}`failure_action <stratae.events.failure.failure_action>` decides each failure.
 
     Each delay gets a retry queue, `<queue>.retry.<milliseconds>`, whose message TTL routes
     the message back to the consumed queue once it expires. A dead-lettered message goes to

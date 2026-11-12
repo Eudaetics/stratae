@@ -18,6 +18,8 @@ A direct bus delivers each pattern with a function from
 chain of emissions. {py:class}`Hooks <stratae.events.hooks.Hooks>` observe one event where it
 meets a bus, typed by that event; {py:class}`Middleware <stratae.events.middleware.Middleware>`
 wraps every emit and handler call on a bus.
+{py:mod}`failure <stratae.events.failure>` decides what a consumer does with a message whose
+handling failed.
 
 ````{example} Create event triggering a logging event
 ```{code-block} python

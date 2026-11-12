@@ -18,11 +18,20 @@ from stratae.events import (
     PubSub,
 )
 from stratae.events.exceptions import AlreadyConnectedError
+from stratae.events.failure import (
+    DeadLetter,
+    FailureAction,
+    Reject,
+    Retry,
+    describe,
+    failure_action,
+)
 from stratae.events.handler import invoke
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
 from stratae.events.pipeline import receiving, wrap_handler
 from stratae.integrations.rabbitmq._link import RECONNECT, Link
+from stratae.integrations.rabbitmq._retry import retry_queue_name
 from stratae.integrations.rabbitmq._topology import declare
 from stratae.integrations.rabbitmq._wire import (
     envelope_from,
@@ -30,7 +39,7 @@ from stratae.integrations.rabbitmq._wire import (
     failed_properties,
     headers_from,
 )
-from stratae.integrations.rabbitmq.config import RabbitMQConsumeConfig
+from stratae.integrations.rabbitmq.config import RabbitMQConsumeConfig, RabbitMQFailurePolicy
 from stratae.integrations.rabbitmq.connection import ConnectionState
 from stratae.lifecycle import AsyncScope
 
@@ -397,7 +406,7 @@ class RabbitMQConsumer:
         try:
             payload = self._deserialize(registration, message.body)
         except Exception as exc:
-            await self._fail(registration, message, exc, retry=False)
+            await self._fail(registration, message, exc, retryable=False)
             return
         try:
             with Envelope.scope(envelope_from(message, self._new_id), new_id=self._new_id):
@@ -407,7 +416,7 @@ class RabbitMQConsumer:
                 else:
                     await self._run_handler(registration, payload)
         except Exception as exc:
-            await self._fail(registration, message, exc, retry=True)
+            await self._fail(registration, message, exc, retryable=True)
             return
         if message.delivery_tag is not None:
             await message.channel.basic_ack(message.delivery_tag)
@@ -426,41 +435,41 @@ class RabbitMQConsumer:
         message: DeliveredMessage,
         exc: Exception,
         *,
-        retry: bool,
+        retryable: bool,
     ) -> None:
-        """Nack a failed message, or retry, dead-letter or drop it under its failure policy."""
-        policy = registration.handler.config.on_failure
-        name = registration.event.name
-        if policy is None:
-            _log.error(
-                "handler for event '%s' failed; message nacked without requeue", name, exc_info=exc
-            )
-            if message.delivery_tag is not None:
-                await message.channel.basic_nack(message.delivery_tag, requeue=False)
+        """Log a failed message, then carry out what its failure policy says to do with it."""
+        config = registration.handler.config
+        failures = failed_attempts(message) + 1
+        action = failure_action(config.on_failure, failures, retryable=retryable)
+        _log.log(
+            action.level,
+            "handler for event '%s' failed; %s",
+            registration.event.name,
+            describe(action, failures),
+            exc_info=exc,
+        )
+        tag = message.delivery_tag
+        if tag is None:
             return
-        queue = cast(str, registration.handler.config.queue)
-        attempts = failed_attempts(message) + 1
-        target = policy.retry_queue(queue, attempts) if retry else None
-        if target is not None:
-            _log.warning(
-                "handler for event '%s' failed; retrying via '%s'", name, target, exc_info=exc
-            )
-        else:
-            target = policy.dead_letter_target(queue)
-            _log.error(
-                "handler for event '%s' failed after %d attempt(s); message %s",
-                name,
-                attempts,
-                f"dead-lettered to '{target}'" if target is not None else "dropped",
-                exc_info=exc,
-            )
-        if message.delivery_tag is None:
+        if isinstance(action, Reject):
+            await message.channel.basic_nack(tag, requeue=False)
             return
+        target = _target(config, action)
         if target is not None:
             await message.channel.basic_publish(
                 message.body,
                 exchange="",
                 routing_key=target,
-                properties=failed_properties(message, attempts, exc),
+                properties=failed_properties(message, failures, exc),
             )
-        await message.channel.basic_ack(message.delivery_tag)
+        await message.channel.basic_ack(tag)
+
+
+def _target(config: RabbitMQConsumeConfig, action: FailureAction) -> str | None:
+    """Return the queue a failed message is published to before it's acked, if any."""
+    queue = cast(str, config.queue)
+    if isinstance(action, Retry):
+        return retry_queue_name(queue, action.delay)
+    if isinstance(action, DeadLetter):
+        return cast(RabbitMQFailurePolicy, config.on_failure).dead_letter_target(queue)
+    return None
