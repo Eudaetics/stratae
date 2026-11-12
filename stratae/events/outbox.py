@@ -34,8 +34,8 @@ The guarantees:
   see. A consumer handling several messages at once, several consumers on one queue, and
   retry queues all reorder delivery. A consumer that needs order per key has to keep it
   too.
-- **Nothing lost.** A record is either sent, or parked as failed with its reason once it
-  has failed `max_attempts` times. A broker outage never counts as an attempt.
+- **Nothing lost.** A record is either sent, or parked as failed with its reason once its
+  `retry` backoff runs out. A broker outage never counts as an attempt.
 
 ````{example} Writing events in a transaction, then relaying the committed ones
 ```{code-block} python
@@ -111,6 +111,7 @@ from typing import (
 )
 from uuid import UUID
 
+from stratae.backoff import Backoff, Exponential
 from stratae.events.binding import abind
 from stratae.events.envelope import ENVELOPE_HEADERS, Envelope, EnvelopeConfig
 from stratae.events.exceptions import NotConnectedError
@@ -137,6 +138,14 @@ _NO_ROUTE = "no outbox route for {!r}; route or bind it to an OutboxConfig befor
 _EVENT_ROUTED = "{!r} is already routed to another OutboxConfig; give it one route per outbox"
 
 _IN_FLIGHT = "max_in_flight must be at least 1, got {}"
+
+_FINITE_POLL = "the relay's poll backoff must never run out, since it polls until it exits"
+
+_POLL = Exponential(0.5, cap=5.0)
+"""How long a relay waits after each poll in a row that doesn't fill a batch, by default."""
+
+_RETRY = Exponential(30.0, cap=3600.0, retries=9)
+"""How long a relay waits before retrying a failed record, by default; parked on the 10th."""
 
 _ALREADY_RUNNING = "the relay is already running; exit it before entering it again"
 
@@ -531,15 +540,17 @@ class OutboxRelay:
     Publishes an outbox's committed records, and marks them sent.
 
     Enter it with `async with` to relay in the background until it exits, or call
-    `run_once` to relay one batch. It polls the store, waiting longer while it's empty, up
-    to `max_poll_interval`. `wake` makes it look straight away, for example after a commit.
+    `run_once` to relay one batch. A poll that fills a batch is followed at once. After any
+    other, it waits by its `poll` backoff, counting the polls since records last arrived, so
+    it waits longer while the store stays empty. `wake` makes it look straight away, for
+    example after a commit.
 
-    A publish that fails for its own record is an attempt. The record is retried after a
-    growing delay, then parked as failed once it reaches `max_attempts`. A publish that fails
-    because the publisher can't reach its broker isn't an attempt: the relay puts the batch
-    back as it was and waits for the broker. A record that will be retried holds back the rest
-    of its key's records in the batch: they go back unchanged, without counting an attempt, so
-    none is published before it. One parked as failed holds nothing back.
+    A publish that fails for its own record is an attempt. The record is retried after each
+    delay of its `retry` backoff, then parked as failed once the backoff runs out. A publish
+    that fails because the publisher can't reach its broker isn't an attempt: the relay puts
+    the batch back as it was and waits for the broker. A record that will be retried holds
+    back the rest of its key's records in the batch: they go back unchanged, without counting
+    an attempt, so none is published before it. One parked as failed holds nothing back.
 
     By default it publishes one record at a time. With `max_in_flight` above one, it keeps up
     to that many publishes waiting on the broker at once, which lifts throughput from about
@@ -560,11 +571,8 @@ class OutboxRelay:
         outbox: OutboxProducer,
         *,
         batch_size: int = 100,
-        poll_interval: float = 0.5,
-        max_poll_interval: float = 5.0,
-        max_attempts: int | None = 10,
-        retry_delay: float = 30.0,
-        max_retry_delay: float = 3600.0,
+        poll: Backoff = _POLL,
+        retry: Backoff = _RETRY,
         max_in_flight: int = 1,
     ) -> None:
         """
@@ -574,16 +582,18 @@ class OutboxRelay:
         :param publisher: Publishes each record under its envelope.
         :param outbox: The producer whose bindings map routes to events and configs.
         :param batch_size: Records claimed at a time.
-        :param poll_interval: Seconds between polls while records keep arriving.
-        :param max_poll_interval: The longest wait between polls while the store is empty.
-        :param max_attempts: Failed attempts before a record is parked as failed; `None` to
-            retry forever.
-        :param retry_delay: Seconds before a record's first retry. Each retry doubles it.
-        :param max_retry_delay: The longest wait before a retry.
+        :param poll: The wait after each poll in a row that doesn't fill a batch, counted from
+            the last that found records. It must never run out. By default 0.5 s, doubling up
+            to 5 s.
+        :param retry: The wait before each retry of a record that failed. Once it runs out,
+            the record is parked as failed. By default 30 s, doubling up to an hour, with the
+            record parked on its 10th failure.
         :param max_in_flight: Publishes waiting on the broker at once. At most one per key.
-        :raises ValueError: If `max_in_flight` is less than one, or the publisher already
-            routes one of the outbox's events to a different config.
+        :raises ValueError: If `poll` runs out, `max_in_flight` is less than one, or the
+            publisher already routes one of the outbox's events to a different config.
         """
+        if poll.retries is not None:
+            raise ValueError(_FINITE_POLL)
         if max_in_flight < 1:
             raise ValueError(_IN_FLIGHT.format(max_in_flight))
         for event, config in outbox.routes.values():
@@ -592,11 +602,8 @@ class OutboxRelay:
         self._publisher = publisher
         self._routes = outbox.routes
         self._batch_size = batch_size
-        self._poll_interval = poll_interval
-        self._max_poll_interval = max_poll_interval
-        self._max_attempts = max_attempts
-        self._retry_delay = retry_delay
-        self._max_retry_delay = max_retry_delay
+        self._poll = poll
+        self._retry = retry
         self._max_in_flight = max_in_flight
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -635,18 +642,19 @@ class OutboxRelay:
 
     async def _run(self) -> None:
         """Relay batches until cancelled, waiting longer between polls while there's none."""
-        wait = self._poll_interval
+        idle = 0
         while True:
             try:
                 claimed, _, outage = await self._relay_batch()
             except Exception:
                 _log.exception("outbox relay failed to relay a batch")
                 claimed, outage = 0, True
-            if claimed == self._batch_size and not outage:
-                continue
-            wait = self._poll_interval if claimed and not outage else wait
-            await self._sleep(wait)
-            wait = min(wait * 2, self._max_poll_interval)
+            if claimed and not outage:
+                idle = 0
+                if claimed == self._batch_size:
+                    continue
+            idle += 1
+            await self._sleep(cast(float, self._poll.delay(idle)))
 
     async def _sleep(self, seconds: float) -> None:
         """Wait `seconds`, or until woken."""
@@ -723,7 +731,8 @@ class OutboxRelay:
         """Count a failed attempt: retry the record later, or park it once out of attempts."""
         attempts = record.attempts + 1
         failed = replace(record, attempts=attempts, error=f"{type(exc).__name__}: {exc}")
-        if self._max_attempts is not None and attempts >= self._max_attempts:
+        delay = self._retry.delay(attempts)
+        if delay is None:
             _log.error(
                 "outbox record %s failed %d time(s); parked as failed",
                 record.id,
@@ -732,7 +741,6 @@ class OutboxRelay:
             )
             await _settle(self._store.mark_failed(failed))
             return "parked"
-        delay = min(self._retry_delay * 2 ** (attempts - 1), self._max_retry_delay)
         _log.warning("outbox record %s failed; retrying in %.0fs", record.id, delay, exc_info=exc)
         retry_at = _now() + timedelta(seconds=delay)
         await _settle(self._store.reschedule(replace(failed, available_at=retry_at)))

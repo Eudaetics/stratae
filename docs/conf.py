@@ -35,6 +35,7 @@ maximum_signature_line_length = 90
 python_use_unqualified_type_names = True
 
 autodoc2_packages = [
+    {"path": "../stratae/backoff.py", "module": "stratae.backoff"},
     {"path": "../stratae/callables.py", "module": "stratae.callables"},
     {"path": "../stratae/checks.py", "module": "stratae.checks"},
     {"path": "../stratae/context.py", "module": "stratae.context"},

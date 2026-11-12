@@ -62,10 +62,15 @@ OutboxRelay:
   a record being retried holds back its key's later records.
 - A batch cancelled mid-flight cancels its publishes and marks sent what finished.
 - max_in_flight below one raises ValueError.
+- A poll backoff that runs out raises ValueError.
+- By default, a relay retries a record after 30 s, doubling up to an hour, and parks it on
+  its 10th failure; it polls after 0.5 s, doubling up to 5 s.
+- Polling waits longer while the store stays empty, and starts over once records arrive.
 """
 
 import asyncio
 import dataclasses
+import inspect
 import logging
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
@@ -75,7 +80,9 @@ from typing import Any, assert_type, cast, override
 from uuid import UUID
 
 import pytest
+from pytest_mock import MockerFixture
 
+from stratae.backoff import Delays, Exponential
 from stratae.events import (
     Encoded,
     Envelope,
@@ -824,7 +831,7 @@ async def test_failed_publish_retried_after_growing_delay(
     place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
     await place(order_id=1)
     publisher = _Publisher(RuntimeError("refused"), RuntimeError("refused again"))
-    relay = OutboxRelay(store, publisher, outbox, retry_delay=10, max_retry_delay=15)
+    relay = OutboxRelay(store, publisher, outbox, retry=Exponential(10, cap=15))
 
     # Act
     await relay.run_once()
@@ -856,7 +863,7 @@ async def test_out_of_attempts_parked_as_failed(outbox: OutboxProducer, store: I
     # Arrange
     place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
     await place(order_id=1)
-    limited = OutboxRelay(store, _Publisher(RuntimeError("refused")), outbox, max_attempts=1)
+    limited = OutboxRelay(store, _Publisher(RuntimeError("refused")), outbox, retry=Delays())
     unlimited_store = InMemoryOutboxStore()
     unlimited_outbox = OutboxProducer(unlimited_store, serializer=_encode)
     await unlimited_outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))(
@@ -866,8 +873,7 @@ async def test_out_of_attempts_parked_as_failed(outbox: OutboxProducer, store: I
         unlimited_store,
         _Publisher(RuntimeError("refused")),
         unlimited_outbox,
-        max_attempts=None,
-        retry_delay=0,
+        retry=Exponential(0),
     )
 
     # Act
@@ -901,7 +907,7 @@ async def test_failure_holds_back_rest_of_its_key(
         for index, key in enumerate(keys)
     ]
     publisher = _Publisher(RuntimeError("refused"))
-    relay = OutboxRelay(store, publisher, outbox, retry_delay=60)
+    relay = OutboxRelay(store, publisher, outbox, retry=Exponential(60))
 
     # Act
     await relay.run_once()
@@ -937,7 +943,7 @@ async def test_parked_failure_holds_nothing_back(
     first = _record(store, 1, key="a", created_at=start)
     _record(store, 2, key="a", created_at=start + timedelta(seconds=1))
     publisher = _Publisher(RuntimeError("refused"))
-    relay = OutboxRelay(store, publisher, outbox, max_attempts=1)
+    relay = OutboxRelay(store, publisher, outbox, retry=Delays())
 
     # Act
     await relay.run_once()
@@ -1082,7 +1088,7 @@ async def test_background_relay_woken(outbox: OutboxProducer, store: _WatchedSto
     # Arrange
     place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
     publisher = _Publisher()
-    relay = OutboxRelay(store, publisher, outbox, poll_interval=60, max_poll_interval=60)
+    relay = OutboxRelay(store, publisher, outbox, poll=Exponential(60, factor=1))
 
     # Act
     async with relay:
@@ -1130,9 +1136,7 @@ async def test_background_store_failure_logged(caplog: pytest.LogCaptureFixture)
 
     # Act
     with caplog.at_level(logging.ERROR):
-        async with OutboxRelay(
-            store, publisher, producer, poll_interval=0.001, max_poll_interval=0.001
-        ):
+        async with OutboxRelay(store, publisher, producer, poll=Exponential(0.001, factor=1)):
             await memory.wait_for_sent(1)
 
     # Assert
@@ -1155,9 +1159,7 @@ async def test_full_batch_followed_at_once(outbox: OutboxProducer, store: _Watch
     publisher = _Publisher()
 
     # Act
-    async with OutboxRelay(
-        store, publisher, outbox, batch_size=2, poll_interval=60, max_poll_interval=60
-    ):
+    async with OutboxRelay(store, publisher, outbox, batch_size=2, poll=Exponential(60, factor=1)):
         await store.wait_for_sent(3)
 
     # Assert
@@ -1409,3 +1411,78 @@ def test_max_in_flight_below_one_refused(outbox: OutboxProducer, store: InMemory
     # Act / Assert
     with pytest.raises(ValueError, match="at least 1, got 0"):
         OutboxRelay(store, _OverlapPublisher(), outbox, max_in_flight=0)
+
+
+def test_poll_that_runs_out_refused(outbox: OutboxProducer, store: InMemoryOutboxStore):
+    """
+    A relay should refuse a poll backoff that runs out, since it polls until it exits.
+
+    Given: A poll backoff with a retry limit
+    When: A relay is built with it
+    Then: ValueError says it must never run out
+    """
+    with pytest.raises(ValueError, match="never run out"):
+        OutboxRelay(store, _Publisher(), outbox, poll=Exponential(1, retries=3))
+
+
+def test_relay_default_backoffs():
+    """
+    A relay should retry after 30 s, doubling to an hour, parking on the 10th failure.
+
+    Given: OutboxRelay's signature
+    When: Its retry and poll defaults are read
+    Then: Retries wait 30 s, doubling to 3600 s, and run out on the 10th failure; polls wait
+          0.5 s, doubling to 5 s, without end
+    """
+    parameters = inspect.signature(OutboxRelay).parameters
+    retry, poll = parameters["retry"].default, parameters["poll"].default
+
+    assert [retry.delay(n) for n in range(1, 11)] == [
+        30.0,
+        60.0,
+        120.0,
+        240.0,
+        480.0,
+        960.0,
+        1920.0,
+        3600.0,
+        3600.0,
+        None,
+    ]
+    assert poll == Exponential(0.5, cap=5.0)
+
+
+async def test_poll_waits_longer_while_empty_and_starts_over(
+    outbox: OutboxProducer, store: InMemoryOutboxStore, mocker: MockerFixture
+):
+    """
+    Polling should wait longer while the store stays empty, and start over once records arrive.
+
+    Given: A relay with the default poll backoff, and an order placed during its third wait
+    When: It runs in the background through five waits
+    Then: It waits 0.5, 1 and 2 s while empty, then 0.5 s after relaying the order, then 1 s
+    """
+    # Arrange
+    place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
+    relay = OutboxRelay(store, _Publisher(), outbox)
+    waits: list[float] = []
+    fifth = asyncio.Event()
+
+    async def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 3:
+            await place(order_id=1)
+        if len(waits) == 5:
+            fifth.set()
+            await asyncio.Event().wait()
+
+    mocker.patch.object(relay, "_sleep", sleep)
+
+    # Act
+    async with relay:
+        async with asyncio.timeout(1):
+            await fifth.wait()
+
+    # Assert
+    assert waits == [0.5, 1.0, 2.0, 0.5, 1.0]
+    assert len(store.sent()) == 1
