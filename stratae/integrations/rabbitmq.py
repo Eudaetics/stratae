@@ -12,11 +12,12 @@ before any consumer has run aren't dropped.
 
 Both report their {py:class}`ConnectionState` as `state`, e.g. for a health check. Their
 `wait_for_state` waits until they reach a given state, e.g. to hold off work until
-reconnected. If the connection or channel drops, they reconnect with the backoff of a
-{py:class}`RabbitMQReconnect`, then declare their topology again, or resume every
-registration. While reconnecting, `emit`
-raises {py:exc}`NotConnectedError <stratae.events.exceptions.NotConnectedError>` at once, so
-the caller decides whether to retry; nothing is buffered in memory. A message whose handler
+reconnected. If the connection or channel drops, they reconnect after each delay of their
+`reconnect` {py:class}`Backoff <stratae.backoff.Backoff>`, then declare their topology
+again, or resume every registration. A backoff that runs out leaves them closed. While
+reconnecting, `emit` raises
+{py:exc}`NotConnectedError <stratae.events.exceptions.NotConnectedError>` at once, so the
+caller decides whether to retry; nothing is buffered in memory. A message whose handler
 was running when the connection dropped is cancelled unacked, and the broker redelivers it.
 
 Each message carries its {py:class}`Envelope <stratae.events.envelope.Envelope>` in its
@@ -42,9 +43,10 @@ queues, so they need no broker plugin, and every attempt keeps the message's env
 
 ````{example} Retrying a failed message three times, then dead-lettering it
 ```{code-block} python
+from stratae.backoff import Delays
 from stratae.integrations.rabbitmq import RabbitMQConsumeConfig, RabbitMQFailurePolicy
 
-policy = RabbitMQFailurePolicy(retry_delays=(1, 10, 60))
+policy = RabbitMQFailurePolicy(Delays(1, 10, 60))
 config = RabbitMQConsumeConfig("orders", on_failure=policy)
 
 for attempt in range(1, 5):
@@ -123,7 +125,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Mapping
 from contextlib import suppress
 from copy import copy
 from dataclasses import KW_ONLY, InitVar, dataclass, field, replace
@@ -142,6 +144,7 @@ from aiormq import connect
 from aiormq.exceptions import PublishError
 from pamqp.commands import Basic, Queue
 
+from stratae.backoff import Backoff, Delays, Exponential
 from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
@@ -182,9 +185,10 @@ _NOT_CONNECTED = "publisher is not connected; open it with 'async with' before e
 
 _RECONNECTING = "publisher lost its broker connection and is reconnecting; retry the publish"
 
-_BAD_RECONNECT = "reconnect needs 0 < initial_delay <= max_delay and backoff >= 1"
-
 _ALREADY_CONNECTED = "{} is already connected; exit it before entering it again"
+
+_RECONNECT = Exponential(0.5, cap=30.0)
+"""How long publishers and consumers wait before each attempt to reconnect, by default."""
 
 _REQUEST_REPLY_NOT_IMPLEMENTED = (
     "RabbitMQ publishes PubSub events only; request/reply is not yet implemented"
@@ -214,6 +218,8 @@ _TOPOLOGY_NEEDS_QUEUE = (
 )
 
 _NON_POSITIVE_DELAY = "retry delays must be positive, got {!r}"
+
+_ENDLESS_RETRIES = "a failure policy's backoff must run out, since each delay names a retry queue"
 
 _DROP_WITH_QUEUE = "dead_letter_queue is set, but dead_letter=False drops failed messages"
 
@@ -373,43 +379,7 @@ class ConnectionState(StrEnum):
     """The connection dropped unexpectedly, and is being reopened."""
 
     CLOSED = "closed"
-    """Not connected: never entered, exited, or dropped with reconnecting turned off."""
-
-
-class RabbitMQReconnect:
-    """
-    How a {py:class}`RabbitMQPublisher` or {py:class}`RabbitMQConsumer` reconnects.
-
-    After its connection or channel closes unexpectedly, it waits `initial_delay` seconds and
-    tries again, multiplying the wait by `backoff` after each failed attempt, up to
-    `max_delay`, until it reconnects or its context exits.
-    """
-
-    __slots__ = ("backoff", "initial_delay", "max_delay")
-
-    def __init__(
-        self, initial_delay: float = 0.5, max_delay: float = 30.0, backoff: float = 2.0
-    ) -> None:
-        """
-        Create a reconnect policy.
-
-        :param initial_delay: Seconds before the first attempt.
-        :param max_delay: The longest wait between attempts.
-        :param backoff: What each failed attempt multiplies the wait by.
-        :raises ValueError: Unless `0 < initial_delay <= max_delay` and `backoff >= 1`.
-        """
-        if not 0 < initial_delay <= max_delay or backoff < 1:
-            raise ValueError(_BAD_RECONNECT)
-        self.initial_delay: float = initial_delay
-        self.max_delay: float = max_delay
-        self.backoff: float = backoff
-
-    def delays(self) -> Iterator[float]:
-        """Yield the wait before each reconnect attempt, without end."""
-        delay = self.initial_delay
-        while True:
-            yield delay
-            delay = min(delay * self.backoff, self.max_delay)
+    """Not connected: never entered, exited, or dropped with no reconnecting left to try."""
 
 
 def _closing(channel: Any) -> asyncio.Future[Any]:
@@ -424,7 +394,7 @@ class _Link:
         self,
         name: str,
         url: str,
-        reconnect: RabbitMQReconnect | None,
+        reconnect: Backoff | None,
         on_open: Callable[[AbstractChannel], Awaitable[None]],
         on_lost: Callable[[], None],
     ) -> None:
@@ -503,18 +473,22 @@ class _Link:
         """Close what's left of the old connection, then reconnect with backoff if enabled."""
         with suppress(Exception):
             await stale.close()
-        if self._reconnect is None:
+        reconnect = self._reconnect
+        if reconnect is None:
             return
-        delays = self._reconnect.delays()
-        while True:
-            await asyncio.sleep(next(delays))
+        failures = 1
+        while (delay := reconnect.delay(failures)) is not None:
+            await asyncio.sleep(delay)
             try:
                 await self._open()
             except Exception:
                 _log.warning("%s failed to reconnect", self._name, exc_info=True)
+                failures += 1
                 continue
             _log.info("%s reconnected to the broker", self._name)
             return
+        _log.error("%s gave up reconnecting after %d attempt(s)", self._name, failures - 1)
+        self.state = ConnectionState.CLOSED
 
     async def close(self) -> None:
         """Stop any reconnecting and close the connection, if open."""
@@ -562,7 +536,7 @@ class RabbitMQPublisher:
         serializer: Serializer[object],
         *,
         topology: Iterable[RabbitMQConsumeConfig] = (),
-        reconnect: RabbitMQReconnect | None = RabbitMQReconnect(),
+        reconnect: Backoff | None = _RECONNECT,
         middleware: Middleware = Middleware(),
         envelope: EnvelopeConfig = EnvelopeConfig(),
     ) -> None:
@@ -575,8 +549,9 @@ class RabbitMQPublisher:
         :param topology: Consume configs whose queues, exchanges, bindings and failure queues
             are declared on entering the context, before anything is published. Each needs a
             named `queue`. They're declared again after each reconnect.
-        :param reconnect: How to reconnect after the connection or channel closes unexpectedly;
-            `None` to stay closed instead.
+        :param reconnect: The delays before each attempt to reconnect after the connection or
+            channel closes unexpectedly. Once it runs out, the publisher stays closed. `None`
+            to stay closed at once. By default 0.5 s, doubling up to 30 s, without end.
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `publish` half runs around every publish, inside the message's
             envelope; its `handle` half is a consumer's, so one `Middleware` can be shared with
@@ -798,10 +773,10 @@ class RabbitMQFailurePolicy:
     """
     What a {py:class}`RabbitMQConsumer` does with a message whose handling fails.
 
-    A failed message is retried once per entry in `retry_delays`, each attempt waiting that
-    many seconds, then dead-lettered or dropped. With no delays, it's dead-lettered or dropped
-    on its first failure. A message that fails to decode would fail every attempt, so it skips
-    the retries.
+    A failed message is retried after each delay of its {py:class}`Backoff
+    <stratae.backoff.Backoff>`, then dead-lettered or dropped once the backoff runs out. With
+    no retries, it's dead-lettered or dropped on its first failure. A message that fails to
+    decode would fail every attempt, so it skips the retries.
 
     Each delay gets a retry queue, `<queue>.retry.<milliseconds>`, whose message TTL routes
     the message back to the consumed queue once it expires. A dead-lettered message goes to
@@ -813,11 +788,11 @@ class RabbitMQFailurePolicy:
     the two delivers it twice, never zero times.
     """
 
-    __slots__ = ("dead_letter", "dead_letter_queue", "retry_delays")
+    __slots__ = ("backoff", "dead_letter", "dead_letter_queue")
 
     def __init__(
         self,
-        retry_delays: Iterable[float] = (),
+        backoff: Backoff = Delays(),
         *,
         dead_letter: bool = True,
         dead_letter_queue: str | None = None,
@@ -825,19 +800,21 @@ class RabbitMQFailurePolicy:
         """
         Create a failure policy.
 
-        :param retry_delays: Seconds to wait before each retry, in order, e.g. `(1, 10, 60)`
-            for three retries with a growing backoff.
+        :param backoff: The delay before each retry, e.g. `Delays(1, 10, 60)` for three
+            retries. It must run out, since each delay names a retry queue.
         :param dead_letter: Whether a message is dead-lettered once its retries run out, or
             acked and dropped.
         :param dead_letter_queue: The dead-letter queue's name; defaults to
             `<queue>.dead-letter`.
-        :raises ValueError: If a delay isn't positive, or `dead_letter_queue` is given with
-            `dead_letter=False`.
+        :raises ValueError: If the backoff never runs out, a delay isn't positive, or
+            `dead_letter_queue` is given with `dead_letter=False`.
         """
-        self.retry_delays: tuple[float, ...] = tuple(retry_delays)
-        for delay in self.retry_delays:
+        if backoff.retries is None:
+            raise ValueError(_ENDLESS_RETRIES)
+        for delay in _retry_delays(backoff):
             if delay <= 0:
                 raise ValueError(_NON_POSITIVE_DELAY.format(delay))
+        self.backoff: Backoff = backoff
         if not dead_letter and dead_letter_queue is not None:
             raise ValueError(_DROP_WITH_QUEUE)
         self.dead_letter: bool = dead_letter
@@ -850,9 +827,8 @@ class RabbitMQFailurePolicy:
         :param queue: The consumed queue.
         :param attempt: How many times the message has failed, counting this failure.
         """
-        if attempt > len(self.retry_delays):
-            return None
-        return _retry_queue(queue, self.retry_delays[attempt - 1])
+        delay = self.backoff.delay(attempt)
+        return None if delay is None else _retry_queue(queue, delay)
 
     def dead_letter_target(self, queue: str) -> str | None:
         """
@@ -863,6 +839,12 @@ class RabbitMQFailurePolicy:
         if not self.dead_letter:
             return None
         return self.dead_letter_queue or f"{queue}.dead-letter"
+
+
+def _retry_delays(backoff: Backoff) -> list[float]:
+    """Return each retry delay of a backoff that runs out, in order."""
+    retries = backoff.retries or 0
+    return [delay for n in range(1, retries + 1) if (delay := backoff.delay(n)) is not None]
 
 
 def _milliseconds(seconds: float) -> int:
@@ -972,7 +954,7 @@ async def _declare_failure_queues(
     channel: AbstractChannel, queue: str, policy: RabbitMQFailurePolicy
 ) -> None:
     """Declare a policy's retry queues, each expiring back into `queue`, and dead letters."""
-    for delay in dict.fromkeys(policy.retry_delays):
+    for delay in dict.fromkeys(_retry_delays(policy.backoff)):
         await channel.queue_declare(
             _retry_queue(queue, delay),
             durable=True,
@@ -1057,7 +1039,7 @@ class RabbitMQConsumer:
         drain_timeout: float | None = 30.0,
         *,
         scope: AsyncScope | None = None,
-        reconnect: RabbitMQReconnect | None = RabbitMQReconnect(),
+        reconnect: Backoff | None = _RECONNECT,
         middleware: Middleware = Middleware(),
         envelope: EnvelopeConfig = EnvelopeConfig(),
     ) -> None:
@@ -1073,8 +1055,10 @@ class RabbitMQConsumer:
         :param scope: Activated for each message, around its middleware, hooks and handler,
             and closed before the ack or nack. A message that fails to decode never activates
             it.
-        :param reconnect: How to reconnect after the connection or channel closes unexpectedly,
-            resuming every registration; `None` to stay closed instead.
+        :param reconnect: The delays before each attempt to reconnect after the connection or
+            channel closes unexpectedly, resuming every registration. Once it runs out, the
+            consumer stays closed. `None` to stay closed at once. By default 0.5 s, doubling up
+            to 30 s, without end.
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `handle` half runs around every handler call, inside the message's
             envelope; a message that fails to decode never reaches it. Its `publish` half is a

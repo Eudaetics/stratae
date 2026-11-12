@@ -89,6 +89,7 @@ from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 
+from stratae.backoff import Delays, Exponential
 from stratae.events import Envelope, HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer, OutboxRelay
@@ -102,7 +103,6 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConsumer,
     RabbitMQFailurePolicy,
     RabbitMQPublisher,
-    RabbitMQReconnect,
 )
 from stratae.lifecycle import AsyncScope
 
@@ -763,7 +763,7 @@ def _failure_queues(broker: _Broker, prefix: str, policy: RabbitMQFailurePolicy)
     broker.queues.extend(
         name
         for name in (
-            *(policy.retry_queue(queue, n + 1) for n in range(len(policy.retry_delays))),
+            *(policy.retry_queue(queue, n) for n in range(1, (policy.backoff.retries or 0) + 1)),
             policy.dead_letter_target(queue),
         )
         if name is not None
@@ -796,7 +796,7 @@ async def test_failing_handler_retried_with_backoff_then_acked(broker: _Broker):
           the original message id, and the queue ends empty
     """
     # Arrange
-    policy = RabbitMQFailurePolicy(retry_delays=(0.2, 0.4))
+    policy = RabbitMQFailurePolicy(Delays(0.2, 0.4))
     queue = _failure_queues(broker, "stratae-it-retry", policy)
     loop = asyncio.get_running_loop()
     attempts = _Log[tuple[float, UUID]]()
@@ -836,7 +836,7 @@ async def test_failing_handler_dead_lettered_after_retries(broker: _Broker):
           the failure and the original message id
     """
     # Arrange
-    policy = RabbitMQFailurePolicy(retry_delays=(0.1, 0.1))
+    policy = RabbitMQFailurePolicy(Delays(0.1, 0.1))
     queue = _failure_queues(broker, "stratae-it-dlq", policy)
     dead_letter = cast(str, policy.dead_letter_target(queue))
     calls = _Log[Message]()
@@ -874,7 +874,7 @@ async def test_undecodable_message_dead_lettered_without_retry(broker: _Broker):
     Then: The handler never runs, and it lands on the dead-letter queue with one attempt
     """
     # Arrange
-    policy = RabbitMQFailurePolicy(retry_delays=(0.1, 0.1))
+    policy = RabbitMQFailurePolicy(Delays(0.1, 0.1))
     queue = _failure_queues(broker, "stratae-it-poison-dlq", policy)
     dead_letter = cast(str, policy.dead_letter_target(queue))
     received: list[Message] = []
@@ -936,7 +936,7 @@ async def test_cancelled_delivery_under_policy_is_redelivered(broker: _Broker):
           stay empty
     """
     # Arrange
-    policy = RabbitMQFailurePolicy(retry_delays=(0.1,))
+    policy = RabbitMQFailurePolicy(Delays(0.1))
     queue = _failure_queues(broker, "stratae-it-cancel", policy)
     config = RabbitMQConsumeConfig(queue, on_failure=policy)
     started = asyncio.Event()
@@ -1013,7 +1013,7 @@ async def test_publisher_and_consumer_declare_alike(broker: _Broker, publisher_f
     Then: Neither declaration is refused, and the consumer receives the message
     """
     # Arrange
-    policy = RabbitMQFailurePolicy(retry_delays=(0.1,))
+    policy = RabbitMQFailurePolicy(Delays(0.1))
     queue = _failure_queues(broker, "stratae-it-alike", policy)
     config = RabbitMQConsumeConfig(queue, on_failure=policy)
     received = _Log[Message]()
@@ -1189,7 +1189,7 @@ async def proxy(broker: _Broker) -> AsyncIterator[_Proxy]:
         await proxy.outage()
 
 
-_QUICK = RabbitMQReconnect(initial_delay=0.1, max_delay=0.2)
+_QUICK = Exponential(0.1, cap=0.2)
 
 
 async def test_consumer_resumes_after_outage(broker: _Broker, proxy: _Proxy):
@@ -1272,7 +1272,7 @@ async def test_in_flight_message_redelivered_after_outage(broker: _Broker, proxy
           queues stay empty
     """
     # Arrange
-    policy = RabbitMQFailurePolicy(retry_delays=(0.1,))
+    policy = RabbitMQFailurePolicy(Delays(0.1))
     queue = _failure_queues(broker, "stratae-it-outage-inflight", policy)
     started = asyncio.Event()
     handled = _Log[Message]()

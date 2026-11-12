@@ -253,6 +253,24 @@ False
 
 {doc}`Full reference <apidocs/stratae.callables/stratae.callables>`
 
+### Backoff
+
+How long to wait after each failure, as a value. `delay(n)` is the wait after the nth failure in a row, or `None` once there are no retries left. A backoff holds no progress of its own, so whatever retries keeps the count. The outbox relay and the RabbitMQ adapters each take one.
+
+````{example} Retrying after 30 seconds, doubling to an hour, then giving up
+```{code-block} python
+from stratae.backoff import Exponential
+
+retry = Exponential(30, cap=3600, retries=9)
+print(retry.delay(1), retry.delay(9), retry.delay(10))
+```
+```{output}
+30.0 3600.0 None
+```
+````
+
+{doc}`Full reference <apidocs/stratae.backoff/stratae.backoff>`
+
 ### Integrations
 
 Bridges between Stratae and third-party tools. FastAPI and Starlette get lifecycle-scoped routes. RabbitMQ gets async publish and consume adapters. OpenTelemetry traces emits and handlers across them.
@@ -326,5 +344,6 @@ checks <apidocs/stratae.checks/stratae.checks>
 callables <apidocs/stratae.callables/stratae.callables>
 context <apidocs/stratae.context/stratae.context>
 middleware <apidocs/stratae.middleware/stratae.middleware>
+backoff <apidocs/stratae.backoff/stratae.backoff>
 integrations <apidocs/stratae.integrations/stratae.integrations>
 ```

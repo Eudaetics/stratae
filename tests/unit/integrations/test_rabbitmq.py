@@ -70,7 +70,8 @@ RabbitMQPublisher:
 - emit doesn't return until the broker's confirm arrives.
 
 Connection health and reconnecting:
-- RabbitMQReconnect refuses inconsistent delays, and its waits grow by backoff up to the cap.
+- Publishers reconnect after 0.5 s, doubling up to 30 s, without end, by default.
+- A publisher whose reconnect backoff runs out logs that it gave up, and stays closed.
 - The publisher reports closed before entering and after exiting, and connected inside.
 - When the channel closes unexpectedly, the publisher reports reconnecting, emit raises
   NotConnectedError at once, and after reconnecting it's connected, has declared its topology
@@ -84,6 +85,7 @@ Connection health and reconnecting:
 
 import asyncio
 import dataclasses
+import inspect
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -97,6 +99,7 @@ from aiormq.exceptions import PublishError
 from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
+from stratae.backoff import Delays, Exponential
 from stratae.events import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
@@ -122,7 +125,6 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConsumeConfig,
     RabbitMQFailurePolicy,
     RabbitMQPublisher,
-    RabbitMQReconnect,
 )
 
 _URL = "amqp://guest:guest@localhost/"
@@ -1282,7 +1284,7 @@ async def test_entering_declares_topology(connect_mock: AsyncMock, channel: Asyn
         binding_key="job.*",
         exchange_type="topic",
         exchange_durable=True,
-        on_failure=RabbitMQFailurePolicy(retry_delays=(5,)),
+        on_failure=RabbitMQFailurePolicy(Delays(5)),
     )
     publisher = RabbitMQPublisher(
         _URL, serializer=_encode, topology=[jobs, RabbitMQConsumeConfig("audit")]
@@ -1459,7 +1461,7 @@ async def test_emit_waits_for_confirm(publisher: RabbitMQPublisher, channel: Asy
     assert emitting.done()
 
 
-_FAST = RabbitMQReconnect(initial_delay=0.001, max_delay=0.001)
+_FAST = Exponential(0.001, factor=1)
 
 
 def _new_channels(connection: AsyncMock) -> list[AsyncMock]:
@@ -1477,30 +1479,17 @@ def _new_channels(connection: AsyncMock) -> list[AsyncMock]:
     return opened
 
 
-def test_reconnect_refuses_inconsistent_delays():
+def test_reconnect_default():
     """
-    RabbitMQReconnect should refuse delays that can't make a backoff.
+    A publisher should reconnect after 0.5 s, doubling up to 30 s, without end, by default.
 
-    Given: A zero initial delay, a cap below the initial delay, and a shrinking backoff
-    When: Each policy is created
-    Then: A ValueError should be raised
+    Given: RabbitMQPublisher's signature
+    When: Its reconnect default is read
+    Then: It's Exponential(0.5, cap=30.0)
     """
-    for kwargs in ({"initial_delay": 0}, {"initial_delay": 2, "max_delay": 1}, {"backoff": 0.5}):
-        with pytest.raises(ValueError, match="initial_delay"):
-            RabbitMQReconnect(**kwargs)
+    default = inspect.signature(RabbitMQPublisher).parameters["reconnect"].default
 
-
-def test_reconnect_delays_grow_to_cap():
-    """
-    RabbitMQReconnect's waits should grow by its backoff, up to its cap.
-
-    Given: A policy starting at 1 second, doubling, capped at 5
-    When: Its first five delays are taken
-    Then: They're 1, 2, 4, 5, 5
-    """
-    delays = RabbitMQReconnect(initial_delay=1, max_delay=5).delays()
-
-    assert [next(delays) for _ in range(5)] == [1, 2, 4, 5, 5]
+    assert default == Exponential(0.5, cap=30.0)
 
 
 async def test_publisher_reports_state(publisher: RabbitMQPublisher):
@@ -1572,7 +1561,7 @@ async def test_publisher_reconnects_after_channel_loss(
         _URL,
         serializer=_encode,
         topology=[RabbitMQConsumeConfig("jobs")],
-        reconnect=RabbitMQReconnect(0.05, 0.05),
+        reconnect=Exponential(0.05, factor=1),
     )
 
     publisher.route(_order_placed, _config)
@@ -1624,6 +1613,38 @@ async def test_failed_reconnect_attempt_retried(
 
     assert "publisher failed to reconnect" in caplog.text
     assert connect_mock.await_count == 3
+
+
+async def test_reconnect_gives_up_once_backoff_runs_out(
+    connect_mock: AsyncMock, connection: AsyncMock, caplog: pytest.LogCaptureFixture
+):
+    """
+    A publisher whose reconnect backoff runs out should stop trying and stay closed.
+
+    Given: A connected publisher whose backoff allows two attempts, and a broker refusing
+           every reconnect
+    When: Its channel closes unexpectedly
+    Then: It tries twice, logs that it gave up, and is closed
+    """
+    # Arrange
+    channels = _new_channels(connection)
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, reconnect=Exponential(0.001, factor=1, retries=2)
+    )
+
+    async with publisher:
+        connect_mock.side_effect = OSError("refused")
+
+        # Act
+        channels[0].closing.set_exception(ConnectionError("gone"))
+        async with asyncio.timeout(1):
+            await publisher.wait_for_state(ConnectionState.RECONNECTING)
+            await publisher.wait_for_state(ConnectionState.CLOSED)
+
+        # Assert
+        assert connect_mock.await_count == 3
+
+    assert "publisher gave up reconnecting after 2 attempt(s)" in caplog.text
 
 
 async def test_exit_while_reconnecting_stops(connect_mock: AsyncMock, connection: AsyncMock):

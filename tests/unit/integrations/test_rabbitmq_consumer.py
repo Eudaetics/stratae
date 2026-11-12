@@ -86,12 +86,13 @@ RabbitMQConsumer:
 - A message that fails to decode never activates the scope.
 
 RabbitMQFailurePolicy:
-- A non-positive retry delay raises ValueError.
+- A non-positive retry delay, or a backoff that never runs out, raises ValueError.
 - A dead-letter queue name with dead_letter=False raises ValueError.
 - A failure policy on a config without a named queue raises ValueError.
 - retry_queue names one queue per delay and returns None past the last retry;
   dead_letter_target defaults to <queue>.dead-letter, takes a custom name, and is None
   when dropping.
+- An exponential backoff names its retry queues from its capped delays.
 - The consumer declares one durable retry queue per distinct delay, each expiring back into
   the consumed queue, and a durable dead-letter queue; a dropping policy declares none.
 - A failed message with retries left is published to its next retry queue with its body,
@@ -130,6 +131,7 @@ import pytest
 from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
+from stratae.backoff import Delays, Exponential
 from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
@@ -151,7 +153,6 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConsumeConfig,
     RabbitMQConsumer,
     RabbitMQFailurePolicy,
-    RabbitMQReconnect,
 )
 from stratae.lifecycle import AsyncScope
 
@@ -2028,7 +2029,19 @@ def test_failure_policy_refuses_non_positive_delay():
     Then: A ValueError should be raised
     """
     with pytest.raises(ValueError, match="positive"):
-        RabbitMQFailurePolicy(retry_delays=(1, 0))
+        RabbitMQFailurePolicy(Delays(1, 0))
+
+
+def test_failure_policy_refuses_endless_backoff():
+    """
+    RabbitMQFailurePolicy should refuse a backoff that never runs out.
+
+    Given: An exponential backoff without a retry limit
+    When: A RabbitMQFailurePolicy is created
+    Then: A ValueError should be raised, since each delay names a retry queue
+    """
+    with pytest.raises(ValueError, match="must run out"):
+        RabbitMQFailurePolicy(Exponential(1))
 
 
 def test_failure_policy_refuses_queue_when_dropping():
@@ -2064,7 +2077,7 @@ def test_failure_policy_names_its_queues():
     Then: Each attempt maps to its delay's retry queue, then None; the dead-letter queue is
           the default, the custom name, or None when dropping
     """
-    policy = RabbitMQFailurePolicy(retry_delays=(0.5, 2))
+    policy = RabbitMQFailurePolicy(Delays(0.5, 2))
 
     assert [policy.retry_queue("orders", n) for n in (1, 2, 3)] == [
         "orders.retry.500",
@@ -2074,6 +2087,25 @@ def test_failure_policy_names_its_queues():
     assert policy.dead_letter_target("orders") == "orders.dead-letter"
     assert RabbitMQFailurePolicy(dead_letter_queue="dlq").dead_letter_target("orders") == "dlq"
     assert RabbitMQFailurePolicy(dead_letter=False).dead_letter_target("orders") is None
+
+
+def test_failure_policy_takes_exponential_backoff():
+    """
+    A failure policy should name its retry queues from an exponential backoff's delays.
+
+    Given: A policy retrying four times after 1 second, doubling, capped at 4
+    When: Its retry queues are named for the "orders" queue
+    Then: The attempts map to the 1, 2, 4 and 4 second queues, then None
+    """
+    policy = RabbitMQFailurePolicy(Exponential(1, cap=4, retries=4))
+
+    assert [policy.retry_queue("orders", n) for n in range(1, 6)] == [
+        "orders.retry.1000",
+        "orders.retry.2000",
+        "orders.retry.4000",
+        "orders.retry.4000",
+        None,
+    ]
 
 
 async def test_failure_policy_declares_retry_and_dead_letter_queues(
@@ -2088,7 +2120,7 @@ async def test_failure_policy_declares_retry_and_dead_letter_queues(
           consumed queue, then a durable dead-letter queue
     """
     # Arrange
-    policy = RabbitMQFailurePolicy(retry_delays=(1, 1, 5))
+    policy = RabbitMQFailurePolicy(Delays(1, 1, 5))
     config = RabbitMQConsumeConfig("orders", on_failure=policy)
     consumer.handle(_order_placed, lambda payload: None, config=config)
 
@@ -2162,7 +2194,7 @@ async def test_failed_message_retried(consumer: RabbitMQConsumer, channel: Async
           one attempt and the failure, then acked, never nacked
     """
     # Arrange
-    config, message = _failing(RabbitMQFailurePolicy(retry_delays=(1, 10)))
+    config, message = _failing(RabbitMQFailurePolicy(Delays(1, 10)))
     consumer.handle(_order_placed, _boom, config=config)
 
     # Act
@@ -2191,9 +2223,7 @@ async def test_failed_message_dead_lettered_after_retries(
     Then: It's published to the dead-letter queue with three attempts, then acked
     """
     # Arrange
-    config, message = _failing(
-        RabbitMQFailurePolicy(retry_delays=(1, 10)), headers={ATTEMPTS_HEADER: 2}
-    )
+    config, message = _failing(RabbitMQFailurePolicy(Delays(1, 10)), headers={ATTEMPTS_HEADER: 2})
     consumer.handle(_order_placed, _boom, config=config)
 
     # Act
@@ -2217,7 +2247,7 @@ async def test_undecodable_message_skips_retries(consumer: RabbitMQConsumer, cha
     """
     # Arrange
     received: list[_OrderPlaced] = []
-    config, message = _failing(RabbitMQFailurePolicy(retry_delays=(1, 10)))
+    config, message = _failing(RabbitMQFailurePolicy(Delays(1, 10)))
     message.body = b"not json"
     consumer.handle(_order_placed, received.append, config=config)
 
@@ -2291,9 +2321,7 @@ async def test_unreadable_attempt_count_is_first_failure(
     Then: It's retried as a first failure, with one attempt
     """
     # Arrange
-    config, message = _failing(
-        RabbitMQFailurePolicy(retry_delays=(1,)), headers={ATTEMPTS_HEADER: "many"}
-    )
+    config, message = _failing(RabbitMQFailurePolicy(Delays(1)), headers={ATTEMPTS_HEADER: "many"})
     consumer.handle(_order_placed, _boom, config=config)
 
     # Act
@@ -2317,7 +2345,7 @@ async def test_failed_message_without_delivery_tag_not_rerouted(
     Then: Nothing is published, acked or nacked
     """
     # Arrange
-    config, message = _failing(RabbitMQFailurePolicy(retry_delays=(1,)))
+    config, message = _failing(RabbitMQFailurePolicy(Delays(1)))
     message.delivery_tag = None
     consumer.handle(_order_placed, _boom, config=config)
 
@@ -2346,7 +2374,7 @@ async def test_cancelled_delivery_not_retried(consumer: RabbitMQConsumer, channe
         started.set()
         await asyncio.Event().wait()
 
-    config, message = _failing(RabbitMQFailurePolicy(retry_delays=(1,)))
+    config, message = _failing(RabbitMQFailurePolicy(Delays(1)))
     consumer.handle(_order_placed, wait, config=config)
 
     async with consumer:
@@ -2381,7 +2409,7 @@ async def test_channel_opened_with_confirms(consumer: RabbitMQConsumer, connecti
     connection.channel.assert_awaited_once_with(publisher_confirms=True, on_return_raises=True)
 
 
-_FAST = RabbitMQReconnect(initial_delay=0.001, max_delay=0.001)
+_FAST = Exponential(0.001, factor=1)
 
 
 def _new_channels(connection: AsyncMock) -> list[AsyncMock]:
@@ -2429,7 +2457,7 @@ async def test_consumer_resumes_registrations_after_channel_loss(
     # Arrange
     channels = _new_channels(connection)
     consumer = RabbitMQConsumer(
-        _URL, deserializer=_decode, prefetch_count=5, reconnect=RabbitMQReconnect(0.05, 0.05)
+        _URL, deserializer=_decode, prefetch_count=5, reconnect=Exponential(0.05, factor=1)
     )
     consumer.handle(_order_placed, lambda order: None, config=RabbitMQConsumeConfig("kept"))
     removed = consumer.handle(
