@@ -281,7 +281,7 @@ class OutboxConfig[C]:
     How an outbox binding is routed when it's relayed.
 
     `C` is the publisher's routing config, such as a
-    {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.RabbitMQConfig>`. An immutable
+    {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.config.RabbitMQConfig>`. An immutable
     value: configs with the same fields are equal.
     """
 
@@ -323,7 +323,7 @@ class OutboxProducer:
         :param store: Where records are added.
         :param serializer: Encodes payloads to bytes. A route whose publisher config has its
             own serializer, such as a
-            {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.RabbitMQConfig>`, uses
+            {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.config.RabbitMQConfig>`, uses
             that one instead; see
             {py:class}`Serializing <stratae.events.protocols.Serializing>`.
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
@@ -494,7 +494,8 @@ class OutboxPublisher(Protocol):
     It routes events, and publishes an already-encoded payload under a given envelope and
     headers.
 
-    {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.RabbitMQPublisher>` is one.
+    {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher>` is
+    one.
     """
 
     def route(self, event: Any, config: Any) -> None:

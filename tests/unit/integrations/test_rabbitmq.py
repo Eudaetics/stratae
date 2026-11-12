@@ -156,7 +156,7 @@ def connection(channel: AsyncMock) -> AsyncMock:
 def connect_mock(mocker: MockerFixture, connection: AsyncMock) -> AsyncMock:
     """Patch aiormq's connect in the adapter module and return the mock."""
     mock = AsyncMock(return_value=connection)
-    mocker.patch("stratae.integrations.rabbitmq.connect", mock)
+    mocker.patch("stratae.integrations.rabbitmq._link.connect", mock)
     return mock
 
 

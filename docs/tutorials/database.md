@@ -301,7 +301,7 @@ committed
 ```
 ````
 
-**Messages.** Give {py:class}`RabbitMQConsumer <stratae.integrations.rabbitmq.RabbitMQConsumer>` the session's scope as its `scope`. A message is acked only once its scope has closed, so its transaction has committed first. A failed commit fails the message. It's nacked, or retried and dead-lettered under its {py:class}`RabbitMQFailurePolicy <stratae.integrations.rabbitmq.RabbitMQFailurePolicy>`. A message cancelled at shutdown, or by a dropped connection, rolls back and is redelivered.
+**Messages.** Give {py:class}`RabbitMQConsumer <stratae.integrations.rabbitmq.consumer.RabbitMQConsumer>` the session's scope as its `scope`. A message is acked only once its scope has closed, so its transaction has committed first. A failed commit fails the message. It's nacked, or retried and dead-lettered under its {py:class}`RabbitMQFailurePolicy <stratae.integrations.rabbitmq.config.RabbitMQFailurePolicy>`. A message cancelled at shutdown, or by a dropped connection, rolls back and is redelivered.
 
 <!--- skip: next -->
 ```{code-block} python

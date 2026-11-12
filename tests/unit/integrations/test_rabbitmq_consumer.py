@@ -9,6 +9,10 @@ RabbitMQConsumeConfig:
 - Omitting both the queue and the exchange raises ValueError.
 - It's an immutable value: assignment is refused, and configs with the same fields, binding
   keys given as one string or a list of it, are equal.
+- Configs built separately with equal arguments and equal failure policies are equal and hash
+  alike, with or without either; a different policy or different arguments makes them unequal.
+- A config keeps a read-only copy of its arguments: changing the dict it was given leaves the
+  config and its repr unchanged, and the copy refuses assignment.
 
 RabbitMQConsumer:
 - Constructing a consumer without a deserializer is a type error and raises TypeError.
@@ -86,6 +90,8 @@ RabbitMQConsumer:
 - A message that fails to decode never activates the scope.
 
 RabbitMQFailurePolicy:
+- It's an immutable value: assignment is refused, and policies with the same fields are equal
+  and hash alike.
 - A non-positive retry delay, or a backoff that never runs out, raises ValueError.
 - A dead-letter queue name with dead_letter=False raises ValueError.
 - A failure policy on a config without a named queue raises ValueError.
@@ -232,7 +238,7 @@ def connection(channel: AsyncMock) -> AsyncMock:
 def connect_mock(mocker: MockerFixture, connection: AsyncMock) -> AsyncMock:
     """Patch aiormq's connect in the adapter module and return the mock."""
     mock = AsyncMock(return_value=connection)
-    mocker.patch("stratae.integrations.rabbitmq.connect", mock)
+    mocker.patch("stratae.integrations.rabbitmq._link.connect", mock)
     return mock
 
 
@@ -288,6 +294,85 @@ def test_consume_config_is_an_immutable_value():
     assert config != RabbitMQConsumeConfig("ledger", exchange="events", binding_key="order.*")
     with pytest.raises(dataclasses.FrozenInstanceError):
         config.queue = "ledger"  # pyright: ignore[reportAttributeAccessIssue]
+
+
+@pytest.mark.parametrize("with_arguments", [False, True])
+@pytest.mark.parametrize("with_policy", [False, True])
+def test_consume_configs_built_separately_compare_as_values(
+    with_arguments: bool, with_policy: bool
+):
+    """
+    Consume configs built separately from equal fields should be equal and hash alike.
+
+    Given: Two configs for one queue, each built with its own arguments dict and its own
+        failure policy where the case has them
+    When: They're compared and hashed
+    Then: They're equal and share a hash
+    """
+
+    def build() -> RabbitMQConsumeConfig:
+        return RabbitMQConsumeConfig(
+            "orders",
+            arguments={"x-message-ttl": 1000} if with_arguments else None,
+            on_failure=RabbitMQFailurePolicy(Delays(1, 10)) if with_policy else None,
+        )
+
+    first, second = build(), build()
+
+    assert first == second
+    assert hash(first) == hash(second)
+
+
+def test_consume_configs_differ_by_policy_and_arguments():
+    """
+    Consume configs should differ when their failure policies or arguments do.
+
+    Given: A config with arguments and a failure policy
+    When: It's compared with configs that change the policy's backoff, its dead-letter queue,
+        or an argument
+    Then: None of them is equal to it
+    """
+    config = RabbitMQConsumeConfig(
+        "orders", arguments={"x-message-ttl": 1000}, on_failure=RabbitMQFailurePolicy(Delays(1))
+    )
+
+    assert config != RabbitMQConsumeConfig(
+        "orders", arguments={"x-message-ttl": 1000}, on_failure=RabbitMQFailurePolicy(Delays(2))
+    )
+    assert config != RabbitMQConsumeConfig(
+        "orders",
+        arguments={"x-message-ttl": 1000},
+        on_failure=RabbitMQFailurePolicy(Delays(1), dead_letter_queue="dlq"),
+    )
+    assert config != RabbitMQConsumeConfig(
+        "orders", arguments={"x-message-ttl": 2000}, on_failure=RabbitMQFailurePolicy(Delays(1))
+    )
+
+
+def test_consume_config_keeps_a_read_only_copy_of_arguments():
+    """
+    A consume config should keep a read-only copy of its arguments.
+
+    Given: A config built from an arguments dict
+    When: The dict is changed afterwards, and the config's arguments are assigned to
+    Then: The config's arguments, their length, its hash and its repr are unchanged, and
+        assignment raises TypeError
+    """
+    arguments: dict[str, Any] = {"x-message-ttl": 1000}
+    config = RabbitMQConsumeConfig("orders", arguments=arguments)
+    before = hash(config)
+
+    arguments["x-message-ttl"] = 2000
+    arguments["x-max-length"] = 10
+
+    kept = config.arguments
+    assert kept is not None
+    assert kept == {"x-message-ttl": 1000}
+    assert len(kept) == 1
+    assert hash(config) == before
+    assert "arguments={'x-message-ttl': 1000}" in repr(config)
+    with pytest.raises(TypeError):
+        kept["x-message-ttl"] = 2000  # pyright: ignore[reportIndexIssue]
 
 
 def test_consume_config_requires_queue_or_exchange():
@@ -2018,6 +2103,25 @@ async def test_undecodable_message_never_activates_scope(
     # Assert
     assert activations == []
     message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
+
+
+def test_failure_policy_is_an_immutable_value():
+    """
+    RabbitMQFailurePolicy should be an immutable value.
+
+    Given: Two policies built from the same fields, and one dropping failures instead
+    When: They're compared and hashed, and a field is assigned
+    Then: The first two are equal and share a hash, the third isn't equal, and assignment
+        raises
+    """
+    policy = RabbitMQFailurePolicy(Delays(1, 10), dead_letter_queue="dlq")
+    same = RabbitMQFailurePolicy(Delays(1, 10), dead_letter_queue="dlq")
+
+    assert policy == same
+    assert hash(policy) == hash(same)
+    assert policy != RabbitMQFailurePolicy(Delays(1, 10), dead_letter=False)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        policy.dead_letter = False  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def test_failure_policy_refuses_non_positive_delay():
