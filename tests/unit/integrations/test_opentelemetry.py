@@ -311,7 +311,7 @@ def connect_mock(mocker: MockerFixture, channel: AsyncMock) -> AsyncMock:
     connection = AsyncMock()
     connection.channel.return_value = channel
     mock = AsyncMock(return_value=connection)
-    mocker.patch("stratae.integrations.rabbitmq.connect", mock)
+    mocker.patch("stratae.integrations.rabbitmq._link.connect", mock)
     return mock
 
 

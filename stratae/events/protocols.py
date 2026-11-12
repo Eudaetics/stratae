@@ -74,9 +74,9 @@ class EmitCallable[Ev, S, H, R](Protocol):
 
     `Ev` is the event type it takes, `S` its payload type, `H` the hooks it takes and `R` what
     it returns. Binding an event to it checks the emitter takes that event. So an emitter for
-    PubSub events only, such as
-    {py:meth}`RabbitMQPublisher.emit <stratae.integrations.rabbitmq.RabbitMQPublisher.emit>`,
-    binds PubSub events and refuses a request.
+    PubSub events only, such as a RabbitMQ publisher's
+    {py:meth}`emit <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher.emit>`, binds
+    PubSub events and refuses a request.
     """
 
     def __call__(self, event: Ev, payload: S, *, hooks: H | None = None) -> R:
@@ -130,7 +130,7 @@ class PubSubProducer(Protocol):
     a PubSub event, so the pattern is matched by its class.
 
     Every {py:class}`Producer` matches it too, since a `Producer` emits any event.
-    {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.RabbitMQPublisher>` and
+    {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher>` and
     {py:class}`OutboxProducer <stratae.events.outbox.OutboxProducer>` match only this one.
     """
 
