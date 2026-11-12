@@ -31,7 +31,6 @@ AsyncDirectBus:
 AsyncDirectBus (fan-out):
 - Context variables a sync or lone async handler sets reach neither the other handlers nor
   the emitter, and a lone async handler keeps its own across a suspension.
-- Several async handlers run concurrently, each in its own context.
 - A lone async handler's CancelledError is grouped with a sync handler's failure.
 - Cancelling an emit cancels its lone async handler and raises CancelledError, ungrouped.
 - Closing an emit closes its suspended lone async handler.
@@ -109,6 +108,7 @@ from stratae.events import (
     PublishCall,
     PubSub,
     Request,
+    fan_out_concurrent,
 )
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.pipeline import receiving
@@ -750,36 +750,6 @@ async def test_handler_context_changes_stay_with_handler(bus: AsyncDirectBus):
     # Assert
     assert before == ["unset", "unset", "unset"]
     assert after == ["async"]
-    assert _marker.get() == "unset"
-
-
-async def test_several_async_handlers_run_concurrently_in_own_contexts(bus: AsyncDirectBus):
-    """
-    Several async handlers should run concurrently, each in its own context.
-
-    Given: Two async handlers that each set a context variable, then wait for the other at a
-        barrier
-    When: An event is emitted
-    Then: Both pass the barrier, each first read the unset value, and the emitter still
-        reads the unset value
-    """
-    # Arrange
-    both = asyncio.Barrier(2)
-    before: list[str] = []
-
-    async def handler(task: _TaskCreated) -> None:
-        before.append(_marker.get())
-        _marker.set("handler")
-        await asyncio.wait_for(both.wait(), 1)
-
-    bus.handle(_task_created, handler)
-    bus.handle(_task_created, handler)
-
-    # Act
-    await bus.emit(_task_created, _TaskCreated(2))
-
-    # Assert
-    assert before == ["unset", "unset"]
     assert _marker.get() == "unset"
 
 
@@ -1599,8 +1569,9 @@ async def test_handle_middleware_reads_publish_headers():
     """
     Handle middleware should read the headers publish middleware set, per emit.
 
-    Given: A bus whose async publish middleware tags each emit with its task id, handle
-        middleware recording the tag, and two async handlers yielding to the loop
+    Given: A bus running async handlers concurrently, whose async publish middleware tags
+        each emit with its task id, handle middleware recording the tag, and two async
+        handlers yielding to the loop
     When: Two events are emitted concurrently
     Then: Each handler's middleware read its own emit's tag
     """
@@ -1629,7 +1600,10 @@ async def test_handle_middleware_reads_publish_headers():
     async def handler(task: _TaskCreated) -> None:
         await asyncio.sleep(0)
 
-    bus = AsyncDirectBus(middleware=Middleware(publish=(Tag,), handle=(Record,)))
+    bus = AsyncDirectBus(
+        middleware=Middleware(publish=(Tag,), handle=(Record,)),
+        dispatchers=[Dispatch(PubSub, fan_out_concurrent)],
+    )
     bus.handle(_task_created, handler)
     bus.handle(_task_created, handler)
 

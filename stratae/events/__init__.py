@@ -12,6 +12,8 @@ which patterns it delivers.
 {py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>` dispatch in-process;
 other adapters implement the {py:class}`Producer <stratae.events.protocols.Producer>` and
 {py:class}`Consumer <stratae.events.protocols.Consumer>` protocols.
+A direct bus delivers each pattern with a function from
+{py:mod}`dispatch <stratae.events.dispatch>`, or one of your own.
 {py:class}`Envelope <stratae.events.envelope.Envelope>` carries correlation ids across a
 chain of emissions. {py:class}`Hooks <stratae.events.hooks.Hooks>` observe one event where it
 meets a bus, typed by that event; {py:class}`Middleware <stratae.events.middleware.Middleware>`
@@ -67,6 +69,14 @@ created user: ada
 
 from .binding import abind, bind
 from .direct import AsyncDirectBus, DirectBus, Dispatch
+from .dispatch import (
+    dispatch_request,
+    dispatch_request_async,
+    fan_out,
+    fan_out_async,
+    fan_out_concurrent,
+    only_responder,
+)
 from .envelope import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
@@ -136,4 +146,10 @@ __all__ = [
     "WithoutPayload",
     "abind",
     "bind",
+    "dispatch_request",
+    "dispatch_request_async",
+    "fan_out",
+    "fan_out_async",
+    "fan_out_concurrent",
+    "only_responder",
 ]
