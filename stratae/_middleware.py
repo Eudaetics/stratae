@@ -21,19 +21,6 @@ from stratae.middleware import (
 type_of: Callable[[object], Any] = type
 """`type`, typed to return `Any`: a context manager's methods are looked up on its type."""
 
-_UNKNOWN: Any = object()
-
-_ENTRIES_LIMIT = 256
-"""How many context manager types async owners remember; beyond it, they check each time."""
-
-_ENTRIES: dict[type, bool | None] = {}
-"""
-How an async owner enters each context manager type it has seen, so it checks each type once.
-
-Sync owners don't classify: they look up `__enter__` and `__exit__`, which they need anyway,
-and refuse the result if either is missing.
-"""
-
 
 def refuse_unenterable(middleware: tuple[Any, ...], owner: str, asynchronous: bool) -> None:
     """
@@ -76,12 +63,7 @@ def manager(middleware: Callable[[Any], Any], wrapped: object) -> tuple[Any, Any
     """
     result = middleware(wrapped)
     kind = type_of(result)
-    entry = _ENTRIES.get(kind, _UNKNOWN)
-    if entry is _UNKNOWN:
-        entry = _entry(kind, asynchronous=True)
-        # Bounded, so middleware that makes a new class per call can't grow it forever.
-        if len(_ENTRIES) < _ENTRIES_LIMIT:
-            _ENTRIES[kind] = entry
+    entry = _entry(kind, asynchronous=True)
     if entry is None:
         refuse_result(middleware, result, asynchronous=True)
     return result, kind, entry

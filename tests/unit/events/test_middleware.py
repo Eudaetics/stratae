@@ -36,8 +36,6 @@ run_middleware:
   async def middleware's coroutine is closed.
 - A middleware returning something that isn't a context manager is refused on every call, not
   only the first.
-- Middleware returning a new context manager class on every call keeps working, and the bus
-  remembers a bounded number of classes.
 - A sync context manager with an async __enter__ or __exit__ raises TypeError, closing the
   coroutine, whether the call succeeded or failed.
 
@@ -68,7 +66,6 @@ from typing import Any, cast
 
 import pytest
 
-from stratae import _middleware as shared_middleware
 from stratae.events import HandleCall, Hooks, Middleware, PublishCall, PubSub
 from stratae.events.middleware import MessageHeaders, run_middleware, run_middleware_async
 from stratae.middleware import (
@@ -798,46 +795,6 @@ def test_non_manager_middleware_raises_on_every_call() -> None:
 
     # Assert
     assert calls == []
-
-
-async def test_new_manager_class_per_call_keeps_working() -> None:
-    """
-    Middleware returning a new context manager class on every call should keep working.
-
-    Only async buses remember classes: a sync bus looks each one's methods up directly.
-
-    Given: A middleware that builds a new context manager class each time it's called
-    When: More calls run through an async bus than it remembers classes for
-    Then: Every call runs inside it, and the remembered classes stay within the bound
-    """
-    # Arrange
-    calls: list[int] = []
-    entered: list[int] = []
-
-    def fresh(call: PublishCall) -> object:
-        class Fresh:
-            def __enter__(self) -> None:
-                entered.append(len(entered))
-
-            def __exit__(self, *exc: object) -> None: ...
-
-        return Fresh()
-
-    async def record(index: int) -> None:
-        await asyncio.sleep(0)
-        calls.append(index)
-
-    count = shared_middleware._ENTRIES_LIMIT + 10  # pyright: ignore[reportPrivateUsage]
-
-    # Act
-    for index in range(count):
-        await _arun((fresh,), record, index)
-
-    # Assert
-    assert calls == list(range(count))
-    assert len(entered) == count
-    limit = shared_middleware._ENTRIES_LIMIT  # pyright: ignore[reportPrivateUsage]
-    assert len(shared_middleware._ENTRIES) <= limit  # pyright: ignore[reportPrivateUsage]
 
 
 def test_async_def_middleware_is_closed_on_sync_path() -> None:
