@@ -64,6 +64,8 @@ AsyncDirectBus (middleware):
 - Handle middleware reads the headers async publish middleware set, on every handler of a
   concurrent fan-out, and concurrent emits each read their own.
 - Publish middleware setting a reserved header refuses the emit; no handler runs.
+- Handle middleware without publish middleware sees no headers, even inside another message's
+  receiving block.
 - emit is reported as a coroutine function, and returns a coroutine for every event: nothing
   runs and nothing is raised until it's awaited, a sync responder included.
 - A custom dispatcher's awaitable that isn't a coroutine still makes emit return a coroutine,
@@ -109,6 +111,7 @@ from stratae.events import (
     Request,
 )
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
+from stratae.events.pipeline import receiving
 
 
 class _TaskCreated:
@@ -1667,6 +1670,38 @@ async def test_reserved_header_refuses_emit():
     with pytest.raises(ValueError, match="'x-correlation-id' is a header the bus sets itself"):
         await bus.emit(_find_book, _BookQuery("dune"))
     assert ran == []
+
+
+async def test_handle_middleware_without_publish_middleware_sees_no_headers():
+    """
+    Handle middleware on a bus without publish middleware should see no headers.
+
+    Given: A bus with only async handle middleware recording the headers
+    When: An event is emitted inside another message's delivery, which carries a header
+    Then: The middleware saw no headers, not the enclosing message's
+    """
+    # Arrange
+    seen: list[dict[str, str]] = []
+
+    class Record:
+        def __init__(self, call: HandleCall) -> None:
+            self.call = call
+
+        async def __aenter__(self) -> None:
+            await asyncio.sleep(0)
+            seen.append(dict(self.call.headers))
+
+        async def __aexit__(self, *exc: object) -> None: ...
+
+    bus = AsyncDirectBus(middleware=Middleware(handle=(Record,)))
+    bus.handle(_task_created, lambda task: None)
+
+    # Act
+    with receiving({"x-tenant": "acme"}):
+        await bus.emit(_task_created, _TaskCreated(1))
+
+    # Assert
+    assert seen == [{}]
 
 
 # endregion

@@ -279,12 +279,12 @@ class MessageHeaders(MutableMapping[str, str]):
         return f"MessageHeaders({self._headers!r})"
 
 
-class _Call:
+class _Call[H: Mapping[str, str]]:
     """What a middleware sees of one call."""
 
     __slots__ = ("config", "event", "headers", "payload", "reply")
 
-    def __init__(self, event: "AnyEvent", config: Any, payload: Any) -> None:
+    def __init__(self, event: "AnyEvent", config: Any, payload: Any, headers: H) -> None:
         """Describe one call for a middleware; buses build these."""
         self.event: AnyEvent = event
         """The event being emitted or handled."""
@@ -297,46 +297,36 @@ class _Call:
         """
         self.payload: Any = payload
         """The payload being emitted or handled."""
+        self.headers: H = headers
+        """The message's headers; see {py:class}`PublishCall` and {py:class}`HandleCall`."""
         self.reply: Any = None
         """The call's reply once it has returned, for the exits to see; `None` until then."""
 
 
-class PublishCall(_Call):
-    """One emit, as a publish middleware sees it."""
+class PublishCall(_Call[MessageHeaders]):
+    """
+    One emit, as a publish middleware sees it.
+
+    Its `headers` are the ones the message is published with. Set one to send it along, for
+    handle middleware to read.
+    """
 
     __slots__ = ()
 
-    def __init__(
-        self, event: "AnyEvent", config: Any, payload: Any, headers: MessageHeaders
-    ) -> None:
-        """Describe one emit for a publish middleware; buses build these."""
-        super().__init__(event, config, payload)
-        self.headers = headers
-        """
-        The headers the message is published with. Set one to send it along, for handle
-        middleware to read.
-        """
 
+class HandleCall(_Call[Mapping[str, str]]):
+    """
+    One handler call, as a handle middleware sees it.
 
-class HandleCall(_Call):
-    """One handler call, as a handle middleware sees it."""
+    Its `headers` are the ones of the message being handled, read-only. On a direct bus,
+    they're the ones its publish middleware set. Over a broker, they're the message's text
+    headers, which include its envelope's.
+    """
 
     __slots__ = ()
 
-    def __init__(
-        self, event: "AnyEvent", config: Any, payload: Any, headers: Mapping[str, str]
-    ) -> None:
-        """Describe one handler call for a handle middleware; buses build these."""
-        super().__init__(event, config, payload)
-        self.headers = headers
-        """
-        The headers of the message being handled, read-only. On a direct bus, they're the ones
-        its publish middleware set. Over a broker, they're the message's text headers, which
-        include its envelope's.
-        """
 
-
-def _exit(entered: _Entered, call: _Call) -> None:
+def _exit(entered: _Entered, call: _Call[Any]) -> None:
     """
     Exit the entered context managers innermost first, after the call succeeded.
 
@@ -379,7 +369,7 @@ def _unwind(entered: _Entered, error: BaseException) -> NoReturn:
 
 def run_middleware[T](
     middleware: tuple[Callable[..., Any], ...],
-    seen: _Call,
+    seen: _Call[Any],
     call: Callable[..., T],
     *args: Any,
 ) -> T:
@@ -413,7 +403,7 @@ def run_middleware[T](
     return reply
 
 
-async def _exit_async(entered: _EnteredAsync, call: _Call) -> None:
+async def _exit_async(entered: _EnteredAsync, call: _Call[Any]) -> None:
     """Exit the entered context managers, sync or async, the way {py:func}`_exit` does."""
     while entered:
         context, kind, middleware, is_async = entered.pop()
@@ -447,7 +437,7 @@ async def _unwind_async(entered: _EnteredAsync, error: BaseException) -> NoRetur
 
 async def run_middleware_async[T](
     middleware: tuple[Callable[..., Any], ...],
-    seen: _Call,
+    seen: _Call[Any],
     call: Callable[..., Awaitable[T]],
     *args: Any,
 ) -> T:

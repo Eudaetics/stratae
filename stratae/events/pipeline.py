@@ -18,7 +18,7 @@ Only handle middleware reads them, so an adapter without any can skip `receiving
 """
 
 from collections.abc import Awaitable, Callable, Collection, Mapping
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar, Token
 from types import MappingProxyType
 from typing import Any, NamedTuple, cast
@@ -40,6 +40,9 @@ from stratae.events.protocols import AnyEvent
 _NO_HEADERS: Mapping[str, str] = MappingProxyType({})
 
 _received: ContextVar[Mapping[str, str]] = ContextVar("_received_headers")
+
+_UNCHANGED: AbstractContextManager[None] = nullcontext()
+"""What `receiving` returns for no headers outside any message: it would change nothing."""
 
 
 class _Receiving:
@@ -63,7 +66,7 @@ class _Receiving:
         _received.reset(self._token)
 
 
-def receiving(headers: Mapping[str, str]) -> _Receiving:
+def receiving(headers: Mapping[str, str]) -> AbstractContextManager[None]:
     """
     Make `headers` the headers handle middleware sees, for a block that handles a message.
 
@@ -73,6 +76,8 @@ def receiving(headers: Mapping[str, str]) -> _Receiving:
         change afterwards. Handle middleware reads it read-only, without a copy.
     :returns: A context manager for the block.
     """
+    if not headers and _received.get(None) is None:
+        return _UNCHANGED
     return _Receiving(headers)
 
 
@@ -162,7 +167,7 @@ def _publish_call(message: Outgoing) -> PublishCall:
 class Publishing:
     """How an adapter emits: its publish middleware, envelopes and reserved header names."""
 
-    __slots__ = ("middleware", "new_id", "reserved")
+    __slots__ = ("bare", "middleware", "new_id", "reserved")
 
     middleware: tuple[Callable[..., object], ...]
     """The adapter's publish middleware, outermost first."""
@@ -170,6 +175,8 @@ class Publishing:
     """Makes the ids of each emit's new envelope; `None` opens none unless one is given."""
     reserved: Collection[str]
     """Header names the adapter sets itself, in lower case."""
+    bare: bool
+    """Whether an emit has nothing to open or stamp unless it's given an envelope or headers."""
 
     def __init__(
         self,
@@ -188,6 +195,7 @@ class Publishing:
         self.middleware = middleware
         self.new_id = new_id
         self.reserved = reserved
+        self.bare = not middleware and new_id is None
 
     def opened(self, envelope: Envelope | None) -> AbstractContextManager[Envelope] | None:
         """
@@ -233,6 +241,8 @@ def publish(
     :returns: What `send` returns.
     :raises ValueError: If a given header is reserved.
     """
+    if publishing.bare and hooks is None and envelope is None and headers is None:
+        return send(_message(Outgoing, (event, config, payload, None, _NO_HEADERS)))
     middleware, stamped = publishing.middleware, publishing.stamped(headers)
     scope = publishing.opened(envelope)
     if scope is None:
@@ -254,6 +264,8 @@ async def publish_async(
     headers: Mapping[str, str] | None = None,
 ) -> Any:
     """Emit through an async adapter, as {py:func}`publish` does, awaiting `send`."""
+    if publishing.bare and hooks is None and envelope is None and headers is None:
+        return await send(_message(Outgoing, (event, config, payload, None, _NO_HEADERS)))
     middleware, stamped = publishing.middleware, publishing.stamped(headers)
     scope = publishing.opened(envelope)
     if scope is None:
