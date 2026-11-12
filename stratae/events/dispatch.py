@@ -1,17 +1,25 @@
 """
-Dispatchers for the direct buses, and the per-bus dispatch function built from them.
+Dispatchers: functions that deliver an event's payload to its handlers.
 
 A dispatcher takes an event, its handlers and a payload, and delivers the payload as the
-event's pattern requires. Each is generic in the pattern's type parameters, so its body is
-checked against what the pattern promises to emit. Each direct bus builds its own
-`singledispatch` function over the event's class, so it supports the patterns it has a
-dispatcher for, and their subclasses.
+event's pattern requires. A direct bus picks one by the event's class, and takes more with
+`dispatchers=`, as {py:class}`Dispatch <stratae.events.direct.Dispatch>` pairs. Each is
+generic in its pattern's type parameters, so its body is checked against what the pattern
+promises.
+
+{py:func}`dispatch_request` and {py:func}`dispatch_request_async` call a
+{py:class}`Request <stratae.events.patterns.Request>` event's sole responder.
+{py:func}`fan_out` and {py:func}`fan_out_async` call every handler of a
+{py:class}`PubSub <stratae.events.patterns.PubSub>` event, the async one running several async
+handlers concurrently. {py:func}`fan_out_sequential` runs them one at a time instead, for
+handlers sharing a resource that refuses concurrent use, such as a database session. Each
+PubSub dispatcher runs every handler in its own copy of the context, and raises their failures
+together. {py:func}`only_responder` finds a request's responder, for a dispatcher of your own.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
+from collections.abc import Awaitable, Collection, Coroutine, Generator, Iterable
 from contextvars import Context, copy_context
-from functools import singledispatch
 from typing import Any, cast
 
 from stratae.events.exceptions import (
@@ -23,31 +31,6 @@ from stratae.events.exceptions import (
 from stratae.events.handler import Handler, Handlers, invoke
 from stratae.events.patterns import PubSub, Request
 from stratae.events.protocols import AnyEvent
-
-
-def no_dispatcher(event: AnyEvent, handlers: Collection[Any], payload: Any) -> Any:
-    """
-    Mark a pattern the bus has no dispatcher for; never called.
-
-    A bus compares its dispatch function's choice against this, and refuses the event with
-    `TypeError` in `handle`, `bind` and `emit`. `BaseDirectBus` routes every emit through
-    that check, so nothing dispatches to this.
-    """
-    ...
-
-
-def build_dispatcher(
-    pairs: Iterable[tuple[type, Callable[..., Any]]],
-) -> Callable[[type], Callable[..., Any]]:
-    """
-    Build a bus's dispatch function from pattern and dispatcher pairs; later pairs win.
-
-    It takes an event's class and returns its dispatcher, or `no_dispatcher` if there's none.
-    """
-    dispatch = singledispatch(no_dispatcher)
-    for pattern, dispatcher in pairs:
-        dispatch.register(pattern, dispatcher)
-    return dispatch.dispatch
 
 
 def only_responder[H: Handler[Any, Any, Any]](event: AnyEvent, handlers: Collection[H]) -> H:
@@ -217,4 +200,27 @@ async def fan_out_async[S](
     failures: list[BaseException] = []
     _run_sync_handlers(handlers.sync, payload, failures)
     await _await_handlers(handlers.asynchronous, payload, failures)
+    _raise_failures(failures)
+
+
+async def fan_out_sequential[S](
+    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, Any]], payload: S
+) -> None:
+    """
+    Run every handler in its own copy of the context, one at a time.
+
+    Use it for async handlers sharing a resource that refuses concurrent use, such as a
+    database session. Give it to an {py:class}`AsyncDirectBus
+    <stratae.events.direct.AsyncDirectBus>` as `Dispatch(PubSub, fan_out_sequential)`. Sync
+    handlers run first, then each async handler is awaited before the next starts. Failures
+    are collected and raised together, as {py:func}`fan_out_async` raises them.
+
+    :raises BaseHandlerErrors: If any handler raises. {py:exc}`HandlerErrors
+        <stratae.events.exceptions.HandlerErrors>` unless one raised a `BaseException` such as
+        `CancelledError`.
+    """
+    failures: list[BaseException] = []
+    _run_sync_handlers(handlers.sync, payload, failures)
+    for handler in handlers.asynchronous:
+        await _await_lone_handler(handler, payload, failures)
     _raise_failures(failures)

@@ -19,6 +19,55 @@ of an unsupported pattern raises `TypeError`. With
 `envelope=EnvelopeConfig()`, each emission opens an
 {py:class}`Envelope <stratae.events.envelope.Envelope>`.
 
+Concurrent async handlers share whatever their scopes have cached. A pool or client allows
+that. A resource that is one connection, such as a database session or an open transaction,
+refuses overlapping calls.
+{py:func}`fan_out_sequential <stratae.events.dispatch.fan_out_sequential>` runs async
+handlers one at a time, for handlers that share such a resource. Pass
+`Dispatch(PubSub, fan_out_sequential)` for every PubSub event on the bus, or pair it with a
+PubSub subclass for only that subclass's events.
+
+````{example} Handlers sharing a connection run one at a time
+```{code-block} python
+import asyncio
+from stratae.events import AsyncDirectBus, Dispatch, PubSub, fan_out_sequential
+
+class Connection:
+    def __init__(self) -> None:
+        self.busy = False
+
+    async def write(self, row: str) -> None:
+        if self.busy:
+            raise RuntimeError("connection in use")
+        self.busy = True
+        await asyncio.sleep(0)
+        self.busy = False
+        print(f"wrote {row}")
+
+class OrderPlaced:
+    def __init__(self, item: str) -> None:
+        self.item = item
+
+order_placed = PubSub(OrderPlaced)
+bus = AsyncDirectBus(dispatchers=[Dispatch(PubSub, fan_out_sequential)])
+connection = Connection()
+
+@bus.handle(order_placed)
+async def record_audit(placed: OrderPlaced) -> None:
+    await connection.write(f"audit {placed.item}")
+
+@bus.handle(order_placed)
+async def count_sale(placed: OrderPlaced) -> None:
+    await connection.write(f"sale {placed.item}")
+
+asyncio.run(bus.emit(order_placed, OrderPlaced("widget")))
+```
+```{output}
+wrote audit widget
+wrote sale widget
+```
+````
+
 ````{example} Sending events over a DirectBus
 ```{code-block} python
 from itertools import count
@@ -94,21 +143,20 @@ scheduled shipment for order 1
 
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
+from functools import singledispatch
 from inspect import markcoroutinefunction
 from types import CoroutineType
 from typing import Any, ClassVar, NoReturn, Protocol, overload
 
 from stratae.callables import is_async_callable
-from stratae.events._dispatch import (
-    build_dispatcher,
+from stratae.events.binding import abind, bind
+from stratae.events.dispatch import (
     dispatch_request,
     dispatch_request_async,
     fan_out,
     fan_out_async,
-    no_dispatcher,
 )
-from stratae.events.binding import abind, bind
 from stratae.events.envelope import EnvelopeConfig
 from stratae.events.handler import Handler, Handlers
 from stratae.events.hooks import Hooks
@@ -134,6 +182,32 @@ _NO_HANDLERS: Handlers[Handler[Any, _AnyEvent, Any]] = Handlers()
 _UNSUPPORTED_PATTERN = (
     "{bus} has no dispatcher for {pattern} events; register one with dispatchers="
 )
+
+
+def _no_dispatcher(event: AnyEvent, handlers: Collection[Any], payload: Any) -> Any:
+    """
+    Mark a pattern the bus has no dispatcher for; never called.
+
+    A bus compares its dispatch function's choice against this, and refuses the event with
+    `TypeError` in `handle`, `bind` and `emit`. `BaseDirectBus` routes every emit through
+    that check, so nothing dispatches to this.
+    """
+    ...
+
+
+def _build_dispatcher(
+    pairs: Iterable[tuple[type, Callable[..., Any]]],
+) -> Callable[[type], Callable[..., Any]]:
+    """
+    Build a bus's dispatch function from pattern and dispatcher pairs; later pairs win.
+
+    It takes an event's class and returns its dispatcher, or `_no_dispatcher` if there's none.
+    """
+    dispatch = singledispatch(_no_dispatcher)
+    for pattern, dispatcher in pairs:
+        dispatch.register(pattern, dispatcher)
+    return dispatch.dispatch
+
 
 _ASYNC_HANDLER_REJECTED = (
     "DirectBus dispatches synchronously and cannot await async handlers;"
@@ -283,7 +357,7 @@ class BaseDirectBus(ABC):
         self._routes: dict[_AnyEvent, _Route] = {}
         self._registering = threading.Lock()
         pairs = (*self._defaults, *dispatchers)
-        self._dispatcher = build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
+        self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
         self._publishing = Publishing(
             middleware.publish, None if envelope is None else envelope.new_id
@@ -316,7 +390,7 @@ class BaseDirectBus(ABC):
     def _resolve(self, event: _AnyEvent) -> Callable[..., Any]:
         """Return the dispatcher for the event's pattern, or raise TypeError if there's none."""
         dispatcher = self._dispatcher(type(event))
-        if dispatcher is no_dispatcher:
+        if dispatcher is _no_dispatcher:
             raise TypeError(
                 _UNSUPPORTED_PATTERN.format(bus=type(self).__name__, pattern=type(event).__name__)
             )

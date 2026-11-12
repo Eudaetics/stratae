@@ -171,9 +171,11 @@ committed
 
 An event handler running inside the unit of work gets the same session. Its writes commit or roll back with the rest. Emitting on an [`AsyncDirectBus`](../apidocs/stratae.events/stratae.events.direct) runs handlers in the emitter's context, inside its scope.
 
-````{example} An audit handler's write commits and rolls back with the order
+By default, the bus runs several async handlers at once. They all get the same session, and a session refuses overlapping calls. So give the bus `fan_out_sequential`, which runs them one at a time.
+
+````{example} Two audit handlers' writes commit and roll back with the order
 ```{code-block} python
-from stratae.events import AsyncDirectBus, PubSub
+from stratae.events import AsyncDirectBus, Dispatch, PubSub, fan_out_sequential
 
 class AuditEntry(Base):
     __tablename__ = "audit"
@@ -185,13 +187,20 @@ class OrderPlaced:
         self.item = item
 
 order_placed = PubSub(OrderPlaced)
-bus = AsyncDirectBus()
+bus = AsyncDirectBus(dispatchers=[Dispatch(PubSub, fan_out_sequential)])
 announce_order = bus.bind(order_placed, factory=OrderPlaced)
 
 @bus.handle(order_placed)
 @inject
 async def record_audit(event: OrderPlaced, session: SessionDep) -> None:
     session.add(AuditEntry(note=f"placed {event.item}"))
+    await session.flush()
+
+@bus.handle(order_placed)
+@inject
+async def record_reservation(event: OrderPlaced, session: SessionDep) -> None:
+    session.add(AuditEntry(note=f"reserved {event.item}"))
+    await session.flush()
 
 async def checkout(item: str) -> None:
     await place_order(item)
@@ -226,12 +235,12 @@ transaction for system
 rolled back
 failed: gift cards are sold out
 transaction for system
-(1, 1)
+(1, 2)
 committed
 ```
 ````
 
-There's one order and one audit entry. The gift card's order *and* its audit entry rolled back together. This holds for in-process buses only. An event published to a broker leaves the transaction the moment it's sent. It's out even if the transaction later rolls back. The [outbox](../apidocs/stratae.events/stratae.events.outbox) fixes that.
+There's one order and two audit entries. The gift card's order *and* both its audit entries rolled back together. This holds for in-process buses only. An event published to a broker leaves the transaction the moment it's sent. It's out even if the transaction later rolls back. The [outbox](../apidocs/stratae.events/stratae.events.outbox) fixes that.
 
 ## Where the commit lands
 

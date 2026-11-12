@@ -52,7 +52,7 @@ from stratae.events import (
     abind,
     bind,
 )
-from stratae.events._dispatch import (
+from stratae.events.dispatch import (
     dispatch_request,
     dispatch_request_async,
     fan_out,
