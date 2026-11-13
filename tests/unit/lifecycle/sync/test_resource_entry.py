@@ -16,7 +16,7 @@ from typing import Any, cast
 import pytest
 
 from stratae.lifecycle._stack import enter_generator, exit_generator
-from stratae.lifecycle.exceptions import AsyncGeneratorInSyncScopeError, ScopeInactiveError
+from stratae.lifecycle.exceptions import AsyncInSyncScopeError, ScopeInactiveError
 from stratae.lifecycle.scope import AsyncScope, Scope
 
 type Body = Callable[[list[str]], Generator[Any, None, None]]
@@ -327,28 +327,124 @@ def test_decorator_without_wraps_is_cached_as_its_return_value():
     assert isinstance(value, Generator)
 
 
-@pytest.mark.parametrize("decorate", [False, True], ids=["plain", "decorated"])
-def test_sync_scope_refuses_async_generator_function(decorate: bool):
-    """
-    Test that a sync scope refuses an async generator function when it's decorated.
+async def _async_generator() -> AsyncGenerator[str, None]:
+    await asyncio.sleep(0)
+    yield "value"
 
-    Given: An async generator function, plain or behind a `functools.wraps` decorator,
+
+async def _coroutine() -> str:
+    await asyncio.sleep(0)
+    return "value"
+
+
+class _AsyncCall:
+    async def __call__(self) -> str:
+        return "value"
+
+
+@pytest.mark.parametrize(
+    ("func", "gives"),
+    [
+        (_async_generator, "an async generator"),
+        (_coroutine, "a coroutine"),
+        (_AsyncCall(), "a coroutine"),
+    ],
+    ids=["async-generator", "coroutine", "async-call"],
+)
+def test_sync_scope_refuses_what_it_cant_await(func: Callable[..., Any], gives: str):
+    """
+    Test that a sync scope refuses a callable giving what it can't await.
+
+    Given: An async generator function, an async function, or an object with an async
+        `__call__`,
     When: It's cached in a sync scope,
-    Then: AsyncGeneratorInSyncScopeError should be raised, and an async scope can still
-        cache it.
+    Then: AsyncInSyncScopeError should be raised, naming what it gives, and an async scope can
+        still cache it.
+    """
+    # Act & Assert
+    with pytest.raises(AsyncInSyncScopeError, match=f"it gives {gives}.*Cache it in an AsyncScope"):
+        Scope("request").cache()(func)
+    AsyncScope("request").cache()(func)
+
+
+@pytest.mark.parametrize(
+    ("hidden", "gives"),
+    [(_async_generator, "an async generator"), (_coroutine, "a coroutine")],
+    ids=["async-generator", "coroutine"],
+)
+def test_sync_scope_refuses_hidden_async_on_a_miss(hidden: Callable[..., Any], gives: str):
+    """
+    Test that a sync scope checks a decorator hiding an async function on each miss.
+
+    Given: An async generator function or async function behind a `functools.wraps` decorator,
+    When: It's cached in a sync scope, then called,
+    Then: Caching it succeeds, since the decorator may have made it sync, and the call raises
+        AsyncInSyncScopeError naming what it gave.
+    """
+    # Arrange
+    scope = Scope("request")
+    cached = scope.cache()(_passthrough(hidden))
+
+    # Act & Assert
+    with scope, pytest.raises(AsyncInSyncScopeError, match=f"it gives {gives}"):
+        cached()
+
+
+def test_sync_scope_caches_a_decorator_that_runs_an_async_generator():
+    """
+    Test that a decorator turning an async generator function sync is cached in a sync scope.
+
+    Given: A `functools.wraps` decorator that runs an async generator to its first value,
+    When: It's cached in a sync scope and called twice,
+    Then: The value is computed once and cached.
+    """
+    # Arrange
+    runs: list[int] = []
+
+    async def generator() -> AsyncGenerator[str, None]:
+        await asyncio.sleep(0)
+        runs.append(1)
+        yield "value"
+
+    @wraps(generator)
+    def first() -> str:
+        return asyncio.run(anext(generator()))
+
+    scope = Scope("request")
+    cached = scope.cache()(first)
+
+    # Act
+    with scope:
+        values = [cached(), cached()]
+
+    # Assert
+    assert values == ["value", "value"]
+    assert runs == [1]
+
+
+def test_generator_call_object_is_entered():
+    """
+    Test that an object whose `__call__` is a generator function has its generator entered.
+
+    Given: An object whose class's `__call__` yields a value,
+    When: It's cached in a sync scope and called,
+    Then: The yielded value is cached, not the generator.
     """
 
     # Arrange
-    async def generator() -> AsyncGenerator[str, None]:
-        await asyncio.sleep(0)
-        yield "value"
+    class Resource:
+        def __call__(self) -> Generator[str, None, None]:
+            yield "value"
 
-    func = _passthrough(generator) if decorate else generator
+    scope = Scope("request")
+    cached = scope.cache()(Resource())
 
-    # Act & Assert
-    with pytest.raises(AsyncGeneratorInSyncScopeError, match="Cache it in an AsyncScope"):
-        Scope("request").cache()(func)
-    AsyncScope("request").cache()(func)
+    # Act
+    with scope:
+        value = cached()
+
+    # Assert
+    assert value == "value"
 
 
 def test_sync_scope_refuses_returned_async_generator():
@@ -357,7 +453,7 @@ def test_sync_scope_refuses_returned_async_generator():
 
     Given: A decorator over a generator function that returns an async generator instead,
     When: It's cached in a sync scope and called,
-    Then: AsyncGeneratorInSyncScopeError should be raised.
+    Then: AsyncInSyncScopeError should be raised.
     """
 
     # Arrange
@@ -376,5 +472,5 @@ def test_sync_scope_refuses_returned_async_generator():
     cached = scope.cache()(swap)
 
     # Act & Assert
-    with scope, pytest.raises(AsyncGeneratorInSyncScopeError):
+    with scope, pytest.raises(AsyncInSyncScopeError):
         cached()

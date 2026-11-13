@@ -372,3 +372,56 @@ async def test_decorator_hiding_async_generator_returning_sync_generator_enters_
     # Assert
     assert value == "other"
     assert events == ["exit"]
+
+
+async def test_decorator_hiding_coroutine_function_has_its_result_cached():
+    """
+    Test that a decorator hiding an async function has the awaited result cached.
+
+    Given: An async function behind a sync `functools.wraps` decorator,
+    When: It's cached in an async scope, then awaited twice,
+    Then: The function runs once, and both calls give its result.
+    """
+    # Arrange
+    runs: list[int] = []
+
+    async def fetch() -> str:
+        await asyncio.sleep(0)
+        runs.append(1)
+        return "value"
+
+    scope = AsyncScope("request")
+    cached = scope.cache()(_passthrough(fetch))
+
+    # Act
+    async with scope:
+        values = [await cached(), await cached()]
+
+    # Assert
+    assert values == ["value", "value"]
+    assert runs == [1]
+
+
+async def test_async_generator_call_object_is_entered():
+    """
+    Test that an object whose `__call__` is an async generator function has it entered.
+
+    Given: An object whose class's `__call__` is an async generator function,
+    When: It's cached in an async scope and awaited,
+    Then: The yielded value is cached, not the async generator.
+    """
+
+    # Arrange
+    class Resource:
+        async def __call__(self) -> AsyncGenerator[str, None]:
+            yield "value"
+
+    scope = AsyncScope("request")
+    cached = scope.cache()(Resource())
+
+    # Act
+    async with scope:
+        value = await cached()
+
+    # Assert
+    assert value == "value"

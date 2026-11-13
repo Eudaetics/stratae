@@ -58,19 +58,10 @@ pi_2000_123456
 import __future__
 
 from collections.abc import Callable
-from inspect import (
-    Parameter,
-    Signature,
-    isasyncgenfunction,
-    isclass,
-    isfunction,
-    isgeneratorfunction,
-    ismethod,
-    unwrap,
-)
+from inspect import Parameter, Signature, isclass, isfunction, ismethod, unwrap
 from typing import Annotated, Any, get_origin, overload
 
-from stratae.callables import is_async_callable
+from stratae.callables import Gives, call_result
 from stratae.codegen import read_signature
 from stratae.depends._provide import Provider
 from stratae.depends._wrappers import (
@@ -163,8 +154,16 @@ def _resolve_function[**P, R](
     resolved_deps: dict[str, Provider] = _resolve_parameters(sig, _resolving)
 
     _reject_callable_objects(func, resolved_deps)
-    _validate_sync_async_constraint(func, resolved_deps)
-    return _create_wrapper(func, resolved_deps)
+    return _injected(func, resolved_deps)
+
+
+_WRAPPERS: dict[Gives, Callable[[Callable[..., Any], dict[str, Provider]], Callable[..., Any]]] = {
+    Gives.VALUE: create_sync_wrapper,
+    Gives.COROUTINE: create_async_wrapper,
+    Gives.GENERATOR: create_sync_gen_wrapper,
+    Gives.ASYNC_GENERATOR: create_async_gen_wrapper,
+}
+"""The wrapper injecting a function's dependencies, for what calling it gives."""
 
 
 def _reject_callable_objects(func: Callable[..., Any], resolved_deps: dict[str, Provider]) -> None:
@@ -266,35 +265,20 @@ def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., Any]]) ->
     return depends
 
 
-def _validate_sync_async_constraint(
-    func: Callable[..., Any], resolved_deps: dict[str, Provider]
-) -> None:
-    """Raise if a sync function has async dependencies."""
-    if is_async_callable(func) or isasyncgenfunction(func):
-        return
+def _injected(func: Callable[..., Any], resolved_deps: dict[str, Provider]) -> Callable[..., Any]:
+    """
+    Return `func` with its dependencies injected, by the wrapper for what calling it gives.
 
-    if any(v.is_async for v in resolved_deps.values()):
-        raise AsyncDependencyError(func)
+    A decorator hiding a function is wrapped as giving a value, since what the decorator
+    returns is only known once it's called.
 
-
-def _create_wrapper(
-    func: Callable[..., Any],
-    resolved_deps: dict[str, Provider],
-) -> Callable[..., Any]:
-    """Create a wrapper function that injects resolved dependencies."""
+    :raises AsyncDependencyError: If `func` is a sync function or sync generator function, and
+        a dependency is async. Its wrapper is sync too, so it can't await the dependency.
+    """
     if not resolved_deps:
         return func
-
-    return _wrapper_factory(func)(func, resolved_deps)
-
-
-def _wrapper_factory(func: Callable[..., Any]) -> Callable[..., Callable[..., Any]]:
-    """Pick the wrapper factory for the function's type."""
-    if is_async_callable(func):
-        return create_async_wrapper
-    elif isasyncgenfunction(func):
-        return create_async_gen_wrapper
-    elif isgeneratorfunction(func):
-        return create_sync_gen_wrapper
-    else:
-        return create_sync_wrapper
+    result = call_result(func)
+    gives = Gives.VALUE if result.hidden else result.gives
+    if not gives.awaits and any(provider.is_async for provider in resolved_deps.values()):
+        raise AsyncDependencyError(func)
+    return _WRAPPERS[gives](func, resolved_deps)

@@ -13,7 +13,7 @@ from asyncio import current_task
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hashable
 from functools import wraps
 from inspect import Parameter
-from types import AsyncGeneratorType, GeneratorType
+from types import AsyncGeneratorType, CoroutineType, GeneratorType
 from typing import (
     Any,
     NoReturn,
@@ -21,6 +21,7 @@ from typing import (
     cast,
 )
 
+from stratae.callables import Gives
 from stratae.codegen import (
     Writer,
     compile_wrapper,
@@ -42,7 +43,7 @@ from stratae.lifecycle._slots import UNSET, SlotStore
 from stratae.lifecycle._stack import enter_async_generator, enter_generator
 from stratae.lifecycle.exceptions import (
     ActivationEndedError,
-    AsyncGeneratorInSyncScopeError,
+    AsyncInSyncScopeError,
     UnreadableSignatureError,
 )
 
@@ -743,19 +744,19 @@ def _write_enter_async_generator(writer: Writer, call: str) -> None:
 
 
 def _write_check_sync(writer: Writer, call: str) -> None:
-    """Enter a returned generator, refuse a returned async generator, and keep anything else."""
+    """Enter a returned generator, refuse a coroutine or async generator, keep anything else."""
     writer.write(f"__value__ = {call}")
     writer.write("__kind__ = __value__.__class__")
     writer.write("if __kind__ is __Generator__:")
     with writer.block():
         writer.write("__value__ = __enter_generator__(__slots__, __value__)")
-    writer.write("elif __kind__ is __AsyncGenerator__:")
+    writer.write("elif __kind__ is __Coroutine__ or __kind__ is __AsyncGenerator__:")
     with writer.block():
-        writer.write("__refuse_async__()")
+        writer.write("__refuse_async__(__value__)")
 
 
 def _write_check_async(writer: Writer, call: str) -> None:
-    """Enter a returned generator of either kind, and keep anything else."""
+    """Await a returned coroutine, enter either kind of generator, and keep anything else."""
     writer.write(f"__value__ = {call}")
     writer.write("__kind__ = __value__.__class__")
     writer.write("if __kind__ is __AsyncGenerator__:")
@@ -764,6 +765,9 @@ def _write_check_async(writer: Writer, call: str) -> None:
     writer.write("elif __kind__ is __Generator__:")
     with writer.block():
         writer.write("__value__ = __enter_generator__(__slots__, __value__)")
+    writer.write("elif __kind__ is __Coroutine__:")
+    with writer.block():
+        writer.write("__value__ = await __value__")
 
 
 def create_generator_wrapper[**P, T](
@@ -830,47 +834,75 @@ def create_async_generator_wrapper[**P, T](
     )
 
 
-def create_checked_wrapper(
+def create_checked_sync_wrapper(
     func: Callable[..., Any],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-    *,
-    is_async: bool,
 ) -> Cached[..., Any, Any]:
     """
-    Create a wrapper for a function whose decorator hides a generator function.
+    Create a sync wrapper for a function whose decorator hides one giving something else.
 
-    The function may still return a generator, or the decorator may have turned it into
-    something else. Each miss checks: a generator is entered and its yielded value cached,
-    anything else is cached as it is.
+    The decorator may have changed what the function gives. So each miss checks: a generator
+    is entered and its yielded value cached, and anything else is cached as it is. A coroutine
+    or an async generator is refused with
+    {py:exc}`AsyncInSyncScopeError <stratae.lifecycle.exceptions.AsyncInSyncScopeError>`.
 
     :param func: The decorated function.
     :param store: The owning scope's slot storage.
     :param cache_key: Derives a hashable key from the arguments.
     :param ignore_params: Cache one value per activation regardless of arguments.
-    :param is_async: Whether the wrapper is async, so it can enter an async generator. A sync
-        wrapper refuses one with
-        {py:exc}`AsyncGeneratorInSyncScopeError
-        <stratae.lifecycle.exceptions.AsyncGeneratorInSyncScopeError>`.
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
 
-    def refuse_async() -> NoReturn:
-        raise AsyncGeneratorInSyncScopeError(func, store.name)
+    def refuse_async(value: object) -> NoReturn:
+        if isinstance(value, CoroutineType):
+            value.close()
+            raise AsyncInSyncScopeError(func, store.name, Gives.COROUTINE)
+        raise AsyncInSyncScopeError(func, store.name, Gives.ASYNC_GENERATOR)
 
     bindings: dict[str, Any] = {
         "__Generator__": GeneratorType,
         "__AsyncGenerator__": AsyncGeneratorType,
+        "__Coroutine__": CoroutineType,
         "__enter_generator__": enter_generator,
+        "__refuse_async__": refuse_async,
     }
-    if is_async:
-        bindings["__enter_async_generator__"] = enter_async_generator
-        write_value = _write_check_async
-    else:
-        bindings["__refuse_async__"] = refuse_async
-        write_value = _write_check_sync
     return cast(
         Cached[..., Any, Any],
-        _create_wrapper(func, store, cache_key, ignore_params, is_async, write_value, bindings),
+        _create_wrapper(func, store, cache_key, ignore_params, False, _write_check_sync, bindings),
+    )
+
+
+def create_checked_async_wrapper(
+    func: Callable[..., Any],
+    store: SlotStore,
+    cache_key: Callable[..., Hashable] | None = None,
+    ignore_params: bool = False,
+) -> Cached[..., Any, Any]:
+    """
+    Create an async wrapper for a function whose decorator hides one giving something else.
+
+    The decorator may have changed what the function gives. So each miss checks: a coroutine
+    is awaited, a generator of either kind is entered and its yielded value cached, and
+    anything else is cached as it is.
+
+    :param func: The decorated function.
+    :param store: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`'s
+        slot storage.
+    :param cache_key: Derives a hashable key from the arguments.
+    :param ignore_params: Cache one value per activation regardless of arguments.
+    :returns: An async wrapper matching `func`'s signature, with `func` as its `uncached`
+        attribute.
+    """
+    bindings: dict[str, Any] = {
+        "__Generator__": GeneratorType,
+        "__AsyncGenerator__": AsyncGeneratorType,
+        "__Coroutine__": CoroutineType,
+        "__enter_generator__": enter_generator,
+        "__enter_async_generator__": enter_async_generator,
+    }
+    return cast(
+        Cached[..., Any, Any],
+        _create_wrapper(func, store, cache_key, ignore_params, True, _write_check_async, bindings),
     )
