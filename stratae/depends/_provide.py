@@ -48,23 +48,22 @@ class Provider:
 
         :raises InjectionSignatureError: If `dependency` is unhashable.
         """
+        try:
+            existing = cls._registry.get(dependency)
+        except TypeError:
+            raise UnhashableDependencyError(dependency) from None
+        if existing is not None:
+            return existing
+        instance = super().__new__(cls)
+        instance.dependency = dependency
+        instance.provide = dependency
+        instance.is_async = is_async_callable(dependency)
+        instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
+        instance.live = 0
+        instance.lock = RLock()
+        instance.resolved = False
         with cls._registering:
-            try:
-                existing = cls._registry.get(dependency)
-            except TypeError:
-                raise UnhashableDependencyError(dependency) from None
-            if existing is not None:
-                return existing
-            instance = super().__new__(cls)
-            instance.dependency = dependency
-            instance.provide = dependency
-            instance.is_async = is_async_callable(dependency)
-            instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
-            instance.live = 0
-            instance.lock = RLock()
-            instance.resolved = False
-            cls._registry[dependency] = instance
-            return instance
+            return cls._registry.setdefault(dependency, instance)
 
     def provide_held(self) -> Any:
         """Return the override's value if set, otherwise evaluate the dependency."""

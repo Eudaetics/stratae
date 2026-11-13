@@ -7,8 +7,6 @@ from typing import Annotated, Any
 
 import pytest
 
-import stratae.depends._provide
-from stratae.callables import is_async_callable
 from stratae.depends import Depends, inject, override
 from stratae.depends._provide import Provider
 from stratae.depends.exceptions import InjectionSignatureError
@@ -79,16 +77,23 @@ def test_depends_rejects_unhashable_callable():
         Depends(Unhashable())
 
 
-def _depends_at_once(
-    monkeypatch: pytest.MonkeyPatch, dependency: Callable[[], str]
-) -> list[Provider]:
-    """Call Depends on one dependency from eight threads at once, and return what each got."""
+class _SlowHash:
+    """A dependency whose hash takes a while when slow, so registry lookups and inserts overlap."""
 
-    def slow_is_async_callable(obj: Callable[..., Any]) -> bool:
-        time.sleep(0.02)
-        return is_async_callable(obj)
+    def __init__(self) -> None:
+        self.slow = True
 
-    monkeypatch.setattr(stratae.depends._provide, "is_async_callable", slow_is_async_callable)
+    def __call__(self) -> str:
+        return "real"
+
+    def __hash__(self) -> int:
+        if self.slow:
+            time.sleep(0.005)
+        return id(self)
+
+
+def _depends_at_once(dependency: _SlowHash) -> list[Provider]:
+    """Call Depends on a slow dependency from eight threads at once, and return what each got."""
     start = threading.Barrier(8)
     got: list[Any] = [None] * 8
 
@@ -101,31 +106,30 @@ def _depends_at_once(
         thread.start()
     for thread in threads:
         thread.join()
+    dependency.slow = False
     return got
 
 
-def test_depends_from_threads_at_once_gives_one_provider(monkeypatch: pytest.MonkeyPatch):
+def test_depends_from_threads_at_once_gives_one_provider():
     """
     Verify that threads calling Depends on one dependency at once all get one Provider.
 
-    Given: a dependency no thread has asked for yet, and a Provider that takes a while to build,
+    Given: a dependency no thread has asked for yet, whose hash takes a while,
     When: eight threads call Depends on it at the same moment,
     Then: every thread gets the same Provider, and Depends returns it afterwards too.
     """
-
     # Arrange
-    def dependency() -> str:
-        return "real"
+    dependency = _SlowHash()
 
     # Act
-    got = _depends_at_once(monkeypatch, dependency)
+    got = _depends_at_once(dependency)
 
     # Assert
     assert all(provider is got[0] for provider in got)
     assert Depends(dependency) is got[0]
 
 
-def test_override_reaches_functions_injected_from_threads_at_once(monkeypatch: pytest.MonkeyPatch):
+def test_override_reaches_functions_injected_from_threads_at_once():
     """
     Verify that an override reaches functions injected from Depends calls made at once.
 
@@ -133,12 +137,9 @@ def test_override_reaches_functions_injected_from_threads_at_once(monkeypatch: p
     When: a function is injected with each thread's Provider, and the dependency is overridden,
     Then: every function sees the override.
     """
-
     # Arrange
-    def dependency() -> str:
-        return "real"
-
-    got = _depends_at_once(monkeypatch, dependency)
+    dependency = _SlowHash()
+    got = _depends_at_once(dependency)
     functions: list[Callable[[], str]] = []
     for provider in got:
 
