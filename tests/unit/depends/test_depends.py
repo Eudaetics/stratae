@@ -1,8 +1,15 @@
 """Test suite for the Depends class in the dependency injection module."""
 
+import threading
+import time
+from collections.abc import Callable
+from typing import Annotated, Any
+
 import pytest
 
-from stratae.depends import Depends
+import stratae.depends._provide
+from stratae.callables import is_async_callable
+from stratae.depends import Depends, inject, override
 from stratae.depends._provide import Provider
 from stratae.depends.exceptions import InjectionSignatureError
 
@@ -70,3 +77,80 @@ def test_depends_rejects_unhashable_callable():
     # Act & Assert
     with pytest.raises(InjectionSignatureError, match="unhashable"):
         Depends(Unhashable())
+
+
+def _depends_at_once(
+    monkeypatch: pytest.MonkeyPatch, dependency: Callable[[], str]
+) -> list[Provider]:
+    """Call Depends on one dependency from eight threads at once, and return what each got."""
+
+    def slow_is_async_callable(obj: Callable[..., Any]) -> bool:
+        time.sleep(0.02)
+        return is_async_callable(obj)
+
+    monkeypatch.setattr(stratae.depends._provide, "is_async_callable", slow_is_async_callable)
+    start = threading.Barrier(8)
+    got: list[Any] = [None] * 8
+
+    def call(i: int) -> None:
+        start.wait()
+        got[i] = Depends(dependency)
+
+    threads = [threading.Thread(target=call, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return got
+
+
+def test_depends_from_threads_at_once_gives_one_provider(monkeypatch: pytest.MonkeyPatch):
+    """
+    Verify that threads calling Depends on one dependency at once all get one Provider.
+
+    Given: a dependency no thread has asked for yet, and a Provider that takes a while to build,
+    When: eight threads call Depends on it at the same moment,
+    Then: every thread gets the same Provider, and Depends returns it afterwards too.
+    """
+
+    # Arrange
+    def dependency() -> str:
+        return "real"
+
+    # Act
+    got = _depends_at_once(monkeypatch, dependency)
+
+    # Assert
+    assert all(provider is got[0] for provider in got)
+    assert Depends(dependency) is got[0]
+
+
+def test_override_reaches_functions_injected_from_threads_at_once(monkeypatch: pytest.MonkeyPatch):
+    """
+    Verify that an override reaches functions injected from Depends calls made at once.
+
+    Given: eight threads that called Depends on one dependency at the same moment,
+    When: a function is injected with each thread's Provider, and the dependency is overridden,
+    Then: every function sees the override.
+    """
+
+    # Arrange
+    def dependency() -> str:
+        return "real"
+
+    got = _depends_at_once(monkeypatch, dependency)
+    functions: list[Callable[[], str]] = []
+    for provider in got:
+
+        @inject
+        def read(value: Annotated[str, provider]) -> str:
+            return value
+
+        functions.append(read)
+
+    # Act
+    with override(dependency).to("overridden"):
+        seen = [read() for read in functions]
+
+    # Assert
+    assert seen == ["overridden"] * 8

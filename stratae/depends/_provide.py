@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable, Hashable
 from contextvars import ContextVar
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any, ClassVar, Self
 from weakref import WeakValueDictionary
 
@@ -31,6 +31,7 @@ class Provider:
     }
 
     _registry: ClassVar[WeakValueDictionary[Hashable, Self]] = WeakValueDictionary()
+    _registering: ClassVar[Lock] = Lock()
     dependency: Callable[[], Any]
     provide: Callable[[], Any]
     is_async: bool
@@ -43,24 +44,27 @@ class Provider:
         """
         Return the single Provider for `dependency`.
 
+        Threads that ask for the same dependency at once all get the same Provider.
+
         :raises InjectionSignatureError: If `dependency` is unhashable.
         """
-        try:
-            existing = cls._registry.get(dependency)
-        except TypeError:
-            raise UnhashableDependencyError(dependency) from None
-        if existing is not None:
-            return existing
-        instance = super().__new__(cls)
-        instance.dependency = dependency
-        instance.provide = dependency
-        instance.is_async = is_async_callable(dependency)
-        instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
-        instance.live = 0
-        instance.lock = RLock()
-        instance.resolved = False
-        cls._registry[dependency] = instance
-        return instance
+        with cls._registering:
+            try:
+                existing = cls._registry.get(dependency)
+            except TypeError:
+                raise UnhashableDependencyError(dependency) from None
+            if existing is not None:
+                return existing
+            instance = super().__new__(cls)
+            instance.dependency = dependency
+            instance.provide = dependency
+            instance.is_async = is_async_callable(dependency)
+            instance.override = ContextVar[Any](f"{dependency}_dep", default=_UNSET)
+            instance.live = 0
+            instance.lock = RLock()
+            instance.resolved = False
+            cls._registry[dependency] = instance
+            return instance
 
     def provide_held(self) -> Any:
         """Return the override's value if set, otherwise evaluate the dependency."""
