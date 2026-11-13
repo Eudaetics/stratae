@@ -22,6 +22,8 @@ OutboxProducer:
   equal one, binds again.
 - OutboxConfig is an immutable value: assignment is refused, and configs with the same fields
   are equal.
+- OutboxConfig's operation is create, and its destination is its publisher config's, or None
+  when that config doesn't describe one.
 - Routes added from several threads at once are all kept; of several events routed to one
   name at once, one gets it and the rest raise ValueError; one event routed to one config
   from several threads at once is added once.
@@ -105,11 +107,13 @@ from pytest_mock import MockerFixture
 
 from stratae.backoff import Delays, Exponential
 from stratae.events import (
+    Destination,
     Encoded,
     Envelope,
     EnvelopeConfig,
     Hooks,
     Middleware,
+    Operation,
     Producer,
     PublishCall,
     PubSub,
@@ -551,6 +555,31 @@ def test_outbox_config_is_an_immutable_value():
     assert config != OutboxConfig("orders-config", route="other")
     with pytest.raises(dataclasses.FrozenInstanceError):
         config.route = "other"  # pyright: ignore[reportAttributeAccessIssue]
+
+
+class _Described:
+    """A publisher config that says where its messages go."""
+
+    messaging_destination = Destination("testmq", "orders")
+
+
+@pytest.mark.parametrize(
+    ("config", "destination"),
+    [(_Described(), Destination("testmq", "orders")), ("orders-config", None)],
+    ids=["described", "undescribed"],
+)
+def test_outbox_config_describes_itself(config: object, destination: Destination | None):
+    """
+    OutboxConfig should say it creates records, sent where its publisher config says.
+
+    Given: A publisher config with a Destination, and one with none
+    When: An OutboxConfig wrapping it is asked for its operation and destination
+    Then: Its operation is create, and its destination is the publisher config's, or None
+    """
+    outbox_config = OutboxConfig(config)
+
+    assert outbox_config.messaging_operation == Operation("create", "create")
+    assert outbox_config.messaging_destination == destination
 
 
 def test_route_clash_refused(outbox: OutboxProducer):

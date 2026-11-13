@@ -10,8 +10,10 @@ events. {py:class}`EmitCallable` describes a single emitter, typed by the events
 payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
 one such pair. {py:class}`Serializing` describes a routing config with its own serializer.
 {py:class}`Routed` describes a routing config that says where its messages go, as a
-{py:class}`Destination`, so tracing and other observers can name it without knowing the
-adapter.
+{py:class}`Destination`. {py:class}`Operating` describes a publish config that says what it
+does with them, as an {py:class}`Operation`. {py:func}`destination_of` and
+{py:func}`operation_of` read them from any config. So tracing and other observers can describe a
+config without knowing the adapter.
 """
 
 from collections.abc import Callable, Mapping
@@ -292,6 +294,63 @@ class Routed(Protocol):
     """
 
     @property
-    def messaging_destination(self) -> Destination:
-        """Where this config's messages go, or come from."""
+    def messaging_destination(self) -> Destination | None:
+        """Where this config's messages go, or come from, or `None` if it can't say."""
         ...
+
+
+def destination_of(config: object) -> Destination | None:
+    """
+    Return where a config's messages go, or come from, or `None` if it doesn't say.
+
+    A config says with a `messaging_destination`, as {py:class}`Routed` describes. Any other
+    config, or one whose `messaging_destination` isn't a {py:class}`Destination`, doesn't say.
+    """
+    destination = getattr(config, "messaging_destination", None)
+    return destination if isinstance(destination, Destination) else None
+
+
+@dataclass(frozen=True, slots=True)
+class Operation:
+    """
+    What a publish config does with each message, as plain data.
+
+    A config describes itself with one, as {py:class}`Operating` says. The fields follow
+    OpenTelemetry's messaging semantic conventions, but nothing here depends on OpenTelemetry.
+    """
+
+    name: str
+    """The system's name for the operation, such as `"publish"`: `messaging.operation.name`."""
+    type: str
+    """The kind of operation, such as `"send"` or `"create"`: `messaging.operation.type`."""
+
+
+class Operating(Protocol):
+    """
+    Structural protocol for a publish config that says what it does with each message.
+
+    A config that sends each message needn't say, since observers take sending as the default.
+    One that does something else implements this. An
+    {py:class}`OutboxConfig <stratae.events.outbox.OutboxConfig>` is one. It creates each
+    message as a record, and a relay sends it later.
+    """
+
+    @property
+    def messaging_operation(self) -> Operation:
+        """What this config does with each message."""
+        ...
+
+
+_SEND = Operation("publish", "send")
+
+
+def operation_of(config: object) -> Operation:
+    """
+    Return what a publish config does with each message: sending it, unless the config says.
+
+    A config says with a `messaging_operation`, as {py:class}`Operating` describes. Any other
+    config, or one whose `messaging_operation` isn't an {py:class}`Operation`, sends each
+    message, as `Operation("publish", "send")`.
+    """
+    operation = getattr(config, "messaging_operation", None)
+    return operation if isinstance(operation, Operation) else _SEND

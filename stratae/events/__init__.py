@@ -100,6 +100,8 @@ from .protocols import (
     EmitCallable,
     Encoded,
     EventType,
+    Operating,
+    Operation,
     PayloadEvent,
     Producer,
     PubSubProducer,
@@ -107,6 +109,8 @@ from .protocols import (
     Serializer,
     Serializing,
     SignalEvent,
+    destination_of,
+    operation_of,
 )
 
 __all__ = [
@@ -135,6 +139,8 @@ __all__ = [
     "MessageHeaders",
     "Middleware",
     "NoPayload",
+    "Operating",
+    "Operation",
     "PayloadEvent",
     "Producer",
     "PubSub",
@@ -148,10 +154,12 @@ __all__ = [
     "WithoutPayload",
     "abind",
     "bind",
+    "destination_of",
     "dispatch_request",
     "dispatch_request_async",
     "fan_out",
     "fan_out_async",
     "fan_out_concurrent",
     "only_responder",
+    "operation_of",
 ]

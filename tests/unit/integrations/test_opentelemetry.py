@@ -31,6 +31,9 @@ Without an SDK or a known adapter:
 - A config from any adapter that describes its destination gets its system, name and
   attributes, and spans named after it. A destination with no name gives its system, and
   spans named after the event.
+- A config whose messaging_operation isn't an Operation is traced as a publish.
+- A config that declares a create operation is traced as an outbox write is: a PRODUCER
+  create span named after its destination, whose context is sent in the headers.
 """
 
 import asyncio
@@ -53,6 +56,7 @@ from stratae.events import (
     DirectBus,
     Envelope,
     EnvelopeConfig,
+    Operation,
     PubSub,
 )
 from stratae.events.middleware import HandleCall, MessageHeaders, PublishCall, run_middleware
@@ -594,6 +598,7 @@ class _NotADestination:
     """A routing config with an unrelated attribute that happens to share the name."""
 
     messaging_destination = "audit"
+    messaging_operation = "create"
 
 
 @pytest.mark.parametrize(
@@ -605,9 +610,11 @@ def test_undescribed_config(
     """
     A config that doesn't describe its destination should give spans named after the event.
 
-    Given: A config with no messaging_destination, or one that isn't a Destination
+    Given: A config with no messaging_destination or messaging_operation, or ones that
+        aren't a Destination and an Operation
     When: The publish and handle middleware run around a call with it
-    Then: The spans are named after the event, with no system or destination
+    Then: The spans are named after the event, with no system or destination, and the emit is
+        traced as a publish
     """
     # Arrange
     middleware = tracing(provider)
@@ -623,6 +630,7 @@ def test_undescribed_config(
     for span in spans.values():
         assert "messaging.system" not in (span.attributes or {})
         assert "messaging.destination.name" not in (span.attributes or {})
+    assert (spans["publish _OrderPlaced"].attributes or {})["messaging.operation.type"] == "send"
 
 
 class _QueueConfig:
@@ -696,3 +704,39 @@ def test_described_config_without_name(provider: TracerProvider, exporter: InMem
         attributes = span.attributes or {}
         assert attributes["messaging.system"] == "testmq"
         assert "messaging.destination.name" not in attributes
+
+
+class _CreatingConfig:
+    """A routing config from an adapter of the test's own, creating each message to send later."""
+
+    messaging_destination = Destination("testmq", "orders")
+    messaging_operation = Operation("create", "create")
+
+
+def test_creating_config_traced_as_a_write(
+    provider: TracerProvider, exporter: InMemorySpanExporter
+):
+    """
+    A config that declares a create operation should be traced as an outbox write is.
+
+    Given: A test adapter's config declaring a create operation and a destination
+    When: The publish middleware runs around an emit with it
+    Then: The span is a PRODUCER create span named after the destination, and its context is
+        written into the headers
+    """
+    # Arrange
+    middleware = tracing(provider)
+    publish = PublishCall(_order_placed, _CreatingConfig(), _OrderPlaced(1), MessageHeaders())
+
+    # Act
+    run_middleware(middleware.publish, publish, lambda: None)
+
+    # Assert
+    span = _spans(exporter)["create orders"]
+    attributes = span.attributes or {}
+    sent = trace.get_current_span(propagate.extract(publish.headers)).get_span_context()
+    assert span.kind is SpanKind.PRODUCER
+    assert attributes["messaging.operation.name"] == "create"
+    assert attributes["messaging.operation.type"] == "create"
+    assert attributes["messaging.system"] == "testmq"
+    assert sent.span_id == _id_of(span)

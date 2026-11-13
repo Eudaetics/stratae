@@ -19,23 +19,33 @@ Serializer and Deserializer:
 - A codec of the wrong shape is a type error. Each `# pyright: ignore[...]` marks an expected
   one. The project enables `reportUnnecessaryTypeIgnoreComment`, so if one stops being an
   error, the type check fails.
+
+destination_of and operation_of:
+- A config's Destination and Operation are read from it.
+- A config without them, or whose attributes of those names hold something else, has no
+  destination and sends each message.
 """
 
 from collections.abc import Callable
 from typing import Any
 
 import msgspec
+import pytest
 
 from stratae.events import (
     AsyncDirectBus,
     Consumer,
     Deserializer,
+    Destination,
     DirectBus,
     EmitCallable,
     EventType,
+    Operation,
     Producer,
     PubSubProducer,
     Serializer,
+    destination_of,
+    operation_of,
 )
 
 
@@ -160,3 +170,43 @@ def test_every_producer_is_a_pubsub_producer():
         # Assert
         assert isinstance(producer, Producer)
         assert isinstance(pubsub_producer, PubSubProducer)
+
+
+class _Describing:
+    """A config with a messaging destination and operation, whatever they hold."""
+
+    def __init__(self, destination: object, operation: object) -> None:
+        self.messaging_destination = destination
+        self.messaging_operation = operation
+
+
+def test_config_description_read():
+    """
+    A config's destination and operation should be read from it.
+
+    Given: A config with a Destination and an Operation
+    When: destination_of and operation_of read it
+    Then: They return its Destination and its Operation
+    """
+    destination = Destination("testmq", "orders")
+    operation = Operation("create", "create")
+    config = _Describing(destination, operation)
+
+    assert destination_of(config) is destination
+    assert operation_of(config) is operation
+
+
+@pytest.mark.parametrize(
+    "config", ["orders", _Describing("orders", "create")], ids=["undescribed", "unrelated"]
+)
+def test_undescribed_config_has_no_destination_and_sends(config: object):
+    """
+    A config that doesn't describe itself should have no destination, and send each message.
+
+    Given: A config with no messaging attributes, and one whose attributes of those names hold
+        a string
+    When: destination_of and operation_of read it
+    Then: It has no destination, and its operation is publish/send
+    """
+    assert destination_of(config) is None
+    assert operation_of(config) == Operation("publish", "send")
