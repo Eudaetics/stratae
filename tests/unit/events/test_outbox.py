@@ -23,7 +23,10 @@ OutboxProducer:
 - OutboxConfig is an immutable value: assignment is refused, and configs with the same fields
   are equal.
 - Routes added from several threads at once are all kept; of several events routed to one
-  name at once, one gets it and the rest raise ValueError.
+  name at once, one gets it and the rest raise ValueError; one event routed to one config
+  from several threads at once is added once.
+- Binding an event that's already routed takes no lock, and a new route's writer is built
+  before the lock is taken.
 - An equal event, built separately, binds an existing route; a different payload type under
   the same name raises ValueError.
 
@@ -93,6 +96,7 @@ from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, assert_type, cast, override
 from uuid import UUID
 
@@ -619,28 +623,43 @@ def test_equal_event_binds_existing_route(outbox: OutboxProducer):
         outbox.bind(PubSub(_OtherOrder, name="_Order"), config=config)
 
 
-def _route_at_once(
-    outbox: OutboxProducer, mocker: MockerFixture, routes: Sequence[tuple[PubSub[Any, Any], str]]
-) -> list[BaseException]:
-    """Route each event to its route name from its own thread at once, returning the errors."""
-    writer = outbox._writer  # pyright: ignore[reportPrivateUsage]
+class _SlowName(str):
+    """A route name whose hash takes a while, so routing's checks and swaps overlap."""
 
-    def slow_writer(name: str, target: Any) -> Any:
-        time.sleep(0.02)
-        return writer(name, target)
+    __slots__ = ()
 
-    mocker.patch.object(outbox, "_writer", slow_writer)
-    start = threading.Barrier(len(routes))
+    def __hash__(self) -> int:
+        time.sleep(0.005)
+        return str.__hash__(self)
+
+
+class _WatchedTarget:
+    """A publisher config that records whether the routing lock is held when it's read."""
+
+    def __init__(self, outbox: OutboxProducer, delay: float = 0.0) -> None:
+        self._outbox = outbox
+        self._delay = delay
+        self.locked: list[bool] = []
+
+    @property
+    def serializer(self) -> None:
+        self.locked.append(self._outbox._routing.locked())  # pyright: ignore[reportPrivateUsage]
+        time.sleep(self._delay)
+
+
+def _at_once(*calls: Callable[[], None]) -> list[BaseException]:
+    """Run each call on its own thread, all starting together, and return what they raised."""
+    start = threading.Barrier(len(calls))
     errors: list[BaseException] = []
 
-    def route(event: PubSub[Any, Any], name: str) -> None:
+    def run(call: Callable[[], None]) -> None:
         start.wait()
         try:
-            outbox.route(event, OutboxConfig(name, route=name))
+            call()
         except ValueError as exc:
             errors.append(exc)
 
-    threads = [threading.Thread(target=route, args=pair) for pair in routes]
+    threads = [threading.Thread(target=run, args=(call,)) for call in calls]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -648,38 +667,47 @@ def _route_at_once(
     return errors
 
 
-def test_routes_from_threads_at_once_all_kept(outbox: OutboxProducer, mocker: MockerFixture):
+def test_routes_from_threads_at_once_all_kept(outbox: OutboxProducer):
     """
     Routes added from several threads at once should all be kept.
 
-    Given: An outbox producer whose routes take a while to build
+    Given: Route names whose hashes take a while, so the checks and swaps overlap
     When: Eight threads each route a different event at the same moment
-    Then: Every route is kept, and each event emits on its own
+    Then: Every route is kept
     """
     # Arrange
     events = [PubSub(_Order, name=f"orders-{n}") for n in range(8)]
+    names = [_SlowName(event.name) for event in events]
 
     # Act
-    errors = _route_at_once(outbox, mocker, [(event, event.name) for event in events])
+    errors = _at_once(
+        *(
+            partial(outbox.route, event, OutboxConfig(name, route=name))
+            for event, name in zip(events, names, strict=True)
+        )
+    )
 
     # Assert
     assert errors == []
     assert dict(outbox.routes) == {event.name: (event, event.name) for event in events}
 
 
-def test_route_name_taken_from_threads_at_once(outbox: OutboxProducer, mocker: MockerFixture):
+def test_route_name_taken_from_threads_at_once(outbox: OutboxProducer):
     """
     Only one of several events routed to one name at once should get it.
 
-    Given: An outbox producer whose routes take a while to build
-    When: Eight threads each route a different event to the same route name at the same moment
+    Given: A route name whose hash takes a while, so the checks and swaps overlap
+    When: Eight threads each route a different event to that name at the same moment
     Then: One route is kept, and the other seven raise ValueError
     """
     # Arrange
     events = [PubSub(_Order, name=f"orders-{n}") for n in range(8)]
+    name = _SlowName("orders")
 
     # Act
-    errors = _route_at_once(outbox, mocker, [(event, "orders") for event in events])
+    errors = _at_once(
+        *(partial(outbox.route, event, OutboxConfig(name, route=name)) for event in events)
+    )
 
     # Assert
     assert len(errors) == 7
@@ -687,6 +715,72 @@ def test_route_name_taken_from_threads_at_once(outbox: OutboxProducer, mocker: M
     [(event, config)] = outbox.routes.values()
     assert event in events
     assert config == "orders"
+
+
+def test_same_route_from_threads_at_once_kept_once(outbox: OutboxProducer):
+    """
+    Threads routing one event to one config at once should all succeed, adding it once.
+
+    Given: A publisher config that takes a while to read, so every thread builds its route
+        before any adds one
+    When: Eight threads route the same event to that config at the same moment
+    Then: None raises, and the outbox holds that one route
+    """
+    # Arrange
+    target = _WatchedTarget(outbox, delay=0.02)
+    config = OutboxConfig(target, route="orders")
+
+    # Act
+    errors = _at_once(*(partial(outbox.route, _order_placed, config) for _ in range(8)))
+
+    # Assert
+    assert errors == []
+    assert dict(outbox.routes) == {"orders": (_order_placed, target)}
+
+
+def test_rebinding_a_routed_event_takes_no_lock(outbox: OutboxProducer):
+    """
+    Binding an event that's already routed should only read the routes.
+
+    Given: An event routed to a config, and another thread holding the routing lock
+    When: The event is bound again to an equal config
+    Then: The bind returns while the lock is still held
+    """
+    # Arrange
+    config = OutboxConfig("orders")
+    outbox.route(_order_placed, config)
+    rebound = threading.Event()
+    rebinding = threading.Thread(
+        target=lambda: (outbox.bind(_order_placed, config=config), rebound.set())
+    )
+
+    # Act
+    with outbox._routing:  # pyright: ignore[reportPrivateUsage]
+        rebinding.start()
+        finished = rebound.wait(timeout=1)
+
+    # Assert
+    rebinding.join()
+    assert finished
+
+
+def test_route_writer_built_outside_the_lock(outbox: OutboxProducer):
+    """
+    A new route's writer should be built before the routing lock is taken.
+
+    Given: A publisher config that records whether the routing lock is held when it's read
+    When: An event is routed to it
+    Then: It's read only while the lock is free
+    """
+    # Arrange
+    target = _WatchedTarget(outbox)
+
+    # Act
+    outbox.route(_order_placed, OutboxConfig(target))
+
+    # Assert
+    assert target.locked
+    assert not any(target.locked)
 
 
 # region: InMemoryOutboxStore
