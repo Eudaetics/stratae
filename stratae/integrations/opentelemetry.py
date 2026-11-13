@@ -30,6 +30,12 @@ them with a `messaging_destination`: a
 adapter of your own takes part the same way. This module names no adapter. A config that
 doesn't describe itself is still traced, without them.
 
+An emit's operation comes from its config too. A config sends each message, unless it says
+otherwise with a `messaging_operation`: an
+{py:class}`Operation <stratae.events.protocols.Operation>`, as
+{py:class}`Operating <stratae.events.protocols.Operating>` describes. An outbox's config says
+it creates a record. Its destination is that of the publisher's config it wraps.
+
 On a direct bus, an emit and each of its handler calls are `INTERNAL` spans, without
 messaging attributes. Every span records the event's name, and the ids of the
 {py:class}`Envelope <stratae.events.envelope.Envelope>` it runs in, when there's one. Over
@@ -77,7 +83,7 @@ emit OrderPlaced: INTERNAL, parent none
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 from opentelemetry import context, propagate, trace
 from opentelemetry.context import Context
@@ -85,20 +91,9 @@ from opentelemetry.trace import Link, Span, SpanKind, Status, StatusCode, Tracer
 
 from stratae.events.envelope import Envelope
 from stratae.events.middleware import HandleCall, MessageHeaders, Middleware, PublishCall
-from stratae.events.outbox import OutboxConfig
-from stratae.events.protocols import Destination
+from stratae.events.protocols import Destination, Operation, destination_of, operation_of
 
-
-def _destination(config: object) -> Destination | None:
-    """
-    Return where a config's messages go, or `None` if it doesn't say.
-
-    A config says with a `messaging_destination`, as
-    {py:class}`Routed <stratae.events.protocols.Routed>` describes. One that doesn't is still
-    traced, without messaging attributes for its destination.
-    """
-    destination = getattr(config, "messaging_destination", None)
-    return destination if isinstance(destination, Destination) else None
+_PROCESS = Operation("process", "process")
 
 
 def _name(destination: Destination | None, event: str) -> str:
@@ -132,13 +127,13 @@ def _internal_attributes(event: str) -> dict[str, Any]:
 
 
 def _messaging_attributes(
-    event: str, destination: Destination | None, operation: str, operation_type: str
+    event: str, destination: Destination | None, operation: Operation
 ) -> dict[str, Any]:
     """Return a messaging span's attributes, per the messaging semantic conventions."""
     attributes: dict[str, Any] = {
         "stratae.event": event,
-        "messaging.operation.name": operation,
-        "messaging.operation.type": operation_type,
+        "messaging.operation.name": operation.name,
+        "messaging.operation.type": operation.type,
     }
     if destination is not None:
         attributes["messaging.system"] = destination.system
@@ -241,14 +236,9 @@ class _Publish:
             return _Traced(
                 self._tracer, f"emit {event}", SpanKind.INTERNAL, attributes, inject=call.headers
             )
-        config: object = call.config
-        if isinstance(config, OutboxConfig):
-            outbox = cast("OutboxConfig[object]", config)
-            destination, operation, operation_type = _destination(outbox.config), "create", "create"
-        else:
-            destination, operation, operation_type = _destination(config), "publish", "send"
-        attributes = _messaging_attributes(event, destination, operation, operation_type)
-        name = f"{operation} {_name(destination, event)}"
+        destination, operation = destination_of(call.config), operation_of(call.config)
+        attributes = _messaging_attributes(event, destination, operation)
+        name = f"{operation.name} {_name(destination, event)}"
         created = trace.get_current_span(propagate.extract(call.headers)).get_span_context()
         if created.is_valid:
             # Created earlier, as a relay's record was: link to its creation, and keep it.
@@ -274,9 +264,9 @@ class _Handle:
             return _Traced(
                 self._tracer, f"handle {event}", SpanKind.INTERNAL, attributes, parent=parent
             )
-        destination = _destination(call.config)
-        attributes = _messaging_attributes(event, destination, "process", "process")
-        name = f"process {_name(destination, event)}"
+        destination = destination_of(call.config)
+        attributes = _messaging_attributes(event, destination, _PROCESS)
+        name = f"{_PROCESS.name} {_name(destination, event)}"
         return _Traced(self._tracer, name, SpanKind.CONSUMER, attributes, parent=parent)
 
 

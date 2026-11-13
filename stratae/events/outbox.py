@@ -132,7 +132,16 @@ from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
 from stratae.events.patterns import NoPayload, PubSub
 from stratae.events.pipeline import Outgoing, Publishing, Send, publish_async, received
-from stratae.events.protocols import Addressed, AnyEvent, Encoded, EventType, Serializing
+from stratae.events.protocols import (
+    Addressed,
+    AnyEvent,
+    Destination,
+    Encoded,
+    EventType,
+    Operation,
+    Serializing,
+    destination_of,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -164,6 +173,8 @@ _ALREADY_RUNNING = "the relay is already running; exit it before entering it aga
 
 _OUTAGES = (NotConnectedError, ConnectionError)
 """Errors that mean the publisher can't reach its broker, so no record is at fault."""
+
+_CREATE = Operation("create", "create")
 
 
 def _now() -> datetime:
@@ -290,6 +301,11 @@ class OutboxConfig[C]:
     `C` is the publisher's routing config, such as a
     {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.config.RabbitMQConfig>`. An immutable
     value: configs with the same fields are equal.
+
+    It describes itself to observers such as tracing. Its operation is `create`, as
+    {py:class}`Operating <stratae.events.protocols.Operating>` describes: an emit creates a
+    record, and the relay sends it later. Its destination is the publisher's config's, as
+    {py:class}`Routed <stratae.events.protocols.Routed>` describes.
     """
 
     config: C
@@ -299,6 +315,16 @@ class OutboxConfig[C]:
     """The name records store instead of the config. Defaults to the event's name."""
     key: Callable[[Any], str] | None = None
     """Derives an ordering key from the payload."""
+
+    @property
+    def messaging_operation(self) -> Operation:
+        """Creating a record, which the relay sends later."""
+        return _CREATE
+
+    @property
+    def messaging_destination(self) -> Destination | None:
+        """Where the relay sends this binding's records, if the publisher's config says."""
+        return destination_of(self.config)
 
 
 @dataclass(frozen=True, slots=True)
