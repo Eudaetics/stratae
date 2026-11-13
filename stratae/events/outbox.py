@@ -324,9 +324,26 @@ class _Routes:
     by_event: Mapping[AnyEvent, _Route]
     """Each event's route."""
 
+    def routed(self, event: AnyEvent, config: OutboxConfig[Any]) -> _Route | None:
+        """
+        Return the event's route, or `None` if it has none.
+
+        :raises ValueError: If the event is routed to a different config.
+        """
+        routed = self.by_event.get(event)
+        if routed is not None and routed.config != config:
+            raise ValueError(_EVENT_ROUTED.format(event.name))
+        return routed
+
     def add(self, route: _Route) -> _Routes:
-        """Return these routes with one more."""
+        """
+        Return these routes with one more.
+
+        :raises ValueError: If the route's name holds another event or publisher config.
+        """
         target = (route.event, route.config.config)
+        if self.by_name.get(route.name, target) != target:
+            raise ValueError(_ROUTE_TAKEN.format(route.name))
         return _Routes(
             MappingProxyType({**self.by_name, route.name: target}),
             MappingProxyType({**self.by_event, route.event: route}),
@@ -404,20 +421,18 @@ class OutboxProducer:
     def _route(self, event: AnyEvent, config: OutboxConfig[Any]) -> _Route:
         """Return the event's route, adding it if the event has none."""
         _require_pubsub(event)
+        routed = self._routes.routed(event, config)
+        if routed is not None:
+            return routed
+        name = config.route or event.name
+        route = _Route(name, event, config, self._writer(name, config.config))
         with self._routing:
             routes = self._routes
-            routed = routes.by_event.get(event)
+            routed = routes.routed(event, config)
             if routed is not None:
-                if routed.config != config:
-                    raise ValueError(_EVENT_ROUTED.format(event.name))
                 return routed
-            name = config.route or event.name
-            target = (event, config.config)
-            if routes.by_name.get(name, target) != target:
-                raise ValueError(_ROUTE_TAKEN.format(name))
-            route = _Route(name, event, config, self._writer(name, config.config))
             self._routes = routes.add(route)
-            return route
+        return route
 
     def _writer(self, name: str, target: Any) -> Send:
         """Return what writes a route's records, with its config's serializer and address."""
