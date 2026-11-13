@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable, Hashable
 from contextvars import ContextVar
-from threading import RLock
+from threading import Lock, RLock
 from typing import Any, ClassVar, Self
 from weakref import WeakValueDictionary
 
@@ -31,6 +31,7 @@ class Provider:
     }
 
     _registry: ClassVar[WeakValueDictionary[Hashable, Self]] = WeakValueDictionary()
+    _registering: ClassVar[Lock] = Lock()
     dependency: Callable[[], Any]
     provide: Callable[[], Any]
     is_async: bool
@@ -42,6 +43,8 @@ class Provider:
     def __new__(cls, dependency: Callable[..., Any]) -> Self:
         """
         Return the single Provider for `dependency`.
+
+        Threads that ask for the same dependency at once all get the same Provider.
 
         :raises InjectionSignatureError: If `dependency` is unhashable.
         """
@@ -59,8 +62,8 @@ class Provider:
         instance.live = 0
         instance.lock = RLock()
         instance.resolved = False
-        cls._registry[dependency] = instance
-        return instance
+        with cls._registering:
+            return cls._registry.setdefault(dependency, instance)
 
     def provide_held(self) -> Any:
         """Return the override's value if set, otherwise evaluate the dependency."""
