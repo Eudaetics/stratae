@@ -22,6 +22,8 @@ OutboxProducer:
   equal one, binds again.
 - OutboxConfig is an immutable value: assignment is refused, and configs with the same fields
   are equal.
+- Routes added from several threads at once are all kept; of several events routed to one
+  name at once, one gets it and the rest raise ValueError.
 - An equal event, built separately, binds an existing route; a different payload type under
   the same name raises ValueError.
 
@@ -85,6 +87,8 @@ import asyncio
 import dataclasses
 import inspect
 import logging
+import threading
+import time
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -613,6 +617,76 @@ def test_equal_event_binds_existing_route(outbox: OutboxProducer):
     assert dict(outbox.routes) == {"_Order": (_order_placed, "orders-config")}
     with pytest.raises(ValueError, match="'_Order' is already bound"):
         outbox.bind(PubSub(_OtherOrder, name="_Order"), config=config)
+
+
+def _route_at_once(
+    outbox: OutboxProducer, mocker: MockerFixture, routes: Sequence[tuple[PubSub[Any, Any], str]]
+) -> list[BaseException]:
+    """Route each event to its route name from its own thread at once, returning the errors."""
+    writer = outbox._writer  # pyright: ignore[reportPrivateUsage]
+
+    def slow_writer(name: str, target: Any) -> Any:
+        time.sleep(0.02)
+        return writer(name, target)
+
+    mocker.patch.object(outbox, "_writer", slow_writer)
+    start = threading.Barrier(len(routes))
+    errors: list[BaseException] = []
+
+    def route(event: PubSub[Any, Any], name: str) -> None:
+        start.wait()
+        try:
+            outbox.route(event, OutboxConfig(name, route=name))
+        except ValueError as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=route, args=pair) for pair in routes]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return errors
+
+
+def test_routes_from_threads_at_once_all_kept(outbox: OutboxProducer, mocker: MockerFixture):
+    """
+    Routes added from several threads at once should all be kept.
+
+    Given: An outbox producer whose routes take a while to build
+    When: Eight threads each route a different event at the same moment
+    Then: Every route is kept, and each event emits on its own
+    """
+    # Arrange
+    events = [PubSub(_Order, name=f"orders-{n}") for n in range(8)]
+
+    # Act
+    errors = _route_at_once(outbox, mocker, [(event, event.name) for event in events])
+
+    # Assert
+    assert errors == []
+    assert dict(outbox.routes) == {event.name: (event, event.name) for event in events}
+
+
+def test_route_name_taken_from_threads_at_once(outbox: OutboxProducer, mocker: MockerFixture):
+    """
+    Only one of several events routed to one name at once should get it.
+
+    Given: An outbox producer whose routes take a while to build
+    When: Eight threads each route a different event to the same route name at the same moment
+    Then: One route is kept, and the other seven raise ValueError
+    """
+    # Arrange
+    events = [PubSub(_Order, name=f"orders-{n}") for n in range(8)]
+
+    # Act
+    errors = _route_at_once(outbox, mocker, [(event, "orders") for event in events])
+
+    # Assert
+    assert len(errors) == 7
+    assert all("'orders' is already bound" in str(error) for error in errors)
+    [(event, config)] = outbox.routes.values()
+    assert event in events
+    assert config == "orders"
 
 
 # region: InMemoryOutboxStore
