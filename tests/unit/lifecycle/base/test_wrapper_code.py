@@ -36,8 +36,8 @@ from stratae.lifecycle._wrappers import (
     _LockedClaims,  # pyright: ignore[reportPrivateUsage]
     _Miss,  # pyright: ignore[reportPrivateUsage]
     _Mode,  # pyright: ignore[reportPrivateUsage]
-    _namespace,  # pyright: ignore[reportPrivateUsage]
     _OwnedSlot,  # pyright: ignore[reportPrivateUsage]
+    _Parts,  # pyright: ignore[reportPrivateUsage]
     _PlainSlot,  # pyright: ignore[reportPrivateUsage]
     _source,  # pyright: ignore[reportPrivateUsage]
     _TaskClaims,  # pyright: ignore[reportPrivateUsage]
@@ -131,10 +131,9 @@ def test_parts_bind_every_name_the_source_reads(
     params = list(read_signature(_one).parameters.values())
     store = _store(isolation, dense)
     slot = _OwnedSlot(4) if owned else _PlainSlot(4)
-    access = _access(store)
-    claims = _claims(store, miss.mode)
-    namespace = _namespace(_one, cache_key, slot, access, claims, miss)
+    parts = _Parts(slot, _access(store), _claims(store, miss.mode), miss)
 
-    source = _source(params, _key(params, cache_key, ignore_params), slot, access, claims, miss)
+    source = _source(params, _key(params, cache_key, ignore_params), parts)
 
-    assert _globals_read(_wrapper_code("\n".join(source))) <= set(namespace)
+    bound = {"__func__", "__cache_key__", *parts.names}
+    assert _globals_read(_wrapper_code("\n".join(source))) <= bound

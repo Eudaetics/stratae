@@ -6,7 +6,6 @@ tooling can introspect them.
 """
 
 from collections.abc import Callable
-from functools import wraps
 from inspect import Parameter, Signature, markcoroutinefunction
 from typing import Any
 
@@ -16,8 +15,6 @@ from stratae.codegen import (
     block,
     compile_wrapper,
     def_wrapper,
-    defaults,
-    kwdefaults,
     read_signature,
     render_arguments,
     render_parameters,
@@ -75,12 +72,8 @@ def _compile(
         "__func__": func,
         **{f"__dep_{name}__": dep for name, dep in resolved_deps.items()},
     }
-    wrapper = compile_wrapper(lines, func, namespace)
-
-    wraps(func)(wrapper)
+    wrapper = compile_wrapper(lines, func, namespace, kept_params)
     wrapper.__signature__ = kept
-    wrapper.__defaults__ = defaults(kept_params)
-    wrapper.__kwdefaults__ = kwdefaults(kept_params)
     wrapper.__annotations__ = _get_annotations(kept_params)
     if kept.return_annotation is not Signature.empty:
         wrapper.__annotations__["return"] = kept.return_annotation

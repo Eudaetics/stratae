@@ -2,11 +2,14 @@
 
 import linecache
 import weakref
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
+from functools import wraps
+from inspect import Parameter
 from itertools import count
 from typing import Any
 
 from .lines import Lines, block
+from .signature import defaults, kwdefaults
 
 _serial = count(1)
 """Numbers each wrapper filename, so wrappers of the same object never share one."""
@@ -24,9 +27,14 @@ def wrapper_filename(obj: Any) -> str:
     return f"<stratae: {module}.{qualname}#{next(_serial)}>"
 
 
-def compile_wrapper(lines: Lines, target: Any, namespace: dict[str, Any]) -> Any:
+def compile_wrapper(
+    lines: Lines, target: Any, namespace: dict[str, Any], parameters: Sequence[Parameter]
+) -> Any:
     """
-    Compile `lines`, which define a function named `wrapper`, and return that function.
+    Compile `lines`, which define a function named `wrapper`, and return it dressed as `target`.
+
+    The wrapper takes `target`'s metadata through `functools.wraps`, and the defaults of
+    `parameters`, which its source lists without defaults.
 
     The source is registered with `linecache` under a filename naming `target`. Tracebacks and
     debuggers show its lines, and `inspect.getsource(wrapper.__code__)` returns it. It's
@@ -35,6 +43,7 @@ def compile_wrapper(lines: Lines, target: Any, namespace: dict[str, Any]) -> Any
     :param lines: The wrapper's source.
     :param target: The object being wrapped, named in the filename.
     :param namespace: The globals the source runs in. The wrapper is defined into it.
+    :param parameters: The wrapper's parameters, whose defaults it takes.
     :returns: The compiled wrapper.
     """
     source = "\n".join(lines)
@@ -43,6 +52,9 @@ def compile_wrapper(lines: Lines, target: Any, namespace: dict[str, Any]) -> Any
     wrapper = namespace["wrapper"]
     linecache.cache[filename] = (len(source), None, source.splitlines(keepends=True), filename)
     weakref.finalize(wrapper, linecache.cache.pop, filename, None)
+    wraps(target)(wrapper)
+    wrapper.__defaults__ = defaults(parameters)
+    wrapper.__kwdefaults__ = kwdefaults(parameters)
     return wrapper
 
 

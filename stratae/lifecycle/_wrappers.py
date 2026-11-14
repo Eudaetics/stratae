@@ -18,7 +18,6 @@ import weakref
 from asyncio import current_task
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hashable, Sequence
 from dataclasses import dataclass, field
-from functools import wraps
 from inspect import Parameter
 from types import AsyncGeneratorType, CoroutineType, GeneratorType
 from typing import (
@@ -35,10 +34,9 @@ from stratae.codegen import (
     block,
     compile_wrapper,
     def_wrapper,
-    defaults,
-    kwdefaults,
     read_signature,
     render_arguments,
+    render_key,
     render_parameters,
 )
 from stratae.lifecycle._inflight import (
@@ -587,28 +585,6 @@ _CHECK_SYNC = _Miss(_SYNC, _check_sync, {**_ENTERS, **_KINDS, "__refuse_async__"
 _CHECK_ASYNC = _Miss(_ASYNC, _check_async, {**_ENTERS, **_ENTERS_ASYNC, **_KINDS})
 
 
-def _params_key(params: Sequence[Parameter]) -> str:
-    """
-    Render a keyed function's key from its parameters.
-
-    Each keyed function has its own dict, so the key only distinguishes its calls. It's a
-    flat tuple of parameter locals, or the bare local for a single parameter. Only a true
-    `**kwargs` needs `frozenset(items())`.
-    """
-
-    def part(param: Parameter) -> str:
-        if param.kind is Parameter.VAR_POSITIONAL:
-            return f"*{param.name}"
-        if param.kind is Parameter.VAR_KEYWORD:
-            return f"frozenset({param.name}.items())"
-        return param.name
-
-    if len(params) == 1:
-        (param,) = params
-        return param.name if param.kind is Parameter.VAR_POSITIONAL else part(param)
-    return "(" + "".join(f"{part(param)}, " for param in params) + ")"
-
-
 def _key(
     params: Sequence[Parameter], cache_key: Callable[..., Hashable] | None, ignore_params: bool
 ) -> str | None:
@@ -621,19 +597,33 @@ def _key(
     if ignore_params or (cache_key is None and not params):
         return None
     if cache_key is None:
-        return f"__ck__ = {_params_key(params)}"
+        return f"__ck__ = {render_key(params)}"
     return f"__ck__ = __cache_key__({render_arguments(params)})"
 
 
-def _source(
-    params: Sequence[Parameter],
-    key: str | None,
-    slot: _Slot,
-    access: _Access,
-    claims: _Claim,
-    miss: _Miss,
-) -> Lines:
+@dataclass(frozen=True, slots=True)
+class _Parts:
+    """The parts a cache wrapper is built from, each chosen once from what it varies by."""
+
+    slot: _Slot
+    access: _Access
+    claims: _Claim
+    miss: _Miss
+
+    @property
+    def names(self) -> dict[str, Any]:
+        """Return the names the parts' code reads, each bound by the part that reads it."""
+        return {**self.slot.names, **self.access.names, **self.claims.names, **self.miss.names}
+
+
+def _parts(store: SlotStore, miss: _Miss) -> _Parts:
+    """Choose a wrapper's parts for `store`'s scope, allocating its slot."""
+    return _Parts(_allocate_slot(store), _access(store), _claims(store, miss.mode), miss)
+
+
+def _source(params: Sequence[Parameter], key: str | None, parts: _Parts) -> Lines:
     """Return a cache wrapper's source, from what each of its parts was chosen to be."""
+    slot, access, claims, miss = parts.slot, parts.access, parts.claims, parts.miss
     compute = miss.compute(f"__func__({render_arguments(params)})")
     if key is None:
         body = [
@@ -643,25 +633,6 @@ def _source(
     else:
         body = claims.keyed(slot, access, key, compute)
     return miss.mode.define(render_parameters(params), [*body, "return __value__"])
-
-
-def _namespace(
-    func: Callable[..., Any],
-    cache_key: Callable[..., Hashable] | None,
-    slot: _Slot,
-    access: _Access,
-    claims: _Claim,
-    miss: _Miss,
-) -> dict[str, Any]:
-    """Return the names a wrapper's source reads: the cached function's, and each part's."""
-    return {
-        "__func__": func,
-        "__cache_key__": cache_key,
-        **slot.names,
-        **access.names,
-        **claims.names,
-        **miss.names,
-    }
 
 
 def _read_params(func: Callable[..., Any], store: SlotStore) -> list[Parameter]:
@@ -690,17 +661,12 @@ def _create_wrapper(
     Each part is chosen once, and brings the names its code reads.
     """
     params = _read_params(func, store)
-    key = _key(params, cache_key, ignore_params)
-    slot = _allocate_slot(store)
-    access = _access(store)
-    claims = _claims(store, miss.mode)
-    namespace = _namespace(func, cache_key, slot, access, claims, miss)
-    wrapper = compile_wrapper(_source(params, key, slot, access, claims, miss), func, namespace)
-    wraps(func)(wrapper)
-    wrapper.__defaults__ = defaults(params)
-    wrapper.__kwdefaults__ = kwdefaults(params)
+    parts = _parts(store, miss)
+    namespace = {"__func__": func, "__cache_key__": cache_key, **parts.names}
+    source = _source(params, _key(params, cache_key, ignore_params), parts)
+    wrapper = compile_wrapper(source, func, namespace, params)
     wrapper.uncached = func
-    weakref.finalize(wrapper, store.release, slot.index)
+    weakref.finalize(wrapper, store.release, parts.slot.index)
     return wrapper
 
 

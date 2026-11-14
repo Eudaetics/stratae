@@ -87,6 +87,30 @@ def render_arguments(
     return ", ".join(args)
 
 
+def render_key(parameters: Sequence[Parameter]) -> str:
+    """
+    Render a hashable key telling calls with `parameters` apart, from the wrapper's locals.
+
+    A single parameter is its bare local. Otherwise it's a flat tuple of the locals, with
+    `*args` unpacked into it. Only a true `**kwargs` needs `frozenset(items())`.
+
+    :param parameters: The parameters of the function whose calls are keyed.
+    :returns: Source such as `(a, *args, frozenset(kwargs.items()), )`.
+    """
+
+    def part(param: Parameter) -> str:
+        if param.kind is Parameter.VAR_POSITIONAL:
+            return f"*{param.name}"
+        if param.kind is Parameter.VAR_KEYWORD:
+            return f"frozenset({param.name}.items())"
+        return param.name
+
+    if len(parameters) == 1:
+        (param,) = parameters
+        return param.name if param.kind is Parameter.VAR_POSITIONAL else part(param)
+    return "(" + "".join(f"{part(param)}, " for param in parameters) + ")"
+
+
 def defaults(parameters: Sequence[Parameter]) -> tuple[Any, ...] | None:
     """
     Return the `__defaults__` of a function with `parameters`: its positional defaults.
