@@ -126,5 +126,5 @@ def test_only_context_scope_reused_slots_are_boxed(isolation: IsolationType, box
     reused = _make_cached(scope, "sync", False, 3, calls)
 
     # Assert
-    assert "__Owned__" not in fresh.__globals__
-    assert ("__Owned__" in reused.__globals__) is boxed
+    assert "__Owned__" not in fresh.__code__.co_names
+    assert ("__Owned__" in reused.__code__.co_names) is boxed

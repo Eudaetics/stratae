@@ -7,7 +7,7 @@ and {py:func}`kwdefaults` give it the same defaults.
 """
 
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from inspect import Parameter, Signature, signature
 from typing import Any
 
@@ -30,7 +30,7 @@ _PREFIX = {
 }
 
 
-def render_parameters(parameters: list[Parameter]) -> str:
+def render_parameters(parameters: Sequence[Parameter]) -> str:
     """
     Render a parameter list as source text, without defaults.
 
@@ -62,7 +62,9 @@ def _name(param: Parameter) -> str:
     return param.name
 
 
-def render_arguments(parameters: list[Parameter], value: Callable[[Parameter], str] = _name) -> str:
+def render_arguments(
+    parameters: Sequence[Parameter], value: Callable[[Parameter], str] = _name
+) -> str:
     """
     Render a call's arguments for `parameters`, each in its parameter's calling convention.
 
@@ -85,7 +87,31 @@ def render_arguments(parameters: list[Parameter], value: Callable[[Parameter], s
     return ", ".join(args)
 
 
-def defaults(parameters: list[Parameter]) -> tuple[Any, ...] | None:
+def render_key(parameters: Sequence[Parameter]) -> str:
+    """
+    Render a hashable key telling calls with `parameters` apart, from the wrapper's locals.
+
+    A single parameter is its bare local. Otherwise it's a flat tuple of the locals, with
+    `*args` unpacked into it. Only a true `**kwargs` needs `frozenset(items())`.
+
+    :param parameters: The parameters of the function whose calls are keyed.
+    :returns: Source such as `(a, *args, frozenset(kwargs.items()), )`.
+    """
+
+    def part(param: Parameter) -> str:
+        if param.kind is Parameter.VAR_POSITIONAL:
+            return f"*{param.name}"
+        if param.kind is Parameter.VAR_KEYWORD:
+            return f"frozenset({param.name}.items())"
+        return param.name
+
+    if len(parameters) == 1:
+        (param,) = parameters
+        return param.name if param.kind is Parameter.VAR_POSITIONAL else part(param)
+    return "(" + "".join(f"{part(param)}, " for param in parameters) + ")"
+
+
+def defaults(parameters: Sequence[Parameter]) -> tuple[Any, ...] | None:
     """
     Return the `__defaults__` of a function with `parameters`: its positional defaults.
 
@@ -103,7 +129,7 @@ def defaults(parameters: list[Parameter]) -> tuple[Any, ...] | None:
     )
 
 
-def kwdefaults(parameters: list[Parameter]) -> dict[str, Any] | None:
+def kwdefaults(parameters: Sequence[Parameter]) -> dict[str, Any] | None:
     """Return the `__kwdefaults__` of a function with `parameters`: its keyword-only defaults."""
     return {
         param.name: param.default

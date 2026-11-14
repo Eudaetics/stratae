@@ -6,7 +6,13 @@ from typing import Any
 
 import pytest
 
-from stratae.codegen import defaults, kwdefaults, render_arguments, render_parameters
+from stratae.codegen import (
+    defaults,
+    kwdefaults,
+    render_arguments,
+    render_key,
+    render_parameters,
+)
 
 
 def _typed_empty(): ...
@@ -160,3 +166,27 @@ def test_defaults_none_without_defaults():
     assert _no_defaults.__defaults__ is None
     assert kwdefaults(params) is None
     assert _no_defaults.__kwdefaults__ is None
+
+
+@pytest.mark.parametrize(
+    ("func", "expected"),
+    [
+        (_typed_pk, "x"),
+        (_typed_va, "args"),
+        (_typed_vk, "frozenset(kwargs.items())"),
+        (_typed_pk_pkd, "(x, y, )"),
+        (_typed_pk_va_vk, "(x, *args, frozenset(kwargs.items()), )"),
+        (_typed_ko_ko, "(a, b, )"),
+    ],
+    ids=["one", "var-positional", "var-keyword", "two", "every-kind", "keyword-only"],
+)
+def test_render_key(func: Callable[..., Any], expected: str):
+    """
+    render_key should tell calls apart by their parameters' locals.
+
+    Given: Functions with one parameter, or several of each kind.
+    When: Rendering their key.
+    Then: One parameter is its bare local, and several make a flat tuple, with `*args`
+        unpacked and `**kwargs` frozen.
+    """
+    assert render_key(list(signature(func).parameters.values())) == expected
