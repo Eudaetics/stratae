@@ -277,6 +277,10 @@ class OutboxStore(Protocol):
         waiting for a retry, or claimed by another relay, holds back the later ones with its
         key. Earlier means created first. A store breaks ties in creation time some fixed
         way, such as by id, which time-ordered ids make the order they were written in.
+
+        A claim leaves nothing out that it could take, while it's under its limit. While
+        other relays claim too, a store may skip the records they're claiming and take later
+        ones, or return fewer than it could.
         """
         ...
 
@@ -291,6 +295,45 @@ class OutboxStore(Protocol):
     def mark_failed(self, record: OutboxRecord) -> Awaitable[None] | None:
         """Park a record that won't be retried, keeping it and its `error`."""
         ...
+
+
+def _claimable(
+    pending: Iterable[OutboxRecord],
+    leases: Mapping[UUID, datetime],
+    now: datetime,
+    limit: int,
+) -> list[OutboxRecord]:
+    """
+    Return what a claim takes, when no other relay is claiming at the same moment.
+
+    A claim takes due, unleased records, oldest first, until it has `limit` of them. A keyed
+    record is taken only if no earlier pending record with its key is left out. So a record
+    not yet due, or still leased, holds back the later ones with its key, and so does a
+    keyed record the claim skips. {py:meth}`OutboxStore.claim` says what a claim may do
+    differently while other relays claim too. The store contract tests check every store
+    against this.
+
+    :param pending: Every pending record, neither sent nor parked as failed, oldest first,
+        with ties in creation time broken the store's fixed way.
+    :param leases: When each leased record's lease runs out. A record not in it isn't
+        leased, and one whose lease has run out by `now` is free.
+    :param now: The time of the claim.
+    :param limit: The most records the claim takes.
+    :returns: The records claimed, oldest first.
+    """
+    claimed: list[OutboxRecord] = []
+    held: set[str] = set()
+    for record in pending:
+        if len(claimed) == limit:
+            break
+        key = record.key
+        if key is not None and key in held:
+            continue
+        if record.available_at <= now and leases.get(record.id, now) <= now:
+            claimed.append(record)
+        elif key is not None:
+            held.add(key)
+    return claimed
 
 
 @dataclass(frozen=True, slots=True)
@@ -1046,21 +1089,10 @@ class InMemoryOutboxStore:
         it. Ties in creation time keep the order the records were added in.
         """
         now = _now()
-        due: list[OutboxRecord] = []
-        held: set[str] = set()
-        for record in self.pending():
-            if len(due) == limit:
-                break
-            key = record.key
-            if key is not None and key in held:
-                continue
-            if record.available_at <= now and self._leased.get(record.id, now) <= now:
-                due.append(record)
-            elif key is not None:
-                held.add(key)
-        for record in due:
+        claimed = _claimable(self.pending(), self._leased, now, limit)
+        for record in claimed:
             self._leased[record.id] = now + self._lease
-        return due
+        return claimed
 
     def mark_sent(self, records: Sequence[OutboxRecord]) -> None:
         """Mark records sent, releasing them."""

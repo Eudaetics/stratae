@@ -20,15 +20,19 @@ This test suite verifies the following behaviors:
   key, are claimed meanwhile.
 - Records with the same key come out in the order they were created, together in one claim.
 - Sending or parking the earlier record frees the later ones with its key.
+- Over seeded random histories of adds, claims, sends, reschedules and parks, every claim
+  takes what the claim rule says it should.
 """
 
+import random
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import UUID
 
 import pytest
 from sybil import Sybil
@@ -36,6 +40,7 @@ from sybil.parsers.myst import PythonCodeBlockParser
 
 from stratae.events import Envelope
 from stratae.events.outbox import InMemoryOutboxStore, OutboxRecord, OutboxStore
+from stratae.events.outbox import _claimable as claimable  # pyright: ignore[reportPrivateUsage]
 
 _RECIPE = Path(__file__).parents[3] / "docs" / "tutorials" / "outbox.md"
 
@@ -412,3 +417,96 @@ async def test_settled_record_frees_its_key(harness: _Harness, outcome: str):
 
     # Assert
     assert await _claim(store) == [second]
+
+
+_PAST = datetime(2026, 1, 1, tzinfo=UTC)
+_FUTURE = datetime(2100, 1, 1, tzinfo=UTC)
+
+
+@dataclass
+class _History:
+    """What a history has done to a store, enough to say what each claim should take."""
+
+    rng: random.Random
+    added: int = 0
+    pending: dict[UUID, OutboxRecord] = field(default_factory=dict[UUID, OutboxRecord])
+    leases: dict[UUID, datetime] = field(default_factory=dict[UUID, datetime])
+    claimed: list[OutboxRecord] = field(default_factory=list[OutboxRecord])
+
+    def new_record(self) -> OutboxRecord:
+        """Return a record created after every earlier one, maybe keyed, maybe not yet due."""
+        self.added += 1
+        created = _PAST + timedelta(seconds=self.added)
+        return _record(
+            self.added,
+            key=self.rng.choice(["a", "b", None]),
+            created_at=created,
+            available_at=self.rng.choice([created, _FUTURE]),
+        )
+
+    def expected(self, limit: int) -> list[OutboxRecord]:
+        """Return what the claim rule takes from the pending records now."""
+        pending = sorted(self.pending.values(), key=lambda record: record.created_at)
+        return claimable(pending, self.leases, datetime.now(UTC), limit)
+
+    def settle(self, record: OutboxRecord, kept: OutboxRecord | None) -> None:
+        """Release a claimed record, keeping it pending as `kept`, or dropping it."""
+        self.claimed.remove(record)
+        del self.leases[record.id]
+        if kept is None:
+            del self.pending[record.id]
+        else:
+            self.pending[record.id] = kept
+
+
+async def _step(harness: _Harness, store: OutboxStore, history: _History) -> None:
+    """Take one random step of a history, checking any claim against the rule."""
+    rng = history.rng
+    action = rng.choice(["add", "claim", "claim", "send", "reschedule", "park"])
+    if action == "add":
+        record = history.new_record()
+        async with _added(harness, store, record):
+            pass
+        history.pending[record.id] = record
+    elif action == "claim":
+        limit = rng.randint(1, 4)
+        expected = history.expected(limit)
+        claimed = list(await _claim(store, limit))
+        assert claimed == expected, f"claim of {limit} after {history.added} adds"
+        history.claimed.extend(claimed)
+        history.leases.update((record.id, _FUTURE) for record in claimed)
+    elif history.claimed:
+        record = rng.choice(history.claimed)
+        if action == "send":
+            await _call(store.mark_sent([record]))
+            history.settle(record, None)
+        elif action == "reschedule":
+            retried = replace(
+                record,
+                attempts=record.attempts + 1,
+                error="failed",
+                available_at=rng.choice([_PAST, _FUTURE]),
+            )
+            await _call(store.reschedule(retried))
+            history.settle(record, retried)
+        else:
+            await _call(store.mark_failed(replace(record, error="gone")))
+            history.settle(record, None)
+
+
+@pytest.mark.parametrize("seed", range(20))
+async def test_claims_follow_the_rule_over_random_histories(harness: _Harness, seed: int):
+    """
+    Every claim should take what the claim rule says, whatever came before it.
+
+    Leases outlast the history, so whether a record is leased never depends on the clock.
+
+    Given: A store, and a seeded random history of adds, claims, sends, reschedules and
+        parks, with keyed and unkeyed records, some not yet due
+    When: Each step of the history runs
+    Then: Every claim takes exactly the records the claim rule takes from what's pending
+    """
+    store = harness.store(lease=3600.0)
+    history = _History(random.Random(seed))
+    for _ in range(60):
+        await _step(harness, store, history)
