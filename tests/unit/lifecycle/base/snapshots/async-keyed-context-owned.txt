@@ -1,16 +1,16 @@
 async def wrapper(a, b):
     try:
         __slots__ = __var__.get()
-        __entry__ = __slots__[4]
+        __cache__ = __slots__[4]
     except LookupError:
         __slots__ = __store__.get()
-        __entry__ = __slots__[4]
+        __cache__ = __slots__[4]
     __ck__ = (a, b, )
-    if __entry__.__class__ is not __Owned__:
+    if __cache__.__class__ is not __Owned__:
         __cache__ = {}
         __slots__[4] = __Owned__(__cache__)
     else:
-        __cache__ = __entry__.value
+        __cache__ = __cache__.value
         if __ck__ in __cache__:
             return __cache__[__ck__]
     __pk__ = (__id__(__slots__), __ck__)

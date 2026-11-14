@@ -20,8 +20,8 @@ import pytest
 
 from stratae.codegen import compile_wrapper
 
-_SOURCE = "def wrapper(x):\n    return __func__(x) + 1"
-_RAISING = "def wrapper():\n    raise ValueError('generated')"
+_SOURCE = ["def wrapper(x):", "    return __func__(x) + 1"]
+_RAISING = ["def wrapper():", "    raise ValueError('generated')"]
 
 
 def _target(x: int) -> int:
@@ -58,7 +58,7 @@ def test_getsource_returns_generated_source():
     source = inspect.getsource(wrapper.__code__)
 
     # Assert
-    assert source == _SOURCE
+    assert source == "\n".join(_SOURCE)
 
 
 def test_traceback_shows_source_line():
@@ -116,5 +116,5 @@ def test_wrappers_of_same_target_keep_own_source():
     second = compile_wrapper(_RAISING, _target, {})
 
     # Assert
-    assert inspect.getsource(first.__code__) == _SOURCE
-    assert inspect.getsource(second.__code__) == _RAISING
+    assert inspect.getsource(first.__code__) == "\n".join(_SOURCE)
+    assert inspect.getsource(second.__code__) == "\n".join(_RAISING)

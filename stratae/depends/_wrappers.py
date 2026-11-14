@@ -11,8 +11,11 @@ from inspect import Parameter, Signature, markcoroutinefunction
 from typing import Any
 
 from stratae.codegen import (
-    Writer,
+    Lines,
+    async_def_wrapper,
+    block,
     compile_wrapper,
+    def_wrapper,
     defaults,
     kwdefaults,
     read_signature,
@@ -51,23 +54,28 @@ def _get_annotations(params: list[Parameter]) -> dict[str, Any]:
     }
 
 
-def _finalize(
-    writer: Writer,
-    func: Callable[..., Any],
-    kept: Signature,
-    resolved_deps: dict[str, Provider],
+type _Source = Callable[[str, str], Lines]
+"""The wrapper's source, from its parameters and the arguments its call passes on."""
+
+
+def _compile(
+    func: Callable[..., Any], resolved_deps: dict[str, Provider], source: _Source
 ) -> Callable[..., Any]:
     """
-    Compile the wrapper source and copy func's metadata onto it.
+    Compile `source` for `func`, and copy func's metadata onto it.
 
     The return annotation is kept, since frameworks like FastAPI read it.
     """
+    sig = read_signature(func)
+    params = list(sig.parameters.values())
+    kept_params = _kept_parameters(params, resolved_deps)
+    kept = sig.replace(parameters=kept_params)
+    lines = source(render_parameters(kept_params), _render_call_arguments(params, resolved_deps))
     namespace: dict[str, Any] = {
         "__func__": func,
         **{f"__dep_{name}__": dep for name, dep in resolved_deps.items()},
     }
-    wrapper = compile_wrapper(writer.render(), func, namespace)
-    kept_params = list(kept.parameters.values())
+    wrapper = compile_wrapper(lines, func, namespace)
 
     wraps(func)(wrapper)
     wrapper.__signature__ = kept
@@ -80,31 +88,12 @@ def _finalize(
     return wrapper
 
 
-def _build_wrapper(
-    func: Callable[..., Any],
-    resolved_deps: dict[str, Provider],
-    is_async: bool,
-    write_body: Callable[[Writer, str], None],
-) -> Callable[..., Any]:
-    """Share the setup common to every wrapper kind."""
-    sig = read_signature(func)
-    params = list(sig.parameters.values())
-    kept = _kept_parameters(params, resolved_deps)
-
-    writer = Writer()
-    writer.write(f"{'async ' if is_async else ''}def wrapper({render_parameters(kept)}):")
-    with writer.block():
-        write_body(writer, _render_call_arguments(params, resolved_deps))
-
-    return _finalize(writer, func, sig.replace(parameters=kept), resolved_deps)
-
-
 def create_sync_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
     """Create a synchronous wrapper."""
-    return _build_wrapper(
-        func, resolved_deps, False, lambda w, call: w.write(f"return __func__({call})")
+    return _compile(
+        func, resolved_deps, lambda params, args: def_wrapper(params, [f"return __func__({args})"])
     )
 
 
@@ -112,8 +101,10 @@ def create_sync_gen_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
     """Create a synchronous generator wrapper, delegating with `yield from`."""
-    return _build_wrapper(
-        func, resolved_deps, False, lambda w, call: w.write(f"yield from __func__({call})")
+    return _compile(
+        func,
+        resolved_deps,
+        lambda params, args: def_wrapper(params, [f"yield from __func__({args})"]),
     )
 
 
@@ -125,50 +116,50 @@ def create_async_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
     """Create an asynchronous wrapper."""
-    if _has_async_deps(resolved_deps):
-        return _build_wrapper(
-            func, resolved_deps, True, lambda w, call: w.write(f"return await __func__({call})")
-        )
-    return markcoroutinefunction(create_sync_wrapper(func, resolved_deps))
+    if not _has_async_deps(resolved_deps):
+        return markcoroutinefunction(create_sync_wrapper(func, resolved_deps))
+    return _compile(
+        func,
+        resolved_deps,
+        lambda params, args: async_def_wrapper(params, [f"return await __func__({args})"]),
+    )
 
 
-def _write_stop_on_exhaustion(writer: Writer, statement: str) -> None:
-    """Write `statement`, returning from the wrapper once the inner generator is exhausted."""
-    writer.write("try:")
-    with writer.block():
-        writer.write(statement)
-    writer.write("except StopAsyncIteration:")
-    with writer.block():
-        writer.write("return")
+def _stop_on_exhaustion(statement: str) -> Lines:
+    """Run `statement`, returning from the wrapper once the inner generator is exhausted."""
+    return [*block("try:", [statement]), *block("except StopAsyncIteration:", ["return"])]
 
 
-def _write_async_gen_body(writer: Writer, call: str) -> None:
+def _async_gen_body(arguments: str) -> Lines:
     """
-    Write an async generator wrapper body that delegates like `yield from`.
+    Return an async generator wrapper body that delegates like `yield from`.
 
     Forwards sent values, thrown exceptions, and close, which `async for` would drop.
     """
-    writer.write(f"__gen__ = __func__({call})")
-    _write_stop_on_exhaustion(writer, "__value__ = await __gen__.__anext__()")
-    writer.write("while True:")
-    with writer.block():
-        writer.write("try:")
-        with writer.block():
-            writer.write("__sent__ = yield __value__")
-        writer.write("except GeneratorExit:")
-        with writer.block():
-            writer.write("await __gen__.aclose()")
-            writer.write("raise")
-        writer.write("except BaseException as __exc__:")
-        with writer.block():
-            _write_stop_on_exhaustion(writer, "__value__ = await __gen__.athrow(__exc__)")
-        writer.write("else:")
-        with writer.block():
-            _write_stop_on_exhaustion(writer, "__value__ = await __gen__.asend(__sent__)")
+    return [
+        f"__gen__ = __func__({arguments})",
+        *_stop_on_exhaustion("__value__ = await __gen__.__anext__()"),
+        *block(
+            "while True:",
+            [
+                *block("try:", ["__sent__ = yield __value__"]),
+                *block("except GeneratorExit:", ["await __gen__.aclose()", "raise"]),
+                *block(
+                    "except BaseException as __exc__:",
+                    _stop_on_exhaustion("__value__ = await __gen__.athrow(__exc__)"),
+                ),
+                *block("else:", _stop_on_exhaustion("__value__ = await __gen__.asend(__sent__)")),
+            ],
+        ),
+    ]
 
 
 def create_async_gen_wrapper(
     func: Callable[..., Any], resolved_deps: dict[str, Provider]
 ) -> Callable[..., Any]:
     """Create an async generator wrapper, itself an async generator function."""
-    return _build_wrapper(func, resolved_deps, True, write_body=_write_async_gen_body)
+    return _compile(
+        func,
+        resolved_deps,
+        lambda params, args: async_def_wrapper(params, _async_gen_body(args)),
+    )

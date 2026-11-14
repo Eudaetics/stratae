@@ -1,16 +1,16 @@
 def wrapper():
     try:
         __slots__ = __var__.get()
-        __entry__ = __slots__[4]
+        __value__ = __slots__[4]
     except LookupError:
         __slots__ = __store__.get()
-        __entry__ = __slots__[4]
-    if __entry__.__class__ is not __Owned__:
+        __value__ = __slots__[4]
+    if __value__.__class__ is not __Owned__:
         __value__ = __func__()
         try:
             __slots__[4] = __Owned__(__value__)
         except IndexError:
             pass
     else:
-        __value__ = __entry__.value
+        __value__ = __value__.value
     return __value__
