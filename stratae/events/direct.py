@@ -99,12 +99,11 @@ scheduled shipment for order 1
 """
 
 import threading
-from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
 from functools import singledispatch
 from inspect import markcoroutinefunction
 from types import CoroutineType
-from typing import Any, ClassVar, NoReturn, Protocol, overload
+from typing import Any, NoReturn, Protocol, overload
 
 from stratae.callables import is_async_callable
 from stratae.events.binding import abind, bind
@@ -145,8 +144,8 @@ def _no_dispatcher(event: AnyEvent, handlers: Collection[Any], payload: Any) -> 
     Mark a pattern the bus has no dispatcher for; never called.
 
     A bus compares its dispatch function's choice against this, and refuses the event with
-    `TypeError` in `handle`, `bind` and `emit`. `BaseDirectBus` routes every emit through
-    that check, so nothing dispatches to this.
+    `TypeError` in `handle`, `bind` and `emit`. Every emit goes through that check, so
+    nothing dispatches to this.
     """
     ...
 
@@ -275,54 +274,96 @@ _ASYNC_DEFAULTS = (Dispatch(Request, dispatch_request_async), Dispatch(PubSub, f
 """The patterns an AsyncDirectBus supports by default."""
 
 
-class BaseDirectBus(ABC):
+def _sender(route: _Route, received: bool, asynchronous: bool) -> Send:
     """
-    Handler registry and pattern dispatch shared by the direct buses.
+    Return what dispatches a message to the route's handlers.
 
-    An emit called directly goes through `_emit`, which looks the event up and refuses one the
-    bus can't dispatch. A bound callable emits through `_emitter_for`'s emitter instead, which
+    :param received: Whether handle middleware reads the message's headers, which are then made
+        the received headers around the dispatch.
+    :param asynchronous: Whether the dispatcher returns an awaitable, which is awaited inside
+        the received headers.
+    """
+    dispatcher = route.dispatcher
+    if not received:
+
+        def send(message: Outgoing) -> Any:
+            return dispatcher(message.event, route.handlers, message.payload)
+
+        return send
+    if asynchronous:
+
+        async def send_received_async(message: Outgoing) -> Any:
+            with receiving(message.headers):
+                return await dispatcher(message.event, route.handlers, message.payload)
+
+        return send_received_async
+
+    def send_received(message: Outgoing) -> Any:
+        with receiving(message.headers):
+            return dispatcher(message.event, route.handlers, message.payload)
+
+    return send_received
+
+
+class _Core:
+    """
+    Handler registry and pattern dispatch, for a sync or an async direct bus.
+
+    Whether the bus is async decides its default dispatchers, its shared emit, how it delivers
+    a message, and which handlers and hooks it refuses. All are chosen here, once.
+
+    An emit called directly goes through `emit`, which looks the event up and refuses one the
+    bus can't dispatch. A bound callable emits through `emitter_for`'s emitter instead, which
     refused the event when it was bound, and holds its route. Either way, a plain emit, with
-    no hooks, no middleware and no envelope, is delivered to its handlers directly; any other
-    goes to the subclass's `_run`. That delivers it with the headers its publish middleware
-    set, for handle middleware to read. A direct bus supplies only how it runs a checked emit,
-    so it can't dispatch an event its dispatcher doesn't know.
+    no hooks, no middleware and no envelope, is delivered to its handlers directly. Any other
+    goes through the shared emit, with the headers its publish middleware set, for handle
+    middleware to read.
     """
 
-    _asynchronous: ClassVar[bool]
-    """Whether the bus runs handlers and middleware asynchronously."""
-
-    _defaults: ClassVar[tuple[Dispatch, ...]]
-    """The patterns the bus supports before any `dispatchers=`."""
-
-    _publish: ClassVar[Callable[..., Any]]
-    """The shared emit the bus runs a checked emit through, sync or async."""
+    __slots__ = (
+        "_asynchronous",
+        "_dispatcher",
+        "_middleware",
+        "_name",
+        "_plain",
+        "_publish",
+        "_publishing",
+        "_registering",
+        "_routes",
+    )
 
     def __init__(
         self,
-        *,
-        envelope: EnvelopeConfig | None = None,
-        dispatchers: Collection[Dispatch] = (),
-        middleware: Middleware = Middleware(),
+        name: str,
+        asynchronous: bool,
+        envelope: EnvelopeConfig | None,
+        dispatchers: Collection[Dispatch],
+        middleware: Middleware,
     ) -> None:
         """
-        Create a bus, optionally with envelope tracking, more patterns and middleware.
+        Create the core of a bus.
 
-        :raises TypeError: If any middleware is the wrong kind for the bus.
+        :param name: The bus's class name, for error messages.
+        :param asynchronous: Whether the bus runs handlers, hooks and middleware asynchronously.
+        :raises MiddlewareKindError: If any middleware is the wrong kind for the bus.
         """
-        middleware.require(type(self).__name__, asynchronous=self._asynchronous)
+        middleware.require(name, asynchronous=asynchronous)
+        self._name = name
+        self._asynchronous = asynchronous
         self._routes: dict[_AnyEvent, _Route] = {}
         self._registering = threading.Lock()
-        pairs = (*self._defaults, *dispatchers)
+        pairs = (*(_ASYNC_DEFAULTS if asynchronous else _SYNC_DEFAULTS), *dispatchers)
         self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
+        self._publish: Callable[..., Any] = publish_async if asynchronous else publish
         self._publishing = Publishing(
             middleware.publish,
             None if envelope is None else envelope.new_id,
-            asynchronous=self._asynchronous,
+            asynchronous=asynchronous,
         )
         self._plain = not (middleware.publish or middleware.handle) and envelope is None
 
-    def _emitter_for(self, event: _AnyEvent) -> Callable[..., Any]:
+    def emitter_for(self, event: _AnyEvent) -> Callable[..., Any]:
         """
         Return what `bind` calls to emit the event: an emitter holding the event's route.
 
@@ -350,7 +391,7 @@ class BaseDirectBus(ABC):
         dispatcher = self._dispatcher(type(event))
         if dispatcher is _no_dispatcher:
             raise TypeError(
-                _UNSUPPORTED_PATTERN.format(bus=type(self).__name__, pattern=type(event).__name__)
+                _UNSUPPORTED_PATTERN.format(bus=self._name, pattern=type(event).__name__)
             )
         return dispatcher
 
@@ -368,25 +409,23 @@ class BaseDirectBus(ABC):
     def _new_route(self, dispatcher: Callable[..., Any]) -> _Route:
         """Make a route with no handlers yet, and the `send` that delivers to them."""
         route = _Route(dispatcher, _NO_HANDLERS)
-        route.send = self._sender(route)
+        route.send = _sender(route, bool(self._middleware.handle), self._asynchronous)
         return route
 
-    @abstractmethod
-    def _sender(self, route: _Route) -> Send:
-        """Return what delivers a message to the route's handlers, as the shared emit calls."""
-
-    def _check_hooks(self, event: _AnyEvent, hooks: Hooks[Any, Any]) -> None:
+    def check_hooks(self, event: _AnyEvent, hooks: Hooks[Any, Any]) -> None:
         """Raise TypeError for async hooks on a sync bus, which can't await them."""
         if hooks.has_async and not self._asynchronous:
             raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
 
-    def _register(
+    def register(
         self, config: _AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
     ) -> Handler[Any, _AnyEvent, Any]:
         """Wrap fn and its hooks as a Handler, and add it to the event's handlers."""
+        if not self._asynchronous and is_async_callable(fn):
+            raise TypeError(_ASYNC_HANDLER_REJECTED)
         route = self._route(config)
         if hooks is not None:
-            self._check_hooks(config, hooks)
+            self.check_hooks(config, hooks)
         call, is_async = wrap_handler(
             config, None, fn, hooks, self._middleware.handle, self._asynchronous
         )
@@ -395,7 +434,17 @@ class BaseDirectBus(ABC):
             route.handlers = route.handlers.adding(handler)
         return handler
 
-    def _emit(self, event: _AnyEvent, payload: Any, hooks: Hooks[Any, Any] | None) -> Any:
+    def decorator(
+        self, config: _AnyEvent, hooks: Hooks[Any, Any] | None
+    ) -> Callable[[Callable[..., Any]], Handler[Any, _AnyEvent, Any]]:
+        """Return the decorator form of `handle`, registering what it's applied to."""
+
+        def decorator(fn: Callable[..., Any]) -> Handler[Any, _AnyEvent, Any]:
+            return self.register(config, fn, hooks)
+
+        return decorator
+
+    def emit(self, event: _AnyEvent, payload: Any, hooks: Hooks[Any, Any] | None) -> Any:
         """
         Refuse an event this bus can't emit, then run it: the one emit entry point.
 
@@ -411,39 +460,25 @@ class BaseDirectBus(ABC):
                 return dispatcher(event, _NO_HANDLERS, payload)
             route = self._new_route(dispatcher)
         if hooks is not None:
-            self._check_hooks(event, hooks)
+            self.check_hooks(event, hooks)
         elif self._plain:
             return route.dispatcher(event, route.handlers, payload)
         return self._publish(self._publishing, route.send, event, payload, None, hooks)
 
     def remove(self, handler: Handler[Any, _AnyEvent, Any]) -> None:
-        """
-        Remove a registered handler.
-
-        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
-            One this bus doesn't have is ignored.
-        """
+        """Remove a registered handler, ignoring one the bus doesn't have."""
         route = self._routes.get(handler.config)
         if route is not None:
             with self._registering:
                 route.handlers = route.handlers.removing(handler)
 
     def handlers(self, event: _AnyEvent) -> Handlers[Handler[Any, _AnyEvent, Any]]:
-        """
-        Return the handlers registered for an event, in no particular order.
-
-        Use it to check registrations up front, such as that a request event has exactly one
-        responder before anything emits it.
-
-        :param event: The event to look up.
-        :returns: The event's {py:class}`Handlers <stratae.events.handler.Handlers>`, empty if
-            it has none. Later calls to `handle` or `remove` don't change it.
-        """
+        """Return the handlers registered for an event, empty if it has none."""
         route = self._routes.get(event)
         return _NO_HANDLERS if route is None else route.handlers
 
 
-class DirectBus(BaseDirectBus):
+class DirectBus:
     """
     In-process, synchronous event bus.
 
@@ -466,9 +501,15 @@ class DirectBus(BaseDirectBus):
     :raises MiddlewareKindError: If any middleware isn't a sync function returning a value.
     """
 
-    _asynchronous = False
-    _defaults = _SYNC_DEFAULTS
-    _publish = staticmethod(publish)
+    def __init__(
+        self,
+        *,
+        envelope: EnvelopeConfig | None = None,
+        dispatchers: Collection[Dispatch] = (),
+        middleware: Middleware = Middleware(),
+    ) -> None:
+        """Create a bus, optionally with envelope tracking, more patterns and middleware."""
+        self._core = _Core("DirectBus", False, envelope, dispatchers, middleware)
 
     def emit[S, R](
         self,
@@ -494,7 +535,7 @@ class DirectBus(BaseDirectBus):
         :raises TypeError: If the bus has no dispatcher for the event's pattern, or `hooks`
             includes an async hook.
         """
-        return self._emit(event, payload, hooks)
+        return self._core.emit(event, payload, hooks)
 
     @overload
     def bind[**P, S, R](
@@ -539,8 +580,8 @@ class DirectBus(BaseDirectBus):
             async, or `hooks` includes an async hook.
         """
         if hooks is not None:
-            self._check_hooks(event, hooks)
-        return bind(event, self._emitter_for(event), factory=factory, hooks=hooks)
+            self._core.check_hooks(event, hooks)
+        return bind(event, self._core.emitter_for(event), factory=factory, hooks=hooks)
 
     @overload
     def handle[R](
@@ -596,39 +637,33 @@ class DirectBus(BaseDirectBus):
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
         """
         if fn is not None:
-            return self._register(config, fn, hooks)
+            return self._core.register(config, fn, hooks)
+        return self._core.decorator(config, hooks)
 
-        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEvent, Any]:
-            return self._register(config, f, hooks)
+    def remove(self, handler: Handler[Any, _AnyEvent, Any]) -> None:
+        """
+        Remove a registered handler.
 
-        return decorator
+        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
+            One this bus doesn't have is ignored.
+        """
+        self._core.remove(handler)
 
-    def _register(
-        self, config: _AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
-    ) -> Handler[Any, _AnyEvent, Any]:
-        """Wrap fn as a Handler, raising TypeError if it's async."""
-        if is_async_callable(fn):
-            raise TypeError(_ASYNC_HANDLER_REJECTED)
-        return super()._register(config, fn, hooks)
+    def handlers(self, event: _AnyEvent) -> Handlers[Handler[Any, _AnyEvent, Any]]:
+        """
+        Return the handlers registered for an event, in no particular order.
 
-    def _sender(self, route: _Route) -> Send:
-        """Return what dispatches a message, with its headers if handle middleware reads them."""
-        dispatcher = route.dispatcher
-        if not self._middleware.handle:
+        Use it to check registrations up front, such as that a request event has exactly one
+        responder before anything emits it.
 
-            def send(message: Outgoing) -> Any:
-                return dispatcher(message.event, route.handlers, message.payload)
-
-            return send
-
-        def send_received(message: Outgoing) -> Any:
-            with receiving(message.headers):
-                return dispatcher(message.event, route.handlers, message.payload)
-
-        return send_received
+        :param event: The event to look up.
+        :returns: The event's {py:class}`Handlers <stratae.events.handler.Handlers>`, empty if
+            it has none. Later calls to `handle` or `remove` don't change it.
+        """
+        return self._core.handlers(event)
 
 
-class AsyncDirectBus(BaseDirectBus):
+class AsyncDirectBus:
     """
     In-process, asynchronous event bus.
 
@@ -649,9 +684,15 @@ class AsyncDirectBus(BaseDirectBus):
     :raises MiddlewareKindError: If any middleware isn't an `async def`.
     """
 
-    _asynchronous = True
-    _defaults = _ASYNC_DEFAULTS
-    _publish = staticmethod(publish_async)
+    def __init__(
+        self,
+        *,
+        envelope: EnvelopeConfig | None = None,
+        dispatchers: Collection[Dispatch] = (),
+        middleware: Middleware = Middleware(),
+    ) -> None:
+        """Create a bus, optionally with envelope tracking, more patterns and middleware."""
+        self._core = _Core("AsyncDirectBus", True, envelope, dispatchers, middleware)
 
     @markcoroutinefunction
     def emit[S, R](
@@ -678,7 +719,7 @@ class AsyncDirectBus(BaseDirectBus):
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
         try:
-            dispatched = self._emit(event, payload, hooks)
+            dispatched = self._core.emit(event, payload, hooks)
         except Exception as error:
             return _await(_Failed(error))
         if dispatched.__class__ is CoroutineType:
@@ -726,7 +767,7 @@ class AsyncDirectBus(BaseDirectBus):
         :returns: An async callable that emits the event on this bus.
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
-        return abind(event, self._emitter_for(event), factory=factory, hooks=hooks)
+        return abind(event, self._core.emitter_for(event), factory=factory, hooks=hooks)
 
     @overload
     def handle[R](
@@ -800,25 +841,27 @@ class AsyncDirectBus(BaseDirectBus):
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
         """
         if fn is not None:
-            return self._register(config, fn, hooks)
+            return self._core.register(config, fn, hooks)
+        return self._core.decorator(config, hooks)
 
-        def decorator(f: Callable[..., Any]) -> Handler[..., _AnyEvent, Any]:
-            return self._register(config, f, hooks)
+    def remove(self, handler: Handler[Any, _AnyEvent, Any]) -> None:
+        """
+        Remove a registered handler.
 
-        return decorator
+        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
+            One this bus doesn't have is ignored.
+        """
+        self._core.remove(handler)
 
-    def _sender(self, route: _Route) -> Send:
-        """Return what dispatches a message, with its headers if handle middleware reads them."""
-        dispatcher = route.dispatcher
-        if not self._middleware.handle:
+    def handlers(self, event: _AnyEvent) -> Handlers[Handler[Any, _AnyEvent, Any]]:
+        """
+        Return the handlers registered for an event, in no particular order.
 
-            def send(message: Outgoing) -> Awaitable[Any]:
-                return dispatcher(message.event, route.handlers, message.payload)
+        Use it to check registrations up front, such as that a request event has exactly one
+        responder before anything emits it.
 
-            return send
-
-        async def send_received(message: Outgoing) -> Any:
-            with receiving(message.headers):
-                return await dispatcher(message.event, route.handlers, message.payload)
-
-        return send_received
+        :param event: The event to look up.
+        :returns: The event's {py:class}`Handlers <stratae.events.handler.Handlers>`, empty if
+            it has none. Later calls to `handle` or `remove` don't change it.
+        """
+        return self._core.handlers(event)
