@@ -66,14 +66,13 @@ DirectBus (middleware):
 - Publish middleware runs once around each emit, outside its hooks.
 - Handle middleware runs around each handler, outside its hooks, and sees the reply.
 - Publish middleware runs inside the emission's envelope.
-- Handle middleware raising on entry refuses the handler call.
-- A KeyboardInterrupt a handle middleware tries to swallow stops fan-out.
-- An async context manager class is refused as middleware when the bus is built.
+- Handle middleware raising before next refuses the handler call.
+- An async def middleware is refused when the bus is built.
 - An unsupported pattern emitted directly fails before any middleware runs.
 - A call object a middleware keeps doesn't keep the bus alive.
-- Handle middleware reads the headers publish middleware set, read-only.
+- Handle middleware reads the headers publish middleware added, read-only.
 - A handler's own emit has its own headers, and the outer handler's are restored after it.
-- Publish middleware setting a reserved header refuses the emit; no handler runs.
+- Publish middleware adding a reserved header refuses the emit; no handler runs.
 - Handle middleware on a bus without publish middleware sees no headers, even inside another
   message's delivery.
 
@@ -89,8 +88,7 @@ import gc
 import sys
 import threading
 import weakref
-from collections.abc import Collection, Generator
-from contextlib import contextmanager
+from collections.abc import Callable, Collection
 from contextvars import ContextVar
 from typing import Any, Literal, cast
 from unittest.mock import Mock
@@ -122,7 +120,7 @@ from stratae.events.exceptions import (
     NoResponderError,
 )
 from stratae.events.pipeline import receiving
-from stratae.middleware import MiddlewareNotEnterableError
+from stratae.middleware import MiddlewareKindError
 
 
 class _NoSuchBook(LookupError):
@@ -1482,18 +1480,15 @@ def test_observing_hook_returning_awaitable_is_logged(
 
 
 def _labelled(log: list[str], label: str) -> Any:
-    """Return a sync context manager class logging under a label as it's entered and exited."""
+    """Return middleware logging under a label before and after the rest of the chain."""
 
-    class Labelled:
-        def __init__(self, call: PublishCall | HandleCall) -> None: ...
+    def labelled(call: PublishCall | HandleCall, next: Callable[[Any], Any]) -> Any:
+        log.append(f"{label} in")
+        reply = next(call)
+        log.append(f"{label} out")
+        return reply
 
-        def __enter__(self) -> None:
-            log.append(f"{label} in")
-
-        def __exit__(self, *exc: object) -> None:
-            log.append(f"{label} out")
-
-    return Labelled
+    return labelled
 
 
 def _labelled_hooks(log: list[str], label: str) -> Hooks[Any, Any]:
@@ -1554,10 +1549,10 @@ def test_handle_middleware_sees_event_and_reply():
     # Arrange
     seen: list[object] = []
 
-    @contextmanager
-    def record(call: HandleCall) -> Generator[None, None, None]:
-        yield
-        seen.extend((call.event, call.payload.query, call.reply))
+    def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
+        reply = next(call)
+        seen.extend((call.event, call.payload.query, reply))
+        return reply
 
     bus = DirectBus(middleware=Middleware(handle=(record,)))
     bus.handle(_find_book, lambda query: _BookResult(query.query))
@@ -1581,10 +1576,9 @@ def test_publish_middleware_inside_envelope():
     # Arrange
     seen: list[Envelope | None] = []
 
-    @contextmanager
-    def record(call: PublishCall) -> Generator[None, None, None]:
+    def record(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
         seen.append(Envelope.current())
-        yield
+        return next(call)
 
     bus = DirectBus(envelope=EnvelopeConfig(), middleware=Middleware(publish=(record,)))
     bus.handle(_task_created, lambda task: seen.append(Envelope.current()))
@@ -1597,21 +1591,19 @@ def test_publish_middleware_inside_envelope():
     assert seen == [seen[0], seen[0]]
 
 
-def test_handle_middleware_raising_on_entry_refuses_handler():
+def test_handle_middleware_raising_refuses_handler():
     """
-    Handle middleware raising on entry should refuse the handler call.
+    Handle middleware raising before next should refuse the handler call.
 
-    Given: A bus whose handle middleware raises on entry, and a responder
+    Given: A bus whose handle middleware raises before calling next, and a responder
     When: A request is emitted
     Then: The middleware's error is raised, and the responder doesn't run
     """
     # Arrange
     calls: list[str] = []
 
-    @contextmanager
-    def refuse(call: HandleCall) -> Generator[None, None, None]:
+    def refuse(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
         raise _RateLimited()
-        yield
 
     def respond(query: _BookQuery) -> _BookResult:
         calls.append("responder")
@@ -1626,60 +1618,22 @@ def test_handle_middleware_raising_on_entry_refuses_handler():
     assert calls == []
 
 
-def test_swallowed_interrupt_stops_fan_out():
-    """
-    A KeyboardInterrupt that handle middleware tries to swallow should still stop the emit.
-
-    Given: A bus whose handle middleware's exit returns True, and two handlers that each
-        record they ran, then raise KeyboardInterrupt
-    When: A pub/sub event is emitted
-    Then: KeyboardInterrupt propagates, and only the first handler ran
-    """
-    # Arrange
-    ran: list[str] = []
-
-    class Suppressing:
-        def __init__(self, call: HandleCall) -> None: ...
-
-        def __enter__(self) -> None: ...
-
-        def __exit__(self, *exc: object) -> bool:
-            return True
-
-    def interrupt(task: _TaskCreated) -> None:
-        ran.append("handler")
-        raise KeyboardInterrupt
-
-    bus = DirectBus(middleware=Middleware(handle=(Suppressing,)))
-    bus.handle(_task_created, interrupt)
-    bus.handle(_task_created, interrupt)
-
-    # Act / Assert
-    with pytest.raises(KeyboardInterrupt):
-        bus.emit(_task_created, _TaskCreated(1))
-    assert ran == ["handler"]
-
-
 def test_async_middleware_refused():
     """
-    DirectBus should refuse an async context manager class as middleware when it's built.
+    DirectBus should refuse an async def middleware when it's built.
 
-    Given: Publish middleware that's an async context manager class
+    Given: Publish middleware that's an async def
     When: A DirectBus is built with it
-    Then: A TypeError says DirectBus enters middleware synchronously
+    Then: MiddlewareKindError says DirectBus middleware must be a sync function
     """
 
     # Arrange
-    class Trace:
-        def __init__(self, call: PublishCall) -> None: ...
-
-        async def __aenter__(self) -> None: ...
-
-        async def __aexit__(self, *exc: object) -> None: ...
+    async def trace(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return await next(call)
 
     # Act / Assert
-    with pytest.raises(MiddlewareNotEnterableError, match="DirectBus"):
-        DirectBus(middleware=Middleware(publish=(Trace,)))
+    with pytest.raises(MiddlewareKindError, match="DirectBus middleware must be a sync"):
+        DirectBus(middleware=Middleware(publish=(trace,)))
 
 
 def test_unsupported_pattern_fails_before_middleware():
@@ -1702,19 +1656,18 @@ def test_unsupported_pattern_fails_before_middleware():
 
 def test_kept_call_does_not_keep_bus_alive():
     """
-    A call object a middleware keeps shouldn't keep the bus alive.
+    A call a middleware keeps shouldn't keep the bus alive.
 
-    Given: A bus whose publish middleware keeps every call object, and a responder
+    Given: A bus whose publish middleware keeps every call, and a responder
     When: A request is emitted, and the bus is dropped
-    Then: The bus is collected, though the call object is still kept
+    Then: The bus is collected, though the call is still kept
     """
     # Arrange
     kept: list[PublishCall] = []
 
-    @contextmanager
-    def keep(call: PublishCall) -> Generator[None, None, None]:
+    def keep(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
         kept.append(call)
-        yield
+        return next(call)
 
     bus = DirectBus(middleware=Middleware(publish=(keep,)))
     bus.handle(_find_book, lambda query: _BookResult(query.query))
@@ -1730,28 +1683,26 @@ def test_kept_call_does_not_keep_bus_alive():
     assert collected() is None
 
 
-@contextmanager
-def _tag_tenant(call: PublishCall) -> Generator[None, None, None]:
+def _tag_tenant(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
     """Publish middleware adding the tenant header."""
-    call.headers["x-tenant"] = "acme"
-    yield
+    return next(call.with_headers({"x-tenant": "acme"}))
 
 
 def _recording_headers(seen: list[object]) -> Any:
     """Return handle middleware recording the event's name and the headers it reads."""
 
-    @contextmanager
-    def record(call: HandleCall) -> Generator[None, None, None]:
+    def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
         seen.append((call.event.name, dict(call.headers)))
-        yield
+        reply = next(call)
         seen.append((call.event.name, dict(call.headers)))
+        return reply
 
     return record
 
 
 def test_handle_middleware_reads_publish_headers():
     """
-    Handle middleware should read the headers publish middleware set, without changing them.
+    Handle middleware should read the headers publish middleware added, without changing them.
 
     Given: A bus whose publish middleware adds a tenant header, and handle middleware that
         records the headers, then tries to set one
@@ -1761,14 +1712,13 @@ def test_handle_middleware_reads_publish_headers():
     # Arrange
     seen: list[object] = []
 
-    @contextmanager
-    def record(call: HandleCall) -> Generator[None, None, None]:
+    def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
         seen.append(dict(call.headers))
         try:
             cast(Any, call.headers)["x-tenant"] = "other"
         except TypeError:
             seen.append("read-only")
-        yield
+        return next(call)
 
     bus = DirectBus(middleware=Middleware(publish=(_tag_tenant,), handle=(record,)))
     bus.handle(_task_created, lambda task: None)
@@ -1785,17 +1735,16 @@ def test_nested_emit_has_own_headers():
     A handler's own emit should be handled with its own headers, then the outer ones restored.
 
     Given: A bus whose publish middleware tags each emit with its event's name, handle
-        middleware recording the headers on entry and exit, and a handler emitting a request
+        middleware recording the headers before and after the handler, and a handler
+        emitting a request
     When: The outer event is emitted
     Then: Each handler's middleware read its own event's tag, the outer one on both sides
     """
     # Arrange
     seen: list[object] = []
 
-    @contextmanager
-    def tag(call: PublishCall) -> Generator[None, None, None]:
-        call.headers["x-event"] = call.event.name
-        yield
+    def tag(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return next(call.with_headers({"x-event": call.event.name}))
 
     bus = DirectBus(middleware=Middleware(publish=(tag,), handle=(_recording_headers(seen),)))
     bus.handle(_find_book, lambda query: _BookResult(query.query))
@@ -1817,19 +1766,17 @@ def test_nested_emit_has_own_headers():
 @pytest.mark.parametrize("name", ["x-correlation-id", "X-Message-Id"])
 def test_reserved_header_refuses_emit(name: str):
     """
-    Publish middleware setting an envelope header should refuse the emit.
+    Publish middleware adding an envelope header should refuse the emit.
 
-    Given: A bus whose publish middleware sets an envelope header, in any case, and a handler
+    Given: A bus whose publish middleware adds an envelope header, in any case, and a handler
     When: An event is emitted
     Then: ValueError names the header, and the handler doesn't run
     """
     # Arrange
     ran: list[str] = []
 
-    @contextmanager
-    def forge(call: PublishCall) -> Generator[None, None, None]:
-        call.headers[name] = "forged"
-        yield
+    def forge(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return next(call.with_headers({name: "forged"}))
 
     bus = DirectBus(middleware=Middleware(publish=(forge,)))
     bus.handle(_task_created, lambda task: ran.append("handler"))

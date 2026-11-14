@@ -3,12 +3,16 @@ OpenTelemetry tracing for buses, as bus middleware.
 
 {py:func}`tracing` returns {py:class}`Middleware <stratae.events.middleware.Middleware>` that
 traces every emit and handler call. Give it to a publisher, a consumer, an outbox producer
-or a direct bus. Its publish half opens a span around each emit and writes the trace context
-into the message's headers, with OpenTelemetry's configured propagators. Its handle half
-reads that context from the message being handled, and opens a span around the handler as
-its child. So one trace follows an event from the request that emitted it, through the
-broker, into its handler. It depends only on `opentelemetry-api`; the application chooses the
-SDK and exporter. With no SDK configured, it does nothing.
+or a direct bus. An async bus runs only async middleware, so pass `asynchronous=True` for an
+{py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>`, an outbox producer, or a
+RabbitMQ publisher or consumer.
+
+Its publish half opens a span around each emit and writes the trace context into the
+message's headers, with OpenTelemetry's configured propagators. Its handle half reads that
+context from the message being handled, and opens a span around the handler as its child. So
+one trace follows an event from the request that emitted it, through the broker, into its
+handler. It depends only on `opentelemetry-api`; the application chooses the SDK and exporter.
+With no SDK configured, it does nothing.
 
 Spans over a broker follow OpenTelemetry's messaging semantic conventions:
 
@@ -90,8 +94,9 @@ from opentelemetry.context import Context
 from opentelemetry.trace import Link, Span, SpanKind, Status, StatusCode, Tracer, TracerProvider
 
 from stratae.events.envelope import Envelope
-from stratae.events.middleware import HandleCall, MessageHeaders, Middleware, PublishCall
+from stratae.events.middleware import HandleCall, Middleware, PublishCall
 from stratae.events.protocols import Destination, Operation, destination_of, operation_of
+from stratae.middleware import Next
 
 _PROCESS = Operation("process", "process")
 
@@ -177,7 +182,7 @@ class _Traced:
         *,
         parent: Context | None = None,
         links: tuple[Link, ...] = (),
-        inject: MessageHeaders | None = None,
+        inject: dict[str, str] | None = None,
     ) -> None:
         """
         Describe the span to open.
@@ -220,41 +225,69 @@ class _Traced:
             context.detach(self._token)
 
 
-class _Publish:
-    """Publish middleware opening a span around each emit."""
+class _PublishSpans:
+    """Opens a span around each emit."""
 
     __slots__ = ("_tracer",)
 
     def __init__(self, tracer: Tracer) -> None:
         self._tracer = tracer
 
-    def __call__(self, call: PublishCall) -> _Traced:
-        """Return the span for an emit."""
+    def _span(self, call: PublishCall) -> tuple[_Traced, dict[str, str] | None]:
+        """Return the span for an emit, and the headers its context is written into, if any."""
         event = call.event.name
+        carrier: dict[str, str] = {}
         if call.config is None:
             attributes = _internal_attributes(event)
-            return _Traced(
-                self._tracer, f"emit {event}", SpanKind.INTERNAL, attributes, inject=call.headers
+            traced = _Traced(
+                self._tracer, f"emit {event}", SpanKind.INTERNAL, attributes, inject=carrier
             )
+            return traced, carrier
         destination, operation = destination_of(call.config), operation_of(call.config)
         attributes = _messaging_attributes(event, destination, operation)
         name = f"{operation.name} {_name(destination, event)}"
         created = trace.get_current_span(propagate.extract(call.headers)).get_span_context()
         if created.is_valid:
             # Created earlier, as a relay's record was: link to its creation, and keep it.
-            return _Traced(self._tracer, name, SpanKind.CLIENT, attributes, links=(Link(created),))
-        return _Traced(self._tracer, name, SpanKind.PRODUCER, attributes, inject=call.headers)
+            links = (Link(created),)
+            return _Traced(self._tracer, name, SpanKind.CLIENT, attributes, links=links), None
+        traced = _Traced(self._tracer, name, SpanKind.PRODUCER, attributes, inject=carrier)
+        return traced, carrier
 
 
-class _Handle:
-    """Handle middleware opening a span around each handler call."""
+class _Publish(_PublishSpans):
+    """Sync publish middleware opening a span around each emit."""
+
+    __slots__ = ()
+
+    def __call__(self, call: PublishCall, next: Next[PublishCall, Any]) -> Any:
+        """Run the emit inside its span, sending the span's context in its headers."""
+        traced, carrier = self._span(call)
+        with traced:
+            return next(call if carrier is None else call.with_headers(carrier))
+
+
+class _AsyncPublish(_PublishSpans):
+    """Async publish middleware opening a span around each emit."""
+
+    __slots__ = ()
+
+    async def __call__(self, call: PublishCall, next: Next[PublishCall, Any]) -> Any:
+        """Await the emit inside its span, sending the span's context in its headers."""
+        traced, carrier = self._span(call)
+        with traced:
+            return await next(call if carrier is None else call.with_headers(carrier))
+
+
+class _HandleSpans:
+    """Opens a span around each handler call."""
 
     __slots__ = ("_tracer",)
 
     def __init__(self, tracer: Tracer) -> None:
         self._tracer = tracer
 
-    def __call__(self, call: HandleCall) -> _Traced:
+    def _span(self, call: HandleCall) -> _Traced:
         """Return the span for a handler call, a child of the message's creation context."""
         event = call.event.name
         # The message's creation context, over the current one: the current span if none.
@@ -270,13 +303,40 @@ class _Handle:
         return _Traced(self._tracer, name, SpanKind.CONSUMER, attributes, parent=parent)
 
 
-def tracing(tracer_provider: TracerProvider | None = None) -> Middleware:
+class _Handle(_HandleSpans):
+    """Sync handle middleware opening a span around each handler call."""
+
+    __slots__ = ()
+
+    def __call__(self, call: HandleCall, next: Next[HandleCall, Any]) -> Any:
+        """Run the handler call inside its span."""
+        with self._span(call):
+            return next(call)
+
+
+class _AsyncHandle(_HandleSpans):
+    """Async handle middleware opening a span around each handler call."""
+
+    __slots__ = ()
+
+    async def __call__(self, call: HandleCall, next: Next[HandleCall, Any]) -> Any:
+        """Await the handler call inside its span."""
+        with self._span(call):
+            return await next(call)
+
+
+def tracing(
+    tracer_provider: TracerProvider | None = None, *, asynchronous: bool = False
+) -> Middleware:
     """
     Return middleware tracing every emit and handler call on a bus.
 
     :param tracer_provider: The provider to get the tracer from; the global one if `None`.
+    :param asynchronous: Whether the middleware is for an async bus.
     :returns: {py:class}`Middleware <stratae.events.middleware.Middleware>` with a `publish`
         and a `handle` half, so it can be given to a publisher, a consumer, or both.
     """
     tracer = trace.get_tracer(__name__, tracer_provider=tracer_provider)
+    if asynchronous:
+        return Middleware(publish=(_AsyncPublish(tracer),), handle=(_AsyncHandle(tracer),))
     return Middleware(publish=(_Publish(tracer),), handle=(_Handle(tracer),))

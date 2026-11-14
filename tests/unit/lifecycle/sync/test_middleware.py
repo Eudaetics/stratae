@@ -4,42 +4,44 @@ Unit tests for middleware on a sync Scope.
 This test suite verifies the following behaviors:
 
 Scope middleware:
-- Each activation enters the middleware in order once the scope is active, and exits it in
-  reverse after the activation's resources have closed, with the scope no longer active.
-- activate() and deactivate() enter and exit the middleware as `with` does.
-- An exit sees the activation's error, or None.
-- An exit sees an error a resource's cleanup raised, such as a failed commit.
-- A middleware raising on entry refuses the activation: the scope isn't left active, the
-  middleware already entered is exited with the error, later middleware isn't entered, and
-  the error propagates.
+- Each activation runs the middleware in order up to its yield once the scope is active, and
+  resumes it in reverse after the activation's resources have closed, with the scope no
+  longer active.
+- activate() and deactivate() run the middleware as `with` does.
+- A middleware sees the activation's error raised at its yield, or nothing.
+- A middleware sees an error a resource's cleanup raised, such as a failed commit.
+- A middleware raising before its yield refuses the activation: the scope isn't left active,
+  the middleware already running sees the error, later middleware isn't run, and the error
+  propagates.
 - A refused activation releases its required parent.
-- A middleware returning something that isn't a context manager refuses the activation.
-- An exit can't swallow the activation's error: trying raises MiddlewareError from it,
-  grouped with the error in CleanupErrors as an exit's error is. A BaseException that isn't
+- A middleware can't swallow the activation's error: trying raises MiddlewareError from it,
+  grouped with the error in CleanupErrors as a cleanup error is. A BaseException that isn't
   an Exception, such as KeyboardInterrupt, propagates as it is.
-- A sync context manager with an async __enter__ or __exit__ is refused, and its coroutine
-  closed.
-- An error raised on exit propagates as a resource's cleanup error does: alone after a clean
-  activation, or grouped with the activation's error in CleanupErrors.
-- middleware= refuses a lone callable, a string, an item that isn't callable, and a class
-  that isn't a sync context manager.
+- A middleware must yield exactly once: one that never yields refuses the activation, and
+  one that yields again raises ResourceDidNotStopError.
+- An error raised after the yield propagates as a resource's cleanup error does: alone after
+  a clean activation, or grouped with the activation's error in CleanupErrors.
+- middleware= refuses a lone callable, a string, an item that isn't callable, and anything
+  but a generator function.
 - The middleware is kept as a tuple, given in any sequence.
 """
 
-from collections.abc import Generator
-from contextlib import contextmanager, suppress
+import asyncio
+from collections.abc import AsyncGenerator, Generator
+from contextlib import suppress
 from typing import Any
 
 import pytest
 
-from stratae.lifecycle.exceptions import CleanupErrors, ScopeActivationError
-from stratae.lifecycle.scope import Scope
-from stratae.middleware import (
-    MiddlewareAsyncMethodError,
+from stratae.lifecycle.exceptions import (
+    CleanupErrors,
     MiddlewareError,
-    MiddlewareNotEnterableError,
-    MiddlewareResultError,
+    ResourceDidNotStopError,
+    ResourceDidNotYieldError,
+    ScopeActivationError,
 )
+from stratae.lifecycle.scope import Scope
+from stratae.middleware import MiddlewareKindError
 
 
 class _Refused(RuntimeError):
@@ -59,7 +61,6 @@ class _Failed(LookupError):
 def _recording(log: list[str], name: str):
     """Return a middleware recording its entry, whether the scope was active, and its exit."""
 
-    @contextmanager
     def middleware(scope: Scope) -> Generator[None, None, None]:
         log.append(f"enter {name} active={scope.is_active()}")
         try:
@@ -126,7 +127,6 @@ def test_middleware_can_use_cached_functions_on_entry():
     # Arrange
     made: list[int] = []
 
-    @contextmanager
     def warm(scope: Scope) -> Generator[None, None, None]:
         made.append(cached())
         yield
@@ -227,7 +227,6 @@ def test_refusing_middleware_ends_activation():
     # Arrange
     log: list[str] = []
 
-    @contextmanager
     def refuse(scope: Scope) -> Generator[None, None, None]:
         resource()
         raise _Refused
@@ -263,7 +262,6 @@ def test_refused_activation_releases_parent():
     """
 
     # Arrange
-    @contextmanager
     def refuse(scope: Scope) -> Generator[None, None, None]:
         raise _Refused
         yield  # unreachable, but makes this a generator
@@ -281,21 +279,17 @@ def test_refused_activation_releases_parent():
     assert not parent.is_active()
 
 
-def test_middleware_not_returning_context_manager_refuses():
+def test_middleware_that_isnt_a_generator_function_refused():
     """
-    A middleware returning something that isn't a context manager should refuse the activation.
+    A middleware that isn't a generator function should be refused when the scope is built.
 
-    Given: A scope whose middleware returns a plain value
-    When: The scope is activated
-    Then: MiddlewareResultError propagates and the scope isn't active
+    Given: A middleware returning a plain value
+    When: A scope is built with it
+    Then: MiddlewareKindError says the scope's middleware must be a generator function
     """
-    # Arrange
-    scope = Scope("work", middleware=(lambda scope: "not a context manager",))  # pyright: ignore[reportArgumentType]
-
     # Act / Assert
-    with pytest.raises(MiddlewareResultError, match="isn't a sync context manager"), scope:
-        pass
-    assert not scope.is_active()
+    with pytest.raises(MiddlewareKindError, match="must be a generator function"):
+        Scope("work", middleware=(lambda scope: "not a generator",))  # pyright: ignore[reportArgumentType]
 
 
 def test_exit_cannot_swallow_activation_error():
@@ -312,7 +306,6 @@ def test_exit_cannot_swallow_activation_error():
     """
 
     # Arrange
-    @contextmanager
     def swallow(scope: Scope) -> Generator[None, None, None]:
         with suppress(_Failed):
             yield
@@ -338,21 +331,19 @@ def test_swallowing_base_exception_raises_it_again():
     """
     A middleware trying to swallow a BaseException that isn't an Exception should re-raise it.
 
-    Given: A scope whose middleware's exit returns true for anything
+    Given: A scope whose middleware returns whatever its yield raises
     When: The block raises a BaseException that isn't an Exception
     Then: That error propagates as it is, not as MiddlewareError
     """
 
     # Arrange
-    class SwallowAll:
-        def __init__(self, scope: Scope) -> None: ...
+    def swallow_all(scope: Scope) -> Generator[None, None, None]:
+        try:
+            yield
+        except BaseException:
+            return
 
-        def __enter__(self) -> None: ...
-
-        def __exit__(self, *exc: object) -> bool:
-            return True
-
-    scope = Scope("work", middleware=(SwallowAll,))
+    scope = Scope("work", middleware=(swallow_all,))
 
     # Act / Assert
     with pytest.raises(_Interrupt), scope:
@@ -360,103 +351,62 @@ def test_swallowing_base_exception_raises_it_again():
     assert not scope.is_active()
 
 
-def test_clean_exit_returning_true_is_allowed():
+def _never_yields(scope: Scope) -> Generator[None, None, None]:
+    return
+    yield
+
+
+def _yields_twice(scope: Scope) -> Generator[None, None, None]:
+    try:
+        yield
+    finally:
+        yield
+
+
+def test_middleware_that_never_yields_refuses():
     """
-    An exit returning true after a clean activation should be allowed: there's no error.
+    A middleware that returns without yielding should refuse the activation.
 
-    Given: A scope whose middleware's exit returns true for anything
-    When: The block ends cleanly
-    Then: Nothing is raised
-    """
-
-    # Arrange
-    class SwallowAll:
-        def __init__(self, scope: Scope) -> None: ...
-
-        def __enter__(self) -> None: ...
-
-        def __exit__(self, *exc: object) -> bool:
-            return True
-
-    scope = Scope("work", middleware=(SwallowAll,))
-
-    # Act
-    with scope:
-        pass
-
-    # Assert
-    assert not scope.is_active()
-
-
-class _AsyncEnter:
-    """A sync context manager whose __enter__ is mistakenly an async def."""
-
-    def __init__(self, scope: Scope) -> None: ...
-
-    async def __enter__(self) -> None: ...
-
-    def __exit__(self, *exc: object) -> None: ...
-
-
-class _AsyncExit:
-    """A sync context manager whose __exit__ is mistakenly an async def."""
-
-    def __init__(self, scope: Scope) -> None: ...
-
-    def __enter__(self) -> None: ...
-
-    async def __exit__(self, *exc: object) -> None: ...
-
-
-@pytest.mark.filterwarnings("error::RuntimeWarning")
-def test_async_enter_refused():
-    """
-    A sync context manager with an async __enter__ should refuse the activation.
-
-    Given: A scope whose middleware's __enter__ is an async def
+    Given: A scope whose middleware returns before its yield
     When: The scope is activated
-    Then: MiddlewareAsyncMethodError propagates, the scope isn't active, and the coroutine is
-        closed rather than left unawaited
+    Then: ResourceDidNotYieldError propagates, and the scope isn't active
     """
     # Arrange
-    scope = Scope("work", middleware=(_AsyncEnter,))
+    scope = Scope("work", middleware=(_never_yields,))
 
     # Act / Assert
-    with pytest.raises(MiddlewareAsyncMethodError), scope:
+    with pytest.raises(ResourceDidNotYieldError), scope:
         pass
     assert not scope.is_active()
 
 
-@pytest.mark.filterwarnings("error::RuntimeWarning")
-def test_async_exit_refused_after_clean_activation():
+def test_middleware_yielding_again_after_clean_activation_refused():
     """
-    A sync context manager with an async __exit__ should be refused when it exits cleanly.
+    A middleware that yields again after a clean activation should be refused.
 
-    Given: A scope whose middleware's __exit__ is an async def
+    Given: A scope whose middleware yields a second time
     When: The block ends cleanly
-    Then: MiddlewareAsyncMethodError is raised, and the coroutine is closed rather than left
-        unawaited
+    Then: ResourceDidNotStopError is raised, and the scope isn't active
     """
     # Arrange
-    scope = Scope("work", middleware=(_AsyncExit,))  # pyright: ignore[reportArgumentType]
+    scope = Scope("work", middleware=(_yields_twice,))
 
     # Act / Assert
-    with pytest.raises(MiddlewareAsyncMethodError), scope:
+    with pytest.raises(ResourceDidNotStopError), scope:
         pass
+    assert not scope.is_active()
 
 
-@pytest.mark.filterwarnings("error::RuntimeWarning")
-def test_async_exit_refused_after_error():
+def test_middleware_yielding_again_after_error_refused():
     """
-    A sync context manager with an async __exit__ should be refused when the block raises.
+    A middleware that yields again when the block raises should be refused.
 
-    Given: A scope whose middleware's __exit__ is an async def
+    Given: A scope whose middleware yields a second time
     When: The block raises
-    Then: CleanupErrors holds the block's error and MiddlewareAsyncMethodError, and the
-        coroutine is closed rather than left unawaited
+    Then: CleanupErrors holds the block's error and ResourceDidNotStopError
     """
     # Arrange
-    scope = Scope("work", middleware=(_AsyncExit,))  # pyright: ignore[reportArgumentType]
+    scope = Scope("work", middleware=(_yields_twice,))
 
     # Act
     with pytest.raises(CleanupErrors) as raised, scope:
@@ -464,7 +414,7 @@ def test_async_exit_refused_after_error():
 
     # Assert
     assert {type(error) for error in raised.value.exceptions} == {
-        MiddlewareAsyncMethodError,
+        ResourceDidNotStopError,
         _Failed,
     }
 
@@ -479,7 +429,6 @@ def test_error_raised_on_exit_after_clean_activation_propagates():
     """
 
     # Arrange
-    @contextmanager
     def fail_on_exit(scope: Scope) -> Generator[None, None, None]:
         yield
         raise _Refused
@@ -504,7 +453,6 @@ def test_error_raised_on_exit_is_grouped_with_activation_error():
     """
 
     # Arrange
-    @contextmanager
     def translate(scope: Scope) -> Generator[None, None, None]:
         try:
             yield
@@ -563,37 +511,28 @@ def test_uncallable_middleware_refused():
         Scope("work", middleware=(None,))  # pyright: ignore[reportArgumentType]
 
 
-class _AsyncOnly:
-    """An async context manager class, which a sync scope can't enter."""
-
-    def __init__(self, scope: Any) -> None:
-        self.scope = scope
-
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, *_: object) -> None:
-        return None
+async def _async_generator(scope: Any) -> AsyncGenerator[None, None]:
+    await asyncio.sleep(0)
+    yield
 
 
-class _NotAManager:
-    """A class that isn't a context manager."""
-
-    def __init__(self, scope: Any) -> None:
-        self.scope = scope
+def _plain(scope: Any) -> None:
+    return None
 
 
-@pytest.mark.parametrize("middleware", [_AsyncOnly, _NotAManager], ids=["async", "plain"])
-def test_unenterable_middleware_class_refused(middleware: type):
+@pytest.mark.parametrize(
+    "middleware", [_async_generator, _plain], ids=["async-generator", "plain-function"]
+)
+def test_middleware_of_the_wrong_kind_refused(middleware: Any):
     """
-    A sync scope should refuse a middleware class it can't enter when it's built.
+    A sync scope should refuse a middleware that isn't a generator function when it's built.
 
-    Given: An async context manager class, or a class that isn't a context manager
+    Given: An async generator function, or a plain function
     When: A sync scope is built with it as middleware
-    Then: MiddlewareNotEnterableError names the scope and the class
+    Then: MiddlewareKindError names the scope and the middleware
     """
     # Act / Assert
-    with pytest.raises(MiddlewareNotEnterableError, match=middleware.__name__):
+    with pytest.raises(MiddlewareKindError, match=rf"Scope 'work'.*{middleware.__name__}"):
         Scope("work", middleware=(middleware,))
 
 

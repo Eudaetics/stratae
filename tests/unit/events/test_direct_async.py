@@ -58,11 +58,10 @@ AsyncDirectBus (hooks):
 AsyncDirectBus (middleware):
 - Async publish and handle middleware run outside hooks, inside the emission's envelope.
 - Publish middleware wraps an emit without hooks.
-- Sync middleware is entered alongside async middleware.
-- A class that isn't a context manager is refused as middleware when the bus is built.
-- Handle middleware reads the headers async publish middleware set, on every handler of a
+- A sync middleware is refused when the bus is built.
+- Handle middleware reads the headers async publish middleware added, on every handler of a
   concurrent fan-out, and concurrent emits each read their own.
-- Publish middleware setting a reserved header refuses the emit; no handler runs.
+- Publish middleware adding a reserved header refuses the emit; no handler runs.
 - Handle middleware without publish middleware sees no headers, even inside another message's
   receiving block.
 - emit is reported as a coroutine function, and returns a coroutine for every event: nothing
@@ -82,8 +81,7 @@ import asyncio
 import inspect
 import sys
 import threading
-from collections.abc import Awaitable, Collection, Generator
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Collection, Generator
 from contextvars import ContextVar
 from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, Mock
@@ -112,6 +110,7 @@ from stratae.events import (
 )
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
 from stratae.events.pipeline import receiving
+from stratae.middleware import MiddlewareKindError
 
 
 class _TaskCreated:
@@ -1440,18 +1439,17 @@ async def test_signal_event_hooks_receive_no_payload(bus: AsyncDirectBus):
 
 
 def _alabelled(log: list[str], label: str) -> Any:
-    """Return an async context manager class logging under a label, and the envelope."""
+    """Return async middleware logging under a label, and whether there's an envelope."""
 
-    class Labelled:
-        def __init__(self, call: PublishCall | HandleCall) -> None: ...
+    async def labelled(
+        call: PublishCall | HandleCall, next: Callable[[Any], Awaitable[Any]]
+    ) -> Any:
+        log.append(f"{label} in {Envelope.current() is not None}")
+        reply = await next(call)
+        log.append(f"{label} out")
+        return reply
 
-        async def __aenter__(self) -> None:
-            log.append(f"{label} in {Envelope.current() is not None}")
-
-        async def __aexit__(self, *exc: object) -> None:
-            log.append(f"{label} out")
-
-    return Labelled
+    return labelled
 
 
 async def test_middleware_wraps_hooks_inside_envelope():
@@ -1520,54 +1518,27 @@ async def test_publish_middleware_without_hooks():
     assert log == ["mw in False", "mw out"]
 
 
-async def test_sync_middleware_entered_alongside_async():
+def test_sync_middleware_refused():
     """
-    AsyncDirectBus should enter sync middleware as well as async middleware.
+    AsyncDirectBus should refuse a middleware that isn't an async def when it's built.
 
-    Given: A bus with sync contextmanager handle middleware outside async handle middleware
-    When: An event is emitted
-    Then: Both wrap the handler, the sync one outermost
-    """
-    # Arrange
-    log: list[str] = []
-
-    @contextmanager
-    def sync(call: HandleCall) -> Generator[None, None, None]:
-        log.append("sync in")
-        yield
-        log.append("sync out")
-
-    bus = AsyncDirectBus(middleware=Middleware(handle=(sync, _alabelled(log, "async"))))
-    bus.handle(_task_created, lambda task: log.append("handler"))
-
-    # Act
-    await bus.emit(_task_created, _TaskCreated(1))
-
-    # Assert
-    assert log == ["sync in", "async in False", "handler", "async out", "sync out"]
-
-
-def test_non_manager_middleware_refused():
-    """
-    AsyncDirectBus should refuse a class that isn't a context manager when it's built.
-
-    Given: Handle middleware that's a plain class
+    Given: Handle middleware that's a sync function
     When: An AsyncDirectBus is built with it
-    Then: A TypeError says AsyncDirectBus can't enter it
+    Then: MiddlewareKindError says AsyncDirectBus middleware must be an async def
     """
 
     # Arrange
-    class Plain:
-        def __init__(self, call: HandleCall) -> None: ...
+    def sync(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
+        return next(call)
 
     # Act / Assert
-    with pytest.raises(TypeError, match="AsyncDirectBus can't enter"):
-        AsyncDirectBus(middleware=Middleware(handle=(cast(Any, Plain),)))
+    with pytest.raises(MiddlewareKindError, match="AsyncDirectBus middleware must be an async"):
+        AsyncDirectBus(middleware=Middleware(handle=(sync,)))
 
 
 async def test_handle_middleware_reads_publish_headers():
     """
-    Handle middleware should read the headers publish middleware set, per emit.
+    Handle middleware should read the headers publish middleware added, per emit.
 
     Given: A bus running async handlers concurrently, whose async publish middleware tags
         each emit with its task id, handle middleware recording the tag, and two async
@@ -1578,30 +1549,19 @@ async def test_handle_middleware_reads_publish_headers():
     # Arrange
     seen: list[tuple[int, str]] = []
 
-    class Tag:
-        def __init__(self, call: PublishCall) -> None:
-            self.call = call
+    async def tag(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+        return await next(call.with_headers({"x-task": str(call.payload.task_id)}))
 
-        async def __aenter__(self) -> None:
-            self.call.headers["x-task"] = str(self.call.payload.task_id)
-
-        async def __aexit__(self, *exc: object) -> None: ...
-
-    class Record:
-        def __init__(self, call: HandleCall) -> None:
-            self.call = call
-
-        async def __aenter__(self) -> None:
-            await asyncio.sleep(0)
-            seen.append((self.call.payload.task_id, self.call.headers["x-task"]))
-
-        async def __aexit__(self, *exc: object) -> None: ...
+    async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        await asyncio.sleep(0)
+        seen.append((call.payload.task_id, call.headers["x-task"]))
+        return await next(call)
 
     async def handler(task: _TaskCreated) -> None:
         await asyncio.sleep(0)
 
     bus = AsyncDirectBus(
-        middleware=Middleware(publish=(Tag,), handle=(Record,)),
+        middleware=Middleware(publish=(tag,), handle=(record,)),
         dispatchers=[Dispatch(PubSub, fan_out_concurrent)],
     )
     bus.handle(_task_created, handler)
@@ -1619,19 +1579,17 @@ async def test_handle_middleware_reads_publish_headers():
 
 async def test_reserved_header_refuses_emit():
     """
-    Publish middleware setting an envelope header should refuse the emit.
+    Publish middleware adding an envelope header should refuse the emit.
 
-    Given: A bus whose publish middleware sets the correlation id header, and a responder
+    Given: A bus whose publish middleware adds the correlation id header, and a responder
     When: A request is emitted
     Then: ValueError names the header, and the responder doesn't run
     """
     # Arrange
     ran: list[str] = []
 
-    @contextmanager
-    def forge(call: PublishCall) -> Generator[None, None, None]:
-        call.headers["x-correlation-id"] = "forged"
-        yield
+    async def forge(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+        return await next(call.with_headers({"x-correlation-id": "forged"}))
 
     def respond(query: _BookQuery) -> _BookResult:
         ran.append("responder")
@@ -1657,17 +1615,12 @@ async def test_handle_middleware_without_publish_middleware_sees_no_headers():
     # Arrange
     seen: list[dict[str, str]] = []
 
-    class Record:
-        def __init__(self, call: HandleCall) -> None:
-            self.call = call
+    async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        await asyncio.sleep(0)
+        seen.append(dict(call.headers))
+        return await next(call)
 
-        async def __aenter__(self) -> None:
-            await asyncio.sleep(0)
-            seen.append(dict(self.call.headers))
-
-        async def __aexit__(self, *exc: object) -> None: ...
-
-    bus = AsyncDirectBus(middleware=Middleware(handle=(Record,)))
+    bus = AsyncDirectBus(middleware=Middleware(handle=(record,)))
     bus.handle(_task_created, lambda task: None)
 
     # Act

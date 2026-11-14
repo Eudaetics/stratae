@@ -12,8 +12,8 @@ OutboxProducer:
   empty body.
 - Hooks run around the write, inside the record's envelope.
 - Publish middleware runs around the write, and the headers it adds are stored with the
-  record's envelope headers; middleware setting an envelope header writes nothing.
-- A middleware class that isn't a context manager is refused when the producer is built.
+  record's envelope headers; middleware adding an envelope header writes nothing.
+- A middleware that isn't an async def is refused when the producer is built.
 - Emitting returns None, and publishes nothing.
 - Binding or emitting a request event raises TypeError.
 - Emitting an event with no route raises LookupError and writes nothing; route registers one,
@@ -94,12 +94,11 @@ import inspect
 import logging
 import threading
 import time
-from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from typing import Any, assert_type, cast, override
+from typing import Any, assert_type, override
 from uuid import UUID
 
 import pytest
@@ -138,6 +137,7 @@ from stratae.events.outbox import (
     _Settlement,  # pyright: ignore[reportPrivateUsage]
     _settlement,  # pyright: ignore[reportPrivateUsage]
 )
+from stratae.middleware import MiddlewareKindError
 
 
 class _InnerRolledBack(ValueError):
@@ -408,11 +408,9 @@ async def test_hooks_run_inside_record_envelope(outbox: OutboxProducer, store: I
     assert seen == [record.envelope]
 
 
-@contextmanager
-def _tag_tenant(call: PublishCall) -> Generator[None, None, None]:
+async def _tag_tenant(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
     """Publish middleware adding the tenant header, inside the record's envelope."""
-    call.headers["x-tenant"] = f"acme {Envelope.current() is not None}"
-    yield
+    return await next(call.with_headers({"x-tenant": f"acme {Envelope.current() is not None}"}))
 
 
 async def test_middleware_headers_stored(store: InMemoryOutboxStore):
@@ -437,18 +435,16 @@ async def test_middleware_headers_stored(store: InMemoryOutboxStore):
 
 async def test_middleware_reserved_header_writes_nothing(store: InMemoryOutboxStore):
     """
-    Publish middleware setting an envelope header should refuse the write.
+    Publish middleware adding an envelope header should refuse the write.
 
-    Given: A producer whose publish middleware sets the message id header
+    Given: A producer whose publish middleware adds the message id header
     When: An event is emitted
     Then: ValueError names the header, and no record is written
     """
 
     # Arrange
-    @contextmanager
-    def forge(call: PublishCall) -> Generator[None, None, None]:
-        call.headers["x-message-id"] = "forged"
-        yield
+    async def forge(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+        return await next(call.with_headers({"x-message-id": "forged"}))
 
     outbox = OutboxProducer(store, _encode, middleware=Middleware(publish=(forge,)))
     outbox.route(_order_placed, OutboxConfig("orders"))
@@ -459,22 +455,22 @@ async def test_middleware_reserved_header_writes_nothing(store: InMemoryOutboxSt
     assert store.pending() == []
 
 
-def test_non_manager_middleware_refused(store: InMemoryOutboxStore):
+def test_sync_middleware_refused(store: InMemoryOutboxStore):
     """
-    The producer should refuse a middleware class that isn't a context manager.
+    The producer should refuse a middleware that isn't an async def.
 
-    Given: Publish middleware that's a plain class
+    Given: Publish middleware that's a sync function
     When: A producer is built with it
-    Then: A TypeError says OutboxProducer can't enter it
+    Then: MiddlewareKindError says OutboxProducer middleware must be an async def
     """
 
     # Arrange
-    class Plain:
-        def __init__(self, call: PublishCall) -> None: ...
+    def sync(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return next(call)
 
     # Act / Assert
-    with pytest.raises(TypeError, match="OutboxProducer can't enter"):
-        OutboxProducer(store, _encode, middleware=Middleware(publish=(cast(Any, Plain),)))
+    with pytest.raises(MiddlewareKindError, match="OutboxProducer middleware must be an async"):
+        OutboxProducer(store, _encode, middleware=Middleware(publish=(sync,)))
 
 
 async def test_request_events_refused(outbox: OutboxProducer):

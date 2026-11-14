@@ -1,94 +1,98 @@
 """
-The middleware contract shared by lifecycle scopes and event buses.
+Middleware around a call: functions taking the call and `next`, composed into a chain.
 
-A middleware is a callable that takes what it wraps and returns a context manager. A
-{py:class}`Scope <stratae.lifecycle.scope.Scope>` passes itself, around each activation. A bus
-passes a {py:class}`PublishCall <stratae.events.middleware.PublishCall>` around each emit, or a
-{py:class}`HandleCall <stratae.events.middleware.HandleCall>` around each handler call. Middleware
-is given as a tuple, outermost first. Scopes and buses follow the same rules for it.
+A middleware wraps a call, as web frameworks' middleware wraps a request. It's a function
+taking the call and `next`, the rest of the chain: the next middleware, or else the call itself.
+It usually passes the call on and returns what comes back: `def middleware(call, next): return
+next(call)`. A sync owner runs sync functions. An async owner runs `async def`s, which await
+`next`: `async def middleware(call, next): return await next(call)`. So a timeout is `async
+with asyncio.timeout(5): return await next(call)`. An owner refuses a middleware of the wrong
+kind with {py:exc}`MiddlewareKindError` when it's built, rather than on each call.
 
-- Each context manager is entered in order and exited in reverse, like nested `with`
-  statements. An exit sees the error the wrapped work ended with, or `None`.
-- A middleware can't swallow an error. An exit that returns true for an ordinary error raises
-  {py:exc}`MiddlewareError` from it instead, so the work still fails. Anything else, such as
-  `KeyboardInterrupt` or the task's cancellation, is raised again as it is. A cancellation the
-  middleware made itself, by timing the work out, isn't the task's, so swallowing the timeout
-  raises `MiddlewareError` too.
-- A middleware that raises on entry refuses the work. The middleware already entered see that
-  error on exit.
-- A sync scope or bus enters sync context managers. An async one enters async context managers
-  as well, in the task doing the work.
-- A sync context manager whose `__enter__` or `__exit__` is an `async def` is refused, and its
-  coroutine closed.
-- A middleware that's a class is checked when the scope or bus is built. Any other callable is
-  checked each time it's called.
+A middleware decides what happens to the call. It can raise before `next` to refuse it, return
+without calling `next` to skip it, call `next` again to retry, return a different reply, or catch
+the call's error and return in its place. What a call is, and what each of those means for it,
+is the owner's to say. {py:mod}`stratae.events.middleware` says it for a bus's emits and handler
+calls.
 
-Code that should decide whether an error propagates isn't middleware. On a scope, it's a
-resource: a cached generator function, which can suppress the activation's error.
+{py:func}`chain` composes middleware around the innermost call once, when the owner is built.
+Each call then runs the chain with the call's value, and with what the innermost call needs for
+it, which no middleware sees.
 
-Where an exit's own error goes is the one thing that differs. On a bus, it replaces the call's
-reply or error, as in nested `with` statements. On a scope, middleware is held as the
-activation's first resources, so it follows the rule for a resource's cleanup: alone after a
-clean activation, or grouped with the activation's error.
+A scope's activation isn't a call: its body is a `with` block, not a function `next` could run.
+So a scope's middleware is a generator function instead, as
+{py:mod}`stratae.lifecycle.scope` describes.
 """
 
+from collections.abc import Callable
+from typing import Any
 
-class MiddlewareError(Exception):
-    """
-    Raised when a middleware tries to swallow an error.
+from stratae.callables import Gives, call_result
 
-    Raised from that error, which middleware can observe on exit, but not suppress.
-    """
+type Next[C, R] = Callable[[C], R]
+"""The rest of the chain, as a middleware is given it: the next middleware, or else the call."""
 
-    def __init__(self, middleware: object, error: BaseException) -> None:
+type Finish[C, X] = Callable[[C, X], Any]
+"""
+The innermost call of a chain: given the call value the last middleware passed on, and what
+the chain was run with for this call, such as an emit's message and how to send it.
+"""
+
+type _Layer = Callable[[Any, Callable[[Any], Any]], Any]
+"""One middleware: given the call and `next`."""
+
+
+class MiddlewareKindError(TypeError):
+    """Raised when an owner is given middleware of a kind it can't run."""
+
+    def __init__(self, owner: str, middleware: object, wanted: str) -> None:
         """
-        Name the middleware and the error it tried to swallow.
+        Name the owner, the middleware, and the kind it takes.
 
-        :param middleware: The middleware whose exit returned true.
-        :param error: The error it tried to swallow.
-        """
-        super().__init__(
-            f"middleware {middleware!r} tried to swallow {error!r}, but middleware can't "
-            "swallow errors"
-        )
-
-
-class MiddlewareNotEnterableError(TypeError):
-    """Raised when a middleware is a class whose instances a scope or bus can't enter."""
-
-    def __init__(self, owner: str, middleware: type, asynchronous: bool) -> None:
-        """
-        Name the scope or bus and the class.
-
-        :param owner: The scope or bus.
-        :param middleware: The class.
-        :param asynchronous: Whether the scope or bus enters async context managers too.
-        """
-        kind = "context manager" if asynchronous else "sync context manager"
-        super().__init__(f"{owner} can't enter {middleware!r}: it isn't a {kind}")
-
-
-class MiddlewareResultError(TypeError):
-    """Raised when a middleware returns something a scope or bus can't enter."""
-
-    def __init__(self, middleware: object, result: object, asynchronous: bool) -> None:
-        """
-        Name the middleware and what it returned.
-
+        :param owner: What runs the middleware, such as a bus or a scope.
         :param middleware: The middleware.
-        :param result: What it returned.
-        :param asynchronous: Whether the scope or bus enters async context managers too.
+        :param wanted: The kind of middleware it takes, such as "an async def".
         """
-        kind = "context manager" if asynchronous else "sync context manager"
-        super().__init__(f"middleware {middleware!r} returned {result!r}, which isn't a {kind}")
+        super().__init__(f"{owner} middleware must be {wanted}, not {middleware!r}")
 
 
-class MiddlewareAsyncMethodError(TypeError):
-    """Raised when a sync context manager's `__enter__` or `__exit__` is an `async def`."""
+def refuse_kind(middleware: tuple[Callable[..., Any], ...], owner: str, asynchronous: bool) -> None:
+    """
+    Refuse a middleware `owner` can't run.
 
-    def __init__(self, middleware: object) -> None:
-        """:param middleware: The middleware that returned the context manager."""
-        super().__init__(
-            f"middleware {middleware!r} has an async __enter__ or __exit__; an async context "
-            "manager defines __aenter__ and __aexit__"
-        )
+    An async owner takes only an `async def`, and a sync owner only a function returning a value.
+    So a generator function, or a `contextlib` context manager, is refused by either.
+
+    :param middleware: The middleware.
+    :param owner: What runs it, for the error message.
+    :param asynchronous: Whether `owner` runs middleware asynchronously.
+    :raises MiddlewareKindError: If a middleware is of the wrong kind.
+    """
+    wanted = Gives.COROUTINE if asynchronous else Gives.VALUE
+    for item in middleware:
+        if call_result(item).gives is not wanted:
+            kind = "an async def" if asynchronous else "a sync function returning a value"
+            raise MiddlewareKindError(owner, item, kind)
+
+
+def chain[C, X](middleware: tuple[_Layer, ...], finish: Finish[C, X]) -> Finish[C, X]:
+    """
+    Compose middleware around `finish`, outermost first, sync or async alike.
+
+    The chain is built once, and run per call with that call's value and context.
+
+    :param middleware: The middleware, outermost first.
+    :param finish: The innermost call.
+    :returns: The composed chain, taking the call value and the context to finish it with.
+    """
+    inner: Finish[Any, Any] = finish
+    for item in reversed(middleware):
+        inner = _step(item, inner)
+    return inner
+
+
+def _step(item: _Layer, inner: Finish[Any, Any]) -> Finish[Any, Any]:
+    def step(call: Any, context: Any) -> Any:
+        return item(call, lambda passed: inner(passed, context))
+
+    return step

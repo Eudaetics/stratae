@@ -125,7 +125,6 @@ from stratae.events.pipeline import (
     Send,
     publish,
     publish_async,
-    received,
     receiving,
     wrap_handler,
 )
@@ -317,7 +316,9 @@ class BaseDirectBus(ABC):
         self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
         self._publishing = Publishing(
-            middleware.publish, None if envelope is None else envelope.new_id
+            middleware.publish,
+            None if envelope is None else envelope.new_id,
+            asynchronous=self._asynchronous,
         )
         self._plain = not (middleware.publish or middleware.handle) and envelope is None
 
@@ -462,7 +463,7 @@ class DirectBus(BaseDirectBus):
         defaults for `Request` and `PubSub`.
     :param middleware: Sync {py:class}`Middleware <stratae.events.middleware.Middleware>` run
         around every emit and handler call.
-    :raises TypeError: If any middleware is a class that isn't a sync context manager.
+    :raises MiddlewareKindError: If any middleware isn't a sync function returning a value.
     """
 
     _asynchronous = False
@@ -621,7 +622,7 @@ class DirectBus(BaseDirectBus):
             return send
 
         def send_received(message: Outgoing) -> Any:
-            with receiving(received(message.headers)):
+            with receiving(message.headers):
                 return dispatcher(message.event, route.handlers, message.payload)
 
         return send_received
@@ -644,8 +645,8 @@ class AsyncDirectBus(BaseDirectBus):
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
         defaults for `Request` and `PubSub`. Their dispatchers return awaitables.
     :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>` run
-        around every emit and handler call, sync or async.
-    :raises TypeError: If any middleware is a class that isn't a context manager.
+        around every emit and handler call. Each is an `async def`.
+    :raises MiddlewareKindError: If any middleware isn't an `async def`.
     """
 
     _asynchronous = True
@@ -817,7 +818,7 @@ class AsyncDirectBus(BaseDirectBus):
             return send
 
         async def send_received(message: Outgoing) -> Any:
-            with receiving(received(message.headers)):
+            with receiving(message.headers):
                 return await dispatcher(message.event, route.handlers, message.payload)
 
         return send_received

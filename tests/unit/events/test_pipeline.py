@@ -3,12 +3,12 @@ Unit tests for how hooks and middleware compose around an adapter's emit.
 
 This test suite verifies the following behaviors:
 
-run_emit:
+publish:
 - Without hooks or middleware, calls the emit directly.
 - With hooks only, runs them around the emit.
 - With middleware only, runs it around the emit.
 - With both, runs the middleware outside the hooks.
-- Publish middleware adds to the headers the emit was given.
+- Publish middleware adds to the headers the emit was given, and the emit sends them.
 
 wrap_handler:
 - Leaves a handler unwrapped without hooks or middleware.
@@ -26,15 +26,13 @@ receiving:
 """
 
 import asyncio
-from collections.abc import AsyncGenerator, Generator, MutableMapping
-from contextlib import asynccontextmanager, contextmanager
+from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 
 import pytest
 
 from stratae.events import HandleCall, Hooks, PublishCall, PubSub, Request
-from stratae.events.middleware import MessageHeaders
-from stratae.events.pipeline import Outgoing, receiving, run_emit, wrap_handler
+from stratae.events.pipeline import Outgoing, Publishing, publish, receiving, wrap_handler
 
 
 class _Order:
@@ -55,14 +53,14 @@ _order_placed = PubSub(_Order)
     ],
     ids=["neither", "hooks", "middleware", "both"],
 )
-def test_run_emit_nests_middleware_outside_hooks(
+def test_publish_nests_middleware_outside_hooks(
     with_hooks: bool, with_middleware: bool, expected: list[str]
 ) -> None:
     """
-    run_emit should run middleware, then hooks, around the emit, whichever are given.
+    Publish should run middleware, then hooks, around the emit, whichever are given.
 
     Given: An emit, with or without a before hook and a publish middleware
-    When: run_emit runs it
+    When: publish runs it
     Then: Whatever is given runs in order, middleware outermost, and the reply is returned
     """
     # Arrange
@@ -75,18 +73,15 @@ def test_run_emit_nests_middleware_outside_hooks(
     def hook(event: Any, payload: Any) -> None:
         log.append("hook")
 
-    @contextmanager
-    def middleware(publish: PublishCall) -> Generator[None, None, None]:
+    def middleware(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
         log.append("middleware")
-        yield
+        return next(call)
 
     hooks: Hooks[Any, Any] | None = Hooks(before=(hook,)) if with_hooks else None
     stack = (middleware,) if with_middleware else ()
 
     # Act
-    order = _Order("lamp")
-    message = Outgoing(_order_placed, None, order, None, MessageHeaders())
-    reply = run_emit(hooks, stack, message, call)
+    reply = publish(Publishing(stack), call, _order_placed, _Order("lamp"), hooks=hooks)
 
     # Assert
     assert reply == "lamp"
@@ -133,10 +128,9 @@ def test_wrap_handler_sync_layers() -> None:
     def hook(event: Any, payload: _Order) -> None:
         log.append("hook")
 
-    @contextmanager
-    def middleware(call: HandleCall) -> Generator[None, None, None]:
+    def middleware(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
         log.append(f"middleware {call.event.name} {call.payload.item}")
-        yield
+        return next(call)
 
     # Act
     call, is_async = wrap_handler(
@@ -173,10 +167,9 @@ async def test_wrap_handler_async(handler: Any, hook_is_async: bool, with_middle
         await asyncio.sleep(0)
         log.append("hook")
 
-    @asynccontextmanager
-    async def middleware(call: HandleCall) -> AsyncGenerator[None, None]:
+    async def middleware(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         log.append("middleware")
-        yield
+        return await next(call)
 
     hooks: Hooks[Any, Any] = Hooks(before=(async_hook if hook_is_async else sync_hook,))
     stack = (middleware,) if with_middleware else ()
@@ -210,9 +203,8 @@ async def test_wrap_handler_sync_handler_runs_when_awaited(through: str) -> None
     async def async_hook(event: Any, payload: _Order) -> None:
         await asyncio.sleep(0)
 
-    @asynccontextmanager
-    async def middleware(call: HandleCall) -> AsyncGenerator[None, None]:
-        yield
+    async def middleware(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        return await next(call)
 
     hooks: Hooks[Any, Any] | None = Hooks(before=(async_hook,)) if through == "async hook" else None
     stack = (middleware,) if through == "async middleware" else ()
@@ -249,28 +241,31 @@ def test_wrap_handler_payload_less() -> None:
     assert call(object()) == "pong"
 
 
-def test_run_emit_middleware_adds_headers() -> None:
+def test_publish_middleware_adds_headers() -> None:
     """
-    Publish middleware should add to the headers run_emit was given.
+    Publish middleware should add to the headers the emit was given, for the emit to send.
 
     Given: Headers holding a tenant, and publish middleware adding a trace header
-    When: run_emit runs an emit with them
-    Then: The headers hold both, for the emit to send
+    When: publish runs an emit with them
+    Then: The message sent holds both headers
     """
     # Arrange
-    headers = MessageHeaders({"x-tenant": "acme"})
+    sent: list[Outgoing] = []
 
-    @contextmanager
-    def trace(call: PublishCall) -> Generator[None, None, None]:
-        call.headers["traceparent"] = "00-trace"
-        yield
+    def trace(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return next(call.with_headers({"traceparent": "00-trace"}))
 
     # Act
-    message = Outgoing(_order_placed, None, _Order("lamp"), None, headers)
-    run_emit(None, (trace,), message, lambda _: None)
+    publish(
+        Publishing((trace,)),
+        sent.append,
+        _order_placed,
+        _Order("lamp"),
+        headers={"x-tenant": "acme"},
+    )
 
     # Assert
-    assert dict(headers) == {"x-tenant": "acme", "traceparent": "00-trace"}
+    assert dict(sent[0].headers) == {"x-tenant": "acme", "traceparent": "00-trace"}
 
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
@@ -286,13 +281,17 @@ async def test_wrap_handler_middleware_reads_received_headers(asynchronous: bool
     seen: list[dict[str, str]] = []
     writable: list[bool] = []
 
-    @contextmanager
-    def record(call: HandleCall) -> Generator[None, None, None]:
+    def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
         seen.append(dict(call.headers))
         writable.append(isinstance(call.headers, MutableMapping))
-        yield
+        return next(call)
 
-    call, is_async = wrap_handler(_order_placed, None, _shout, None, (record,), asynchronous)
+    async def arecord(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        record(call, lambda passed: None)
+        return await next(call)
+
+    stack = (arecord,) if asynchronous else (record,)
+    call, is_async = wrap_handler(_order_placed, None, _shout, None, stack, asynchronous)
 
     async def handle() -> None:
         reply = call(_Order("lamp"))
@@ -321,10 +320,9 @@ def test_receiving_restores_outer_headers_on_exit_and_error() -> None:
     # Arrange
     seen: list[dict[str, str]] = []
 
-    @contextmanager
-    def record(call: HandleCall) -> Generator[None, None, None]:
+    def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
         seen.append(dict(call.headers))
-        yield
+        return next(call)
 
     call, _ = wrap_handler(_order_placed, None, _shout, None, (record,), False)
 

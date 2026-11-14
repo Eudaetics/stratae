@@ -115,7 +115,7 @@ class RabbitMQPublisher:
             a consumer.
         :param envelope: How the envelope of a message published without a given one is made.
             Its `new_id` makes random ids by default.
-        :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
+        :raises MiddlewareKindError: If any `publish` middleware isn't an `async def`.
         :raises ValueError: If a `topology` config has no named `queue`.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
@@ -123,7 +123,9 @@ class RabbitMQPublisher:
         for config in self._topology:
             if config.queue is None:
                 raise ValueError(_TOPOLOGY_NEEDS_QUEUE)
-        self._publishing = Publishing(middleware.publish, envelope.new_id, RESERVED)
+        self._publishing = Publishing(
+            middleware.publish, envelope.new_id, RESERVED, asynchronous=True
+        )
         self._serializer = serializer
         self._routes: dict[AnyEvent, RabbitMQConfig] = {}
         self._declared: set[str] = set()

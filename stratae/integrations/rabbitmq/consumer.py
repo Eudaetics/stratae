@@ -142,7 +142,7 @@ class RabbitMQConsumer:
         :param envelope: How a delivered message's envelope is completed: its `new_id` makes
             any id the message is missing, or all of them if its envelope can't be read. Random
             by default.
-        :raises TypeError: If any `handle` middleware is a class that isn't a context manager.
+        :raises MiddlewareKindError: If any `handle` middleware isn't an `async def`.
         """
         middleware.require(type(self).__name__, asynchronous=True, publish=False)
         self._new_id = envelope.new_id

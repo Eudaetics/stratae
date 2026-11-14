@@ -47,8 +47,8 @@ RabbitMQPublisher:
 - Publish hooks run inside the message's envelope, seeing the ids it's sent with.
 - Publish middleware runs around the publish and its hooks, inside the message's envelope.
 - Publish middleware sees the emit's RabbitMQConfig as call.config.
-- A publish middleware class that isn't a context manager is refused when the publisher is
-  built; handle middleware isn't checked, so one Middleware can be shared with a consumer.
+- A publish middleware that isn't an async def is refused when the publisher is built;
+  handle middleware isn't checked, so one Middleware can be shared with a consumer.
 - emit given an envelope sends its ids and timestamp unchanged, as x- headers and native
   fields, instead of a child of the active envelope.
 - Emitting twice with one envelope sends the same message id both times.
@@ -56,7 +56,7 @@ RabbitMQPublisher:
 - Headers publish middleware adds are sent with the config's and the envelope's; without
   middleware, a message carries the envelope's headers alone.
 - emit given headers sends them, and publish middleware sees them and can add to them.
-- A reserved header, set by middleware or given to emit, raises ValueError, and nothing is
+- A reserved header, added by middleware or given to emit, raises ValueError, and nothing is
   published: the envelope's, the attempts header and the failure header.
 - A topology config without a named queue is refused when the publisher is built.
 - Entering the context declares each topology config's queue, failure queues, exchange and
@@ -87,10 +87,9 @@ import asyncio
 import dataclasses
 import inspect
 import json
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any, assert_type, cast
+from typing import Any, assert_type
 from unittest.mock import AsyncMock, call
 from uuid import UUID
 
@@ -126,6 +125,7 @@ from stratae.integrations.rabbitmq import (
     RabbitMQFailurePolicy,
     RabbitMQPublisher,
 )
+from stratae.middleware import MiddlewareKindError
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -541,10 +541,9 @@ async def test_emit_routes_by_payload(connect_mock: AsyncMock, channel: AsyncMoc
     # Arrange
     seen: list[tuple[object, str | None]] = []
 
-    @asynccontextmanager
-    async def record(call: PublishCall) -> AsyncGenerator[None]:
+    async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         seen.append((call.config.routing_key, call.config.messaging_destination.name))
-        yield
+        return await next(call)
 
     publisher = RabbitMQPublisher(
         _URL, serializer=_encode, middleware=Middleware(publish=(record,))
@@ -927,12 +926,12 @@ async def test_publish_middleware_wraps_hooks_inside_envelope(
     log: list[str] = []
     seen: list[Envelope | None] = []
 
-    @asynccontextmanager
-    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+    async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         log.append("mw in")
         seen.append(Envelope.current())
-        yield
+        reply = await next(call)
         log.append("mw out")
+        return reply
 
     def before(event: Any, payload: Any) -> None:
         log.append("hook")
@@ -965,11 +964,11 @@ async def test_publish_middleware_without_hooks(connect_mock: AsyncMock, channel
     # Arrange
     log: list[str] = []
 
-    @asynccontextmanager
-    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+    async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         log.append("mw in")
-        yield
+        reply = await next(call)
         log.append("mw out")
+        return reply
 
     def record_publish(*_: object, **__: object) -> None:
         log.append("publish")
@@ -988,43 +987,37 @@ async def test_publish_middleware_without_hooks(connect_mock: AsyncMock, channel
     assert log == ["mw in", "publish", "mw out"]
 
 
-@asynccontextmanager
-async def _trace(call: PublishCall) -> AsyncGenerator[None, None]:
-    yield
+async def _trace(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+    return await next(call)
 
 
-class _NotAManager:
-    """A middleware class whose instances aren't context managers."""
-
-    def __init__(self, call: Any) -> None: ...
+def _sync(call: Any, next: Callable[[Any], Any]) -> Any:
+    return next(call)
 
 
-def test_publisher_refuses_non_manager_middleware():
+def test_publisher_refuses_sync_middleware():
     """
-    The publisher should refuse a middleware class that isn't a context manager when built.
+    The publisher should refuse a middleware that isn't an async def when it's built.
 
-    Given: Publish middleware that's a plain class
+    Given: Publish middleware that's a sync function
     When: A RabbitMQPublisher is built with it
-    Then: A TypeError says the publisher can't enter it
+    Then: MiddlewareKindError says the publisher's middleware must be an async def
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="RabbitMQPublisher can't enter"):
-        RabbitMQPublisher(
-            _URL, serializer=_encode, middleware=Middleware(publish=(cast(Any, _NotAManager),))
-        )
+    with pytest.raises(MiddlewareKindError, match="RabbitMQPublisher middleware must be an async"):
+        RabbitMQPublisher(_URL, serializer=_encode, middleware=Middleware(publish=(_sync,)))
 
 
 def test_publisher_accepts_shared_middleware():
     """
     The publisher should accept a Middleware shared with a consumer, checking only its half.
 
-    Given: Middleware with a valid publish middleware, and a handle middleware class that
-        isn't a context manager
+    Given: Middleware with an async publish middleware, and a sync handle middleware
     When: A RabbitMQPublisher is built with it
     Then: It's accepted, since the publisher never runs the handle half
     """
     # Arrange
-    middleware = Middleware(publish=(_trace,), handle=(cast(Any, _NotAManager),))
+    middleware = Middleware(publish=(_trace,), handle=(_sync,))
 
     # Act
     publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=middleware)
@@ -1044,10 +1037,9 @@ async def test_publish_middleware_sees_config(connect_mock: AsyncMock, channel: 
     # Arrange
     seen: list[RabbitMQConfig] = []
 
-    @asynccontextmanager
-    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+    async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         seen.append(call.config)
-        yield
+        return await next(call)
 
     publisher = RabbitMQPublisher(
         _URL, serializer=_encode, middleware=Middleware(publish=(record,))
@@ -1127,10 +1119,9 @@ async def test_middleware_and_hooks_see_given_envelope(connect_mock: AsyncMock, 
     held = Envelope()
     seen: list[Envelope | None] = []
 
-    @asynccontextmanager
-    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+    async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         seen.append(Envelope.current())
-        yield
+        return await next(call)
 
     def before(event: Any, payload: Any) -> None:
         seen.append(Envelope.current())
@@ -1153,10 +1144,8 @@ async def test_middleware_and_hooks_see_given_envelope(connect_mock: AsyncMock, 
     assert seen == [held, held]
 
 
-@asynccontextmanager
-async def _tag_tenant(call: PublishCall) -> AsyncGenerator[None, None]:
-    call.headers["x-tenant"] = "acme"
-    yield
+async def _tag_tenant(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+    return await next(call.with_headers({"x-tenant": "acme"}))
 
 
 async def test_middleware_headers_sent(connect_mock: AsyncMock, channel: AsyncMock):
@@ -1202,10 +1191,9 @@ async def test_emit_given_headers(connect_mock: AsyncMock, channel: AsyncMock):
     # Arrange
     seen: list[dict[str, str]] = []
 
-    @asynccontextmanager
-    async def record(call: PublishCall) -> AsyncGenerator[None, None]:
+    async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         seen.append(dict(call.headers))
-        yield
+        return await next(call)
 
     publisher = RabbitMQPublisher(
         _URL, serializer=_encode, middleware=Middleware(publish=(record, _tag_tenant))
@@ -1227,16 +1215,14 @@ async def test_reserved_header_refused(connect_mock: AsyncMock, channel: AsyncMo
     """
     A reserved header should raise ValueError, from middleware or given to emit.
 
-    Given: A publisher whose middleware sets a reserved header, and one without middleware
+    Given: A publisher whose middleware adds a reserved header, and one without middleware
     When: Each emits, the second given the reserved header
     Then: Both raise ValueError naming it, and nothing is published
     """
 
     # Arrange
-    @asynccontextmanager
-    async def forge(call: PublishCall) -> AsyncGenerator[None, None]:
-        call.headers[name] = "forged"
-        yield
+    async def forge(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+        return await next(call.with_headers({name: "forged"}))
 
     publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=Middleware(publish=(forge,)))
     plain = RabbitMQPublisher(_URL, serializer=_encode)

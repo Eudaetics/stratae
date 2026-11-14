@@ -7,7 +7,9 @@ Each kind of failure has its own class, under one of these bases:
 - {py:exc}`ScopeActivationError`: a scope that can't be activated or deactivated.
 - {py:exc}`ScopeInactiveError`: a scope used outside its activation.
 - {py:exc}`CacheCycleError`: a cached call waiting on itself.
-- {py:exc}`ResourceGeneratorError`: a resource generator that doesn't yield exactly once.
+- {py:exc}`ResourceGeneratorError`: a resource or middleware generator that doesn't yield
+  exactly once.
+- {py:exc}`MiddlewareError`: a scope's middleware that tries to swallow the activation's error.
 
 Failures closing a scope are raised together as a {py:exc}`CleanupErrors` group. It's a
 {py:exc}`BaseCleanupErrors` group instead if any is a `BaseException` such as
@@ -212,8 +214,28 @@ class CacheCycleError(LifecycleException, RuntimeError):
         super().__init__("Cached call depends on its own in-progress computation.")
 
 
+class MiddlewareError(LifecycleException):
+    """
+    Raised when a scope's middleware tries to swallow the activation's error.
+
+    Raised from that error, which middleware can observe at its `yield`, but not suppress.
+    """
+
+    def __init__(self, middleware: object, error: BaseException) -> None:
+        """
+        Name the middleware and the error it tried to swallow.
+
+        :param middleware: The middleware that returned instead of raising.
+        :param error: The error it tried to swallow.
+        """
+        super().__init__(
+            f"middleware {middleware!r} tried to swallow {error!r}, but a scope's middleware "
+            "can't swallow errors; a resource can"
+        )
+
+
 class ResourceGeneratorError(LifecycleException, RuntimeError):
-    """Raised when a resource generator doesn't yield exactly once."""
+    """Raised when a resource or middleware generator doesn't yield exactly once."""
 
 
 class ResourceDidNotYieldError(ResourceGeneratorError):

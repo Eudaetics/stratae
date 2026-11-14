@@ -157,38 +157,38 @@ acting as user 42
 
 ### Middleware
 
-One contract for middleware on lifecycle scopes and event buses: context managers entered around each activation or call, which can observe an error but not swallow it.
+Middleware wraps a scope's activations, or a bus's emits and handler calls. A bus's middleware takes the call and `next`, the rest of the chain, as web frameworks' middleware does. A scope's middleware is a generator function, given the scope, which yields once while the activation runs, as a lifespan or a fixture does.
 
-````{example} One middleware around a scope's activations and a bus's emits
+````{example} Middleware around a scope's activations and a bus's emits
 ```{code-block} python
-from contextlib import contextmanager
 from stratae.events import DirectBus, Middleware, PubSub
 from stratae.lifecycle import Scope
 
-@contextmanager
-def logged(wrapped):
-    name = type(wrapped).__name__
-    print(f"enter {name}")
+def logged_scope(scope):
+    print(f"enter {scope.name}")
     try:
         yield
     finally:
-        print(f"exit {name}")
+        print(f"exit {scope.name}")
+
+def logged_emit(call, next):
+    print(f"emit {call.event.name}")
+    return next(call)
 
 class Ping:
     pass
 
 ping = PubSub(Ping)
-work = Scope("work", middleware=(logged,))
-bus = DirectBus(middleware=Middleware(publish=(logged,)))
+work = Scope("work", middleware=(logged_scope,))
+bus = DirectBus(middleware=Middleware(publish=(logged_emit,)))
 
 with work:
     bus.emit(ping, Ping())
 ```
 ```{output}
-enter Scope
-enter PublishCall
-exit PublishCall
-exit Scope
+enter work
+emit Ping
+exit work
 ```
 ````
 
