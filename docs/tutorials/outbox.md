@@ -131,7 +131,7 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 `add` puts the row into the unit of work's session. It's written when that session commits, and discarded if it rolls back. The other four methods belong to the relay. Each runs in a short transaction of its own.
 
-`claim` keeps records with the same key in order. It locks the due, unclaimed rows, skipping any another relay has locked. Then it leaves out each keyed row whose key has an earlier row still pending outside this claim. That earlier row may be waiting for a retry, or claimed by another relay. A lock hides a row from the first query, but not from the second, so two relays can't split a key between them. Rows are ordered by creation time, then by id. Time-ordered ids, such as `uuid7`'s, make that the order they were written in, even when two share a timestamp.
+`claim` keeps records with the same key in order. It locks the due, unclaimed rows, skipping any another relay has locked. It leaves out each keyed row with an earlier row of its key that's waiting for a retry, or claimed. So rows held back that way never use up the limit, and can't crowd out rows of other keys. A second query then leaves out each keyed row whose key has an earlier row still pending outside this claim. That catches an earlier row another relay has locked but not yet claimed, which the first query can't see. A row dropped that way has already used up a place under the limit, so the claim can return fewer rows than it could have. A lock hides a row from the first query, but not from the second, so two relays can't split a key between them. Rows are ordered by creation time, then by id. Time-ordered ids, such as `uuid7`'s, make that the order they were written in, even when two share a timestamp.
 
 ````{example} An outbox store on SQLAlchemy
 ```{code-block} python
@@ -157,6 +157,7 @@ class SqlAlchemyOutboxStore:
                 ~OutboxRow.failed,
                 OutboxRow.available_at <= now,
                 or_(OutboxRow.claimed_until.is_(None), OutboxRow.claimed_until <= now),
+                ~self._waiting_before(now),
             )
             .order_by(OutboxRow.created_at, OutboxRow.id)
             .limit(limit)
@@ -169,6 +170,16 @@ class SqlAlchemyOutboxStore:
             for row in claimed:
                 row.claimed_until = now + self._lease
             return [row.to_record() for row in claimed]
+
+    def _waiting_before(self, now: datetime) -> Any:
+        # An earlier pending row of the same key that's waiting for a retry, or claimed.
+        earlier = aliased(OutboxRow)
+        return exists().where(
+            earlier.key == OutboxRow.key,
+            ~earlier.failed,
+            or_(earlier.available_at > now, earlier.claimed_until > now),
+            tuple_(earlier.created_at, earlier.id) < tuple_(OutboxRow.created_at, OutboxRow.id),
+        )
 
     def _held_back(self, rows: Sequence[OutboxRow]) -> Any:
         # The keyed rows with an earlier pending row of their key outside this claim:
