@@ -7,7 +7,10 @@ Activate one with `with scope:` (`async with` for {py:class}`AsyncScope`), or wi
 callbacks. `@scope.cache()` caches a function's result for the active activation. A
 generator function is a resource. Its generator is entered when cached, and its yielded
 value is cached in its place. A decorator over a generator function is seen through when it
-records what it wraps, as `functools.wraps` does.
+records what it wraps, as `functools.wraps` does. An activation closes its resources last
+entered first, as nested `with` blocks would. An error a resource raises while closing
+replaces the one the activation ended with, which stays in its chain as `__context__`. So a
+resource can translate an error by raising its own from it.
 
 `isolation="shared"` uses one cache across all threads and tasks, for application-wide
 state. `isolation="context"` (the default) gives each execution context its own cache, for
@@ -41,9 +44,9 @@ cleanup, such as a failed commit, but can't suppress it. One that tries raises
 {py:exc}`MiddlewareError <stratae.lifecycle.exceptions.MiddlewareError>` from the error
 instead. Code that should decide whether an error propagates is a resource, not middleware.
 Once a resource suppresses the error, middleware sees a clean exit, as an outer `with` block
-does. An error a middleware raises after its `yield` follows the rule for a resource's
-cleanup: alone after a clean activation, or grouped with the activation's error. One that
-raises before its `yield` refuses the activation: the ones already entered see that error,
+does. An error a middleware raises after its `yield` replaces the activation's, as a
+resource's does, so middleware can translate an error too. One that raises before its `yield`
+refuses the activation: the ones already entered see that error,
 and it propagates. A {py:class}`Scope` runs generator functions. An {py:class}`AsyncScope`
 runs async generator functions too, which is why its `activate()` is awaited, as its
 `deactivate()` is. Like a resource, a middleware must yield exactly once, and raises

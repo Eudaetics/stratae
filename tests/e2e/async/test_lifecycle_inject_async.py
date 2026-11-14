@@ -202,7 +202,7 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(
 
     Given: An application AsyncScope.
     When: Generator dependencies are injected at application scope that raise an exception.
-    Then: The exceptions should propagate correctly as an ExceptionGroup.
+    Then: The first-entered dependency's error propagates, with the other's as its context.
     """
 
     # Arrange
@@ -246,12 +246,10 @@ async def test_lifecycle_inject_async_gen_with_multiple_exceptions(
             assert isinstance(resource_instance, SimpleObject)
             assert isinstance(resource_instance_2, SimpleObject)
 
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(_SimulatedExceptionAfterYield) as raised:
         await act()
 
-    assert len(exceptions.value.exceptions) == 2
-    assert any(isinstance(e, ValueError) for e in exceptions.value.exceptions)
-    assert any(isinstance(e, AttributeError) for e in exceptions.value.exceptions)
+    assert isinstance(raised.value.__context__, _SimulatedExceptionAfterYieldAttribute)
 
 
 async def test_async_lifecycle_outer_cache_and_context_change(

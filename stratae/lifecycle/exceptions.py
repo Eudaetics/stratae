@@ -11,13 +11,12 @@ Each kind of failure has its own class, under one of these bases:
   exactly once.
 - {py:exc}`MiddlewareError`: a scope's middleware that tries to swallow the activation's error.
 
-Failures closing a scope are raised together as a {py:exc}`CleanupErrors` group. It's a
-{py:exc}`BaseCleanupErrors` group instead if any is a `BaseException` such as
-`CancelledError`.
+An error raised while closing a scope replaces the one it was closing with, which stays in its
+chain as `__context__`, as nested `with` blocks do.
 """
 
-from collections.abc import Callable, Sequence
-from typing import Any, Literal, Self
+from collections.abc import Callable
+from typing import Any, Literal
 
 from stratae.callables import Gives
 
@@ -258,19 +257,3 @@ class ResourceDidNotStopError(ResourceGeneratorError):
         super().__init__(
             "generator didn't stop" if after is None else f"generator didn't stop after {after}"
         )
-
-
-class BaseCleanupErrors(BaseExceptionGroup[BaseException]):
-    """Raised when several exits fail closing a scope, when any is a `BaseException`."""
-
-    def __new__(cls, errors: Sequence[BaseException]) -> Self:
-        """:param errors: The exits' failures."""
-        return super().__new__(cls, "Multiple exceptions raised during scope cleanup", errors)
-
-    def __init__(self, errors: Sequence[BaseException]) -> None:
-        """:param errors: The exits' failures."""
-        super().__init__("Multiple exceptions raised during scope cleanup", errors)
-
-
-class CleanupErrors(BaseCleanupErrors, ExceptionGroup[Exception]):
-    """Raised when several exits fail closing a scope."""

@@ -14,56 +14,12 @@ from typing import Any
 
 from stratae.lifecycle._slots import SlotStorage
 from stratae.lifecycle.exceptions import (
-    BaseCleanupErrors,
-    CleanupErrors,
     EndedDuringEntryError,
     ResourceDidNotStopError,
     ResourceDidNotYieldError,
 )
 
 Contexts = list[tuple[bool, Any, Callable[[Any, BaseException | None], Any]]]
-
-
-def _record(
-    pending: list[BaseException] | None,
-    current: BaseException | None,
-    outcome: BaseException | None,
-) -> list[BaseException]:
-    """
-    Record an exit outcome that differs from the exception it was handed.
-
-    A suppressed exception clears the list, as with `contextlib.ExitStack`.
-    """
-    if outcome is None:
-        return []
-    if pending is None:
-        return _seed(current, outcome)
-    if not any(outcome is exc for exc in pending):
-        pending.append(outcome)
-    return pending
-
-
-def _seed(current: BaseException | None, outcome: BaseException) -> list[BaseException]:
-    """Start the pending list at the first outcome that differs from what it was handed."""
-    return [outcome] if current is None else [current, outcome]
-
-
-def _settle(pending: list[BaseException], received: BaseException | None) -> bool:
-    """
-    Finish a close in which some exit raised or suppressed.
-
-    Returns whether the caller's exception was suppressed, or raises what's still
-    propagating.
-    """
-    if not pending:
-        return received is not None
-    if len(pending) == 1:
-        raise pending[0]
-    failures = pending[::-1]
-    errors = [failure for failure in failures if isinstance(failure, Exception)]
-    if len(errors) < len(failures):
-        raise BaseCleanupErrors(failures)
-    raise CleanupErrors(errors)
 
 
 def exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) -> bool:
@@ -202,45 +158,43 @@ def close(contexts: Contexts, exc: BaseException | None = None) -> bool:
     """
     Exit every resource in `contexts`, last entered first, starting from the caller's exception.
 
+    Each exit is handed what's propagating: the caller's exception, `None` once an exit
+    suppressed it, or the error an exit raised in its place. The resources left after an exit
+    raises are closed inside that error's handler, as the next `with` out would close them. So
+    Python links each error to the one it replaced, as `__context__`, and the last one raised
+    replaces the caller's exception.
+
     :returns: Whether the caller's exception was suppressed.
-    :raises BaseException: A new exception from closing, or a `BaseExceptionGroup` if
-        several are propagating.
+    :raises BaseException: The last error an exit raised.
     """
     received = exc
-    pending: list[BaseException] | None = None
     while contexts:
         _, gen, leave = contexts.pop()
         try:
-            suppressed = leave(gen, exc)
+            if leave(gen, exc):
+                exc = None
         except BaseException as new_exc:
-            outcome = new_exc
-        else:
-            outcome = None if suppressed else exc
-        if outcome is not exc:
-            pending = _record(pending, exc, outcome)
-            exc = outcome
-    return False if pending is None else _settle(pending, received)
+            if close(contexts, new_exc):
+                return received is not None
+            raise
+    return received is not None and exc is None
 
 
 async def aclose(contexts: Contexts, exc: BaseException | None = None) -> bool:
     """
-    Exit every resource in `contexts`, last entered first, starting from the caller's exception.
+    Exit every resource in `contexts`, as {py:func}`close` does, awaiting async exits.
 
     :returns: Whether the caller's exception was suppressed.
-    :raises BaseException: A new exception from closing, or a `BaseExceptionGroup` if
-        several are propagating.
+    :raises BaseException: The last error an exit raised.
     """
     received = exc
-    pending: list[BaseException] | None = None
     while contexts:
         is_async, gen, leave = contexts.pop()
         try:
-            suppressed = await leave(gen, exc) if is_async else leave(gen, exc)
+            if await leave(gen, exc) if is_async else leave(gen, exc):
+                exc = None
         except BaseException as new_exc:
-            outcome = new_exc
-        else:
-            outcome = None if suppressed else exc
-        if outcome is not exc:
-            pending = _record(pending, exc, outcome)
-            exc = outcome
-    return False if pending is None else _settle(pending, received)
+            if await aclose(contexts, new_exc):
+                return received is not None
+            raise
+    return received is not None and exc is None

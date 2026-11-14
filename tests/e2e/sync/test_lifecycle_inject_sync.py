@@ -242,7 +242,7 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(application_scope: S
 
     Given: An application scope.
     When: Generator dependencies are injected at application scope that raise an exception.
-    Then: The exceptions should propagate correctly as an ExceptionGroup.
+    Then: The first-entered dependency's error propagates, with the other's as its context.
     """
 
     # Arrange
@@ -284,18 +284,10 @@ def test_lifecycle_inject_sync_gen_with_multiple_exceptions(application_scope: S
             assert isinstance(resource_instance, SimpleObject)
             assert isinstance(resource_instance_2, SimpleObject)
 
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(_SimulatedExceptionAfterYield) as raised:
         act()
 
-    assert len(exceptions.value.exceptions) == 2
-    assert any(
-        isinstance(exc, ValueError) and str(exc) == "Simulated exception after yield"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, AttributeError) and str(exc) == "Simulated exception after yield"
-        for exc in exceptions.value.exceptions
-    )
+    assert isinstance(raised.value.__context__, _SimulatedExceptionAfterYieldAttribute)
     assert mock_side_effect.call_count == 1
     assert mock_cleanup.call_count == 2
     assert mock_catch.call_count == 1

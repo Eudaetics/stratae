@@ -1,6 +1,8 @@
 """Test suite for caching sync generator functions: registration and cleanup."""
 
 import re
+from contextlib import suppress
+from typing import NoReturn
 from unittest.mock import Mock
 
 import pytest
@@ -222,13 +224,14 @@ def test_multiple_generators_sync(scope: Scope):
     mock_cleanup_3.assert_called_once()
 
 
-def test_generator_sync_exception_group(scope: Scope):
+def test_last_cleanup_failure_propagates_with_earlier_ones_chained(scope: Scope):
     """
-    Test that multiple exceptions during generator cleanup are collected into an ExceptionGroup.
+    Each cleanup failure should replace the one before it, which stays in its context chain.
 
-    Given: A Scope and multiple cached generator functions that raise exceptions,
-    When: The generators are cleaned up,
-    Then: An ExceptionGroup containing all exceptions should be raised.
+    Given: A Scope and three cached generator functions whose cleanups each raise
+    When: The generators are cleaned up, last entered first
+    Then: The first-entered resource's error is raised, with the second's as its context and
+        the third's as the second's, and every cleanup runs
     """
     # Arrange
     mock_cleanup_1 = Mock(side_effect=ValueError("First Failure"))
@@ -258,29 +261,20 @@ def test_generator_sync_exception_group(scope: Scope):
         finally:
             mock_cleanup_3()
 
-    # Act & Assert
+    # Act
     def act() -> None:
         with scope:
             generator_one()
             generator_two()
             generator_three()
 
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(ValueError, match="First Failure") as raised:
         act()
 
-    assert len(exceptions.value.exceptions) == 3
-    assert any(
-        isinstance(exc, ValueError) and str(exc) == "First Failure"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, KeyError) and str(exc) == "'Second Failure'"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, RuntimeError) and str(exc) == "Third Failure"
-        for exc in exceptions.value.exceptions
-    )
+    # Assert
+    second = raised.value.__context__
+    assert isinstance(second, KeyError)
+    assert isinstance(second.__context__, RuntimeError)
     mock_cleanup_1.assert_called_once()
     mock_cleanup_2.assert_called_once()
     mock_cleanup_3.assert_called_once()
@@ -356,17 +350,15 @@ def test_generator_can_suppress_exception_raised_in_caller_block(scope: Scope):
     mock_suppressed.assert_called_once()
 
 
-def test_multiple_generators_each_raise_from_callers_exception(scope: Scope):
+def test_each_resource_error_replaces_the_one_before(scope: Scope):
     """
-    Test that resources each raising their own exception from the caller's are grouped.
+    A resource raising its own error should replace the one it was given, keeping it chained.
 
-    Given: A Scope and two cached generators, each of which raises its own new
-        exception while handling whatever it's thrown, rather than re-raising it
-        unchanged,
-    When: Code inside the active scope's with block raises after both resources have
-        been entered,
-    Then: An ExceptionGroup containing the caller's original exception plus each
-        resource's own exception should be raised, chained in close (LIFO) order.
+    Given: A Scope and two cached generators, each raising its own new error while
+        handling whatever it's thrown
+    When: Code inside the active scope's with block raises after both are entered
+    Then: The first-entered resource's error is raised, with the other's as its context and
+        the caller's as that one's
     """
 
     # Arrange
@@ -386,44 +378,122 @@ def test_multiple_generators_each_raise_from_callers_exception(scope: Scope):
         except Exception:
             raise _BFailure() from None
 
-    # Act & Assert
+    # Act
     def act() -> None:
         with scope:
             resource_a()
             resource_b()
             raise _CallerFailure()
 
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(_AFailure) as raised:
         act()
 
-    assert len(exceptions.value.exceptions) == 3
-    assert any(
-        isinstance(exc, ValueError) and str(exc) == "Caller Failure"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, RuntimeError) and str(exc) == "A Failure"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, KeyError) and str(exc) == "'B Failure'"
-        for exc in exceptions.value.exceptions
-    )
+    # Assert
+    b_failure = raised.value.__context__
+    assert isinstance(b_failure, _BFailure)
+    assert isinstance(b_failure.__context__, _CallerFailure)
 
 
-def test_resource_reraising_callers_exception_groups_it_once(scope: Scope):
+def _fail_unrelated() -> NoReturn:
+    raise _TestFailure()
+
+
+def test_error_raised_after_handling_still_chains_the_one_before(scope: Scope):
     """
-    Test that an exception re-raised during cleanup is grouped only once.
+    An error raised after a resource finished handling the one it was given should chain it.
 
-    Given: A Scope and two cached generators, the later one raising its own new exception
-        and the earlier one re-raising the caller's exception in place of it,
-    When: Code inside the active scope's with block raises after both resources have
-        been entered,
-    Then: An ExceptionGroup containing the caller's exception and the later resource's
-        exception, each once, should be raised.
+    Given: Two cached generators: the later raising its own error from the caller's, and the
+        earlier catching that, then raising a new error while handling an unrelated one
+    When: Code inside the active scope's with block raises after both are entered
+    Then: The earlier resource's error is raised, and following its context chain reaches
+        the later resource's error, then the caller's
+    """
+
+    # Arrange
+    @scope.cache()
+    def resource_a():
+        with suppress(Exception):
+            yield "a"
+        try:
+            _fail_unrelated()
+        except _TestFailure:
+            raise _AFailure() from None
+
+    @scope.cache()
+    def resource_b():
+        try:
+            yield "b"
+        except Exception:
+            raise _BFailure() from None
+
+    # Act
+    def act() -> None:
+        with scope:
+            resource_a()
+            resource_b()
+            raise _CallerFailure()
+
+    with pytest.raises(_AFailure) as raised:
+        act()
+
+    # Assert
+    chain: list[type[BaseException]] = []
+    error: BaseException | None = raised.value
+    while error is not None:
+        chain.append(type(error))
+        error = error.__context__
+    assert chain == [_AFailure, _TestFailure, _BFailure, _CallerFailure]
+
+
+def test_resource_suppressing_a_later_cleanup_error_suppresses_the_activations(
+    scope: Scope,
+):
+    """
+    A resource suppressing the error a later-entered resource raised should end the activation.
+
+    Given: Two cached generators: the later raising its own error from the caller's, and the
+        earlier suppressing whatever it's thrown
+    When: Code inside the active scope's with block raises after both are entered
+    Then: Nothing propagates, and both resources closed
     """
     # Arrange
-    caller_failure = ValueError("Caller Failure")
+    closed: list[str] = []
+
+    @scope.cache()
+    def resource_a():
+        with suppress(Exception):
+            yield "a"
+        closed.append("a")
+
+    @scope.cache()
+    def resource_b():
+        try:
+            yield "b"
+        except Exception:
+            closed.append("b")
+            raise _BFailure() from None
+
+    # Act
+    with scope:
+        resource_a()
+        resource_b()
+        raise _CallerFailure()
+
+    # Assert
+    assert closed == ["b", "a"]
+
+
+def test_resource_reraising_callers_exception_propagates_it(scope: Scope):
+    """
+    A resource re-raising the caller's exception should make it propagate again.
+
+    Given: A Scope and two cached generators, the later one raising its own new error and
+        the earlier one re-raising the caller's exception in place of it
+    When: Code inside the active scope's with block raises after both are entered
+    Then: The caller's exception is raised, with the later resource's error as its context
+    """
+    # Arrange
+    caller_failure = _CallerFailure()
 
     class SimpleObject: ...
 
@@ -448,16 +518,12 @@ def test_resource_reraising_callers_exception_groups_it_once(scope: Scope):
             resource_b()
             raise caller_failure
 
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(_CallerFailure) as raised:
         act()
 
     # Assert
-    assert len(exceptions.value.exceptions) == 2
-    assert any(exc is caller_failure for exc in exceptions.value.exceptions)
-    assert any(
-        isinstance(exc, KeyError) and str(exc) == "'B Failure'"
-        for exc in exceptions.value.exceptions
-    )
+    assert raised.value is caller_failure
+    assert isinstance(caller_failure.__context__, _BFailure)
 
 
 def test_resource_swallowing_exception_hides_it_from_earlier_resources(scope: Scope):
@@ -552,14 +618,14 @@ def test_cleanup_raising_non_exception_still_closes_earlier_resources(scope: Sco
     assert closed == ["first"]
 
 
-def test_non_exception_cleanup_failures_are_grouped_with_exceptions(scope: Scope):
+def test_cleanup_error_replaces_a_base_exception_and_chains_it(scope: Scope):
     """
-    A BaseException from one cleanup and an Exception from another are raised together.
+    An error a cleanup raises while a BaseException propagates should replace it, as `with` does.
 
-    Given: Two cached resources, one raising a non-Exception BaseException while closing and
-        the other a ValueError,
-    When: The scope deactivates,
-    Then: A BaseExceptionGroup containing both should be raised.
+    Given: Two cached resources, the later raising a non-Exception BaseException while
+        closing, and the earlier raising a ValueError from its cleanup
+    When: The scope deactivates
+    Then: The ValueError is raised, with the BaseException as its context
     """
 
     # Arrange
@@ -581,9 +647,8 @@ def test_non_exception_cleanup_failures_are_grouped_with_exceptions(scope: Scope
             first()
             second()
 
-    with pytest.raises(BaseExceptionGroup) as group:
+    with pytest.raises(_FirstFailure) as raised:
         act()
 
     # Assert
-    kinds = sorted(type(exc).__name__ for exc in group.value.exceptions)
-    assert kinds == ["_FirstFailure", "_Interrupt"]
+    assert isinstance(raised.value.__context__, _Interrupt)
