@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from contextlib import suppress
 from unittest.mock import Mock
 
 import pytest
@@ -229,13 +230,16 @@ async def test_multiple_generators_async(async_scope: AsyncScope):
     mock_cleanup_3.assert_called_once()
 
 
-async def test_generator_async_exception_group(async_scope: AsyncScope):
+async def test_last_cleanup_failure_propagates_with_earlier_ones_chained_async(
+    async_scope: AsyncScope,
+):
     """
-    Test that multiple exceptions during generator cleanup are collected into an ExceptionGroup.
+    Each cleanup failure should replace the one before it, which stays in its context chain.
 
-    Given: An AsyncScope and multiple cached generator functions that raise exceptions,
-    When: The generators are cleaned up,
-    Then: An ExceptionGroup containing all exceptions should be raised.
+    Given: A AsyncScope and three cached generator functions whose cleanups each raise
+    When: The generators are cleaned up, last entered first
+    Then: The first-entered resource's error is raised, with the second's as its context and
+        the third's as the second's, and every cleanup runs
     """
     # Arrange
     mock_cleanup_1 = Mock(side_effect=ValueError("First Failure"))
@@ -268,29 +272,20 @@ async def test_generator_async_exception_group(async_scope: AsyncScope):
         finally:
             mock_cleanup_3()
 
-    # Act & Assert
+    # Act
     async def act() -> None:
         async with async_scope:
             await generator_one()
             await generator_two()
             await generator_three()
 
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(ValueError, match="First Failure") as raised:
         await act()
 
-    assert len(exceptions.value.exceptions) == 3
-    assert any(
-        isinstance(exc, ValueError) and str(exc) == "First Failure"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, KeyError) and str(exc) == "'Second Failure'"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, RuntimeError) and str(exc) == "Third Failure"
-        for exc in exceptions.value.exceptions
-    )
+    # Assert
+    second = raised.value.__context__
+    assert isinstance(second, KeyError)
+    assert isinstance(second.__context__, RuntimeError)
     mock_cleanup_1.assert_called_once()
     mock_cleanup_2.assert_called_once()
     mock_cleanup_3.assert_called_once()
@@ -370,19 +365,15 @@ async def test_generator_can_suppress_exception_raised_in_caller_block_async(
     mock_suppressed.assert_called_once()
 
 
-async def test_multiple_generators_each_raise_from_callers_exception_async(
-    async_scope: AsyncScope,
-):
+async def test_each_resource_error_replaces_the_one_before_async(async_scope: AsyncScope):
     """
-    Test that resources each raising their own exception from the caller's are grouped.
+    A resource raising its own error should replace the one it was given, keeping it chained.
 
-    Given: An AsyncScope and two cached async generators, each of which raises its own
-        new exception while handling whatever it's thrown, rather than re-raising it
-        unchanged,
-    When: Code inside the active scope's async with block raises after both resources
-        have been entered,
-    Then: An ExceptionGroup containing the caller's original exception plus each
-        resource's own exception should be raised, chained in close (LIFO) order.
+    Given: A AsyncScope and two cached generators, each raising its own new error while
+        handling whatever it's thrown
+    When: Code inside the active scope's async with block raises after both are entered
+    Then: The first-entered resource's error is raised, with the other's as its context and
+        the caller's as that one's
     """
 
     # Arrange
@@ -404,44 +395,73 @@ async def test_multiple_generators_each_raise_from_callers_exception_async(
         except Exception:
             raise _BFailure() from None
 
-    # Act & Assert
+    # Act
     async def act() -> None:
         async with async_scope:
             await resource_a()
             await resource_b()
             raise _CallerFailure()
 
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(_AFailure) as raised:
         await act()
 
-    assert len(exceptions.value.exceptions) == 3
-    assert any(
-        isinstance(exc, ValueError) and str(exc) == "Caller Failure"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, RuntimeError) and str(exc) == "A Failure"
-        for exc in exceptions.value.exceptions
-    )
-    assert any(
-        isinstance(exc, KeyError) and str(exc) == "'B Failure'"
-        for exc in exceptions.value.exceptions
-    )
+    # Assert
+    b_failure = raised.value.__context__
+    assert isinstance(b_failure, _BFailure)
+    assert isinstance(b_failure.__context__, _CallerFailure)
 
 
-async def test_resource_reraising_callers_exception_groups_it_once(async_scope: AsyncScope):
+async def test_resource_suppressing_a_later_cleanup_error_suppresses_the_activations_async(
+    async_scope: AsyncScope,
+):
     """
-    Test that an exception re-raised during cleanup is grouped only once.
+    A resource suppressing the error a later-entered resource raised should end the activation.
 
-    Given: An AsyncScope and two cached async generators, the later one raising its own
-        new exception and the earlier one re-raising the caller's exception in place of it,
-    When: Code inside the active scope's async with block raises after both resources
-        have been entered,
-    Then: An ExceptionGroup containing the caller's exception and the later resource's
-        exception, each once, should be raised.
+    Given: Two cached generators: the later raising its own error from the caller's, and the
+        earlier suppressing whatever it's thrown
+    When: Code inside the active scope's async with block raises after both are entered
+    Then: Nothing propagates, and both resources closed
     """
     # Arrange
-    caller_failure = ValueError("Caller Failure")
+    closed: list[str] = []
+
+    @async_scope.cache()
+    async def resource_a():
+        await asyncio.sleep(0)
+        with suppress(Exception):
+            yield "a"
+        closed.append("a")
+
+    @async_scope.cache()
+    async def resource_b():
+        await asyncio.sleep(0)
+        try:
+            yield "b"
+        except Exception:
+            closed.append("b")
+            raise _BFailure() from None
+
+    # Act
+    async with async_scope:
+        await resource_a()
+        await resource_b()
+        raise _CallerFailure()
+
+    # Assert
+    assert closed == ["b", "a"]
+
+
+async def test_resource_reraising_callers_exception_propagates_it_async(async_scope: AsyncScope):
+    """
+    A resource re-raising the caller's exception should make it propagate again.
+
+    Given: A AsyncScope and two cached generators, the later one raising its own new error and
+        the earlier one re-raising the caller's exception in place of it
+    When: Code inside the active scope's async with block raises after both are entered
+    Then: The caller's exception is raised, with the later resource's error as its context
+    """
+    # Arrange
+    caller_failure = _CallerFailure()
 
     class SimpleObject: ...
 
@@ -468,16 +488,12 @@ async def test_resource_reraising_callers_exception_groups_it_once(async_scope: 
             await resource_b()
             raise caller_failure
 
-    with pytest.raises(ExceptionGroup) as exceptions:
+    with pytest.raises(_CallerFailure) as raised:
         await act()
 
     # Assert
-    assert len(exceptions.value.exceptions) == 2
-    assert any(exc is caller_failure for exc in exceptions.value.exceptions)
-    assert any(
-        isinstance(exc, KeyError) and str(exc) == "'B Failure'"
-        for exc in exceptions.value.exceptions
-    )
+    assert raised.value is caller_failure
+    assert isinstance(caller_failure.__context__, _BFailure)
 
 
 async def test_resource_swallowing_exception_hides_it_from_earlier_resources_async(
@@ -580,14 +596,14 @@ async def test_cleanup_raising_non_exception_still_closes_earlier_resources(
     assert closed == ["first"]
 
 
-async def test_non_exception_cleanup_failures_are_grouped_with_exceptions(async_scope: AsyncScope):
+async def test_cleanup_error_replaces_a_base_exception_and_chains_it_async(async_scope: AsyncScope):
     """
-    A BaseException from one cleanup and an Exception from another are raised together.
+    An error a cleanup raises while a BaseException propagates should replace it, as `with` does.
 
-    Given: Two cached resources, one raising a non-Exception BaseException while closing and
-        the other a ValueError,
-    When: The scope deactivates,
-    Then: A BaseExceptionGroup containing both should be raised.
+    Given: Two cached resources, the later raising a non-Exception BaseException while
+        closing, and the earlier raising a ValueError from its cleanup
+    When: The scope deactivates
+    Then: The ValueError is raised, with the BaseException as its context
     """
 
     # Arrange
@@ -611,9 +627,8 @@ async def test_non_exception_cleanup_failures_are_grouped_with_exceptions(async_
             await first()
             await second()
 
-    with pytest.raises(BaseExceptionGroup) as group:
+    with pytest.raises(_FirstFailure) as raised:
         await act()
 
     # Assert
-    kinds = sorted(type(exc).__name__ for exc in group.value.exceptions)
-    assert kinds == ["_FirstFailure", "_Interrupt"]
+    assert isinstance(raised.value.__context__, _Interrupt)

@@ -170,8 +170,8 @@ def test_exception_raised_while_handling_another_propagates_unchanged():
 
     Given: An active scope whose block raises a ValueError while handling a KeyError,
     When: the scope deactivates on the way out,
-    Then: the ValueError itself propagates - not an ExceptionGroup bundling it with the
-          KeyError it was raised during.
+    Then: the ValueError itself propagates, with the KeyError it was raised during in its
+          chain, as nested `with` blocks would leave it.
     """
     # Arrange
     scope = Scope("request")

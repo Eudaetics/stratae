@@ -14,13 +14,13 @@ Scope middleware:
   the middleware already running sees the error, later middleware isn't run, and the error
   propagates.
 - A refused activation releases its required parent.
-- A middleware can't swallow the activation's error: trying raises MiddlewareError from it,
-  grouped with the error in CleanupErrors as a cleanup error is. A BaseException that isn't
-  an Exception, such as KeyboardInterrupt, propagates as it is.
+- A middleware can't swallow the activation's error: trying raises MiddlewareError from it in
+  its place. A BaseException that isn't an Exception, such as KeyboardInterrupt, propagates as
+  it is.
 - A middleware must yield exactly once: one that never yields refuses the activation, and
   one that yields again raises ResourceDidNotStopError.
-- An error raised after the yield propagates as a resource's cleanup error does: alone after
-  a clean activation, or grouped with the activation's error in CleanupErrors.
+- An error raised after the yield replaces the activation's, as a resource's cleanup error
+  does, with the activation's error in its chain. So a middleware can translate an error.
 - middleware= refuses a lone callable, a string, an item that isn't callable, and anything
   but a generator function.
 - The middleware is kept as a tuple, given in any sequence.
@@ -34,7 +34,6 @@ from typing import Any
 import pytest
 
 from stratae.lifecycle.exceptions import (
-    CleanupErrors,
     MiddlewareError,
     ResourceDidNotStopError,
     ResourceDidNotYieldError,
@@ -296,13 +295,10 @@ def test_exit_cannot_swallow_activation_error():
     """
     A middleware's exit shouldn't be able to swallow the activation's error.
 
-    Middleware is held as the activation's first resources, so the refusal is grouped with
-    the activation's error, as any error an exit raises is.
-
     Given: A scope whose middleware suppresses the error its block raises
     When: The block raises
-    Then: CleanupErrors holds the block's error and a MiddlewareError raised from it, and the
-        scope isn't active
+    Then: MiddlewareError is raised from the block's error in its place, and the scope isn't
+        active
     """
 
     # Arrange
@@ -313,13 +309,11 @@ def test_exit_cannot_swallow_activation_error():
     scope = Scope("work", middleware=(swallow,))
 
     # Act
-    with pytest.raises(CleanupErrors) as raised, scope:
+    with pytest.raises(MiddlewareError) as raised, scope:
         raise _Failed
 
     # Assert
-    (failed,) = [error for error in raised.value.exceptions if isinstance(error, _Failed)]
-    (refusal,) = [error for error in raised.value.exceptions if isinstance(error, MiddlewareError)]
-    assert refusal.__cause__ is failed
+    assert isinstance(raised.value.__cause__, _Failed)
     assert not scope.is_active()
 
 
@@ -403,20 +397,17 @@ def test_middleware_yielding_again_after_error_refused():
 
     Given: A scope whose middleware yields a second time
     When: The block raises
-    Then: CleanupErrors holds the block's error and ResourceDidNotStopError
+    Then: ResourceDidNotStopError is raised, with the block's error as its context
     """
     # Arrange
     scope = Scope("work", middleware=(_yields_twice,))
 
     # Act
-    with pytest.raises(CleanupErrors) as raised, scope:
+    with pytest.raises(ResourceDidNotStopError) as raised, scope:
         raise _Failed
 
     # Assert
-    assert {type(error) for error in raised.value.exceptions} == {
-        ResourceDidNotStopError,
-        _Failed,
-    }
+    assert isinstance(raised.value.__context__, _Failed)
 
 
 def test_error_raised_on_exit_after_clean_activation_propagates():
@@ -440,16 +431,13 @@ def test_error_raised_on_exit_after_clean_activation_propagates():
         pass
 
 
-def test_error_raised_on_exit_is_grouped_with_activation_error():
+def test_error_raised_on_exit_replaces_activation_error():
     """
-    An error a middleware raises on exit should be grouped with the activation's own.
+    An error a middleware raises on exit should replace the activation's, so it can translate.
 
-    Middleware is held as the activation's first resources, so its exit errors follow the
-    rule for a resource's cleanup: neither error is lost.
-
-    Given: A scope whose middleware raises its own error on exit
+    Given: A scope whose middleware raises its own error from the one its block raised
     When: The block raises
-    Then: CleanupErrors holds the block's error and the middleware's
+    Then: The middleware's error is raised, with the block's as its cause
     """
 
     # Arrange
@@ -462,11 +450,11 @@ def test_error_raised_on_exit_is_grouped_with_activation_error():
     scope = Scope("work", middleware=(translate,))
 
     # Act
-    with pytest.raises(CleanupErrors) as raised, scope:
+    with pytest.raises(_Refused) as raised, scope:
         raise _Failed
 
     # Assert
-    assert {type(error) for error in raised.value.exceptions} == {_Failed, _Refused}
+    assert isinstance(raised.value.__cause__, _Failed)
 
 
 def test_lone_middleware_refused():

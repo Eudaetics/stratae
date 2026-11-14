@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -133,10 +133,7 @@ def _kind(exc: BaseException) -> type[BaseException]:
 
 
 def _describe(exc: BaseException) -> tuple[Any, ...]:
-    """Describe an exception by kind and message, recursing into a group's exceptions."""
-    if isinstance(exc, BaseExceptionGroup):
-        group = cast(BaseExceptionGroup[BaseException], exc)
-        return (_kind(group), str(group), tuple(_describe(inner) for inner in group.exceptions))
+    """Describe an exception by kind and message."""
     return (_kind(exc), str(exc))
 
 

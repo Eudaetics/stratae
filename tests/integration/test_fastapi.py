@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from stratae.depends import Depends, inject
 from stratae.integrations.fastapi import scoped_route
 from stratae.lifecycle import AsyncScope
-from stratae.lifecycle.exceptions import CleanupErrors, ScopeInactiveError
+from stratae.lifecycle.exceptions import ScopeInactiveError
 
 pytestmark = pytest.mark.fastapi
 
@@ -963,8 +963,8 @@ def test_failed_cleanup_after_handled_error_keeps_its_response(
     Given: A scoped route whose endpoint raises HTTPException(409), with a request-scoped
         resource whose cleanup fails
     When: The endpoint is requested
-    Then: The 409 is sent first, then the cleanup failure is raised, grouped with the error
-        it was cleaning up after
+    Then: The 409 is sent first, then the cleanup failure is raised, with the error it was
+        cleaning up after as its context
     """
     # Arrange
     events: list[str] = []
@@ -990,10 +990,7 @@ def test_failed_cleanup_after_handled_error_keeps_its_response(
     fastapi_app.include_router(router)
 
     # Act / Assert
-    with pytest.raises(CleanupErrors) as raised:
+    with pytest.raises(_DeliberateCleanupFailure) as raised:
         TestClient(record_response_start(fastapi_app, events)).get("/conflict")
     assert events == ["response-start: 409", "cleanup failed"]
-    assert [type(exc) for exc in raised.value.exceptions] == [
-        _DeliberateCleanupFailure,
-        HTTPException,
-    ]
+    assert isinstance(raised.value.__context__, HTTPException)

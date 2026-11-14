@@ -13,7 +13,7 @@ AsyncScope middleware:
 - middleware= refuses an async def that isn't a generator, and a plain function, when the
   scope is built.
 - A middleware, async or sync, can't swallow the activation's error: trying raises
-  MiddlewareError from it, grouped with the error in CleanupErrors.
+  MiddlewareError from it in its place.
 - Trying to swallow the task's own cancellation raises the cancellation again.
 - An async middleware that never yields refuses the activation.
 """
@@ -23,7 +23,7 @@ from collections.abc import AsyncGenerator, Generator
 
 import pytest
 
-from stratae.lifecycle.exceptions import CleanupErrors, MiddlewareError, ResourceDidNotYieldError
+from stratae.lifecycle.exceptions import MiddlewareError, ResourceDidNotYieldError
 from stratae.lifecycle.scope import AsyncScope
 from stratae.middleware import MiddlewareKindError
 
@@ -223,21 +223,19 @@ async def test_middleware_cannot_swallow_activation_error(middleware: object):
 
     Given: An async scope whose middleware returns whatever its yield raises
     When: The block raises
-    Then: CleanupErrors holds the block's error and a MiddlewareError raised from it, and the
-        scope isn't active
+    Then: MiddlewareError is raised from the block's error in its place, and the scope isn't
+        active
     """
     # Arrange
     scope = AsyncScope("work", middleware=(middleware,))  # pyright: ignore[reportArgumentType]
 
     # Act
-    with pytest.raises(CleanupErrors) as raised:
+    with pytest.raises(MiddlewareError) as raised:
         async with scope:
             raise _Failed
 
     # Assert
-    (failed,) = [error for error in raised.value.exceptions if isinstance(error, _Failed)]
-    (refusal,) = [error for error in raised.value.exceptions if isinstance(error, MiddlewareError)]
-    assert refusal.__cause__ is failed
+    assert isinstance(raised.value.__cause__, _Failed)
     assert not scope.is_active()
 
 
