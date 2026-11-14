@@ -4,50 +4,66 @@ Decorator objects returned by `Scope.cache` and `AsyncScope.cache`.
 Any callable whose signature can be read may be cached, in any number of scopes. Each
 `cache()` call builds its own wrapper and storage, and nothing is written onto the callable.
 
-How it's wrapped is chosen once, when it's decorated. A generator function, sync or async,
-has its generator entered and the yielded value cached. A function whose decorator hides a
-generator function checks what each miss returns. Any other callable has its return value
-cached.
+How it's wrapped is chosen once, when it's decorated, from what calling it gives, as
+{py:func}`call_result <stratae.callables.call_result>` tells it. A value is cached as it is, and a
+coroutine's result is cached once it's awaited. A generator of either kind is entered, and the
+value it yields is cached. A function whose decorator hides one giving something else checks
+what each miss returns. Both scopes choose the same way. A sync scope can't await, so it
+refuses a coroutine or an async generator.
 """
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hashable
-from inspect import isasyncgenfunction, isgeneratorfunction, unwrap
-from typing import Any, Literal, overload
+from typing import Any, overload
 
-from stratae.callables import is_async_callable
+from stratae.callables import Gives, call_result
 from stratae.lifecycle._slots import SlotStore
 from stratae.lifecycle._wrappers import (
     Cached,
     create_async_generator_wrapper,
     create_async_wrapper,
-    create_checked_wrapper,
+    create_checked_async_wrapper,
+    create_checked_sync_wrapper,
     create_generator_wrapper,
     create_sync_wrapper,
 )
-from stratae.lifecycle.exceptions import (
-    AsyncGeneratorInSyncScopeError,
-)
+from stratae.lifecycle.exceptions import AsyncInSyncScopeError
+
+_WRAPPERS: dict[Gives, Callable[..., Cached[..., Any, Any]]] = {
+    Gives.VALUE: create_sync_wrapper,
+    Gives.COROUTINE: create_async_wrapper,
+    Gives.GENERATOR: create_generator_wrapper,
+    Gives.ASYNC_GENERATOR: create_async_generator_wrapper,
+}
+"""The wrapper for a callable known to give each kind of thing."""
 
 
-def _hidden_generator(func: Callable[..., Any]) -> Literal["sync", "async"] | None:
+def _wrap(
+    func: Callable[..., Any],
+    store: SlotStore,
+    cache_key: Callable[..., Hashable] | None,
+    ignore_params: bool,
+    *,
+    can_await: bool,
+) -> Cached[..., Any, Any]:
     """
-    Return the kind of generator function a decorator over `func` hides, if any.
+    Wrap `func` for its scope, from what calling it gives.
 
-    Found through `__wrapped__`, which `functools.wraps` sets. A decorator that doesn't set it
-    hides nothing this can see, so its function is cached like any other.
+    :param can_await: Whether the scope can await, as an async scope can.
+    :raises AsyncInSyncScopeError: If `func` gives a coroutine or an async generator, and the
+        scope can't await.
     """
-    inner = unwrap(func)
-    if inner is func:
-        return None
-    if isasyncgenfunction(inner):
-        return "async"
-    if isgeneratorfunction(inner):
-        return "sync"
-    return None
+    gives, hidden = call_result(func)
+    if hidden:
+        if gives.awaits and can_await:
+            return create_checked_async_wrapper(func, store, cache_key, ignore_params)
+        return create_checked_sync_wrapper(func, store, cache_key, ignore_params)
+    if gives.awaits and not can_await:
+        raise AsyncInSyncScopeError(func, store.name, gives)
+    return _WRAPPERS[gives](func, store, cache_key, ignore_params)
 
 
-class CacheDecorator:
-    """Decorator returned by `Scope.cache()`."""
+class _CacheDecorator:
+    """The arguments to a scope's `cache()`, bound to the scope's slot storage."""
 
     __slots__ = ("_cache_key", "_ignore_params", "_store")
 
@@ -60,13 +76,19 @@ class CacheDecorator:
         """
         Bind the decorator to a scope.
 
-        :param store: The owning {py:class}`Scope <stratae.lifecycle.scope.Scope>`'s slot storage.
+        :param store: The owning scope's slot storage.
         :param cache_key: Derives a hashable key from the arguments.
         :param ignore_params: Cache one value per activation regardless of arguments.
         """
         self._store = store
         self._cache_key = cache_key
         self._ignore_params = ignore_params
+
+
+class CacheDecorator(_CacheDecorator):
+    """Decorator returned by `Scope.cache()`."""
+
+    __slots__ = ()
 
     @overload
     def __call__[**P, T](
@@ -83,43 +105,17 @@ class CacheDecorator:
         :param func: The function. A generator function's generator is entered, its yielded
             value cached, and it's closed when the activation ends.
         :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
-        :raises AsyncGeneratorInSyncScopeError: If `func` is, or a decorator hides, an async
-            generator function.
+        :raises AsyncInSyncScopeError: If calling `func` gives a coroutine or an async
+            generator.
         :raises UnreadableSignatureError: If `func`'s signature can't be read.
         """
-        store, cache_key, ignore_params = self._store, self._cache_key, self._ignore_params
-        hidden = None if isgeneratorfunction(func) else _hidden_generator(func)
-        if isasyncgenfunction(func) or hidden == "async":
-            raise AsyncGeneratorInSyncScopeError(func, store.name)
-        if isgeneratorfunction(func):
-            return create_generator_wrapper(func, store, cache_key, ignore_params)
-        if hidden == "sync":
-            return create_checked_wrapper(func, store, cache_key, ignore_params, is_async=False)
-        return create_sync_wrapper(func, store, cache_key, ignore_params)
+        return _wrap(func, self._store, self._cache_key, self._ignore_params, can_await=False)
 
 
-class AsyncCacheDecorator:
+class AsyncCacheDecorator(_CacheDecorator):
     """Decorator returned by `AsyncScope.cache()`."""
 
-    __slots__ = ("_cache_key", "_ignore_params", "_store")
-
-    def __init__(
-        self,
-        store: SlotStore,
-        cache_key: Callable[..., Hashable] | None = None,
-        ignore_params: bool = False,
-    ) -> None:
-        """
-        Bind the decorator to a scope.
-
-        :param store: The owning {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`'s
-            slot storage.
-        :param cache_key: Derives a hashable key from the arguments.
-        :param ignore_params: Cache one value per activation regardless of arguments.
-        """
-        self._store = store
-        self._cache_key = cache_key
-        self._ignore_params = ignore_params
+    __slots__ = ()
 
     @overload
     def __call__[**P, T](
@@ -147,19 +143,8 @@ class AsyncCacheDecorator:
             async, is entered, its yielded value cached, and it's closed when the activation
             ends.
         :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
-            Async if `func` is async or an async generator function, or a decorator hides one.
+            Async if calling `func` gives a coroutine or an async generator, or a decorator
+            hides a function that does.
         :raises UnreadableSignatureError: If `func`'s signature can't be read.
         """
-        store, cache_key, ignore_params = self._store, self._cache_key, self._ignore_params
-        if isasyncgenfunction(func):
-            return create_async_generator_wrapper(func, store, cache_key, ignore_params)
-        if isgeneratorfunction(func):
-            return create_generator_wrapper(func, store, cache_key, ignore_params)
-        if is_async_callable(func):
-            return create_async_wrapper(func, store, cache_key, ignore_params)
-        hidden = _hidden_generator(func)
-        if hidden is not None:
-            return create_checked_wrapper(
-                func, store, cache_key, ignore_params, is_async=hidden == "async"
-            )
-        return create_sync_wrapper(func, store, cache_key, ignore_params)
+        return _wrap(func, self._store, self._cache_key, self._ignore_params, can_await=True)

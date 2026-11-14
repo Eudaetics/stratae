@@ -10,8 +10,8 @@ def wrapper():
         __kind__ = __value__.__class__
         if __kind__ is __Generator__:
             __value__ = __enter_generator__(__slots__, __value__)
-        elif __kind__ is __AsyncGenerator__:
-            __refuse_async__()
+        elif __kind__ is __Coroutine__ or __kind__ is __AsyncGenerator__:
+            __refuse_async__(__value__)
         try:
             __slots__[4] = __value__
         except IndexError:

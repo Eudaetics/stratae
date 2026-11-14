@@ -25,6 +25,8 @@ async def wrapper():
                 __value__ = await __enter_async_generator__(__slots__, __value__)
             elif __kind__ is __Generator__:
                 __value__ = __enter_generator__(__slots__, __value__)
+            elif __kind__ is __Coroutine__:
+                __value__ = await __value__
             try:
                 __slots__[4] = __value__
             except IndexError:

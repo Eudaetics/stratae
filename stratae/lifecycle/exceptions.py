@@ -17,6 +17,8 @@ Failures closing a scope are raised together as a {py:exc}`CleanupErrors` group.
 from collections.abc import Callable, Sequence
 from typing import Any, Literal, Self
 
+from stratae.callables import Gives
+
 
 class LifecycleException(Exception):
     """Base class for all lifecycle exceptions."""
@@ -80,19 +82,20 @@ class UnreadableSignatureError(LifecycleConfigurationError):
         )
 
 
-class AsyncGeneratorInSyncScopeError(LifecycleConfigurationError, TypeError):
-    """Raised when a sync scope is asked to cache an async generator, which it can't await."""
+class AsyncInSyncScopeError(LifecycleConfigurationError, TypeError):
+    """Raised when a sync scope is asked to cache a coroutine or async generator it can't await."""
 
-    def __init__(self, func: Callable[..., Any], scope: str) -> None:
+    def __init__(self, func: Callable[..., Any], scope: str, gives: Gives) -> None:
         """
-        Name the function and the sync scope.
+        Name the function, the sync scope, and what the function gives.
 
         :param func: The cached function.
         :param scope: The scope's name.
+        :param gives: What calling the function gives.
         """
         super().__init__(
-            f"Cannot cache {func!r} in sync scope {scope!r}: it gives an async generator, "
-            "which a sync scope can't enter. Cache it in an AsyncScope."
+            f"Cannot cache {func!r} in sync scope {scope!r}: it gives {gives.value}, "
+            "which a sync scope can't await. Cache it in an AsyncScope."
         )
 
 
