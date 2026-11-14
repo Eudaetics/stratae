@@ -13,7 +13,6 @@ from pamqp.commands import Basic
 from stratae.events import CORRELATION_ID_HEADER, MESSAGE_ID_HEADER, TIMESTAMP_HEADER, Envelope
 from stratae.events.envelope import ENVELOPE_HEADERS
 from stratae.events.failure import failure_reason
-from stratae.events.pipeline import received
 from stratae.integrations.rabbitmq.config import ATTEMPTS_HEADER, FAILURE_HEADER
 
 if TYPE_CHECKING:
@@ -32,7 +31,7 @@ def stamp(
     stamped = copy(properties) if properties is not None else Basic.Properties()
     merged = dict(stamped.headers or {})
     if headers:
-        merged |= received(headers)
+        merged |= headers
     stamped.headers = merged | envelope.to_headers()
     stamped.message_id = str(envelope.message_id)
     stamped.correlation_id = str(envelope.correlation_id)

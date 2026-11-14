@@ -123,7 +123,9 @@ class RabbitMQPublisher:
         for config in self._topology:
             if config.queue is None:
                 raise ValueError(_TOPOLOGY_NEEDS_QUEUE)
-        self._publishing = Publishing(middleware.publish, envelope.new_id, RESERVED)
+        self._publishing = Publishing(
+            middleware.publish, envelope.new_id, RESERVED, asynchronous=True
+        )
         self._serializer = serializer
         self._routes: dict[AnyEvent, RabbitMQConfig] = {}
         self._declared: set[str] = set()

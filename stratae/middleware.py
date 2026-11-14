@@ -92,3 +92,34 @@ class MiddlewareAsyncMethodError(TypeError):
             f"middleware {middleware!r} has an async __enter__ or __exit__; an async context "
             "manager defines __aenter__ and __aexit__"
         )
+
+
+class MiddlewareKindError(TypeError):
+    """Raised when a bus is given middleware of the wrong kind: sync on async, or the reverse."""
+
+    def __init__(self, bus: str, middleware: object, asynchronous: bool) -> None:
+        """
+        Name the bus and the middleware.
+
+        :param bus: The bus.
+        :param middleware: The middleware.
+        :param asynchronous: Whether the bus runs middleware asynchronously.
+        """
+        wanted = "an async def" if asynchronous else "a sync function, not an async def"
+        super().__init__(f"{bus} middleware must be {wanted}, not {middleware!r}")
+
+
+class MiddlewareNextError(Exception):
+    """Raised when a middleware skips `next`, calls it twice, or doesn't return its reply."""
+
+    def __init__(self, middleware: object, mistake: str) -> None:
+        """
+        Name the middleware and its mistake.
+
+        :param middleware: The middleware.
+        :param mistake: What it did, such as "called next twice".
+        """
+        super().__init__(
+            f"middleware {middleware!r} {mistake}; middleware must call next exactly once and "
+            "return its reply"
+        )

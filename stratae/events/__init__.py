@@ -89,7 +89,7 @@ from .envelope import (
 )
 from .handler import Handler, Handlers, WithoutPayload
 from .hooks import Hooks
-from .middleware import HandleCall, MessageHeaders, Middleware, PublishCall
+from .middleware import HandleCall, Middleware, PublishCall
 from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
     Addressed,
@@ -136,7 +136,6 @@ __all__ = [
     "Handlers",
     "Hooks",
     "Immutable",
-    "MessageHeaders",
     "Middleware",
     "NoPayload",
     "Operating",

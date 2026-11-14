@@ -131,7 +131,7 @@ from stratae.events.failure import Retry, failure_action, failure_reason
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
 from stratae.events.patterns import NoPayload, PubSub
-from stratae.events.pipeline import Outgoing, Publishing, Send, publish_async, received
+from stratae.events.pipeline import Outgoing, Publishing, Send, publish_async
 from stratae.events.protocols import (
     Addressed,
     AnyEvent,
@@ -463,7 +463,7 @@ class OutboxProducer:
         :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
-        self._publishing = Publishing(middleware.publish, envelope.new_id)
+        self._publishing = Publishing(middleware.publish, envelope.new_id, asynchronous=True)
         self._store = store
         self._serializer = serializer
         self._routes = _NO_ROUTES
@@ -612,7 +612,7 @@ class OutboxProducer:
             id=envelope.message_id,
             route=route,
             body=body,
-            headers={**received(message.headers), **envelope.to_headers()},
+            headers={**message.headers, **envelope.to_headers()},
             created_at=now,
             available_at=now,
             key=config.key(payload) if config.key is not None else None,

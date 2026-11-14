@@ -125,7 +125,6 @@ from stratae.events.pipeline import (
     Send,
     publish,
     publish_async,
-    received,
     receiving,
     wrap_handler,
 )
@@ -317,7 +316,9 @@ class BaseDirectBus(ABC):
         self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
         self._publishing = Publishing(
-            middleware.publish, None if envelope is None else envelope.new_id
+            middleware.publish,
+            None if envelope is None else envelope.new_id,
+            asynchronous=self._asynchronous,
         )
         self._plain = not (middleware.publish or middleware.handle) and envelope is None
 
@@ -621,7 +622,7 @@ class DirectBus(BaseDirectBus):
             return send
 
         def send_received(message: Outgoing) -> Any:
-            with receiving(received(message.headers)):
+            with receiving(message.headers):
                 return dispatcher(message.event, route.handlers, message.payload)
 
         return send_received
@@ -817,7 +818,7 @@ class AsyncDirectBus(BaseDirectBus):
             return send
 
         async def send_received(message: Outgoing) -> Any:
-            with receiving(received(message.headers)):
+            with receiving(message.headers):
                 return await dispatcher(message.event, route.handlers, message.payload)
 
         return send_received
