@@ -28,18 +28,21 @@ from stratae.callables import is_async_callable
 from stratae.events.envelope import ENVELOPE_HEADERS, Envelope
 from stratae.events.handler import WithoutPayload
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
-from stratae.events.middleware import (
-    NO_HEADERS,
-    HandleCall,
-    PublishCall,
-    chain,
-    chain_async,
-)
+from stratae.events.middleware import NO_HEADERS, HandleCall, PublishCall, from_fields
 from stratae.events.protocols import AnyEvent
+from stratae.middleware import chain
 
-_NO_HEADERS = NO_HEADERS
+_RESERVED = "{!r} is a header the bus sets itself, so it can't be given or added"
 
-_RESERVED = "{!r} is a header the bus sets itself, so it can't be given"
+_REROUTED = (
+    "publish middleware passed on a call with another event or config, but they name the "
+    "route, which is chosen before middleware runs"
+)
+
+_RELABELLED = (
+    "handle middleware passed on a call with another event, config or headers, but they "
+    "describe the message being handled"
+)
 
 _received: ContextVar[Mapping[str, str]] = ContextVar("_received_headers")
 
@@ -101,24 +104,52 @@ class Outgoing(NamedTuple):
 type Send = Callable[[Outgoing], Any]
 """Sends one message: the only part of an emit an adapter writes."""
 
-_message: Callable[[type[Outgoing], tuple[Any, ...]], Outgoing] = tuple[Any, ...].__new__
-"""Builds an `Outgoing` from a tuple of its fields."""
+
+def _refuse_reserved(headers: Mapping[str, str], reserved: Collection[str]) -> None:
+    """
+    Refuse a header the adapter sets itself.
+
+    :raises ValueError: If a name is in `reserved`, compared ignoring case.
+    """
+    for name in headers:
+        if name.lower() in reserved:
+            raise ValueError(_RESERVED.format(name))
 
 
-type _Sending = tuple[Hooks[Any, Any] | None, Callable[[Outgoing], Any], Outgoing]
-"""What a publish chain finishes an emit with: its hooks, how to send it, and the message."""
+type _Sending = tuple[Hooks[Any, Any] | None, Callable[[Outgoing], Any], Outgoing, Collection[str]]
+"""
+What a publish chain finishes an emit with: its hooks, how to send, the message, and the
+header names the adapter sets itself.
+"""
+
+
+def _sent(call: PublishCall, message: Outgoing, reserved: Collection[str]) -> Outgoing:
+    """
+    Return `message` with the payload and headers publish middleware passed on.
+
+    :raises ValueError: If the middleware changed the event or config, or changed the headers
+        to hold a reserved one.
+    """
+    event, config, payload, headers = call
+    if event is not message.event or config is not message.config:
+        raise ValueError(_REROUTED)
+    if headers is not message.headers:
+        _refuse_reserved(headers, reserved)
+    elif payload is message.payload:
+        return message
+    return from_fields(Outgoing, (event, config, payload, message.envelope, headers))
 
 
 def _finish_send(call: PublishCall, sending: _Sending) -> Any:
-    """Send the message, with the headers the middleware passed on, inside the emit's hooks."""
-    hooks, send, message = sending
-    return _hooked_send(hooks, send, message._replace(headers=call.headers))
+    """Send what publish middleware passed on, inside the emit's hooks."""
+    hooks, send, message, reserved = sending
+    return _hooked_send(hooks, send, _sent(call, message, reserved))
 
 
 def _finish_send_async(call: PublishCall, sending: _Sending) -> Awaitable[Any]:
-    """Send the message, as {py:func}`_finish_send` does, inside hooks sync or async."""
-    hooks, send, message = sending
-    return _hooked_send_async(hooks, send, message._replace(headers=call.headers))
+    """Send what publish middleware passed on, as {py:func}`_finish_send` does, to await."""
+    hooks, send, message, reserved = sending
+    return _hooked_send_async(hooks, send, _sent(call, message, reserved))
 
 
 def _hooked_send(hooks: Hooks[Any, Any] | None, send: Send, message: Outgoing) -> Any:
@@ -135,10 +166,6 @@ def _hooked_send_async(
     if hooks is None:
         return send(message)
     return run_hooks_async(hooks, message.event, message.payload, send, message)
-
-
-_call: Callable[[type[Any], tuple[Any, ...]], Any] = tuple[Any, ...].__new__
-"""Builds a call, or any other named tuple, from a tuple of its fields."""
 
 
 class Publishing:
@@ -176,7 +203,7 @@ class Publishing:
         """
         self.middleware = middleware
         if asynchronous:
-            self.chained = chain_async(middleware, _finish_send_async)
+            self.chained = chain(middleware, _finish_send_async)
         else:
             self.chained = chain(middleware, _finish_send)
         self.new_id = new_id
@@ -203,10 +230,8 @@ class Publishing:
         :raises ValueError: If a given header is one the adapter sets itself.
         """
         if not headers:
-            return _NO_HEADERS
-        for name in headers:
-            if name.lower() in self.reserved:
-                raise ValueError(_RESERVED.format(name))
+            return NO_HEADERS
+        _refuse_reserved(headers, self.reserved)
         return MappingProxyType(dict(headers))
 
 
@@ -215,8 +240,8 @@ def _emit(
 ) -> Any:
     """Send `message` inside the emit's sync hooks, then the adapter's sync publish middleware."""
     if publishing.middleware:
-        call = _call(PublishCall, (*message[:3], message.headers, publishing.reserved))
-        return publishing.chained(call, (hooks, send, message))
+        call = from_fields(PublishCall, (*message[:3], message.headers))
+        return publishing.chained(call, (hooks, send, message, publishing.reserved))
     return _hooked_send(hooks, send, message)
 
 
@@ -228,8 +253,8 @@ def _emit_async(
 ) -> Awaitable[Any]:
     """Return `send(message)` inside the emit's hooks, then async publish middleware, to await."""
     if publishing.middleware:
-        call = _call(PublishCall, (*message[:3], message.headers, publishing.reserved))
-        return publishing.chained(call, (hooks, send, message))
+        call = from_fields(PublishCall, (*message[:3], message.headers))
+        return publishing.chained(call, (hooks, send, message, publishing.reserved))
     return _hooked_send_async(hooks, send, message)
 
 
@@ -258,14 +283,14 @@ def publish(
     :raises ValueError: If a given header is reserved.
     """
     if publishing.bare and hooks is None and envelope is None and headers is None:
-        return send(_message(Outgoing, (event, config, payload, None, _NO_HEADERS)))
+        return send(from_fields(Outgoing, (event, config, payload, None, NO_HEADERS)))
     stamped = publishing.stamped(headers)
     scope = publishing.opened(envelope)
     if scope is None:
-        message = _message(Outgoing, (event, config, payload, None, stamped))
+        message = from_fields(Outgoing, (event, config, payload, None, stamped))
         return _emit(publishing, hooks, message, send)
     with scope as opened:
-        message = _message(Outgoing, (event, config, payload, opened, stamped))
+        message = from_fields(Outgoing, (event, config, payload, opened, stamped))
         return _emit(publishing, hooks, message, send)
 
 
@@ -281,14 +306,14 @@ async def publish_async(
 ) -> Any:
     """Emit through an async adapter, as {py:func}`publish` does, awaiting `send`."""
     if publishing.bare and hooks is None and envelope is None and headers is None:
-        return await send(_message(Outgoing, (event, config, payload, None, _NO_HEADERS)))
+        return await send(from_fields(Outgoing, (event, config, payload, None, NO_HEADERS)))
     stamped = publishing.stamped(headers)
     scope = publishing.opened(envelope)
     if scope is None:
-        message = _message(Outgoing, (event, config, payload, None, stamped))
+        message = from_fields(Outgoing, (event, config, payload, None, stamped))
         return await _emit_async(publishing, hooks, message, send)
     with scope as opened:
-        message = _message(Outgoing, (event, config, payload, opened, stamped))
+        message = from_fields(Outgoing, (event, config, payload, opened, stamped))
         return await _emit_async(publishing, hooks, message, send)
 
 
@@ -314,6 +339,22 @@ def _hooked_async(
     return hooked
 
 
+def _refuse_relabelled(seen: HandleCall, received: HandleCall) -> None:
+    """
+    Refuse a call handle middleware passed on with another event, config or headers.
+
+    :param seen: The call passed on.
+    :param received: The call the chain was given.
+    :raises ValueError: If any of them differs.
+    """
+    if (
+        seen.event is not received.event
+        or seen.config is not received.config
+        or seen.headers is not received.headers
+    ):
+        raise ValueError(_RELABELLED)
+
+
 def _handled(
     middleware: tuple[Callable[..., object], ...],
     event: AnyEvent,
@@ -322,14 +363,16 @@ def _handled(
 ) -> Callable[[Any], Any]:
     """Return `call` run inside sync handle middleware, which sees the received headers."""
 
-    def finish(seen: HandleCall, _: None) -> Any:
+    def finish(seen: HandleCall, received: HandleCall) -> Any:
+        if seen is not received:
+            _refuse_relabelled(seen, received)
         return call(seen.payload)
 
     chained = chain(middleware, finish)
 
     def handled(payload: Any, /) -> Any:
-        seen = _call(HandleCall, (event, config, payload, _received.get(_NO_HEADERS)))
-        return chained(seen, None)
+        seen = from_fields(HandleCall, (event, config, payload, _received.get(NO_HEADERS)))
+        return chained(seen, seen)
 
     return handled
 
@@ -342,14 +385,16 @@ def _handled_async(
 ) -> Callable[[Any], Awaitable[Any]]:
     """Return `call` run inside async handle middleware, which sees the received headers."""
 
-    def finish(seen: HandleCall, _: None) -> Awaitable[Any]:
+    def finish(seen: HandleCall, received: HandleCall) -> Awaitable[Any]:
+        if seen is not received:
+            _refuse_relabelled(seen, received)
         return call(seen.payload)
 
-    chained = chain_async(middleware, finish)
+    chained = chain(middleware, finish)
 
     def handled(payload: Any, /) -> Awaitable[Any]:
-        seen = _call(HandleCall, (event, config, payload, _received.get(_NO_HEADERS)))
-        return chained(seen, None)
+        seen = from_fields(HandleCall, (event, config, payload, _received.get(NO_HEADERS)))
+        return chained(seen, seen)
 
     return handled
 

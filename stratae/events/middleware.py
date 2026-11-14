@@ -9,23 +9,26 @@ inside the emission's envelope when the bus opens one: always on a broker adapte
 direct bus built with an `envelope`.
 
 A middleware is a function taking the call and `next`, the rest of the chain. It calls `next`
-with the call, or with a new call carrying added headers, and returns what `next` returns:
+with the call, or with a new one, and returns what `next` returns:
 `def middleware(call, next): return next(call)`. The call is a value, a {py:class}`PublishCall`
-or a {py:class}`HandleCall`, which nothing changes. On an async bus, a middleware is an `async
-def`, and awaits `next`: `async def middleware(call, next): return await next(call)`. So a
-timeout is `async with asyncio.timeout(5): return await next(call)`. A sync bus refuses an
-`async def` middleware, and an async bus refuses any other, when the bus is built.
+or a {py:class}`HandleCall`, which nothing changes. A new call can carry another payload, and
+on publish, added headers. Its event and config must stay the same: the route they name is
+chosen before middleware runs, so a call with others raises `ValueError`.
 
-Middleware wraps the call, but can't change its reply or swallow its error. It must call `next`
-exactly once and return its reply. A middleware that skips `next`, calls it twice, or returns
-something else raises
-{py:exc}`MiddlewareNextError <stratae.middleware.MiddlewareNextError>`. One that catches the
-call's error and returns raises {py:exc}`MiddlewareError <stratae.middleware.MiddlewareError>`
-from it instead, so the call still fails. Trying to swallow anything else, such as
-`KeyboardInterrupt` or the task's cancellation, raises it again as it is. A middleware can
-raise an error of its own, before calling `next` to refuse the call, or after it to replace the
-call's reply or error. That's how `asyncio.timeout` turns its cancellation into
-`TimeoutError`.
+On an async bus, a middleware is an `async def`, and awaits `next`:
+`async def middleware(call, next): return await next(call)`. So a timeout is
+`async with asyncio.timeout(5): return await next(call)`. A sync bus takes only a plain function
+returning a value, and an async bus only an `async def`. Anything else is refused when the bus
+is built.
+
+A middleware decides what happens to the call. It usually calls `next` once and returns its
+reply, but it can do otherwise on purpose. It can raise before `next` to refuse the call,
+return without calling `next` to skip it, call `next` again to retry, return a different reply,
+or catch the call's error and return in its place. On a broker adapter, that decides what's
+delivered. A publish middleware that returns without sending, or catches the send's error,
+makes the emit succeed without a message, and an outbox's relay then marks the record sent. A
+handle middleware that catches the handler's error makes the delivery succeed, so the consumer
+acks it.
 
 Publish middleware sends context with a message, such as a trace or a tenant, by passing `next`
 the call {py:meth}`PublishCall.with_headers` returns. Handle middleware reads them from its own
@@ -107,16 +110,13 @@ handling lamp for acme
 ````
 """
 
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from stratae._checked import checked_callables
-from stratae._middleware import refuse_swallow, task_cancelling
-from stratae.callables import is_async_callable
-from stratae.events.envelope import ENVELOPE_HEADERS
-from stratae.middleware import MiddlewareKindError, MiddlewareNextError
+from stratae.middleware import Next, refuse_kind
 
 if TYPE_CHECKING:
     from stratae.events.protocols import AnyEvent
@@ -124,15 +124,23 @@ if TYPE_CHECKING:
 NO_HEADERS: Mapping[str, str] = MappingProxyType({})
 """A message's headers when it has none."""
 
-_RESERVED = "{!r} is a header the bus sets itself, so middleware can't set it"
+from_fields: Callable[[type[Any], tuple[Any, ...]], Any] = tuple[Any, ...].__new__
+"""
+Build a named tuple, such as a call, from a tuple of its fields.
+
+It skips the generated `__new__` and `_replace`'s keyword handling, which a call made on every
+emit would pay for.
+"""
 
 
 class PublishCall(NamedTuple):
     """
     One emit, as a publish middleware sees it.
 
-    Its `headers` are the ones the message is published with. To send another along, for handle
-    middleware to read, pass `next` the call {py:meth}`with_headers` returns.
+    The call passed to `next` is what's sent: its payload, and its headers. To send another
+    header along, for handle middleware to read, pass `next` the call {py:meth}`with_headers`
+    returns. The event and config name the route, which is chosen before middleware runs, so
+    passing on a call with others raises `ValueError`.
     """
 
     event: "AnyEvent"
@@ -147,19 +155,18 @@ class PublishCall(NamedTuple):
     """The payload being emitted."""
     headers: Mapping[str, str] = NO_HEADERS
     """The headers the message is published with, read-only."""
-    reserved: Collection[str] = ENVELOPE_HEADERS
-    """The header names the bus sets itself, in lower case, which middleware can't add."""
 
     def with_headers(self, headers: Mapping[str, str]) -> "PublishCall":
         """
         Return this call, publishing `headers` as well.
 
-        :raises ValueError: If a name is one the bus sets itself, compared ignoring case.
+        A name the bus sets itself, such as the envelope's, is refused with `ValueError` when
+        the call is sent, compared ignoring case.
         """
-        for name in headers:
-            if name.lower() in self.reserved:
-                raise ValueError(_RESERVED.format(name))
-        return self._replace(headers=MappingProxyType({**self.headers, **headers}))
+        event, config, payload, current = self
+        return from_fields(
+            PublishCall, (event, config, payload, MappingProxyType({**current, **headers}))
+        )
 
 
 class HandleCall(NamedTuple):
@@ -168,7 +175,9 @@ class HandleCall(NamedTuple):
 
     Its `headers` are the ones of the message being handled. On a direct bus, they're the ones
     its publish middleware added. Over a broker, they're the message's text headers, which
-    include its envelope's.
+    include its envelope's. The handler is called with the payload of the call passed to
+    `next`. The event, config and headers describe the message being handled, so passing on a
+    call with others raises `ValueError`.
     """
 
     event: "AnyEvent"
@@ -179,10 +188,6 @@ class HandleCall(NamedTuple):
     """The payload being handled."""
     headers: Mapping[str, str] = NO_HEADERS
     """The headers of the message being handled, read-only."""
-
-
-type Next[C, R] = Callable[[C], R]
-"""The rest of the chain: the next middleware, or else the call itself."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,121 +226,10 @@ class Middleware:
         :param publish: Whether to check the `publish` half; a consumer doesn't run it.
         :param handle: Whether to check the `handle` half; a publisher doesn't run it.
         :raises MiddlewareKindError: If an async bus is given a middleware that isn't an
-            `async def`, or a sync bus one that is.
+            `async def`, or a sync bus one that isn't a sync function returning a value.
         """
         selected: tuple[Callable[..., Any], ...] = (
             *(self.publish if publish else ()),
             *(self.handle if handle else ()),
         )
-        for item in selected:
-            if is_async_callable(item) is not asynchronous:
-                raise MiddlewareKindError(bus, item, asynchronous)
-
-
-type Finish[C, X] = Callable[[C, X], Any]
-"""
-The innermost call of a chain: given the call value the last middleware passed on, and what
-the chain was run with for this call, such as the emit's message and how to send it.
-"""
-
-
-class _Next:
-    """The `next` one middleware is given for one call: runs the rest of the chain once."""
-
-    __slots__ = ("called", "context", "error", "inner", "middleware", "reply")
-
-    def __init__(self, inner: Finish[Any, Any], context: Any, middleware: object) -> None:
-        self.inner = inner
-        self.context = context
-        self.middleware = middleware
-        self.called = False
-        self.error: BaseException | None = None
-        self.reply: Any = None
-
-    def __call__(self, call: Any) -> Any:
-        if self.called:
-            raise MiddlewareNextError(self.middleware, "called next twice")
-        self.called = True
-        try:
-            reply = self.inner(call, self.context)
-        except BaseException as error:
-            self.error = error
-            raise
-        self.reply = reply
-        return reply
-
-
-class _AsyncNext(_Next):
-    """The `next` one async middleware is given for one call: awaits the rest once."""
-
-    __slots__ = ()
-
-    async def __call__(self, call: Any) -> Any:
-        if self.called:
-            raise MiddlewareNextError(self.middleware, "called next twice")
-        self.called = True
-        try:
-            reply = await self.inner(call, self.context)
-        except BaseException as error:
-            self.error = error
-            raise
-        self.reply = reply
-        return reply
-
-
-def _settled(middleware: object, nxt: _Next, returned: Any, cancelling: bool) -> Any:
-    """
-    Return what a middleware returned, if it kept the contract.
-
-    :raises MiddlewareError: If it caught the call's error and returned.
-    :raises MiddlewareNextError: If it skipped `next`, or returned something else.
-    """
-    if nxt.error is not None:
-        refuse_swallow(nxt.error, middleware, cancelling)
-    if not nxt.called:
-        raise MiddlewareNextError(middleware, "never called next")
-    if returned is not nxt.reply:
-        raise MiddlewareNextError(middleware, "returned something other than next's reply")
-    return returned
-
-
-def chain[C, X](middleware: tuple[Callable[..., Any], ...], finish: Finish[C, X]) -> Finish[C, X]:
-    """
-    Compose sync middleware around `finish`, outermost first, checking each keeps the contract.
-
-    The chain is built once, and run per call with that call's value and context.
-
-    :param middleware: The middleware, outermost first.
-    :param finish: The innermost call.
-    :returns: The composed chain, taking the call value and the context to finish it with.
-    """
-    inner: Finish[Any, Any] = finish
-    for item in reversed(middleware):
-        inner = _step(item, inner)
-    return inner
-
-
-def _step(item: Callable[..., Any], inner: Finish[Any, Any]) -> Finish[Any, Any]:
-    def step(call: Any, context: Any) -> Any:
-        nxt = _Next(inner, context, item)
-        return _settled(item, nxt, item(call, nxt), True)
-
-    return step
-
-
-def chain_async[C, X](
-    middleware: tuple[Callable[..., Any], ...], finish: Finish[C, X]
-) -> Finish[C, X]:
-    """Compose async middleware around `finish`, as {py:func}`chain` does, awaiting each layer."""
-    inner: Finish[Any, Any] = finish
-    for item in reversed(middleware):
-        inner = _step_async(item, inner)
-    return inner
-
-
-def _step_async(item: Callable[..., Any], inner: Finish[Any, Any]) -> Finish[Any, Any]:
-    async def step(call: Any, context: Any) -> Any:
-        nxt = _AsyncNext(inner, context, item)
-        return _settled(item, nxt, await item(call, nxt), task_cancelling())
-
-    return step
+        refuse_kind(selected, bus, asynchronous)

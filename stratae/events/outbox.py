@@ -460,7 +460,7 @@ class OutboxProducer:
         :param envelope: How each record's envelope is made. Its ids are random by default.
             Records are claimed oldest first, so time-ordered
             ids, such as `uuid7`'s, suit a store indexed by id.
-        :raises TypeError: If any `publish` middleware is a class that isn't a context manager.
+        :raises MiddlewareKindError: If any `publish` middleware isn't an `async def`.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
         self._publishing = Publishing(middleware.publish, envelope.new_id, asynchronous=True)

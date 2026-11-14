@@ -72,12 +72,11 @@ RabbitMQConsumer:
 - Handle middleware sees the event as call.event, and the consume config as call.config.
 - Handle middleware reads the message's text headers, envelope headers included; headers that
   aren't text, such as the attempts count, are left out, and a message without headers has none.
-- Handle middleware that times out a handler nacks the message, and one that swallows the
-  timeout does too, logging a MiddlewareError.
-- Handle middleware raising on entry nacks the message without running the handler.
-- A cancellation handle middleware tries to swallow still cancels the delivery, without a nack.
-- A handle middleware class that isn't a context manager is refused when the consumer is
-  built; publish middleware isn't checked, so one Middleware can be shared with a publisher.
+- Handle middleware that times out a handler nacks the message, and one that catches its
+  own timeout and returns acks it.
+- Handle middleware raising before next nacks the message without running the handler.
+- A handle middleware that isn't an async def is refused when the consumer is built; publish
+  middleware isn't checked, so one Middleware can be shared with a publisher.
 - A schema-less event's hooks receive a NoPayload instance.
 - With a scope, a scope-cached dependency is made once per message and not shared between
   messages.
@@ -128,8 +127,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from itertools import count
 from typing import Any, cast
 from unittest.mock import AsyncMock, call
@@ -164,6 +162,7 @@ from stratae.integrations.rabbitmq import (
     RabbitMQFailurePolicy,
 )
 from stratae.lifecycle import AsyncScope
+from stratae.middleware import MiddlewareKindError
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -1559,11 +1558,11 @@ async def test_handle_middleware_runs_before_ack(connect_mock: AsyncMock, channe
     # Arrange
     log: list[str] = []
 
-    @asynccontextmanager
-    async def record(call: HandleCall) -> AsyncGenerator[None, None]:
+    async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         log.append(f"mw in {call.payload.order_id}")
-        yield
+        reply = await next(call)
         log.append("mw out")
+        return reply
 
     def before(event: Any, payload: _OrderPlaced) -> None:
         log.append("hook")
@@ -1602,10 +1601,9 @@ async def test_handle_middleware_refusing_nacks(
     # Arrange
     received: list[_OrderPlaced] = []
 
-    @asynccontextmanager
-    async def refuse(call: HandleCall) -> AsyncGenerator[None, None]:
+    async def refuse(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         raise _RateLimited()
-        yield
+        return await next(call)
 
     consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(refuse,)))
     consumer.handle(_order_placed, received.append, config=_config)
@@ -1636,11 +1634,10 @@ async def test_handle_middleware_sees_event(connect_mock: AsyncMock, channel: As
     names: list[str] = []
     configs: list[object] = []
 
-    @asynccontextmanager
-    async def record(call: HandleCall) -> AsyncGenerator[None, None]:
+    async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         names.append(call.event.name)
         configs.append(call.config)
-        yield
+        return await next(call)
 
     consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(record,)))
     consumer.handle(_order_placed, lambda order: None, config=_config)
@@ -1668,10 +1665,9 @@ async def test_handle_middleware_reads_text_headers(connect_mock: AsyncMock, cha
     # Arrange
     seen: list[dict[str, str]] = []
 
-    @asynccontextmanager
-    async def record(call: HandleCall) -> AsyncGenerator[None, None]:
+    async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         seen.append(dict(call.headers))
-        yield
+        return await next(call)
 
     consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(record,)))
     consumer.handle(_order_placed, lambda order: None, config=_config)
@@ -1687,72 +1683,24 @@ async def test_handle_middleware_reads_text_headers(connect_mock: AsyncMock, cha
     assert seen == [{"x-tenant": "acme", CORRELATION_ID_HEADER: correlation_id}, {}]
 
 
-@asynccontextmanager
-async def _trace(call: HandleCall) -> AsyncGenerator[None, None]:
-    yield
+async def _trace(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+    return await next(call)
 
 
-class _NotAManager:
-    """A middleware class whose instances aren't context managers."""
-
-    def __init__(self, call: Any) -> None: ...
-
-
-async def test_swallowed_cancellation_is_not_nacked(connect_mock: AsyncMock, channel: AsyncMock):
-    """
-    A delivery cancelled while handle middleware tries to swallow it should stay cancelled.
-
-    Given: A consumer whose handle middleware's exit returns True, around a handler that waits
-    When: The delivery is cancelled while the handler waits
-    Then: The cancellation propagates, and the message is neither nacked nor acked
-    """
-    # Arrange
-    started = asyncio.Event()
-
-    class Suppressing:
-        def __init__(self, call: HandleCall) -> None: ...
-
-        async def __aenter__(self) -> None: ...
-
-        async def __aexit__(self, *exc: object) -> bool:
-            return True
-
-    async def wait(order: _OrderPlaced) -> None:
-        started.set()
-        await asyncio.Event().wait()
-
-    consumer = RabbitMQConsumer(
-        _URL, deserializer=_decode, middleware=Middleware(handle=(Suppressing,))
-    )
-    consumer.handle(_order_placed, wait, config=_config)
-    message = _message(b'{"order_id": 7}')
-
-    async with consumer:
-        delivery = asyncio.ensure_future(_delivery_callback(channel)(message))
-        await started.wait()
-
-        # Act
-        delivery.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await delivery
-
-    # Assert
-    assert delivery.cancelled()
-    message.channel.basic_nack.assert_not_awaited()
-    message.channel.basic_ack.assert_not_awaited()
+def _sync(call: Any, next: Callable[[Any], Any]) -> Any:
+    return next(call)
 
 
 def test_consumer_accepts_shared_middleware():
     """
     The consumer should accept a Middleware shared with a publisher, checking only its half.
 
-    Given: Middleware with a valid handle middleware, and a publish middleware class that
-        isn't a context manager
+    Given: Middleware with an async handle middleware, and a sync publish middleware
     When: A RabbitMQConsumer is built with it
     Then: It's accepted, since the consumer never runs the publish half
     """
     # Arrange
-    middleware = Middleware(publish=(cast(Any, _NotAManager),), handle=(_trace,))
+    middleware = Middleware(publish=(_sync,), handle=(_trace,))
 
     # Act
     consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=middleware)
@@ -1761,19 +1709,17 @@ def test_consumer_accepts_shared_middleware():
     assert isinstance(consumer, RabbitMQConsumer)
 
 
-def test_consumer_refuses_non_manager_middleware():
+def test_consumer_refuses_sync_middleware():
     """
-    The consumer should refuse a middleware class that isn't a context manager when built.
+    The consumer should refuse a middleware that isn't an async def when it's built.
 
-    Given: Handle middleware that's a plain class
+    Given: Handle middleware that's a sync function
     When: A RabbitMQConsumer is built with it
-    Then: A TypeError says the consumer can't enter it
+    Then: MiddlewareKindError says the consumer's middleware must be an async def
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="RabbitMQConsumer can't enter"):
-        RabbitMQConsumer(
-            _URL, deserializer=_decode, middleware=Middleware(handle=(cast(Any, _NotAManager),))
-        )
+    with pytest.raises(MiddlewareKindError, match="RabbitMQConsumer middleware must be an async"):
+        RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(_sync,)))
 
 
 async def test_timeout_middleware_nacks(
@@ -1791,46 +1737,9 @@ async def test_timeout_middleware_nacks(
     async def slow(order: _OrderPlaced) -> None:
         await asyncio.Event().wait()
 
-    consumer = RabbitMQConsumer(
-        _URL,
-        deserializer=_decode,
-        middleware=Middleware(handle=(lambda call: asyncio.timeout(0.01),)),
-    )
-    consumer.handle(_order_placed, slow, config=_config)
-    message = _message(b'{"order_id": 7}')
-
-    # Act
-    async with consumer:
-        await _delivery_callback(channel)(message)
-
-    # Assert
-    message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
-    message.channel.basic_ack.assert_not_awaited()
-    assert "TimeoutError" in caplog.text
-
-
-async def test_swallowed_timeout_nacks(
-    connect_mock: AsyncMock, channel: AsyncMock, caplog: pytest.LogCaptureFixture
-):
-    """
-    Handle middleware that swallows its own timeout should nack, not strand the message.
-
-    Given: A consumer whose handle middleware times out a slow handler and swallows it
-    When: The registered callback receives a message
-    Then: The message is nacked without requeue, and a MiddlewareError is logged
-    """
-
-    # Arrange
-    async def slow(order: _OrderPlaced) -> None:
-        await asyncio.Event().wait()
-
-    @asynccontextmanager
-    async def time_out(call: HandleCall) -> AsyncGenerator[None, None]:
-        try:
-            async with asyncio.timeout(0.01):
-                yield
-        except TimeoutError:
-            pass  # swallowed on purpose: the message must still be settled
+    async def time_out(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        async with asyncio.timeout(0.01):
+            return await next(call)
 
     consumer = RabbitMQConsumer(
         _URL, deserializer=_decode, middleware=Middleware(handle=(time_out,))
@@ -1845,7 +1754,42 @@ async def test_swallowed_timeout_nacks(
     # Assert
     message.channel.basic_nack.assert_awaited_once_with(11, requeue=False)
     message.channel.basic_ack.assert_not_awaited()
-    assert "MiddlewareError" in caplog.text
+    assert "TimeoutError" in caplog.text
+
+
+async def test_caught_timeout_acks(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Handle middleware that catches its own timeout and returns should make the delivery succeed.
+
+    Given: A consumer whose handle middleware times out a slow handler, then returns
+    When: The registered callback receives a message
+    Then: The message is acked, since the middleware decided the delivery succeeded
+    """
+
+    # Arrange
+    async def slow(order: _OrderPlaced) -> None:
+        await asyncio.Event().wait()
+
+    async def time_out(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        try:
+            async with asyncio.timeout(0.01):
+                return await next(call)
+        except TimeoutError:
+            return None
+
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=_decode, middleware=Middleware(handle=(time_out,))
+    )
+    consumer.handle(_order_placed, slow, config=_config)
+    message = _message(b'{"order_id": 7}')
+
+    # Act
+    async with consumer:
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    message.channel.basic_ack.assert_awaited_once()
+    message.channel.basic_nack.assert_not_awaited()
 
 
 def _scoped_resource(events: list[str], *, fail_close: bool = False) -> tuple[AsyncScope, Any]:
@@ -2051,10 +1995,9 @@ async def test_middleware_and_hooks_run_in_scope(connect_mock: AsyncMock, channe
     scope, get_resource = _scoped_resource(events)
     seen: list[tuple[str, int]] = []
 
-    @asynccontextmanager
-    async def record(call: HandleCall) -> AsyncGenerator[None, None]:
+    async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         seen.append(("middleware", await get_resource()))
-        yield
+        return await next(call)
 
     async def before(event: Any, order: _OrderPlaced) -> None:
         seen.append(("hook", await get_resource()))

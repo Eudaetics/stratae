@@ -67,8 +67,7 @@ This test suite verifies the following behaviors:
 import asyncio
 import os
 import re
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from typing import Any, cast, override
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -357,15 +356,14 @@ async def test_middleware_runs_on_both_sides_of_the_broker(broker: _Broker):
     broker.exchanges.append(exchange)
     log = _Log[str]()
 
-    @asynccontextmanager
-    async def on_publish(call: PublishCall) -> AsyncGenerator[None, None]:
+    async def on_publish(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         log.append(f"publish mw {call.payload.text}")
-        yield
+        return await next(call)
 
-    @asynccontextmanager
-    async def on_handle(call: HandleCall) -> AsyncGenerator[None, None]:
-        yield
+    async def on_handle(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        reply = await next(call)
         log.append(f"handle mw {call.payload.text}")
+        return reply
 
     consumer = RabbitMQConsumer(
         _URL, deserializer=msgspec.json.decode, middleware=Middleware(handle=(on_handle,))
@@ -393,19 +391,16 @@ async def test_middleware_runs_on_both_sides_of_the_broker(broker: _Broker):
     assert log == ["publish mw hello", "handler hello", "handle mw hello"]
 
 
-@asynccontextmanager
-async def _tag_tenant(call: PublishCall) -> AsyncGenerator[None, None]:
-    call.headers["x-tenant"] = "acme"
-    yield
+async def _tag_tenant(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+    return await next(call.with_headers({"x-tenant": "acme"}))
 
 
 def _recording_headers(seen: list[dict[str, str]]) -> Any:
     """Return handle middleware recording the headers it reads."""
 
-    @asynccontextmanager
-    async def record(call: HandleCall) -> AsyncGenerator[None, None]:
+    async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         seen.append(dict(call.headers))
-        yield
+        return await next(call)
 
     return record
 
@@ -1404,10 +1399,9 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
     )
     relayed: list[dict[str, str]] = []
 
-    @asynccontextmanager
-    async def on_relay(call: PublishCall) -> AsyncGenerator[None, None]:
+    async def on_relay(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         relayed.append(dict(call.headers))
-        yield
+        return await next(call)
 
     seen = _Log[dict[str, str]]()
     consumer = RabbitMQConsumer(
@@ -1484,11 +1478,11 @@ async def test_trace_spans_request_publish_and_handler(broker: _Broker):
     provider, exporter, ended = _traced()
     handled: list[Message] = []
     consumer = RabbitMQConsumer(
-        _URL, deserializer=msgspec.json.decode, middleware=tracing(provider)
+        _URL, deserializer=msgspec.json.decode, middleware=tracing(provider, asynchronous=True)
     )
     consumer.handle(message_event, handled.append, config=RabbitMQConsumeConfig(queue))
     publisher = RabbitMQPublisher(
-        _URL, serializer=msgspec.json.encode, middleware=tracing(provider)
+        _URL, serializer=msgspec.json.encode, middleware=tracing(provider, asynchronous=True)
     )
 
     async def place_order(request: Request) -> PlainTextResponse:
@@ -1534,12 +1528,14 @@ async def test_outbox_trace_links_relay_to_write(broker: _Broker):
     broker.queues.append(queue)
     provider, exporter, ended = _traced()
     store = InMemoryOutboxStore()
-    outbox = OutboxProducer(store, msgspec.json.encode, middleware=tracing(provider))
+    outbox = OutboxProducer(
+        store, msgspec.json.encode, middleware=tracing(provider, asynchronous=True)
+    )
     send = outbox.bind(
         message_event, factory=Message, config=OutboxConfig(RabbitMQConfig("", queue))
     )
     consumer = RabbitMQConsumer(
-        _URL, deserializer=msgspec.json.decode, middleware=tracing(provider)
+        _URL, deserializer=msgspec.json.decode, middleware=tracing(provider, asynchronous=True)
     )
     consumer.handle(message_event, lambda message: None, config=RabbitMQConsumeConfig(queue))
     with provider.get_tracer("test").start_as_current_span("request"):
@@ -1549,7 +1545,7 @@ async def test_outbox_trace_links_relay_to_write(broker: _Broker):
     async with (
         consumer,
         RabbitMQPublisher(
-            _URL, serializer=msgspec.json.encode, middleware=tracing(provider)
+            _URL, serializer=msgspec.json.encode, middleware=tracing(provider, asynchronous=True)
         ) as publisher,
     ):
         await OutboxRelay(store, publisher, outbox).run_once()

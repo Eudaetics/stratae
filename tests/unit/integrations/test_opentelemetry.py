@@ -38,6 +38,7 @@ Without an SDK or a known adapter:
 
 import asyncio
 import json
+from collections.abc import Mapping
 from itertools import pairwise
 from typing import Any
 from unittest.mock import AsyncMock
@@ -59,7 +60,7 @@ from stratae.events import (
     Operation,
     PubSub,
 )
-from stratae.events.middleware import HandleCall, MessageHeaders, PublishCall, run_middleware
+from stratae.events.middleware import HandleCall, Middleware, PublishCall
 from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer
 from stratae.integrations.opentelemetry import tracing
 from stratae.integrations.rabbitmq import (
@@ -68,6 +69,7 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConsumer,
     RabbitMQPublisher,
 )
+from stratae.middleware import chain
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -228,7 +230,7 @@ async def test_async_bus_concurrent_emits(provider: TracerProvider, exporter: In
     async def handler(order: _OrderPlaced) -> None:
         await asyncio.sleep(0)
 
-    bus = AsyncDirectBus(middleware=tracing(provider))
+    bus = AsyncDirectBus(middleware=tracing(provider, asynchronous=True))
     bus.handle(_order_placed, handler)
     tracer = provider.get_tracer("test")
 
@@ -334,7 +336,9 @@ async def test_publish_span(
         message's envelope ids, and the message's headers carry the span's context
     """
     # Arrange
-    publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=tracing(provider))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=tracing(provider, asynchronous=True)
+    )
 
     # Act
     publisher.route(_order_placed, RabbitMQConfig("events", "order.placed"))
@@ -380,7 +384,9 @@ async def test_publish_span_default_exchange(
     Then: The span is named after the routing key, or amq.default without one
     """
     # Arrange
-    publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=tracing(provider))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=tracing(provider, asynchronous=True)
+    )
 
     # Act
     publisher.route(_order_placed, RabbitMQConfig(exchange, routing_key))
@@ -406,7 +412,9 @@ async def test_republish_links_to_creation(
         message's headers still carry the write's context
     """
     # Arrange
-    publisher = RabbitMQPublisher(_URL, serializer=_encode, middleware=tracing(provider))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, middleware=tracing(provider, asynchronous=True)
+    )
     created: dict[str, str] = {}
     with provider.get_tracer("test").start_as_current_span("write") as write:
         propagate.inject(created)
@@ -466,7 +474,9 @@ async def test_process_span(
         child, with the messaging attributes and the message's envelope ids
     """
     # Arrange
-    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=tracing(provider))
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=_decode, middleware=tracing(provider, asynchronous=True)
+    )
     consumer.handle(_order_placed, lambda order: None, config=config)
     envelope = Envelope()
     headers: dict[str, Any] = envelope.to_headers()
@@ -508,7 +518,9 @@ async def test_failing_consumer_handler_recorded(
     def fail(order: _OrderPlaced) -> None:
         raise _OutOfStock()
 
-    consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=tracing(provider))
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=_decode, middleware=tracing(provider, asynchronous=True)
+    )
     consumer.handle(_order_placed, fail, config=RabbitMQConsumeConfig("orders"))
     message = _message({})
 
@@ -541,7 +553,9 @@ async def test_outbox_write_is_create_span(
     """
     # Arrange
     store = InMemoryOutboxStore()
-    outbox = OutboxProducer(store, lambda order: b"{}", middleware=tracing(provider))
+    outbox = OutboxProducer(
+        store, lambda order: b"{}", middleware=tracing(provider, asynchronous=True)
+    )
 
     # Act
     outbox.route(_order_placed, OutboxConfig(_config()))
@@ -573,7 +587,7 @@ async def test_no_sdk_changes_nothing(connect_mock: AsyncMock, channel: AsyncMoc
     # Arrange
     ran: list[int] = []
     publisher = RabbitMQPublisher(
-        _URL, serializer=_encode, middleware=tracing(NoOpTracerProvider())
+        _URL, serializer=_encode, middleware=tracing(NoOpTracerProvider(), asynchronous=True)
     )
     bus = DirectBus(middleware=tracing(NoOpTracerProvider()))
     bus.handle(_order_placed, lambda order: ran.append(order.order_id))
@@ -618,11 +632,11 @@ def test_undescribed_config(
     """
     # Arrange
     middleware = tracing(provider)
-    publish = PublishCall(_order_placed, config, _OrderPlaced(1), MessageHeaders())
+    publish = PublishCall(_order_placed, config, _OrderPlaced(1))
 
     # Act
-    run_middleware(middleware.publish, publish, lambda: None)
-    run_middleware(middleware.handle, _handle_call(config, publish.headers), lambda: None)
+    publish = _published(middleware, publish)
+    _handled(middleware, _handle_call(config, publish.headers))
 
     # Assert
     spans = _spans(exporter)
@@ -655,11 +669,11 @@ def test_described_config_gets_messaging_attributes(
     destination = Destination("testmq", "orders", attributes={"messaging.testmq.lane": 3})
     config = _QueueConfig(destination)
     middleware = tracing(provider)
-    publish = PublishCall(_order_placed, config, _OrderPlaced(1), MessageHeaders())
+    publish = PublishCall(_order_placed, config, _OrderPlaced(1))
 
     # Act
-    run_middleware(middleware.publish, publish, lambda: None)
-    run_middleware(middleware.handle, _handle_call(config, publish.headers), lambda: None)
+    publish = _published(middleware, publish)
+    _handled(middleware, _handle_call(config, publish.headers))
 
     # Assert
     spans = _spans(exporter)
@@ -672,9 +686,25 @@ def test_described_config_gets_messaging_attributes(
         assert "messaging.destination.anonymous" not in attributes
 
 
-def _handle_call(config: object, headers: MessageHeaders) -> HandleCall:
+def _handle_call(config: object, headers: Mapping[str, str]) -> HandleCall:
     """Return a handler call for an order, under the config and with the headers."""
-    return HandleCall(_order_placed, config, _OrderPlaced(1), dict(headers))
+    return HandleCall(_order_placed, config, _OrderPlaced(1), headers)
+
+
+def _published(middleware: Middleware, call: PublishCall) -> PublishCall:
+    """Run the publish middleware around a call, returning the call it passed on."""
+    passed: list[PublishCall] = []
+
+    def keep(sent: PublishCall, _: None) -> None:
+        passed.append(sent)
+
+    chain(middleware.publish, keep)(call, None)
+    return passed[0]
+
+
+def _handled(middleware: Middleware, call: HandleCall) -> None:
+    """Run the handle middleware around a call."""
+    chain(middleware.handle, lambda handled, _: None)(call, None)
 
 
 # endregion
@@ -691,11 +721,11 @@ def test_described_config_without_name(provider: TracerProvider, exporter: InMem
     # Arrange
     config = _QueueConfig(Destination("testmq"))
     middleware = tracing(provider)
-    publish = PublishCall(_order_placed, config, _OrderPlaced(1), MessageHeaders())
+    publish = PublishCall(_order_placed, config, _OrderPlaced(1))
 
     # Act
-    run_middleware(middleware.publish, publish, lambda: None)
-    run_middleware(middleware.handle, _handle_call(config, publish.headers), lambda: None)
+    publish = _published(middleware, publish)
+    _handled(middleware, _handle_call(config, publish.headers))
 
     # Assert
     spans = _spans(exporter)
@@ -726,10 +756,10 @@ def test_creating_config_traced_as_a_write(
     """
     # Arrange
     middleware = tracing(provider)
-    publish = PublishCall(_order_placed, _CreatingConfig(), _OrderPlaced(1), MessageHeaders())
+    publish = PublishCall(_order_placed, _CreatingConfig(), _OrderPlaced(1))
 
     # Act
-    run_middleware(middleware.publish, publish, lambda: None)
+    publish = _published(middleware, publish)
 
     # Assert
     span = _spans(exporter)["create orders"]

@@ -463,7 +463,7 @@ class DirectBus(BaseDirectBus):
         defaults for `Request` and `PubSub`.
     :param middleware: Sync {py:class}`Middleware <stratae.events.middleware.Middleware>` run
         around every emit and handler call.
-    :raises TypeError: If any middleware is a class that isn't a sync context manager.
+    :raises MiddlewareKindError: If any middleware isn't a sync function returning a value.
     """
 
     _asynchronous = False
@@ -645,8 +645,8 @@ class AsyncDirectBus(BaseDirectBus):
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
         defaults for `Request` and `PubSub`. Their dispatchers return awaitables.
     :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>` run
-        around every emit and handler call, sync or async.
-    :raises TypeError: If any middleware is a class that isn't a context manager.
+        around every emit and handler call. Each is an `async def`.
+    :raises MiddlewareKindError: If any middleware isn't an `async def`.
     """
 
     _asynchronous = True

@@ -3,12 +3,16 @@ OpenTelemetry tracing for buses, as bus middleware.
 
 {py:func}`tracing` returns {py:class}`Middleware <stratae.events.middleware.Middleware>` that
 traces every emit and handler call. Give it to a publisher, a consumer, an outbox producer
-or a direct bus. Its publish half opens a span around each emit and writes the trace context
-into the message's headers, with OpenTelemetry's configured propagators. Its handle half
-reads that context from the message being handled, and opens a span around the handler as
-its child. So one trace follows an event from the request that emitted it, through the
-broker, into its handler. It depends only on `opentelemetry-api`; the application chooses the
-SDK and exporter. With no SDK configured, it does nothing.
+or a direct bus. An async bus runs only async middleware, so pass `asynchronous=True` for an
+{py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>`, an outbox producer, or a
+RabbitMQ publisher or consumer.
+
+Its publish half opens a span around each emit and writes the trace context into the
+message's headers, with OpenTelemetry's configured propagators. Its handle half reads that
+context from the message being handled, and opens a span around the handler as its child. So
+one trace follows an event from the request that emitted it, through the broker, into its
+handler. It depends only on `opentelemetry-api`; the application chooses the SDK and exporter.
+With no SDK configured, it does nothing.
 
 Spans over a broker follow OpenTelemetry's messaging semantic conventions:
 
@@ -90,8 +94,9 @@ from opentelemetry.context import Context
 from opentelemetry.trace import Link, Span, SpanKind, Status, StatusCode, Tracer, TracerProvider
 
 from stratae.events.envelope import Envelope
-from stratae.events.middleware import HandleCall, Middleware, Next, PublishCall
+from stratae.events.middleware import HandleCall, Middleware, PublishCall
 from stratae.events.protocols import Destination, Operation, destination_of, operation_of
+from stratae.middleware import Next
 
 _PROCESS = Operation("process", "process")
 
