@@ -624,8 +624,8 @@ async def test_cancelled_scoped_delivery_is_redelivered(broker: _Broker):
     """
     A delivery cancelled at shutdown should close its scope and be redelivered.
 
-    Given: A consumer with a message scope and a short drain timeout, whose handler never
-           returns on its first delivery
+    Given: A consumer activating a message scope in handle middleware, with a short drain
+           timeout, whose handler never returns on its first delivery
     When: The consumer exits mid-delivery, and a second consumer starts on the same queue
     Then: The first delivery's scope closes with the cancellation, and the message is
           redelivered and handled, its scope closing cleanly
@@ -657,9 +657,16 @@ async def test_cancelled_scoped_delivery_is_redelivered(broker: _Broker):
         await get_transaction()
         events.append(f"handled {message.text}")
 
-    first = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode, drain_timeout=0.1, scope=scope)
+    async def in_scope(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        async with scope:
+            return await next(call)
+
+    middleware = Middleware(handle=(in_scope,))
+    first = RabbitMQConsumer(
+        _URL, deserializer=msgspec.json.decode, drain_timeout=0.1, middleware=middleware
+    )
     first.handle(message_event, stuck, config=RabbitMQConsumeConfig(queue))
-    second = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode, scope=scope)
+    second = RabbitMQConsumer(_URL, deserializer=msgspec.json.decode, middleware=middleware)
     second.handle(message_event, handled, config=RabbitMQConsumeConfig(queue))
 
     # Act
