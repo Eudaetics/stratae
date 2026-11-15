@@ -197,15 +197,16 @@ request 2 block 4: logging 102
 """
 
 import threading
+from abc import abstractmethod
 from collections.abc import AsyncGenerator, Callable, Generator, Hashable
 from types import TracebackType
-from typing import Any, ClassVar, Literal, NoReturn, cast, get_args, overload
+from typing import ClassVar, Literal, NoReturn, cast, get_args, overload
 
 from stratae._checked import checked_callables
 from stratae.lifecycle._decorators import AsyncCacheDecorator, CacheDecorator
-from stratae.lifecycle._middleware import Layer, layers
+from stratae.lifecycle._middleware import AsyncLayer, SyncLayer, async_layers, sync_layers
 from stratae.lifecycle._slots import ScopeVar, SlotStorage, SlotStore
-from stratae.lifecycle._stack import aclose, close, enter_async_generator, enter_generator
+from stratae.lifecycle._stack import aclose, close, enter_async_layer, enter_layer
 from stratae.lifecycle.exceptions import (
     AlreadyDeactivatedError,
     CacheKeyConflictError,
@@ -243,7 +244,7 @@ def _validate_threads(name: str, isolation: IsolationType, threads: bool) -> Non
 
 
 def _validate_requires(
-    name: str, isolation: IsolationType, requires: "BaseScope[Any] | None"
+    name: str, isolation: IsolationType, requires: "Scope | AsyncScope | None"
 ) -> None:
     if requires and isolation == "shared" and requires.isolation == "context":
         raise SharedRequiresContextError(name, requires.name)
@@ -270,10 +271,8 @@ class BaseScope[Middleware]:
         "name",
     )
 
-    _requires: "BaseScope[Any] | None"
+    _requires: "Scope | AsyncScope | None"
     _middleware: tuple[Middleware, ...]
-    _layers: tuple[Layer, ...]
-    """Each middleware, whether it's an async generator function, and its exit."""
     _plain: bool
     """Whether activation is only setting the scope active: no parent to count, no middleware."""
     _asynchronous: ClassVar[bool]
@@ -289,7 +288,7 @@ class BaseScope[Middleware]:
         name: str,
         isolation: IsolationType = "context",
         storage: StorageType = "dense",
-        requires: "BaseScope[Any] | None" = None,
+        requires: "Scope | AsyncScope | None" = None,
         threads: bool = False,
         middleware: tuple[Middleware, ...] = (),
     ) -> None:
@@ -319,7 +318,7 @@ class BaseScope[Middleware]:
         _validate_requires(name, isolation, requires)
         owner = f"{type(self).__name__} {name!r}"
         self._middleware = checked_callables(middleware, f"{owner} middleware=")
-        self._layers = layers(self._middleware, owner, self._asynchronous)
+        self._build_layers(owner)
         self._plain = requires is None and not self._middleware
 
         self.name: str = name
@@ -354,8 +353,18 @@ class BaseScope[Middleware]:
         """The middleware entered around each activation, outermost first."""
         return self._middleware
 
+    @abstractmethod
+    def _build_layers(self, owner: str) -> None:
+        """
+        Pair each middleware with its exit, as this kind of scope runs it.
+
+        :raises MiddlewareKindError: If a middleware isn't a generator function the scope can
+            run.
+        """
+        ...
+
     @property
-    def requires(self) -> "BaseScope[Any] | None":
+    def requires(self) -> "Scope | AsyncScope | None":
         """The scope that must be active before this one can activate, if any."""
         return self._requires
 
@@ -457,8 +466,8 @@ class Activation:
 
     __slots__ = ("scope", "slots")
 
-    slots: Any
-    """The activation's live slot storage, declared `Any` rather than `SlotStorage`."""
+    slots: SlotStorage
+    """The activation's live slot storage."""
 
     def __init__(self, scope: "Scope", slots: SlotStorage) -> None:
         """Construct the token for one activation of `scope`."""
@@ -489,8 +498,8 @@ class AsyncActivation:
 
     __slots__ = ("scope", "slots")
 
-    slots: Any
-    """The activation's live slot storage, declared `Any` rather than `SlotStorage`."""
+    slots: SlotStorage
+    """The activation's live slot storage."""
 
     def __init__(self, scope: "AsyncScope", slots: SlotStorage) -> None:
         """Construct the token for one activation of `scope`."""
@@ -517,6 +526,12 @@ class Scope(BaseScope[ScopeMiddleware]):
     __slots__ = ()
 
     _asynchronous = False
+    _layers: tuple[SyncLayer["Scope"], ...]
+    """Each middleware and its exit."""
+
+    def _build_layers(self, owner: str) -> None:
+        """Pair each middleware with its exit, refusing one that isn't a generator function."""
+        self._layers = sync_layers(self._middleware, owner)
 
     def __enter__(self) -> None:
         """
@@ -560,7 +575,7 @@ class Scope(BaseScope[ScopeMiddleware]):
         """
         try:
             for middleware, _, leave in self._layers:
-                enter_generator(slots, middleware(self), leave)
+                enter_layer(slots, middleware(self), leave)
         except BaseException as refusal:
             self.deactivate(None, refusal)
             raise
@@ -649,6 +664,12 @@ class AsyncScope(BaseScope[AsyncScopeMiddleware]):
     __slots__ = ()
 
     _asynchronous = True
+    _layers: tuple[SyncLayer["AsyncScope"] | AsyncLayer["AsyncScope"], ...]
+    """Each middleware, flagged by whether it's an async generator function, and its exit."""
+
+    def _build_layers(self, owner: str) -> None:
+        """Pair each middleware with its kind and exit, refusing one of another kind."""
+        self._layers = async_layers(self._middleware, owner)
 
     async def __aenter__(self) -> None:
         """
@@ -692,11 +713,11 @@ class AsyncScope(BaseScope[AsyncScopeMiddleware]):
         error propagates.
         """
         try:
-            for middleware, is_async, leave in self._layers:
-                if is_async:
-                    await enter_async_generator(slots, middleware(self), leave)
+            for layer in self._layers:
+                if layer[1] is True:
+                    await enter_async_layer(slots, layer[0](self), layer[2])
                 else:
-                    enter_generator(slots, middleware(self), leave)
+                    enter_layer(slots, layer[0](self), layer[2])
         except BaseException as refusal:
             await self.deactivate(None, refusal)
             raise

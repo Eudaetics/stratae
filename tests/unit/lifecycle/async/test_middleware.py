@@ -16,6 +16,8 @@ AsyncScope middleware:
   MiddlewareError from it in its place.
 - Trying to swallow the task's own cancellation raises the cancellation again.
 - An async middleware that never yields refuses the activation.
+- An async middleware that ends its own activation before its yield is exited at once, and
+  the activation's entry fails with EndedDuringEntryError.
 """
 
 import asyncio
@@ -23,7 +25,12 @@ from collections.abc import AsyncGenerator, Generator
 
 import pytest
 
-from stratae.lifecycle.exceptions import MiddlewareError, ResourceDidNotYieldError
+from stratae.lifecycle.exceptions import (
+    EndedDuringEntryError,
+    MiddlewareError,
+    NothingToDeactivateError,
+    ResourceDidNotYieldError,
+)
 from stratae.lifecycle.scope import AsyncScope
 from stratae.middleware import MiddlewareKindError
 
@@ -290,4 +297,34 @@ async def test_async_middleware_that_never_yields_refuses():
     with pytest.raises(ResourceDidNotYieldError):
         async with scope:
             pass
+    assert not scope.is_active()
+
+
+async def test_async_middleware_ending_its_activation_before_yielding_is_exited():
+    """
+    Test that an async middleware whose activation ends while it's entering is exited at once.
+
+    Given: An async middleware that deactivates its scope before yielding,
+    When: The scope is entered,
+    Then: The middleware is exited, the entry fails with EndedDuringEntryError, and the scope
+          isn't left active.
+    """
+    # Arrange
+    events: list[str] = []
+
+    async def ending(scope: AsyncScope) -> AsyncGenerator[None]:
+        await scope.deactivate()
+        yield
+        events.append("exit")
+
+    scope = AsyncScope("request", middleware=(ending,))
+
+    # Act
+    with pytest.raises(NothingToDeactivateError) as raised:
+        async with scope:
+            events.append("body")
+
+    # Assert
+    assert isinstance(raised.value.__context__, EndedDuringEntryError)
+    assert events == ["exit"]
     assert not scope.is_active()

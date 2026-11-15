@@ -1,16 +1,18 @@
 """
 Entry and exit of the resources entered in a scope activation.
 
-An activation's slot 0 holds a list of its entered resources: the generators that cached
-generator functions returned, driven directly. Each is held with whether it's async and the
-exit that finishes it: {py:func}`exit_generator` or {py:func}`exit_async_generator`, unless
-whoever entered it gave another, as a scope's middleware does.
+An activation's slot 0 holds a list of what it entered, driven directly. A resource, the
+generator a cached generator function returned, is held as it is. Its kind picks its exit:
+{py:func}`exit_generator` or {py:func}`exit_async_generator`. A scope's middleware is held
+with whether it's async and the exit that finishes it, since its exit refuses a swallowed
+error.
 Deactivation empties the activation's storage before closing them, so an entry finishing
 after that sees the emptied storage, exits at once, and raises.
 """
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
-from typing import Any
+from types import AsyncGeneratorType, GeneratorType
+from typing import Literal
 
 from stratae.lifecycle._slots import SlotStorage
 from stratae.lifecycle.exceptions import (
@@ -19,10 +21,38 @@ from stratae.lifecycle.exceptions import (
     ResourceDidNotYieldError,
 )
 
-Entered = list[tuple[bool, Any, Callable[[Any, BaseException | None], Any]]]
+type SyncExit = Callable[[Generator[object, None, object], BaseException | None], bool]
+"""Finishes an entered generator, given what's propagating; returns whether it suppressed it."""
+
+type AsyncExit = Callable[[AsyncGenerator[object, None], BaseException | None], Awaitable[bool]]
+"""Finishes an entered async generator, as {py:data}`SyncExit` does, to await."""
+
+type Native[Value] = GeneratorType[Value, None, object]
+"""A generator a generator function returned, yielding `Value`."""
+
+type AsyncNative[Value] = AsyncGeneratorType[Value, None]
+"""An async generator an async generator function returned, yielding `Value`."""
+
+type Resource = Native[object]
+"""An entered resource: the generator a cached generator function returned."""
+
+type AsyncResource = AsyncNative[object]
+"""An entered async resource: the async generator a cached function returned."""
+
+type SyncLayerEntry = tuple[Literal[False], Generator[object, None, object], SyncExit]
+"""An entered middleware generator and its exit, flagged as sync."""
+
+type AsyncLayerEntry = tuple[Literal[True], AsyncGenerator[object, None], AsyncExit]
+"""An entered middleware async generator and its exit, flagged as async."""
+
+type Entered = list[Resource | SyncLayerEntry]
+"""What a sync activation entered, in the order it entered them."""
+
+type AsyncEntered = list[Resource | AsyncResource | SyncLayerEntry | AsyncLayerEntry]
+"""What an async activation entered, in the order it entered them."""
 
 
-def exit_generator(gen: Generator[object, None, None], exc: BaseException | None) -> bool:
+def exit_generator(gen: Generator[object, None, object], exc: BaseException | None) -> bool:
     """
     Finish a resource generator as `contextlib.contextmanager`'s `__exit__` would.
 
@@ -104,15 +134,9 @@ async def exit_async_generator(
         await gen.aclose()
 
 
-def enter_generator[T](
-    slots: SlotStorage,
-    gen: Generator[T, None, None],
-    leave: Callable[[Generator[T, None, None], BaseException | None], bool] = exit_generator,
-) -> T:
+def enter_generator[T](slots: SlotStorage, gen: Native[T]) -> T:
     """
     Advance a resource generator to its yielded value, registering it in the activation.
-
-    :param leave: What finishes it when the activation closes.
 
     :raises ResourceDidNotYieldError: If the generator doesn't yield.
     :raises ScopeInactiveError: If the activation ended during entry; `gen` is finished at
@@ -123,23 +147,15 @@ def enter_generator[T](
     except StopIteration:
         raise ResourceDidNotYieldError() from None
     if not slots:
-        leave(gen, None)
+        exit_generator(gen, None)
         raise EndedDuringEntryError()
-    slots[0].append((False, gen, leave))  # slot 0: entered resources
+    slots[0].append(gen)  # slot 0: entered resources
     return result
 
 
-async def enter_async_generator[T](
-    slots: SlotStorage,
-    gen: AsyncGenerator[T, None],
-    leave: Callable[
-        [AsyncGenerator[T, None], BaseException | None], Awaitable[bool]
-    ] = exit_async_generator,
-) -> T:
+async def enter_async_generator[T](slots: SlotStorage, gen: AsyncNative[T]) -> T:
     """
     Advance a resource async generator to its yielded value, registering it in the activation.
-
-    :param leave: What finishes it when the activation closes.
 
     :raises ResourceDidNotYieldError: If the generator doesn't yield.
     :raises ScopeInactiveError: If the activation ended during entry; `gen` is finished at
@@ -150,10 +166,48 @@ async def enter_async_generator[T](
     except StopAsyncIteration:
         raise ResourceDidNotYieldError() from None
     if not slots:
+        await exit_async_generator(gen, None)
+        raise EndedDuringEntryError()
+    slots[0].append(gen)  # slot 0: entered resources
+    return result
+
+
+def enter_layer(slots: SlotStorage, gen: Generator[object, None, object], leave: SyncExit) -> None:
+    """
+    Advance a middleware generator to its yield, registering it in the activation with its exit.
+
+    :raises ResourceDidNotYieldError: If the generator doesn't yield.
+    :raises ScopeInactiveError: If the activation ended during entry; `gen` is finished at
+        once.
+    """
+    try:
+        next(gen)
+    except StopIteration:
+        raise ResourceDidNotYieldError() from None
+    if not slots:
+        leave(gen, None)
+        raise EndedDuringEntryError()
+    slots[0].append((False, gen, leave))  # slot 0: entered resources
+
+
+async def enter_async_layer(
+    slots: SlotStorage, gen: AsyncGenerator[object, None], leave: AsyncExit
+) -> None:
+    """
+    Advance a middleware async generator to its yield, as {py:func}`enter_layer` does.
+
+    :raises ResourceDidNotYieldError: If the generator doesn't yield.
+    :raises ScopeInactiveError: If the activation ended during entry; `gen` is finished at
+        once.
+    """
+    try:
+        await anext(gen)
+    except StopAsyncIteration:
+        raise ResourceDidNotYieldError() from None
+    if not slots:
         await leave(gen, None)
         raise EndedDuringEntryError()
     slots[0].append((True, gen, leave))  # slot 0: entered resources
-    return result
 
 
 def close(entered: Entered, exc: BaseException | None = None) -> bool:
@@ -171,9 +225,13 @@ def close(entered: Entered, exc: BaseException | None = None) -> bool:
     """
     received = exc
     while entered:
-        _, gen, leave = entered.pop()
+        entry = entered.pop()
         try:
-            if leave(gen, exc):
+            if (
+                exit_generator(entry, exc)
+                if type(entry) is GeneratorType
+                else entry[2](entry[1], exc)
+            ):
                 exc = None
         except BaseException as new_exc:
             if close(entered, new_exc):
@@ -182,7 +240,7 @@ def close(entered: Entered, exc: BaseException | None = None) -> bool:
     return received is not None and exc is None
 
 
-async def aclose(entered: Entered, exc: BaseException | None = None) -> bool:
+async def aclose(entered: AsyncEntered, exc: BaseException | None = None) -> bool:
     """
     Exit every resource in `entered`, as {py:func}`close` does, awaiting async exits.
 
@@ -191,9 +249,17 @@ async def aclose(entered: Entered, exc: BaseException | None = None) -> bool:
     """
     received = exc
     while entered:
-        is_async, gen, leave = entered.pop()
+        entry = entered.pop()
         try:
-            if await leave(gen, exc) if is_async else leave(gen, exc):
+            if type(entry) is GeneratorType:
+                suppressed = exit_generator(entry, exc)
+            elif type(entry) is AsyncGeneratorType:
+                suppressed = await exit_async_generator(entry, exc)
+            elif entry[0] is True:
+                suppressed = await entry[2](entry[1], exc)
+            else:
+                suppressed = entry[2](entry[1], exc)
+            if suppressed:
                 exc = None
         except BaseException as new_exc:
             if await aclose(entered, new_exc):

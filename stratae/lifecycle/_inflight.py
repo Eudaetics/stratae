@@ -14,7 +14,6 @@ per activation, swapped for a `WatchedClaim` once another task waits.
 import asyncio
 import threading
 from collections.abc import Hashable
-from typing import Any
 
 from stratae.lifecycle.exceptions import (
     CacheCycleError,
@@ -103,7 +102,11 @@ class WatchedClaim:
         self.done = asyncio.Event()
 
 
-async def wait_for_claim(claims: dict[Hashable, Any], key: Hashable, claim: Any) -> None:
+async def wait_for_claim(
+    claims: dict[Hashable, asyncio.Task[object] | WatchedClaim],
+    key: Hashable,
+    claim: asyncio.Task[object] | WatchedClaim,
+) -> None:
     """
     Wait for another task's claim on `key` to be released.
 
@@ -113,36 +116,42 @@ async def wait_for_claim(claims: dict[Hashable, Any], key: Hashable, claim: Any)
     :raises CacheCycleError: If the calling task owns the claim.
     :raises LifecycleConfigurationError: If the claim's owner runs on another event loop.
     """
-    watched = claim.__class__ is WatchedClaim
-    owner = claim.owner if watched else claim
+    if isinstance(claim, WatchedClaim):
+        watched, owner = claim, claim.owner
+    else:
+        watched, owner = None, claim
     if owner is asyncio.current_task():
         raise CacheCycleError()
     if owner.get_loop() is not asyncio.get_running_loop():
         raise CrossLoopWaitError()
-    if not watched:
-        claim = claims[key] = WatchedClaim(claim)
-    await claim.done.wait()
+    if watched is None:
+        watched = claims[key] = WatchedClaim(owner)
+    await watched.done.wait()
 
 
-def watch_thread_claim(claims: dict[Hashable, Any], key: Hashable, claim: Any) -> threading.Event:
+def watch_thread_claim(
+    claims: dict[Hashable, int | Pending], key: Hashable, claim: int | Pending
+) -> threading.Event:
     """
     Return the event to wait on for a thread's claim on `key`. Call under the wrapper's lock.
 
     :raises CacheCycleError: If the calling thread owns the claim.
     """
-    if claim.__class__ is not Pending:
+    if not isinstance(claim, Pending):
         claim = claims[key] = Pending(claim)
     return claim.watch()
 
 
 def watch_task_claim(
-    claims: dict[Hashable, Any], key: Hashable, claim: Any
+    claims: dict[Hashable, asyncio.Task[object] | AsyncPending],
+    key: Hashable,
+    claim: asyncio.Task[object] | AsyncPending,
 ) -> asyncio.Future[None]:
     """
     Return a future to await for a task's claim on `key`. Call under the wrapper's lock.
 
     :raises CacheCycleError: If the calling task owns the claim.
     """
-    if claim.__class__ is not AsyncPending:
+    if not isinstance(claim, AsyncPending):
         claim = claims[key] = AsyncPending(claim)
     return claim.watch()

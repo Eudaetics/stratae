@@ -59,7 +59,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Self
+from typing import Self
 from uuid import UUID
 
 MESSAGE_ID_HEADER = "x-message-id"
@@ -110,10 +110,6 @@ def _when(value: object | None) -> datetime:
     return _now() if value is None else datetime.fromisoformat(str(value))
 
 
-_MADE: Any = object()
-"""Stands in for a field not given to `Envelope`, which makes it."""
-
-
 @dataclass(frozen=True, slots=True, init=False)
 class Envelope:
     """
@@ -129,10 +125,10 @@ class Envelope:
 
     def __init__(
         self,
-        message_id: UUID = _MADE,
-        correlation_id: UUID = _MADE,
+        message_id: UUID | None = None,
+        correlation_id: UUID | None = None,
         causation_id: UUID | None = None,
-        timestamp: datetime = _MADE,
+        timestamp: datetime | None = None,
     ) -> None:
         """
         Make an envelope, making any id or timestamp not given.
@@ -140,15 +136,15 @@ class Envelope:
         Sets each field through its slot directly. A frozen dataclass's own constructor goes
         through `object.__setattr__` for each, which costs more on this per-emit path.
 
-        :param message_id: This message's id. A new random one if omitted.
-        :param correlation_id: The chain's id. A new random one if omitted.
+        :param message_id: This message's id. A new random one if `None`.
+        :param correlation_id: The chain's id. A new random one if `None`.
         :param causation_id: The id of the message that caused this one, if any.
-        :param timestamp: When the message was made. The current time if omitted.
+        :param timestamp: When the message was made. The current time if `None`.
         """
-        _set_message_id(self, _new_uuid4() if message_id is _MADE else message_id)
-        _set_correlation_id(self, _new_uuid4() if correlation_id is _MADE else correlation_id)
+        _set_message_id(self, _new_uuid4() if message_id is None else message_id)
+        _set_correlation_id(self, _new_uuid4() if correlation_id is None else correlation_id)
         _set_causation_id(self, causation_id)
-        _set_timestamp(self, _now() if timestamp is _MADE else timestamp)
+        _set_timestamp(self, _now() if timestamp is None else timestamp)
 
     @classmethod
     def root(cls, new_id: _NewId = _new_uuid4) -> Self:

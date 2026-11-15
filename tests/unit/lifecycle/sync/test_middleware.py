@@ -24,6 +24,8 @@ Scope middleware:
 - middleware= refuses a lone callable, a string, an item that isn't callable, and anything
   but a generator function.
 - The middleware is kept as a tuple, given in any sequence.
+- A middleware that ends its own activation before its yield is exited at once, and the
+  activation's entry fails with EndedDuringEntryError.
 """
 
 import asyncio
@@ -34,7 +36,9 @@ from typing import Any
 import pytest
 
 from stratae.lifecycle.exceptions import (
+    EndedDuringEntryError,
     MiddlewareError,
+    NothingToDeactivateError,
     ResourceDidNotStopError,
     ResourceDidNotYieldError,
     ScopeActivationError,
@@ -585,3 +589,32 @@ def test_deactivating_wrong_activation_keeps_middleware_entered():
     assert log.count("exit middleware None active=False") == 1
     scope.deactivate(live)
     assert log.count("exit middleware None active=False") == 2
+
+
+def test_middleware_ending_its_activation_before_yielding_is_exited():
+    """
+    Test that a middleware whose activation ends while it's entering is exited at once.
+
+    Given: A middleware that deactivates its scope before yielding,
+    When: The scope is entered,
+    Then: The middleware is exited, the entry fails with EndedDuringEntryError, and the scope
+          isn't left active.
+    """
+    # Arrange
+    events: list[str] = []
+
+    def ending(scope: Scope) -> Generator[None]:
+        scope.deactivate()
+        yield
+        events.append("exit")
+
+    scope = Scope("request", middleware=(ending,))
+
+    # Act
+    with pytest.raises(NothingToDeactivateError) as raised, scope:
+        events.append("body")
+
+    # Assert
+    assert isinstance(raised.value.__context__, EndedDuringEntryError)
+    assert events == ["exit"]
+    assert not scope.is_active()

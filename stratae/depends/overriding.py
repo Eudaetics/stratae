@@ -60,31 +60,12 @@ from=notifications@example.com to=jane@example.com subject='Welcome!'
 ````
 """
 
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Awaitable, Callable
 from contextvars import Token
 from typing import Any, overload
 from weakref import finalize
 
-from stratae.depends._provide import Provider
-
-
-class _Held:
-    """
-    An override value as its provider's ContextVar holds it, and awaitable for an async one.
-
-    It lives as long as some context can see it, including contexts copied by tasks started
-    inside the override. Its finalizer tells the provider when to leave the override path.
-    """
-
-    __slots__ = ("__weakref__", "value")
-
-    def __init__(self, value: Any) -> None:
-        self.value = value
-
-    def __await__(self) -> Generator[None, None, Any]:
-        if False:  # noqa: S5797
-            yield
-        return self.value
+from stratae.depends._provide import AnyProvider, Held, provider
 
 
 class _Override[Result]:
@@ -92,13 +73,13 @@ class _Override[Result]:
 
     __slots__ = ("dep", "tokens", "value")
 
-    def __init__(self, dep: Provider, value: Result) -> None:
-        self.dep: Provider = dep
+    def __init__(self, dep: AnyProvider, value: Result) -> None:
+        self.dep: AnyProvider = dep
         self.value: Result = value
-        self.tokens: list[Token[Any]] = []
+        self.tokens: list[Token[Held[Any] | None]] = []
 
     def __enter__(self) -> None:
-        held = _Held(self.value)
+        held = Held(self.value)
         self.dep.hold()
         finalize(held, self.dep.release)
         self.tokens.append(self.dep.override.set(held))
@@ -114,7 +95,7 @@ class _Target[Result]:
 
     __slots__ = ("_dep",)
 
-    def __init__(self, dep: Provider) -> None:
+    def __init__(self, dep: AnyProvider) -> None:
         self._dep = dep
 
     def to(self, value: Result) -> _Override[Result]:
@@ -139,4 +120,4 @@ def override(func: Callable[..., Any]) -> _Target[Any]:
     :param func: A provider passed to {py:func}`Depends <stratae.depends.injection.Depends>`.
     :returns: An object whose `to` method takes the replacement value.
     """
-    return _Target(Provider(func))
+    return _Target(provider(func))

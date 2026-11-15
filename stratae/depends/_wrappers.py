@@ -19,22 +19,22 @@ from stratae.codegen import (
     render_arguments,
     render_parameters,
 )
-from stratae.depends._provide import Provider
+from stratae.depends._provide import AnyProvider
 
 
 def _kept_parameters(
-    params: list[Parameter], resolved_deps: dict[str, Provider]
+    params: list[Parameter], resolved_deps: dict[str, AnyProvider]
 ) -> list[Parameter]:
     """Return func's parameters minus the injected ones."""
     return [param for param in params if param.name not in resolved_deps]
 
 
-def _render_dependency_source(name: str, dep: Provider) -> str:
+def _render_dependency_source(name: str, dep: AnyProvider) -> str:
     """Render the expression resolving one dependency, awaiting it if async."""
     return f"{'await ' if dep.is_async else ''}__dep_{name}__.provide()"
 
 
-def _render_call_arguments(params: list[Parameter], resolved_deps: dict[str, Provider]) -> str:
+def _render_call_arguments(params: list[Parameter], resolved_deps: dict[str, AnyProvider]) -> str:
     """Build the call's arguments: each injected parameter's provider, or the parameter."""
 
     def value(param: Parameter) -> str:
@@ -56,7 +56,7 @@ type _Source = Callable[[str, str], Lines]
 
 
 def _compile(
-    func: Callable[..., object], resolved_deps: dict[str, Provider], source: _Source
+    func: Callable[..., object], resolved_deps: dict[str, AnyProvider], source: _Source
 ) -> Callable[..., Any]:
     """
     Compile `source` for `func`, and copy func's metadata onto it.
@@ -82,7 +82,7 @@ def _compile(
 
 
 def create_sync_wrapper[Result](
-    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+    func: Callable[..., Result], resolved_deps: dict[str, AnyProvider]
 ) -> Callable[..., Result]:
     """Create a synchronous wrapper."""
     return _compile(
@@ -91,7 +91,7 @@ def create_sync_wrapper[Result](
 
 
 def create_sync_gen_wrapper[Result](
-    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+    func: Callable[..., Result], resolved_deps: dict[str, AnyProvider]
 ) -> Callable[..., Result]:
     """Create a synchronous generator wrapper, delegating with `yield from`."""
     return _compile(
@@ -101,12 +101,12 @@ def create_sync_gen_wrapper[Result](
     )
 
 
-def _has_async_deps(resolved_deps: dict[str, Provider]) -> bool:
+def _has_async_deps(resolved_deps: dict[str, AnyProvider]) -> bool:
     return any(dep.is_async for dep in resolved_deps.values())
 
 
 def create_async_wrapper[Result](
-    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+    func: Callable[..., Result], resolved_deps: dict[str, AnyProvider]
 ) -> Callable[..., Result]:
     """Create an asynchronous wrapper."""
     if not _has_async_deps(resolved_deps):
@@ -148,7 +148,7 @@ def _async_gen_body(arguments: str) -> Lines:
 
 
 def create_async_gen_wrapper[Result](
-    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+    func: Callable[..., Result], resolved_deps: dict[str, AnyProvider]
 ) -> Callable[..., Result]:
     """Create an async generator wrapper, itself an async generator function."""
     return _compile(

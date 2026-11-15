@@ -63,7 +63,7 @@ from typing import Annotated, Protocol, get_origin, overload
 
 from stratae.callables import Gives, call_result
 from stratae.codegen import read_signature
-from stratae.depends._provide import Provider
+from stratae.depends._provide import AnyProvider, is_provider, provider
 from stratae.depends._wrappers import (
     create_async_gen_wrapper,
     create_async_wrapper,
@@ -80,7 +80,7 @@ from stratae.depends.exceptions import (
 )
 
 
-def Depends(dependency: Callable[..., object]) -> Provider:  # noqa: S1542
+def Depends(dependency: Callable[..., object]) -> AnyProvider:  # noqa: S1542
     """
     Mark a callable as the provider for an injected parameter.
 
@@ -91,7 +91,7 @@ def Depends(dependency: Callable[..., object]) -> Provider:  # noqa: S1542
         parameters of its own.
     :returns: The callable's {py:class}`Provider <stratae.depends._provide.Provider>`.
     """
-    return Provider(dependency=dependency)
+    return provider(dependency)
 
 
 @overload
@@ -153,7 +153,7 @@ def _resolve_function[**P, Result](
     sig = read_signature(func)
     _reject_future_annotations(func, sig)
     _reject_quoted_dependencies(func, sig)
-    resolved_deps: dict[str, Provider] = _resolve_parameters(sig, _resolving)
+    resolved_deps: dict[str, AnyProvider] = _resolve_parameters(sig, _resolving)
 
     _reject_callable_objects(func, resolved_deps)
     return _injected(func, resolved_deps)
@@ -163,7 +163,7 @@ class _Wrapper(Protocol):
     """Wraps a function to inject its dependencies, keeping what calling it gives."""
 
     def __call__[Result](
-        self, func: Callable[..., Result], resolved_deps: dict[str, Provider], /
+        self, func: Callable[..., Result], resolved_deps: dict[str, AnyProvider], /
     ) -> Callable[..., Result]:
         """Return `func` with `resolved_deps` injected."""
         ...
@@ -179,7 +179,7 @@ _WRAPPERS: dict[Gives, _Wrapper] = {
 
 
 def _reject_callable_objects(
-    func: Callable[..., object], resolved_deps: dict[str, Provider]
+    func: Callable[..., object], resolved_deps: dict[str, AnyProvider]
 ) -> None:
     """
     Raise if `func` has injected parameters but is a callable object.
@@ -240,7 +240,7 @@ def _reject_quoted_dependencies(func: Callable[..., object], sig: Signature) -> 
 
 def _resolve_parameters(
     sig: Signature, _resolving: set[Callable[..., object]]
-) -> dict[str, Provider]:
+) -> dict[str, AnyProvider]:
     """Resolve a list of parameters."""
     return {
         name: value
@@ -249,11 +249,11 @@ def _resolve_parameters(
     }
 
 
-def _get_annotated_info(annotation: object) -> Provider | None:
+def _get_annotated_info(annotation: object) -> AnyProvider | None:
     """Extract the Provider from an Annotated parameter."""
     metadata: tuple[object, ...] = getattr(annotation, "__metadata__", ())
     depends_wrapper = next(
-        (x for x in reversed(metadata) if isinstance(x, Provider)),
+        (x for x in reversed(metadata) if is_provider(x)),
         None,
     )
     return depends_wrapper
@@ -264,7 +264,9 @@ def _unwrap_type(annotation: object) -> object:
     return getattr(annotation, "__value__", annotation)
 
 
-def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., object]]) -> Provider | None:
+def _resolve_parameter(
+    param: Parameter, _resolving: set[Callable[..., object]]
+) -> AnyProvider | None:
     """Resolve a single parameter to its dependency, if it has one."""
     annotation = _unwrap_type(param.annotation)
     if get_origin(annotation) is not Annotated:
@@ -283,7 +285,7 @@ def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., object]])
 
 
 def _injected[Result](
-    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+    func: Callable[..., Result], resolved_deps: dict[str, AnyProvider]
 ) -> Callable[..., Result]:
     """
     Return `func` with its dependencies injected, by the wrapper for what calling it gives.

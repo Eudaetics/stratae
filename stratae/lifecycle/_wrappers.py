@@ -202,7 +202,7 @@ def _shared_first_read(read: str) -> Lines:
     """
     Read a shared scope's SharedVar storage directly, then the slot.
 
-    An inactive scope's UNSET raises TypeError on subscript. An ended activation's emptied
+    An inactive scope's `None` raises TypeError on subscript. An ended activation's emptied
     storage raises IndexError or KeyError. Either falls back to the store's `get()`, which
     raises the right error.
     """
