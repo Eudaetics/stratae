@@ -686,7 +686,7 @@ def test_described_config_gets_messaging_attributes(
         assert "messaging.destination.anonymous" not in attributes
 
 
-def _handle_call(config: object, headers: Mapping[str, str]) -> HandleCall:
+def _handle_call(config: object, headers: Mapping[str, object]) -> HandleCall:
     """Return a handler call for an order, under the config and with the headers."""
     return HandleCall(_order_placed, config, _OrderPlaced(1), headers)
 

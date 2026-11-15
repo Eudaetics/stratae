@@ -58,6 +58,8 @@ RabbitMQPublisher:
 - emit given headers sends them, and publish middleware sees them and can add to them.
 - A reserved header, added by middleware or given to emit, raises ValueError, and nothing is
   published: the envelope's, the attempts header and the failure header.
+- Header values AMQP carries, such as numbers, booleans and timestamps, are sent as they are;
+  a value it can't carry raises TypeError naming the header, and nothing is published.
 - A topology config without a named queue is refused when the publisher is built.
 - Entering the context declares each topology config's queue, failure queues, exchange and
   bindings, as a consumer would.
@@ -89,6 +91,7 @@ import inspect
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any, assert_type
 from unittest.mock import AsyncMock, call
 from uuid import UUID
@@ -1189,7 +1192,7 @@ async def test_emit_given_headers(connect_mock: AsyncMock, channel: AsyncMock):
     Then: The middleware saw the trace header, and the message carries both
     """
     # Arrange
-    seen: list[dict[str, str]] = []
+    seen: list[dict[str, object]] = []
 
     async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         seen.append(dict(call.headers))
@@ -1208,6 +1211,48 @@ async def test_emit_given_headers(connect_mock: AsyncMock, channel: AsyncMock):
     sent = channel.basic_publish.await_args.kwargs["properties"]
     assert seen == [{"traceparent": "00-trace"}]
     assert (sent.headers["traceparent"], sent.headers["x-tenant"]) == ("00-trace", "acme")
+
+
+async def test_header_values_sent_as_they_are(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    Header values AMQP carries should be sent as they are, not as text.
+
+    Given: A publisher
+    When: An event is emitted with a number, a boolean and a timestamp as headers
+    Then: The message carries each with its own type
+    """
+    # Arrange
+    publisher = RabbitMQPublisher(_URL, serializer=_encode)
+    sent_at = datetime(2026, 11, 15, tzinfo=UTC)
+    headers = {"x-priority": 3, "x-replay": True, "x-sent-at": sent_at}
+
+    # Act
+    publisher.route(_order_placed, _config)
+    async with publisher:
+        await publisher.emit(_order_placed, _OrderPlaced(1), headers=headers)
+
+    # Assert
+    sent = channel.basic_publish.await_args.kwargs["properties"]
+    assert {name: sent.headers[name] for name in headers} == headers
+
+
+async def test_header_value_amqp_cannot_carry_refused(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    A header value AMQP can't carry should raise TypeError naming it, and send nothing.
+
+    Given: A publisher
+    When: An event is emitted with a set as a header's value
+    Then: TypeError names the header and the value's type, and nothing is published
+    """
+    # Arrange
+    publisher = RabbitMQPublisher(_URL, serializer=_encode)
+
+    # Act / Assert
+    publisher.route(_order_placed, _config)
+    async with publisher:
+        with pytest.raises(TypeError, match="AMQP can't carry header 'x-tags' of type set"):
+            await publisher.emit(_order_placed, _OrderPlaced(1), headers={"x-tags": {"a"}})
+    channel.basic_publish.assert_not_awaited()
 
 
 @pytest.mark.parametrize("name", [MESSAGE_ID_HEADER, "x-attempts", "X-Failure"])

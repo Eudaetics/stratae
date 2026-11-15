@@ -8,7 +8,7 @@ The outbox only works if a record and its data commit together. So the store mus
 
 ## The table and the unit of work
 
-The application's own table, `orders`, sits beside the outbox table. One outbox row per record. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. The session recipe is the same as in [A database session per scope](database.md).
+The application's own table, `orders`, sits beside the outbox table. One outbox row per record. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. `headers` is a column of type `Headers`: `jsonb` on Postgres, and JSON on other databases. The store must give back what it was given, and JSON has no type for a timestamp. So `Headers` stores a timestamp as `{"$datetime": ...}`, at any depth, and turns it back into one. Text that looks like a timestamp stays text. The database's driver does the JSON encoding itself, so `Headers` hands it plain values and tags only what JSON can't hold. A value JSON can't hold that isn't tagged, such as bytes, fails the add inside the unit of work, and nothing commits. If your middleware sends such values, tag them in `tagged` and `untagged` too. The session recipe is the same as in [A database session per scope](database.md).
 
 ````{example} The outbox table, the engine, and a session per unit of work
 ```{code-block} python
@@ -22,6 +22,7 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
+    TypeDecorator,
     delete,
     exists,
     or_,
@@ -35,8 +36,11 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, aliased, mapped_column
+from sqlalchemy.engine import Dialect
 from sqlalchemy.pool import StaticPool
+from sqlalchemy.types import TypeEngine
 
 from stratae.events.outbox import OutboxRecord
 from stratae.lifecycle import AsyncScope
@@ -53,12 +57,47 @@ def utc(moment: datetime) -> datetime:
     # SQLite returns timestamps without a timezone. Postgres keeps it.
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
+def tagged(value: Any) -> Any:
+    # JSON has no timestamp, so one is stored tagged, at any depth.
+    if isinstance(value, datetime):
+        return {"$datetime": value.isoformat()}
+    if isinstance(value, dict):
+        return {key: tagged(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [tagged(item) for item in value]
+    return value
+
+def untagged(value: Any) -> Any:
+    if isinstance(value, dict):
+        if value.keys() == {"$datetime"}:
+            return datetime.fromisoformat(value["$datetime"])
+        return {key: untagged(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [untagged(item) for item in value]
+    return value
+
+class Headers(TypeDecorator[dict[str, Any]]):
+    # jsonb on Postgres, JSON elsewhere, with timestamps kept as timestamps.
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect: Dialect) -> TypeEngine[Any]:
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(JSONB())
+        return dialect.type_descriptor(JSON())
+
+    def process_bind_param(self, value: Any, dialect: Dialect) -> Any:
+        return tagged(value)
+
+    def process_result_value(self, value: Any, dialect: Dialect) -> Any:
+        return untagged(value)
+
 class OutboxRow(Base):
     __tablename__ = "outbox"
     id: Mapped[UUID] = mapped_column(primary_key=True)
     route: Mapped[str] = mapped_column(String(200))
     body: Mapped[bytes] = mapped_column(LargeBinary)
-    headers: Mapped[dict[str, str]] = mapped_column(JSON)
+    headers: Mapped[dict[str, Any]] = mapped_column(Headers)
     key: Mapped[str | None] = mapped_column(String(200), index=True)
     address: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

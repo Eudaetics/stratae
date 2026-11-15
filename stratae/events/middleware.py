@@ -33,8 +33,10 @@ acks it.
 Publish middleware sends context with a message, such as a trace or a tenant, by passing `next`
 the call {py:meth}`PublishCall.with_headers` returns. Handle middleware reads them from its own
 `call.headers`. Over a broker, the headers travel in the message. On a direct bus, they're
-passed to the handlers of the same emit. Names and values are text. The envelope's headers are
-the bus's own, so adding one raises `ValueError`, and the message isn't sent.
+passed to the handlers of the same emit. Names are text. Values are whatever the transport
+carries: a direct bus passes any value on as it is, and a broker adapter refuses one its
+transport can't hold when the message is sent. The envelope's headers are the bus's own, so
+adding one raises `ValueError`, and the message isn't sent.
 
 ````{example} Tracing every request a bus handles
 ```{code-block} python
@@ -121,7 +123,7 @@ from stratae.middleware import Next, refuse_kind
 if TYPE_CHECKING:
     from stratae.events.protocols import AnyEvent
 
-NO_HEADERS: Mapping[str, str] = MappingProxyType({})
+NO_HEADERS: Mapping[str, object] = MappingProxyType({})
 """A message's headers when it has none."""
 
 from_fields: Callable[[type[Any], tuple[Any, ...]], Any] = tuple[Any, ...].__new__
@@ -153,10 +155,10 @@ class PublishCall(NamedTuple):
     """
     payload: Any
     """The payload being emitted."""
-    headers: Mapping[str, str] = NO_HEADERS
+    headers: Mapping[str, object] = NO_HEADERS
     """The headers the message is published with, read-only."""
 
-    def with_headers(self, headers: Mapping[str, str]) -> "PublishCall":
+    def with_headers(self, headers: Mapping[str, object]) -> "PublishCall":
         """
         Return this call, publishing `headers` as well.
 
@@ -171,13 +173,14 @@ class PublishCall(NamedTuple):
 
 class HandleCall(NamedTuple):
     """
-    One handler call, as a handle middleware sees it.
+    A message being handled: what a dispatcher gives each handler, and handle middleware sees.
 
-    Its `headers` are the ones of the message being handled. On a direct bus, they're the ones
-    its publish middleware added. Over a broker, they're the message's text headers, which
-    include its envelope's. The handler is called with the payload of the call passed to
-    `next`. The event, config and headers describe the message being handled, so passing on a
-    call with others raises `ValueError`.
+    An adapter builds one for each message it handles. Its `headers` are the message's. On a
+    direct bus, they're the ones its publish middleware added. Over a broker, they're the
+    headers the message arrived with, as the transport delivered them, its envelope's included.
+    The handler is called with the payload of the call passed to `next`. The event, config and
+    headers describe the message being handled, so passing on a call with others raises
+    `ValueError`.
     """
 
     event: "AnyEvent"
@@ -186,7 +189,7 @@ class HandleCall(NamedTuple):
     """The registration's routing config, or `None` on a direct bus."""
     payload: Any
     """The payload being handled."""
-    headers: Mapping[str, str] = NO_HEADERS
+    headers: Mapping[str, object] = NO_HEADERS
     """The headers of the message being handled, read-only."""
 
 

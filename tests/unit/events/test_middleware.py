@@ -278,7 +278,7 @@ def test_headers_reach_handle_middleware(added: bool) -> None:
     When: An event is emitted
     Then: The handle middleware reads the tenant, or an empty mapping
     """
-    seen: list[dict[str, str]] = []
+    seen: list[dict[str, object]] = []
 
     def read(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
         seen.append(dict(call.headers))
@@ -300,7 +300,7 @@ async def test_headers_reach_async_handle_middleware() -> None:
     When: An event is emitted
     Then: The handle middleware reads the tenant
     """
-    seen: list[dict[str, str]] = []
+    seen: list[dict[str, object]] = []
 
     async def read(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         seen.append(dict(call.headers))

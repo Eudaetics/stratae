@@ -70,8 +70,8 @@ RabbitMQConsumer:
 - A success hook that raises is logged, and the handled message is still acked.
 - Handle middleware runs around each handler and its hooks, before the ack.
 - Handle middleware sees the event as call.event, and the consume config as call.config.
-- Handle middleware reads the message's text headers, envelope headers included; headers that
-  aren't text, such as the attempts count, are left out, and a message without headers has none.
+- Handle middleware reads the message's headers as they arrived, read-only, envelope headers
+  and the attempts count included; a message without headers has none.
 - Handle middleware that times out a handler nacks the message, and one that catches its
   own timeout and returns acks it.
 - Handle middleware raising before next nacks the message without running the handler.
@@ -128,7 +128,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, MutableMapping
 from itertools import count
 from typing import Any, cast
 from unittest.mock import AsyncMock, call
@@ -1654,20 +1654,25 @@ async def test_handle_middleware_sees_event(connect_mock: AsyncMock, channel: As
     message.channel.basic_ack.assert_awaited_once_with(11)
 
 
-async def test_handle_middleware_reads_text_headers(connect_mock: AsyncMock, channel: AsyncMock):
+async def test_handle_middleware_reads_headers_as_delivered(
+    connect_mock: AsyncMock, channel: AsyncMock
+):
     """
-    Handle middleware should read the message's text headers, and only those.
+    Handle middleware should read the message's headers as they arrived, read-only.
 
     Given: A consumer with handle middleware recording the headers it reads
     When: A message arrives carrying a tenant, an attempts count and a correlation id, then one
         without headers
-    Then: The middleware read the tenant and the correlation id, then no headers
+    Then: The middleware read all three as delivered, the count still a number, then no
+        headers, and couldn't change them
     """
     # Arrange
-    seen: list[dict[str, str]] = []
+    seen: list[dict[str, object]] = []
+    writable: list[bool] = []
 
     async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         seen.append(dict(call.headers))
+        writable.append(isinstance(call.headers, MutableMapping))
         return await next(call)
 
     consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(record,)))
@@ -1681,7 +1686,8 @@ async def test_handle_middleware_reads_text_headers(connect_mock: AsyncMock, cha
         await _delivery_callback(channel)(_message(b'{"order_id": 8}'))
 
     # Assert
-    assert seen == [{"x-tenant": "acme", CORRELATION_ID_HEADER: correlation_id}, {}]
+    assert seen == [headers, {}]
+    assert writable == [False, False]
 
 
 async def _trace(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:

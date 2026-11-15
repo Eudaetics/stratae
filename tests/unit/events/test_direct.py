@@ -71,6 +71,7 @@ DirectBus (middleware):
 - An unsupported pattern emitted directly fails before any middleware runs.
 - A call object a middleware keeps doesn't keep the bus alive.
 - Handle middleware reads the headers publish middleware added, read-only.
+- A header's value reaches handle middleware as publish middleware set it, whatever its type.
 - A handler's own emit has its own headers, and the outer handler's are restored after it.
 - Publish middleware adding a reserved header refuses the emit; no handler runs.
 - Handle middleware on a bus without publish middleware sees no headers, even inside another
@@ -119,7 +120,6 @@ from stratae.events.exceptions import (
     MultipleRespondersError,
     NoResponderError,
 )
-from stratae.events.pipeline import receiving
 from stratae.middleware import MiddlewareKindError
 
 
@@ -364,12 +364,14 @@ def test_handle_returns_handler(bus: DirectBus):
 
     Given: A DirectBus
     When: handle is called with a callable
-    Then: The returned Handler should wrap that callable
+    Then: The returned Handler should call it with the payload of the message it's given
     """
     fn = Mock()
     handle = bus.handle(_task_created, fn)
 
-    assert handle.call is fn
+    handle.call(HandleCall(_task_created, None, _TaskCreated(1)))
+
+    fn.assert_called_once_with(_TaskCreated(1))
 
 
 def test_async_handler_rejected_at_registration(bus: DirectBus):
@@ -1163,7 +1165,7 @@ def test_dispatchers_argument_replaces_default():
     """
     A dispatcher passed for a default pattern should replace the bus's own.
 
-    Given: A bus whose PubSub dispatcher is replaced by one that records the payload
+    Given: A bus whose PubSub dispatcher is replaced by one that records the message's payload
     When: A pub/sub event is emitted
     Then: The replacement runs instead of the default fan-out
     """
@@ -1171,9 +1173,11 @@ def test_dispatchers_argument_replaces_default():
     dispatched: list[Any] = []
 
     def record[S](
-        event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, object]], payload: S
+        event: PubSub[S, Any],
+        handlers: Collection[Handler[[HandleCall], Any, object]],
+        message: HandleCall,
     ) -> None:
-        dispatched.append(payload)
+        dispatched.append(message.payload)
 
     bus = DirectBus(dispatchers=[Dispatch(PubSub, record)])
     handler = Mock()
@@ -1700,6 +1704,35 @@ def _recording_headers(seen: list[object]) -> Any:
     return record
 
 
+def test_header_value_reaches_handle_middleware_as_set():
+    """
+    A header's value should reach handle middleware as publish middleware set it.
+
+    Given: A bus whose publish middleware adds a number as a header's value, and handle
+           middleware recording it
+    When: An event is emitted
+    Then: The handle middleware read the number itself
+    """
+    # Arrange
+    seen: list[object] = []
+
+    def prioritize(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return next(call.with_headers({"x-priority": 3}))
+
+    def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
+        seen.append(call.headers["x-priority"])
+        return next(call)
+
+    bus = DirectBus(middleware=Middleware(publish=(prioritize,), handle=(record,)))
+    bus.handle(_task_created, lambda task: None)
+
+    # Act
+    bus.emit(_task_created, _TaskCreated(1))
+
+    # Assert
+    assert seen == [3]
+
+
 def test_handle_middleware_reads_publish_headers():
     """
     Handle middleware should read the headers publish middleware added, without changing them.
@@ -1791,8 +1824,9 @@ def test_handle_middleware_without_publish_middleware_sees_no_headers():
     """
     Handle middleware on a bus without publish middleware should see no headers.
 
-    Given: A bus with only handle middleware recording the headers
-    When: An event is emitted inside another message's delivery, which carries a header
+    Given: A bus with only handle middleware recording the headers, and an outer bus whose
+           publish middleware adds a header
+    When: The outer bus's handler, handling a message with that header, emits on the first bus
     Then: The middleware saw no headers, not the enclosing message's
     """
     # Arrange
@@ -1800,9 +1834,14 @@ def test_handle_middleware_without_publish_middleware_sees_no_headers():
     bus = DirectBus(middleware=Middleware(handle=(_recording_headers(seen),)))
     bus.handle(_task_created, lambda task: None)
 
+    def tenant(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return next(call.with_headers({"x-tenant": "acme"}))
+
+    outer = DirectBus(middleware=Middleware(publish=(tenant,)))
+    outer.handle(_task_created, lambda task: bus.emit(_task_created, task))
+
     # Act
-    with receiving({"x-tenant": "acme"}):
-        bus.emit(_task_created, _TaskCreated(1))
+    outer.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert seen == [("_TaskCreated", {}), ("_TaskCreated", {})]
