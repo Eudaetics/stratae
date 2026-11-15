@@ -7,8 +7,8 @@ Handler:
 - is_async is stored as given, for sync and async functions and callable objects.
 - call stores the wrapped callable.
 - config stores the supplied value.
-- Calling a Handler invokes the wrapped sync callable.
-- Calling a Handler wrapping an async callable returns an awaitable.
+- Calling a Handler with a message invokes the wrapped sync callable.
+- Calling a Handler wrapping an async callable with a message returns an awaitable.
 
 Handlers:
 - Holds its handlers as a tuple, equal to a plain tuple of them.
@@ -25,27 +25,30 @@ from typing import Any
 
 import pytest
 
-from stratae.events import Handler, Handlers
+from stratae.events import HandleCall, Handler, Handlers, PubSub
+
+_ticked = PubSub(int)
+_message = HandleCall(_ticked, None, 1)
 
 
-def _sync_handler(payload: int) -> int:
+def _sync_handler(message: HandleCall) -> int:
     """Define a simple sync handler for testing."""
     return 1
 
 
-async def _async_handler(payload: int) -> int:
+async def _async_handler(message: HandleCall) -> int:
     """Define a simple async handler for testing."""
     await asyncio.sleep(0)
     return 2
 
 
 class _SyncCallable:
-    def __call__(self, payload: int) -> int:
+    def __call__(self, message: HandleCall) -> int:
         return 3
 
 
 class _AsyncCallable:
-    async def __call__(self, payload: int) -> int:
+    async def __call__(self, message: HandleCall) -> int:
         return 4
 
 
@@ -102,13 +105,12 @@ def test_calling_handler_invokes_sync_callable():
     Calling a Handler wrapping a sync callable should return its result.
 
     Given: A Handler wrapping a sync callable
-    When: The Handler is called with a payload
+    When: The Handler is called with a message
     Then: The result should be the callable's return value
     """
-    payload = 1
     handler = Handler(_sync_handler, object(), is_async=False)
 
-    assert handler(payload) == 1
+    assert handler(_message) == 1
 
 
 async def test_calling_handler_wrapping_async_callable_returns_awaitable():
@@ -116,13 +118,12 @@ async def test_calling_handler_wrapping_async_callable_returns_awaitable():
     Calling a Handler wrapping an async callable should return an awaitable.
 
     Given: A Handler wrapping an async callable
-    When: The Handler is called with a payload
+    When: The Handler is called with a message
     Then: The result should be awaitable and resolve to the callable's return value
     """
-    payload = 1
     handler = Handler(_async_handler, object(), is_async=True)
 
-    result = await handler(payload)
+    result = await handler(_message)
 
     assert result == 2
 
@@ -187,7 +188,7 @@ def test_handlers_adding_leaves_original_unchanged():
         Handler(_sync_handler, None, is_async=False),
         Handler(_async_handler, None, is_async=True),
     )
-    original: Handlers[Handler[Any, Any, Any]] = Handlers((first,))
+    original: Handlers[Handler[Any, Any]] = Handlers((first,))
 
     # Act
     result = original.adding(added)

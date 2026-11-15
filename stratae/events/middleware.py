@@ -193,6 +193,13 @@ class HandleCall(NamedTuple):
     """The headers of the message being handled, read-only."""
 
 
+type PublishMiddleware = Callable[[PublishCall, Next[PublishCall, Any]], Any]
+"""A publish middleware: given the call and `next`, the rest of the chain."""
+
+type HandleMiddleware = Callable[[HandleCall, Next[HandleCall, Any]], Any]
+"""A handle middleware: given the message being handled and `next`, the rest of the chain."""
+
+
 @dataclass(frozen=True, slots=True)
 class Middleware:
     """
@@ -202,9 +209,9 @@ class Middleware:
     `handle` middleware. So one `Middleware` can be shared by both.
     """
 
-    publish: tuple[Callable[[PublishCall, Next[PublishCall, Any]], Any], ...] = ()
+    publish: tuple[PublishMiddleware, ...] = ()
     """Run around each emit, outermost first."""
-    handle: tuple[Callable[[HandleCall, Next[HandleCall, Any]], Any], ...] = ()
+    handle: tuple[HandleMiddleware, ...] = ()
     """Run around each handler call, outermost first."""
 
     def __post_init__(self) -> None:

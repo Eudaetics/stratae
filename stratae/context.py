@@ -58,6 +58,8 @@ On earlier versions, use {py:func}`Context.use`.
 """
 
 from contextvars import ContextVar, Token
+from enum import Enum
+from typing import overload
 
 
 class ContextNotSetError(RuntimeError):
@@ -76,12 +78,20 @@ class IgnoreDefaultError(ValueError):
         super().__init__("IGNORE_DEFAULT cannot be used as a constructor default.")
 
 
-class _NoDefault:
-    __slots__ = ()
+class IgnoreDefault(Enum):
+    """The type of `IGNORE_DEFAULT`, its only value."""
+
+    IGNORE_DEFAULT = "IGNORE_DEFAULT"
 
 
-_NO_DEFAULT = _NoDefault()
-IGNORE_DEFAULT = _NoDefault()
+class _Unset(Enum):
+    """The type of a default that wasn't given."""
+
+    UNSET = "UNSET"
+
+
+_UNSET = _Unset.UNSET
+IGNORE_DEFAULT = IgnoreDefault.IGNORE_DEFAULT
 """
 Sentinel passed as a 'default' to skip the constructor default and require a set value.
 
@@ -96,18 +106,18 @@ with `IGNORE_DEFAULT`, it ignores the constructor level default, and raises
 """
 
 
-class _ContextScope[T]:
+class _ContextScope[Value]:
     """Context manager returned by {py:func}`Context.use`, tracking its own token."""
 
     __slots__ = ("_provider", "_token", "_value")
 
-    def __init__(self, provider: "Context[T]", value: T) -> None:
+    def __init__(self, provider: "Context[Value]", value: Value) -> None:
         """Initialize the context scope with provider and value."""
         self._provider = provider
         self._value = value
-        self._token: Token[T]
+        self._token: Token[Value]
 
-    def __enter__(self) -> T:
+    def __enter__(self) -> Value:
         """Enter the context, setting the value."""
         self._token = self._provider.set(self._value)
         return self._value
@@ -117,12 +127,16 @@ class _ContextScope[T]:
         self._provider.reset(self._token)
 
 
-class Context[T]:
+class Context[Value]:
     """A named value backed by a ContextVar, usable as a Depends() provider."""
 
     __slots__ = ("_default", "_name", "_var")
 
-    def __init__(self, name: str, default: T | _NoDefault = _NO_DEFAULT) -> None:
+    @overload
+    def __init__(self, name: str) -> None: ...
+    @overload
+    def __init__(self, name: str, default: Value) -> None: ...
+    def __init__(self, name: str, default: Value | IgnoreDefault | _Unset = _UNSET) -> None:
         """
         Create a context.
 
@@ -133,10 +147,14 @@ class Context[T]:
         if default is IGNORE_DEFAULT:
             raise IgnoreDefaultError()
         self._name = name
-        self._var: ContextVar[T] = ContextVar(name)
-        self._default = default
+        self._var: ContextVar[Value] = ContextVar(name)
+        self._default: Value | _Unset = default
 
-    def get(self, default: T | _NoDefault = _NO_DEFAULT) -> T:
+    @overload
+    def get(self) -> Value: ...
+    @overload
+    def get(self, default: Value | IgnoreDefault) -> Value: ...
+    def get(self, default: Value | IgnoreDefault | _Unset = _UNSET) -> Value:
         """
         Get the current value. Equivalent to calling the context.
 
@@ -145,17 +163,19 @@ class Context[T]:
         :returns: The set value, otherwise a default.
         :raises ContextNotSetError: If unset with no default.
         """
-        if default is _NO_DEFAULT:
+        if default is _UNSET:
             default = self._default
         try:
-            return self._var.get() if isinstance(default, _NoDefault) else self._var.get(default)
+            if isinstance(default, (IgnoreDefault, _Unset)):
+                return self._var.get()
+            return self._var.get(default)
         except LookupError as lookup_err:
             raise ContextNotSetError(self._name) from lookup_err
 
     __call__ = get
     """An alias of {py:func}`Context.get`. Calling an instance is equivalent to instance.get()"""
 
-    def set(self, value: T) -> Token[T]:
+    def set(self, value: Value) -> Token[Value]:
         """
         Set the context value.
 
@@ -164,7 +184,7 @@ class Context[T]:
         """
         return self._var.set(value)
 
-    def reset(self, token: Token[T]) -> None:
+    def reset(self, token: Token[Value]) -> None:
         """
         Restore the value from before a {py:func}`Context.set` call.
 
@@ -172,7 +192,7 @@ class Context[T]:
         """
         self._var.reset(token)
 
-    def use(self, value: T) -> _ContextScope[T]:
+    def use(self, value: Value) -> _ContextScope[Value]:
         """
         Set a value for the duration of a `with` block.
 

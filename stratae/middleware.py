@@ -29,10 +29,10 @@ from typing import Any
 
 from stratae.callables import Gives, call_result
 
-type Next[C, R] = Callable[[C], R]
+type Next[Call, Result] = Callable[[Call], Result]
 """The rest of the chain, as a middleware is given it: the next middleware, or else the call."""
 
-type Finish[C, X] = Callable[[C, X], Any]
+type Finish[Call, Run] = Callable[[Call, Run], Any]
 """
 The innermost call of a chain: given the call value the last middleware passed on, and what
 the chain was run with for this call, such as an emit's message and how to send it.
@@ -75,7 +75,9 @@ def refuse_kind(middleware: tuple[Callable[..., Any], ...], owner: str, asynchro
             raise MiddlewareKindError(owner, item, kind)
 
 
-def chain[C, X](middleware: tuple[_Layer, ...], finish: Finish[C, X]) -> Finish[C, X]:
+def chain[Call, Run](
+    middleware: tuple[_Layer, ...], finish: Finish[Call, Run]
+) -> Finish[Call, Run]:
     """
     Compose middleware around `finish`, outermost first, sync or async alike.
 

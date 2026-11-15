@@ -249,12 +249,12 @@ def _validate_requires(
         raise SharedRequiresContextError(name, requires.name)
 
 
-class BaseScope[M]:
+class BaseScope[Middleware]:
     """
     Shared state and validation behind Scope and AsyncScope.
 
-    See {py:class}`Scope` and {py:class}`AsyncScope` for the concrete, usable classes. `M` is
-    the kind of middleware the scope takes.
+    See {py:class}`Scope` and {py:class}`AsyncScope` for the concrete, usable classes. It's
+    typed by the kind of middleware the scope takes.
     """
 
     __slots__ = (
@@ -271,7 +271,7 @@ class BaseScope[M]:
     )
 
     _requires: "BaseScope[Any] | None"
-    _middleware: tuple[M, ...]
+    _middleware: tuple[Middleware, ...]
     _layers: tuple[Layer, ...]
     """Each middleware, whether it's an async generator function, and its exit."""
     _plain: bool
@@ -291,7 +291,7 @@ class BaseScope[M]:
         storage: StorageType = "dense",
         requires: "BaseScope[Any] | None" = None,
         threads: bool = False,
-        middleware: tuple[M, ...] = (),
+        middleware: tuple[Middleware, ...] = (),
     ) -> None:
         """
         Create a scope.
@@ -350,7 +350,7 @@ class BaseScope[M]:
         return self._slots.threads
 
     @property
-    def middleware(self) -> tuple[M, ...]:
+    def middleware(self) -> tuple[Middleware, ...]:
         """The middleware entered around each activation, outermost first."""
         return self._middleware
 
@@ -543,10 +543,10 @@ class Scope(BaseScope[ScopeMiddleware]):
         """Deactivate this scope's current activation, closing its resources, then middleware."""
         # Inlined deactivate: `with scope:` is the hot path.
         slots = self._end(None)
-        contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
+        entered, parent_slots = slots[0], slots[3]  # slots 0 and 3
         slots.clear()
         try:
-            return close(contexts, exc) if contexts else False
+            return close(entered, exc) if entered else False
         finally:
             if parent_slots is not None:
                 _release(parent_slots, self._parent_lock)
@@ -596,10 +596,10 @@ class Scope(BaseScope[ScopeMiddleware]):
             a scope requiring this one is still active.
         """
         slots = self._end(None if activation is None else activation.slots)
-        contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
+        entered, parent_slots = slots[0], slots[3]  # slots 0 and 3
         slots.clear()
         try:
-            return close(contexts, exc) if contexts else False
+            return close(entered, exc) if entered else False
         finally:
             if parent_slots is not None:
                 _release(parent_slots, self._parent_lock)
@@ -675,10 +675,10 @@ class AsyncScope(BaseScope[AsyncScopeMiddleware]):
         """Deactivate this scope's current activation, closing its resources, then middleware."""
         # Inlined deactivate: `async with scope:` is the hot path; this saves a coroutine.
         slots = self._end(None)
-        contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
+        entered, parent_slots = slots[0], slots[3]  # slots 0 and 3
         slots.clear()
         try:
-            return await aclose(contexts, exc) if contexts else False
+            return await aclose(entered, exc) if entered else False
         finally:
             if parent_slots is not None:
                 _release(parent_slots, self._parent_lock)
@@ -732,10 +732,10 @@ class AsyncScope(BaseScope[AsyncScopeMiddleware]):
             a scope requiring this one is still active.
         """
         slots = self._end(None if activation is None else activation.slots)
-        contexts, parent_slots = slots[0], slots[3]  # slots 0 and 3
+        entered, parent_slots = slots[0], slots[3]  # slots 0 and 3
         slots.clear()
         try:
-            return await aclose(contexts, exc) if contexts else False
+            return await aclose(entered, exc) if entered else False
         finally:
             if parent_slots is not None:
                 _release(parent_slots, self._parent_lock)

@@ -113,7 +113,9 @@ def _typed[F: Callable[..., Any]](bound: F, parameters: list[Parameter], event: 
     return bound
 
 
-def _with_hooks[E: Callable[..., Any]](emitter: E, hooks: Hooks[Any, Any] | None) -> E:
+def _with_hooks[Emitter: Callable[..., Any]](
+    emitter: Emitter, hooks: Hooks[Any, Any] | None
+) -> Emitter:
     """
     Return the emitter a bound callable calls: `emitter`, given the hooks it was bound with.
 
@@ -121,37 +123,37 @@ def _with_hooks[E: Callable[..., Any]](emitter: E, hooks: Hooks[Any, Any] | None
     someone binds with hooks, then refuses loudly. Fixed when binding, so an emit without
     hooks passes none.
     """
-    return cast(E, partial(emitter, hooks=hooks)) if hooks is not None else emitter
+    return cast(Emitter, partial(emitter, hooks=hooks)) if hooks is not None else emitter
 
 
 @overload
-def bind[**P, S, H: Hooks[Any, Any], R, Ev: PayloadEvent[Any, Any, Any]](
-    event: Ev,
-    emitter: EmitCallable[Ev, S, H, R],
+def bind[**P, Payload, HookType: Hooks[Any, Any], Result, Event: PayloadEvent[Any, Any, Any]](
+    event: Event,
+    emitter: EmitCallable[Event, Payload, HookType, Result],
     *,
-    factory: Callable[P, S],
-    hooks: H | None = None,
-) -> Callable[P, R]: ...
+    factory: Callable[P, Payload],
+    hooks: HookType | None = None,
+) -> Callable[P, Result]: ...
 
 
 @overload
-def bind[H: Hooks[Any, Any], R, Ev: SignalEvent[Any, Any]](
-    event: Ev,
-    emitter: EmitCallable[Ev, NoPayload, H, R],
-    *,
-    factory: None = None,
-    hooks: H | None = None,
-) -> Callable[[], R]: ...
-
-
-@overload
-def bind[S, H: Hooks[Any, Any], R, Ev: PayloadEvent[Any, Any, Any]](
-    event: Ev,
-    emitter: EmitCallable[Ev, S, H, R],
+def bind[HookType: Hooks[Any, Any], Result, Event: SignalEvent[Any, Any]](
+    event: Event,
+    emitter: EmitCallable[Event, NoPayload, HookType, Result],
     *,
     factory: None = None,
-    hooks: H | None = None,
-) -> Callable[[S], R]: ...
+    hooks: HookType | None = None,
+) -> Callable[[], Result]: ...
+
+
+@overload
+def bind[Payload, HookType: Hooks[Any, Any], Result, Event: PayloadEvent[Any, Any, Any]](
+    event: Event,
+    emitter: EmitCallable[Event, Payload, HookType, Result],
+    *,
+    factory: None = None,
+    hooks: HookType | None = None,
+) -> Callable[[Payload], Result]: ...
 
 
 def bind(
@@ -198,33 +200,33 @@ def bind(
 
 
 @overload
-def abind[**P, S, H: Hooks[Any, Any], R, Ev: PayloadEvent[Any, Any, Any]](
-    event: Ev,
-    emitter: EmitCallable[Ev, S, H, Awaitable[R]],
+def abind[**P, Payload, HookType: Hooks[Any, Any], Result, Event: PayloadEvent[Any, Any, Any]](
+    event: Event,
+    emitter: EmitCallable[Event, Payload, HookType, Awaitable[Result]],
     *,
-    factory: Callable[P, S] | Callable[P, Awaitable[S]],
-    hooks: H | None = None,
-) -> Callable[P, Awaitable[R]]: ...
+    factory: Callable[P, Payload] | Callable[P, Awaitable[Payload]],
+    hooks: HookType | None = None,
+) -> Callable[P, Awaitable[Result]]: ...
 
 
 @overload
-def abind[H: Hooks[Any, Any], R, Ev: SignalEvent[Any, Any]](
-    event: Ev,
-    emitter: EmitCallable[Ev, NoPayload, H, Awaitable[R]],
+def abind[HookType: Hooks[Any, Any], Result, Event: SignalEvent[Any, Any]](
+    event: Event,
+    emitter: EmitCallable[Event, NoPayload, HookType, Awaitable[Result]],
     *,
     factory: None = None,
-    hooks: H | None = None,
-) -> Callable[[], Awaitable[R]]: ...
+    hooks: HookType | None = None,
+) -> Callable[[], Awaitable[Result]]: ...
 
 
 @overload
-def abind[S, H: Hooks[Any, Any], R, Ev: PayloadEvent[Any, Any, Any]](
-    event: Ev,
-    emitter: EmitCallable[Ev, S, H, Awaitable[R]],
+def abind[Payload, HookType: Hooks[Any, Any], Result, Event: PayloadEvent[Any, Any, Any]](
+    event: Event,
+    emitter: EmitCallable[Event, Payload, HookType, Awaitable[Result]],
     *,
     factory: None = None,
-    hooks: H | None = None,
-) -> Callable[[S], Awaitable[R]]: ...
+    hooks: HookType | None = None,
+) -> Callable[[Payload], Awaitable[Result]]: ...
 
 
 def abind(

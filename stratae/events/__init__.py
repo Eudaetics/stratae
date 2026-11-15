@@ -72,6 +72,7 @@ created user: ada
 from .binding import abind, bind
 from .direct import AsyncDirectBus, DirectBus, Dispatch
 from .dispatch import (
+    Dispatcher,
     dispatch_request,
     dispatch_request_async,
     fan_out,
@@ -89,7 +90,7 @@ from .envelope import (
 )
 from .handler import Handler, Handlers
 from .hooks import Hooks
-from .middleware import HandleCall, Middleware, PublishCall
+from .middleware import HandleCall, HandleMiddleware, Middleware, PublishCall, PublishMiddleware
 from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
     Addressed,
@@ -126,12 +127,14 @@ __all__ = [
     "Destination",
     "DirectBus",
     "Dispatch",
+    "Dispatcher",
     "EmitCallable",
     "Encoded",
     "Envelope",
     "EnvelopeConfig",
     "EventType",
     "HandleCall",
+    "HandleMiddleware",
     "Handler",
     "Handlers",
     "Hooks",
@@ -145,6 +148,7 @@ __all__ = [
     "PubSub",
     "PubSubProducer",
     "PublishCall",
+    "PublishMiddleware",
     "Request",
     "Routed",
     "Serializer",

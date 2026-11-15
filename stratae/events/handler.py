@@ -39,8 +39,10 @@ log: first
 from collections.abc import Callable, Iterable
 from typing import Any, Self
 
+from stratae.events.middleware import HandleCall
 
-class Handler[**P, HandlerConfig, R]:
+
+class Handler[Config, Result]:
     """
     An event handler callable with its routing config.
 
@@ -49,7 +51,9 @@ class Handler[**P, HandlerConfig, R]:
 
     __slots__ = ("call", "config", "is_async")
 
-    def __init__(self, call: Callable[P, R], config: HandlerConfig, is_async: bool) -> None:
+    def __init__(
+        self, call: Callable[[HandleCall], Result], config: Config, is_async: bool
+    ) -> None:
         """
         Wrap a handler.
 
@@ -58,16 +62,16 @@ class Handler[**P, HandlerConfig, R]:
         :param config: The handler's routing config.
         :param is_async: Whether `call` is async: whether calling it gives a coroutine.
         """
-        self.call: Callable[P, R] = call
-        self.config: HandlerConfig = config
+        self.call: Callable[[HandleCall], Result] = call
+        self.config: Config = config
         self.is_async: bool = is_async
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
-        """Call the handler. An async handler returns an unawaited coroutine."""
-        return self.call(*args, **kwargs)
+    def __call__(self, message: HandleCall, /) -> Result:
+        """Call the handler with a message. An async handler returns an unawaited coroutine."""
+        return self.call(message)
 
 
-class Handlers[H: Handler[Any, Any, Any]](tuple[H, ...]):
+class Handlers[Registered: Handler[Any, Any]](tuple[Registered, ...]):
     """
     An event's registered handlers, as an immutable tuple.
 
@@ -76,12 +80,12 @@ class Handlers[H: Handler[Any, Any, Any]](tuple[H, ...]):
     also kept apart, once, for dispatchers that run them differently.
     """
 
-    sync: tuple[H, ...]
+    sync: tuple[Registered, ...]
     """The handlers that aren't async."""
-    asynchronous: tuple[H, ...]
+    asynchronous: tuple[Registered, ...]
     """The async handlers."""
 
-    def __new__(cls, handlers: Iterable[H] = ()) -> Self:
+    def __new__(cls, handlers: Iterable[Registered] = ()) -> Self:
         """
         Hold `handlers`, keeping the sync and async ones apart.
 
@@ -92,26 +96,27 @@ class Handlers[H: Handler[Any, Any, Any]](tuple[H, ...]):
         instance.asynchronous = tuple(handler for handler in instance if handler.is_async)
         return instance
 
-    def adding(self, handler: H) -> Self:
+    def adding(self, handler: Registered) -> Self:
         """Return these handlers with `handler` added."""
         return type(self)((*self, handler))
 
-    def removing(self, handler: H) -> Self:
+    def removing(self, handler: Registered) -> Self:
         """Return these handlers without `handler`, or these same handlers if it isn't one."""
         if handler not in self:
             return self
         return type(self)(registered for registered in self if registered is not handler)
 
 
-async def invoke(handler: Handler[..., Any, Any], *args: Any) -> Any:
+async def invoke(handler: Handler[Any, Any], message: HandleCall) -> Any:
     """
-    Call `handler(*args)`, awaiting it if it's async.
+    Call `handler` with `message`, awaiting it if it's async.
 
     How an async adapter calls a registered handler, sync or async, such as on each delivery.
 
     :param handler: The registered handler.
+    :param message: The message being handled.
     :returns: What the handler returns, or resolves to.
     """
     if handler.is_async:
-        return await handler(*args)
-    return handler(*args)
+        return await handler(message)
+    return handler(message)

@@ -192,12 +192,12 @@ class RabbitMQPublisher:
         if self._routes.setdefault(event, config) != config:
             raise ValueError(_ROUTE_TAKEN.format(event.name))
 
-    async def emit[S](
+    async def emit[Payload](
         self,
-        event: PubSub[S, Any],
-        payload: S | Encoded,
+        event: PubSub[Payload, Any],
+        payload: Payload | Encoded,
         *,
-        hooks: Hooks[S, None] | None = None,
+        hooks: Hooks[Payload, None] | None = None,
         envelope: Envelope | None = None,
         headers: Mapping[str, object] | None = None,
     ) -> None:
@@ -263,13 +263,13 @@ class RabbitMQPublisher:
             raise UnroutableError(_UNROUTABLE.format(config.exchange, config.routing_key)) from exc
 
     @overload
-    def bind[**P, S](
+    def bind[**P, Payload](
         self,
-        event: PubSub[S, Literal[False]],
+        event: PubSub[Payload, Literal[False]],
         *,
-        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+        factory: Callable[P, Payload] | Callable[P, Awaitable[Payload]],
         config: RabbitMQConfig,
-        hooks: Hooks[S, None] | None = None,
+        hooks: Hooks[Payload, None] | None = None,
     ) -> Callable[P, Awaitable[None]]: ...
     @overload
     def bind(
@@ -281,14 +281,14 @@ class RabbitMQPublisher:
         hooks: Hooks[NoPayload, None] | None = None,
     ) -> Callable[[], Awaitable[None]]: ...
     @overload
-    def bind[S](
+    def bind[Payload](
         self,
-        event: PubSub[S, Literal[False]],
+        event: PubSub[Payload, Literal[False]],
         *,
         factory: None = None,
         config: RabbitMQConfig,
-        hooks: Hooks[S, None] | None = None,
-    ) -> Callable[[S], Awaitable[None]]: ...
+        hooks: Hooks[Payload, None] | None = None,
+    ) -> Callable[[Payload], Awaitable[None]]: ...
 
     def bind(
         self,

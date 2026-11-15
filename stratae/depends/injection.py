@@ -95,15 +95,17 @@ def Depends(dependency: Callable[..., Any]) -> Provider:  # noqa: S1542
 
 
 @overload
-def inject[F: Callable[..., Any]](*, sig: F) -> Callable[[Callable[..., Any]], F]: ...
+def inject[Declared: Callable[..., Any]](
+    *, sig: Declared
+) -> Callable[[Callable[..., Any]], Declared]: ...
 
 
 @overload
-def inject[R](func: Callable[..., R]) -> Callable[..., R]: ...
+def inject[Result](func: Callable[..., Result]) -> Callable[..., Result]: ...
 
 
 @overload
-def inject[R]() -> Callable[[Callable[..., R]], Callable[..., R]]: ...
+def inject[Result]() -> Callable[[Callable[..., Result]], Callable[..., Result]]: ...
 
 
 def inject(
@@ -115,7 +117,7 @@ def inject(
     Fill a function's injected parameters from their providers at call time.
 
     Callers don't pass injected parameters. The decorated function is typed as
-    `Callable[..., R]`; pass `sig` to give type checkers a precise signature.
+    `Callable[..., Result]`; pass `sig` to give type checkers a precise signature.
 
     :param func: The function to wrap, when used as a bare `@inject`.
     :param sig: Stub function whose signature type checkers see instead. No runtime effect.
@@ -135,10 +137,10 @@ def inject(
     return decorator(func)
 
 
-def _resolve_function[**P, R](
-    func: Callable[P, R],
+def _resolve_function[**P, Result](
+    func: Callable[P, Result],
     _resolving: set[Callable[..., Any]] | None = None,
-) -> Callable[..., R]:
+) -> Callable[..., Result]:
     """Resolve a function to its dependencies."""
     if getattr(func, "__stratae_resolved__", False):
         return func

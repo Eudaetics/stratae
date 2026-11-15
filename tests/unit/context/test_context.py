@@ -200,7 +200,7 @@ def test_context_constructor_default_ignore_raises():
     with pytest.raises(
         ValueError, match=re.escape("IGNORE_DEFAULT cannot be used as a constructor default.")
     ):
-        Context[int]("test", default=IGNORE_DEFAULT)
+        Context("test", default=IGNORE_DEFAULT)
 
 
 def test_context_get_unset_raises():

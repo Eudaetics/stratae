@@ -344,11 +344,11 @@ def _claimable(
 
 
 @dataclass(frozen=True, slots=True)
-class OutboxConfig[C]:
+class OutboxConfig[Target]:
     """
     How an outbox binding is routed when it's relayed.
 
-    `C` is the publisher's routing config, such as a
+    `Target` is the publisher's routing config, such as a
     {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.config.RabbitMQConfig>`. An immutable
     value: configs with the same fields are equal.
 
@@ -358,7 +358,7 @@ class OutboxConfig[C]:
     {py:class}`Routed <stratae.events.protocols.Routed>` describes.
     """
 
-    config: C
+    config: Target
     """The publisher's routing config, used by the relay."""
     _: KW_ONLY
     route: str | None = None
@@ -517,13 +517,13 @@ class OutboxProducer:
         return partial(self._write, name, serializer or self._serializer, address)
 
     @overload
-    def bind[**P, S](
+    def bind[**P, Payload](
         self,
-        event: PubSub[S, Literal[False]],
+        event: PubSub[Payload, Literal[False]],
         *,
-        factory: Callable[P, S] | Callable[P, Awaitable[S]],
+        factory: Callable[P, Payload] | Callable[P, Awaitable[Payload]],
         config: OutboxConfig[Any],
-        hooks: Hooks[S, None] | None = None,
+        hooks: Hooks[Payload, None] | None = None,
     ) -> Callable[P, Awaitable[None]]: ...
     @overload
     def bind(
@@ -535,14 +535,14 @@ class OutboxProducer:
         hooks: Hooks[NoPayload, None] | None = None,
     ) -> Callable[[], Awaitable[None]]: ...
     @overload
-    def bind[S](
+    def bind[Payload](
         self,
-        event: PubSub[S, Literal[False]],
+        event: PubSub[Payload, Literal[False]],
         *,
         factory: None = None,
         config: OutboxConfig[Any],
-        hooks: Hooks[S, None] | None = None,
-    ) -> Callable[[S], Awaitable[None]]: ...
+        hooks: Hooks[Payload, None] | None = None,
+    ) -> Callable[[Payload], Awaitable[None]]: ...
 
     def bind(
         self,
@@ -568,8 +568,12 @@ class OutboxProducer:
         route = self._route(event, config)
         return abind(event, partial(self._emit_on, route), factory=factory, hooks=hooks)
 
-    async def emit[S](
-        self, event: PubSub[S, Any], payload: S, *, hooks: Hooks[S, None] | None = None
+    async def emit[Payload](
+        self,
+        event: PubSub[Payload, Any],
+        payload: Payload,
+        *,
+        hooks: Hooks[Payload, None] | None = None,
     ) -> None:
         """
         Write a payload to the outbox as a record, on the event's route.
@@ -587,13 +591,13 @@ class OutboxProducer:
             raise LookupError(_NO_ROUTE.format(event.name))
         await self._emit_on(route, event, payload, hooks=hooks)
 
-    def _emit_on[S](
+    def _emit_on[Payload](
         self,
         route: _Route,
-        event: EventType[S, Any, Any, Any],
-        payload: S,
+        event: EventType[Payload, Any, Any, Any],
+        payload: Payload,
         *,
-        hooks: Hooks[S, Any] | None = None,
+        hooks: Hooks[Payload, Any] | None = None,
     ) -> Coroutine[Any, Any, None]:
         """
         Write a payload to the outbox on a route that's already registered.
@@ -648,8 +652,8 @@ class OutboxPublisher(Protocol):
         event: Any,
         payload: Any,
         *,
-        envelope: Envelope | None = ...,
-        headers: Mapping[str, object] | None = ...,
+        envelope: Envelope | None = None,
+        headers: Mapping[str, object] | None = None,
     ) -> Awaitable[Any]:
         """
         Publish a payload under `envelope` with `headers`, returning once the broker has it.

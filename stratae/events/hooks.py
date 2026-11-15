@@ -5,7 +5,7 @@ Observe an event being published or handled, with hooks passed where it meets a 
 `success` or `failure`, then `complete`. Pass them to a bus's `emit` or `bind` as `hooks=`,
 around each emit, or to its `handle`, around that handler. Both run inside the emission's
 envelope. Every hook takes the event first, so one hook can serve many events. Hooks are
-typed by the event they're passed with: `S` is its payload and `R` the reply they see.
+typed by the event they're passed with: its payload, and the result they see.
 
 - `before(event, payload)` runs first, and may stop the call: if one raises, nothing is
   dispatched and the error propagates.
@@ -106,21 +106,21 @@ type _Returns = Awaitable[None] | None
 
 
 @dataclass(frozen=True, slots=True)
-class Hooks[S, R]:
+class Hooks[Payload, Result]:
     """
     Hooks run around publishing or handling an event, sync or async.
 
-    `S` is the event's payload type and `R` the reply the hooks see: what emitting returns
-    for publish hooks, what the handler returns for handle hooks.
+    Typed by the event's payload and the result the hooks see: what emitting returns for publish
+    hooks, and what the handler returns for handle hooks.
     """
 
-    before: tuple[Callable[["AnyEvent", S], _Returns], ...] = ()
+    before: tuple[Callable[["AnyEvent", Payload], _Returns], ...] = ()
     """Run before the call; one raising stops it."""
-    success: tuple[Callable[["AnyEvent", S, R], _Returns], ...] = ()
+    success: tuple[Callable[["AnyEvent", Payload, Result], _Returns], ...] = ()
     """Run with the reply after the call returns; errors are logged."""
-    failure: tuple[Callable[["AnyEvent", S, Exception], _Returns], ...] = ()
+    failure: tuple[Callable[["AnyEvent", Payload, Exception], _Returns], ...] = ()
     """Run with the error after the call raises an `Exception`; errors are logged."""
-    complete: tuple[Callable[["AnyEvent", S, BaseException | None], _Returns], ...] = ()
+    complete: tuple[Callable[["AnyEvent", Payload, BaseException | None], _Returns], ...] = ()
     """Run last, always, with the call's error or `None`; errors are logged."""
     has_async: bool = field(init=False, repr=False, compare=False)
     """Whether any hook is async, so a sync bus can refuse them."""
@@ -164,14 +164,14 @@ def _observe(hooks: tuple[Callable[..., _Returns], ...], event: Any, *args: Any)
             _log.exception("hook %r for event '%s' failed", hook, event.name)
 
 
-def run_hooks[**P, T](
+def run_hooks[**P, Result](
     hooks: Hooks[Any, Any],
     event: Any,
     payload: Any,
-    call: Callable[P, T],
+    call: Callable[P, Result],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> T:
+) -> Result:
     """
     Run `call(*args, **kwargs)` inside sync hooks, returning or raising what it does.
 
@@ -222,14 +222,14 @@ async def _observe_async(
         await asyncio.gather(*(_observe_one(hook, event, *args) for hook in hooks))
 
 
-async def run_hooks_async[**P, T](
+async def run_hooks_async[**P, Result](
     hooks: Hooks[Any, Any],
     event: Any,
     payload: Any,
-    call: Callable[P, Awaitable[T]],
+    call: Callable[P, Awaitable[Result]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> T:
+) -> Result:
     """
     Await `call(*args, **kwargs)` inside hooks, sync or async, returning or raising its result.
 

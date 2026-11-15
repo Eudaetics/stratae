@@ -87,14 +87,14 @@ class _Held:
         return self.value
 
 
-class _Override[T]:
+class _Override[Result]:
     """A provider's replacement value, applied while the context manager is entered."""
 
     __slots__ = ("dep", "tokens", "value")
 
-    def __init__(self, dep: Provider, value: T) -> None:
+    def __init__(self, dep: Provider, value: Result) -> None:
         self.dep: Provider = dep
-        self.value: T = value
+        self.value: Result = value
         self.tokens: list[Token[Any]] = []
 
     def __enter__(self) -> None:
@@ -109,7 +109,7 @@ class _Override[T]:
         self.tokens.pop()
 
 
-class _Target[T]:
+class _Target[Result]:
     """A provider named by {py:func}`override`, waiting for its replacement value."""
 
     __slots__ = ("_dep",)
@@ -117,7 +117,7 @@ class _Target[T]:
     def __init__(self, dep: Provider) -> None:
         self._dep = dep
 
-    def to(self, value: T) -> _Override[T]:
+    def to(self, value: Result) -> _Override[Result]:
         """
         Give the value to inject in place of the provider.
 
@@ -129,9 +129,9 @@ class _Target[T]:
 
 
 @overload
-def override[T](func: Callable[..., Awaitable[T]]) -> _Target[T]: ...
+def override[Result](func: Callable[..., Awaitable[Result]]) -> _Target[Result]: ...
 @overload
-def override[T](func: Callable[..., T]) -> _Target[T]: ...
+def override[Result](func: Callable[..., Result]) -> _Target[Result]: ...
 def override(func: Callable[..., Any]) -> _Target[Any]:
     """
     Name a provider to replace temporarily; `.to(value)` gives the replacement.
