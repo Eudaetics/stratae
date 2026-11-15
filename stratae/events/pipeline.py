@@ -28,7 +28,14 @@ from uuid import UUID
 from stratae.callables import is_async_callable
 from stratae.events.envelope import ENVELOPE_HEADERS, Envelope
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
-from stratae.events.middleware import NO_HEADERS, HandleCall, PublishCall, from_fields
+from stratae.events.middleware import (
+    NO_HEADERS,
+    HandleCall,
+    HandleMiddleware,
+    PublishCall,
+    PublishMiddleware,
+    from_fields,
+)
 from stratae.events.protocols import AnyEvent
 from stratae.middleware import chain
 
@@ -132,7 +139,7 @@ class Publishing:
 
     __slots__ = ("bare", "chained", "middleware", "new_id", "reserved")
 
-    middleware: tuple[Callable[..., object], ...]
+    middleware: tuple[PublishMiddleware, ...]
     """The adapter's publish middleware, outermost first."""
     chained: Callable[[PublishCall, _Sending], Any]
     """The middleware composed around sending, built once."""
@@ -145,7 +152,7 @@ class Publishing:
 
     def __init__(
         self,
-        middleware: tuple[Callable[..., object], ...] = (),
+        middleware: tuple[PublishMiddleware, ...] = (),
         new_id: Callable[[], UUID] | None = None,
         reserved: Collection[str] = ENVELOPE_HEADERS,
         *,
@@ -333,7 +340,7 @@ def _refuse_relabelled(seen: HandleCall, received: HandleCall) -> None:
 
 
 def _handled(
-    middleware: tuple[Callable[..., object], ...], call: Callable[[HandleCall], Any]
+    middleware: tuple[HandleMiddleware, ...], call: Callable[[HandleCall], Any]
 ) -> Callable[[HandleCall], Any]:
     """Return `call` run inside handle middleware, sync or async, which sees the message."""
 
@@ -371,7 +378,7 @@ def wrap_handler(
     event: AnyEvent,
     fn: Callable[..., Any],
     hooks: Hooks[Any, Any] | None,
-    middleware: tuple[Callable[..., object], ...],
+    middleware: tuple[HandleMiddleware, ...],
     asynchronous: bool,
 ) -> tuple[Callable[[HandleCall], Any], bool]:
     """

@@ -188,10 +188,10 @@ class _Gather[S, R](Immutable):
 
 
 def _gather_replies[S, R](
-    event: _Gather[S, R], handlers: Collection[Handler[[S], Any, R]], payload: S
+    event: _Gather[S, R], handlers: Collection[Handler[Any, R]], message: HandleCall
 ) -> list[R]:
     """Dispatch a _Gather event: call every handler and collect the replies."""
-    return [handler(payload) for handler in handlers]
+    return [handler(message) for handler in handlers]
 
 
 class _Command(Request[_BookQuery, _BookResult, Literal[False]]):
@@ -631,10 +631,10 @@ def test_dispatcher_receives_registered_handlers_as_given():
     Then: The dispatcher should receive the same Handlers that handlers returns
     """
     # Arrange
-    received: list[Collection[Handler[Any, Any, Any]]] = []
+    received: list[Collection[Handler[Any, Any]]] = []
 
     def record[S](
-        event: PubSub[S, Any], handlers: Collection[Handler[[S], Any, object]], payload: S
+        event: PubSub[S, Any], handlers: Collection[Handler[Any, object]], message: HandleCall
     ) -> None:
         received.append(handlers)
 
@@ -661,7 +661,7 @@ def test_handler_registered_during_emit_waits_for_next_emit(bus: DirectBus):
     """
     # Arrange
     late = Mock()
-    registered: list[Handler[Any, Any, Any]] = []
+    registered: list[Handler[Any, Any]] = []
 
     def register_late(_: object) -> None:
         if not registered:
@@ -1174,7 +1174,7 @@ def test_dispatchers_argument_replaces_default():
 
     def record[S](
         event: PubSub[S, Any],
-        handlers: Collection[Handler[[HandleCall], Any, object]],
+        handlers: Collection[Handler[Any, object]],
         message: HandleCall,
     ) -> None:
         dispatched.append(message.payload)

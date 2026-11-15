@@ -19,7 +19,7 @@ from stratae.lifecycle.exceptions import (
     ResourceDidNotYieldError,
 )
 
-Contexts = list[tuple[bool, Any, Callable[[Any, BaseException | None], Any]]]
+Entered = list[tuple[bool, Any, Callable[[Any, BaseException | None], Any]]]
 
 
 def exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) -> bool:
@@ -154,9 +154,9 @@ async def enter_async_generator[T](
     return result
 
 
-def close(contexts: Contexts, exc: BaseException | None = None) -> bool:
+def close(entered: Entered, exc: BaseException | None = None) -> bool:
     """
-    Exit every resource in `contexts`, last entered first, starting from the caller's exception.
+    Exit every resource in `entered`, last entered first, starting from the caller's exception.
 
     Each exit is handed what's propagating: the caller's exception, `None` once an exit
     suppressed it, or the error an exit raised in its place. The resources left after an exit
@@ -168,33 +168,33 @@ def close(contexts: Contexts, exc: BaseException | None = None) -> bool:
     :raises BaseException: The last error an exit raised.
     """
     received = exc
-    while contexts:
-        _, gen, leave = contexts.pop()
+    while entered:
+        _, gen, leave = entered.pop()
         try:
             if leave(gen, exc):
                 exc = None
         except BaseException as new_exc:
-            if close(contexts, new_exc):
+            if close(entered, new_exc):
                 return received is not None
             raise
     return received is not None and exc is None
 
 
-async def aclose(contexts: Contexts, exc: BaseException | None = None) -> bool:
+async def aclose(entered: Entered, exc: BaseException | None = None) -> bool:
     """
-    Exit every resource in `contexts`, as {py:func}`close` does, awaiting async exits.
+    Exit every resource in `entered`, as {py:func}`close` does, awaiting async exits.
 
     :returns: Whether the caller's exception was suppressed.
     :raises BaseException: The last error an exit raised.
     """
     received = exc
-    while contexts:
-        is_async, gen, leave = contexts.pop()
+    while entered:
+        is_async, gen, leave = entered.pop()
         try:
             if await leave(gen, exc) if is_async else leave(gen, exc):
                 exc = None
         except BaseException as new_exc:
-            if await aclose(contexts, new_exc):
+            if await aclose(entered, new_exc):
                 return received is not None
             raise
     return received is not None and exc is None

@@ -100,9 +100,9 @@ class Drop:
         return "message dropped"
 
 
-def failure_action[G: FailureAction](
-    backoff: Backoff, give_up: G, failures: int, *, retryable: bool
-) -> Retry | G:
+def failure_action[GiveUp: FailureAction](
+    backoff: Backoff, give_up: GiveUp, failures: int, *, retryable: bool
+) -> Retry | GiveUp:
     """
     Return what to do with a message whose handling failed.
 

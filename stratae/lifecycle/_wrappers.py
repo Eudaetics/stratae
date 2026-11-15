@@ -56,7 +56,7 @@ from stratae.lifecycle.exceptions import (
 )
 
 
-class Cached[**P, T, U](Protocol):
+class Cached[**P, Value, Uncached](Protocol):
     """
     A function returned by `Scope.cache` or `AsyncScope.cache`.
 
@@ -64,11 +64,11 @@ class Cached[**P, T, U](Protocol):
     original function, callable without an active scope.
     """
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Value:
         """Return the cached value for the current scope activation."""
         ...
 
-    def uncached(self, *args: P.args, **kwargs: P.kwargs) -> U:
+    def uncached(self, *args: P.args, **kwargs: P.kwargs) -> Uncached:
         """Call the original function, bypassing the cache."""
         ...
 
@@ -670,12 +670,12 @@ def _create_wrapper(
     return wrapper
 
 
-def create_sync_wrapper[**P, T](
-    func: Callable[P, T],
+def create_sync_wrapper[**P, Value](
+    func: Callable[P, Value],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[P, T, T]:
+) -> Cached[P, Value, Value]:
     """
     Create a sync wrapper that caches `func`'s result per scope activation.
 
@@ -685,15 +685,17 @@ def create_sync_wrapper[**P, T](
     :param ignore_params: Cache one value per activation regardless of arguments.
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
-    return cast(Cached[P, T, T], _create_wrapper(func, store, cache_key, ignore_params, _CALL))
+    return cast(
+        Cached[P, Value, Value], _create_wrapper(func, store, cache_key, ignore_params, _CALL)
+    )
 
 
-def create_async_wrapper[**P, T](
-    func: Callable[P, Awaitable[T]],
+def create_async_wrapper[**P, Value](
+    func: Callable[P, Awaitable[Value]],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[P, Awaitable[T], Awaitable[T]]:
+) -> Cached[P, Awaitable[Value], Awaitable[Value]]:
     """
     Create an async wrapper that caches `func`'s result per scope activation.
 
@@ -705,17 +707,17 @@ def create_async_wrapper[**P, T](
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
-        Cached[P, Awaitable[T], Awaitable[T]],
+        Cached[P, Awaitable[Value], Awaitable[Value]],
         _create_wrapper(func, store, cache_key, ignore_params, _AWAIT),
     )
 
 
-def create_generator_wrapper[**P, T](
-    func: Callable[P, Generator[T, Any, Any]],
+def create_generator_wrapper[**P, Value](
+    func: Callable[P, Generator[Value, Any, Any]],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[P, T, Generator[T, Any, Any]]:
+) -> Cached[P, Value, Generator[Value, Any, Any]]:
     """
     Create a wrapper that enters a generator function's generator and caches its yielded value.
 
@@ -728,17 +730,17 @@ def create_generator_wrapper[**P, T](
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
-        Cached[P, T, Generator[T, Any, Any]],
+        Cached[P, Value, Generator[Value, Any, Any]],
         _create_wrapper(func, store, cache_key, ignore_params, _ENTER_GENERATOR),
     )
 
 
-def create_async_generator_wrapper[**P, T](
-    func: Callable[P, AsyncGenerator[T, Any]],
+def create_async_generator_wrapper[**P, Value](
+    func: Callable[P, AsyncGenerator[Value, Any]],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[P, Awaitable[T], AsyncGenerator[T, Any]]:
+) -> Cached[P, Awaitable[Value], AsyncGenerator[Value, Any]]:
     """
     Create an async wrapper that enters an async generator and caches its yielded value.
 
@@ -753,7 +755,7 @@ def create_async_generator_wrapper[**P, T](
         attribute.
     """
     return cast(
-        Cached[P, Awaitable[T], AsyncGenerator[T, Any]],
+        Cached[P, Awaitable[Value], AsyncGenerator[Value, Any]],
         _create_wrapper(func, store, cache_key, ignore_params, _ENTER_ASYNC_GENERATOR),
     )
 

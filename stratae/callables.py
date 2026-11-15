@@ -65,9 +65,9 @@ def unwrap_partial(fn: Callable[..., Any]) -> Callable[..., Any]:
     return target
 
 
-def is_async_callable[**P, R](
-    fn: Callable[P, R] | Callable[P, Awaitable[R]],
-) -> TypeGuard[Callable[P, Awaitable[R]]]:
+def is_async_callable[**P, Result](
+    fn: Callable[P, Result] | Callable[P, Awaitable[Result]],
+) -> TypeGuard[Callable[P, Awaitable[Result]]]:
     """
     Tell whether calling `fn` gives a coroutine.
 

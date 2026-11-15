@@ -230,35 +230,35 @@ def all_of(*checks: _Check) -> _Check:
     return _combined(checks, "all")
 
 
-def _wrap_async[**P, R](
-    fn: Callable[P, Awaitable[R]], checks: tuple[_Check, ...], mode: CheckMode
-) -> Callable[P, Awaitable[R]]:
+def _wrap_async[**P, Result](
+    fn: Callable[P, Awaitable[Result]], checks: tuple[_Check, ...], mode: CheckMode
+) -> Callable[P, Awaitable[Result]]:
     @wraps(fn)
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result:
         await check_async(*checks, mode=mode)
         return await fn(*args, **kwargs)
 
     return wrapper
 
 
-def _wrap_sync[**P, R](
-    fn: Callable[P, R], checks: tuple[_Check, ...], mode: CheckMode
-) -> Callable[P, R]:
+def _wrap_sync[**P, Result](
+    fn: Callable[P, Result], checks: tuple[_Check, ...], mode: CheckMode
+) -> Callable[P, Result]:
     async_checks = [guard for guard in checks if is_async_callable(guard)]
     if async_checks:
         raise AsyncCheckOnSyncError(fn, len(async_checks))
 
     @wraps(fn)
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result:
         check(*checks, mode=mode)
         return fn(*args, **kwargs)
 
     return wrapper
 
 
-def require[**P, R](
+def require[**P, Result](
     *checks: _Check, mode: CheckMode = "all"
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
+) -> Callable[[Callable[P, Result]], Callable[P, Result]]:
     """
     Run checks before the decorated function.
 
@@ -266,7 +266,7 @@ def require[**P, R](
     checks, the function is returned unchanged.
 
     :param P: Parameter specification of the decorated function.
-    :param R: Return type of the decorated function.
+    :param Result: Return type of the decorated function.
     :param checks: Zero-argument callables to run before the function.
     :param mode: `"all"`, `"gather"`, or `"any"`; see the module docs. The function is only
         called if the checks pass.
@@ -275,16 +275,16 @@ def require[**P, R](
     """
 
     @overload
-    def decorator(fn: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]: ...
+    def decorator(fn: Callable[P, Awaitable[Result]]) -> Callable[P, Awaitable[Result]]: ...
     @overload
-    def decorator(fn: Callable[P, R]) -> Callable[P, R]: ...
+    def decorator(fn: Callable[P, Result]) -> Callable[P, Result]: ...
     def decorator(
-        fn: Callable[P, R] | Callable[P, Awaitable[R]],
-    ) -> Callable[P, R] | Callable[P, Awaitable[R]]:
+        fn: Callable[P, Result] | Callable[P, Awaitable[Result]],
+    ) -> Callable[P, Result] | Callable[P, Awaitable[Result]]:
         if not checks:
             return fn
         if is_async_callable(fn):
             return _wrap_async(fn, checks, mode)
-        return cast(Callable[P, R], _wrap_sync(fn, checks, mode))
+        return cast(Callable[P, Result], _wrap_sync(fn, checks, mode))
 
     return decorator

@@ -51,7 +51,7 @@ class _Registration:
     def __init__(
         self,
         event: PubSub[Any, Any],
-        handler: Handler[[HandleCall], RabbitMQConsumeConfig, Any],
+        handler: Handler[RabbitMQConsumeConfig, Any],
         deserializer: Deserializer | None,
     ) -> None:
         self.event = event
@@ -64,20 +64,20 @@ type _Returns = Awaitable[None] | None
 """What a pub/sub handler returns: `None`, or an awaitable resolving to it."""
 
 
-class _ConsumeDecorator[S: Any](Protocol):
+class _ConsumeDecorator[Payload: Any](Protocol):
     """Decorator form of `handle`, returning the Handler."""
 
-    def __call__[R: _Returns](
-        self, fn: Callable[[S], R]
-    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, R]: ...
+    def __call__[Result: _Returns](
+        self, fn: Callable[[Payload], Result]
+    ) -> Handler[RabbitMQConsumeConfig, Result]: ...
 
 
 class _SignalConsumeDecorator(Protocol):
     """Decorator form of `handle` for a schema-less event, returning the Handler."""
 
-    def __call__[R: _Returns](
-        self, fn: Callable[[], R]
-    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, R]: ...
+    def __call__[Result: _Returns](
+        self, fn: Callable[[], Result]
+    ) -> Handler[RabbitMQConsumeConfig, Result]: ...
 
 
 class RabbitMQConsumer:
@@ -145,9 +145,7 @@ class RabbitMQConsumer:
         self._prefetch_count = prefetch_count
         self._drain_timeout = drain_timeout
         self._link = Link("consumer", url, reconnect, self._resume, self._forget_consumers)
-        self._registrations: dict[
-            Handler[[HandleCall], RabbitMQConsumeConfig, Any], _Registration
-        ] = {}
+        self._registrations: dict[Handler[RabbitMQConsumeConfig, Any], _Registration] = {}
         self._starting: set[asyncio.Task[None]] = set()
         self._in_flight: set[asyncio.Task[Any]] = set()
 
@@ -235,15 +233,15 @@ class RabbitMQConsumer:
             )
 
     @overload
-    def handle[R: _Returns](
+    def handle[Result: _Returns](
         self,
         event: PubSub[NoPayload, Literal[True]],
-        fn: Callable[[], R],
+        fn: Callable[[], Result],
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
         hooks: Hooks[NoPayload, None] | None = None,
-    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, R]: ...
+    ) -> Handler[RabbitMQConsumeConfig, Result]: ...
 
     @overload
     def handle(
@@ -257,26 +255,26 @@ class RabbitMQConsumer:
     ) -> _SignalConsumeDecorator: ...
 
     @overload
-    def handle[S, R: _Returns](
+    def handle[Payload, Result: _Returns](
         self,
-        event: PubSub[S, Literal[False]],
-        fn: Callable[[S], R],
+        event: PubSub[Payload, Literal[False]],
+        fn: Callable[[Payload], Result],
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
-        hooks: Hooks[S, None] | None = None,
-    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, R]: ...
+        hooks: Hooks[Payload, None] | None = None,
+    ) -> Handler[RabbitMQConsumeConfig, Result]: ...
 
     @overload
-    def handle[S](
+    def handle[Payload](
         self,
-        event: PubSub[S, Literal[False]],
+        event: PubSub[Payload, Literal[False]],
         fn: None = None,
         *,
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
-        hooks: Hooks[S, None] | None = None,
-    ) -> _ConsumeDecorator[S]: ...
+        hooks: Hooks[Payload, None] | None = None,
+    ) -> _ConsumeDecorator[Payload]: ...
 
     def handle(
         self,
@@ -286,9 +284,7 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
         hooks: Hooks[Any, Any] | None = None,
-    ) -> (
-        Handler[Any, RabbitMQConsumeConfig, Any] | _ConsumeDecorator[Any] | _SignalConsumeDecorator
-    ):
+    ) -> Handler[RabbitMQConsumeConfig, Any] | _ConsumeDecorator[Any] | _SignalConsumeDecorator:
         """
         Register a handler for an event, as a decorator or direct call.
 
@@ -309,12 +305,12 @@ class RabbitMQConsumer:
         if fn is not None:
             return self._register(event, fn, config, deserializer, hooks)
 
-        def decorator(fn: Callable[..., Any]) -> Handler[Any, RabbitMQConsumeConfig, Any]:
+        def decorator(fn: Callable[..., Any]) -> Handler[RabbitMQConsumeConfig, Any]:
             return self._register(event, fn, config, deserializer, hooks)
 
         return decorator
 
-    async def remove(self, handler: Handler[[HandleCall], RabbitMQConsumeConfig, Any]) -> None:
+    async def remove(self, handler: Handler[RabbitMQConsumeConfig, Any]) -> None:
         """
         Cancel and remove a registered handler.
 
@@ -335,10 +331,10 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None,
         hooks: Hooks[Any, Any] | None,
-    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, Any]:
+    ) -> Handler[RabbitMQConsumeConfig, Any]:
         """Wrap fn and its hooks as a Handler, consuming immediately if connected."""
         call, is_async = wrap_handler(event, fn, hooks, self._handle_middleware, asynchronous=True)
-        handler: Handler[[HandleCall], RabbitMQConsumeConfig, Any] = Handler(call, config, is_async)
+        handler: Handler[RabbitMQConsumeConfig, Any] = Handler(call, config, is_async)
         registration = _Registration(event, handler, deserializer)
         self._registrations[handler] = registration
         channel = self._link.channel

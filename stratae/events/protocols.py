@@ -25,14 +25,14 @@ from stratae.events.hooks import Hooks
 from stratae.events.patterns import NoPayload, PubSub
 
 
-class EventType[S, EmitR, HandleR, Signal: bool](Protocol):
+class EventType[Payload, EmitResult, HandleResult, Signal: bool](Protocol):
     """
     Structural protocol for an event pattern; buses type against it.
 
     Implemented by {py:class}`Request <stratae.events.patterns.Request>` and
-    {py:class}`PubSub <stratae.events.patterns.PubSub>`. `S` is the payload type, `EmitR`
-    what emitting returns, `HandleR` what a handler returns, and `Signal` is `Literal[True]`
-    for a payload-less event.
+    {py:class}`PubSub <stratae.events.patterns.PubSub>`. It's typed by its payload, what emitting
+    returns, what a handler returns, and whether it's a signal: `Literal[True]` for a
+    payload-less event.
 
     The set of patterns is open: an event is data, and each adapter decides which patterns it
     delivers. The direct buses dispatch any pattern they have a dispatcher for, and take more
@@ -40,48 +40,51 @@ class EventType[S, EmitR, HandleR, Signal: bool](Protocol):
     Either refuses an unsupported event when it's registered or bound. Adapters match a
     pattern by class, so a subclass of a pattern is the same pattern.
 
-    `emit_returns` and `handler_returns` carry `EmitR` and `HandleR` for type checking; a
-    pattern can expose friendlier names, such as `Request.reply`. The members are plain
-    attributes rather than read-only properties: read-only members would let a type checker
-    widen `S`, `EmitR` and `HandleR` until a mismatched handler fits. Events are immutable at
-    runtime instead.
+    `emit_returns` and `handler_returns` carry the two results for type checking; a pattern can
+    expose friendlier names, such as `Request.reply`. The members are plain attributes rather
+    than read-only properties: read-only members would let a type checker widen the payload and
+    result types until a mismatched handler fits. Events are immutable at runtime instead.
     """
 
     name: str
     """The event's identifier."""
-    schema: type[S]
+    schema: type[Payload]
     """The payload type, or {py:class}`NoPayload <stratae.events.patterns.NoPayload>`."""
     is_signal: Signal
     """Whether the event carries no payload."""
-    emit_returns: type[EmitR]
+    emit_returns: type[EmitResult]
     """What emitting the event returns."""
-    handler_returns: type[HandleR]
+    handler_returns: type[HandleResult]
     """What a handler for the event returns."""
 
 
 type AnyEvent = EventType[Any, Any, Any, Any]
 """Any event, of any pattern."""
 
-type PayloadEvent[S, EmitR, HandleR] = EventType[S, EmitR, HandleR, Literal[False]]
-"""An event carrying a payload of type `S`."""
+type PayloadEvent[Payload, EmitResult, HandleResult] = EventType[
+    Payload, EmitResult, HandleResult, Literal[False]
+]
+"""An event carrying a payload."""
 
-type SignalEvent[EmitR, HandleR] = EventType[NoPayload, EmitR, HandleR, Literal[True]]
+type SignalEvent[EmitResult, HandleResult] = EventType[
+    NoPayload, EmitResult, HandleResult, Literal[True]
+]
 """An event carrying no payload."""
 
 
 @runtime_checkable
-class EmitCallable[Ev, S, H, R](Protocol):
+class EmitCallable[Event, Payload, HookType, Result](Protocol):
     """
     Structural protocol for one emitter, shaped like {py:meth}`Producer.emit`.
 
-    `Ev` is the event type it takes, `S` its payload type, `H` the hooks it takes and `R` what
-    it returns. Binding an event to it checks the emitter takes that event. So an emitter for
+    It's typed by the event it takes, its payload, the hooks it takes and what it returns.
+    Binding an event to it checks the emitter takes that event. So an emitter for
     PubSub events only, such as a RabbitMQ publisher's
     {py:meth}`emit <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher.emit>`, binds
     PubSub events and refuses a request.
     """
 
-    def __call__(self, event: Ev, payload: S, *, hooks: H | None = None) -> R:
+    def __call__(self, event: Event, payload: Payload, *, hooks: HookType | None = None) -> Result:
         """
         Emit a payload on the event's route.
 
@@ -104,12 +107,12 @@ class Producer(Protocol):
     holds a route for each event, registered by `bind` or by its own `route` method.
     """
 
-    def emit[S](
+    def emit[Payload](
         self,
-        event: EventType[S, Any, Any, Any],
-        payload: S,
+        event: EventType[Payload, Any, Any, Any],
+        payload: Payload,
         *,
-        hooks: Hooks[S, Any] | None = None,
+        hooks: Hooks[Payload, Any] | None = None,
     ) -> Any:
         """
         Emit a payload on the event's route.
@@ -136,12 +139,12 @@ class PubSubProducer(Protocol):
     {py:class}`OutboxProducer <stratae.events.outbox.OutboxProducer>` match only this one.
     """
 
-    def emit[S](
+    def emit[Payload](
         self,
-        event: PubSub[S, Any],
-        payload: S,
+        event: PubSub[Payload, Any],
+        payload: Payload,
         *,
-        hooks: Hooks[S, None] | None = None,
+        hooks: Hooks[Payload, None] | None = None,
     ) -> Any:
         """
         Emit a payload on the event's route.
@@ -205,14 +208,14 @@ class Consumer(Protocol):
         ...
 
 
-class Serializer[T](Protocol):
+class Serializer[Payload](Protocol):
     """
     Structural protocol for a payload serializer: an object to bytes.
 
     An adapter that sends payloads over a transport takes one, such as `msgspec.json.encode`.
     """
 
-    def __call__(self, obj: T, /) -> bytes:
+    def __call__(self, obj: Payload, /) -> bytes:
         """
         Serialize `obj` to bytes.
 
@@ -245,7 +248,7 @@ class Deserializer(Protocol):
     with the payload type of the event being handled.
     """
 
-    def __call__[S](self, data: bytes, /, *, type: type[S]) -> S:
+    def __call__[Payload](self, data: bytes, /, *, type: type[Payload]) -> Payload:
         """
         Deserialize `data` into an instance of `type`.
 

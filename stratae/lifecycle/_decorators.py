@@ -91,12 +91,12 @@ class CacheDecorator(_CacheDecorator):
     __slots__ = ()
 
     @overload
-    def __call__[**P, T](
-        self, func: Callable[P, Generator[T, Any, Any]]
-    ) -> Cached[P, T, Generator[T, Any, Any]]: ...
+    def __call__[**P, Value](
+        self, func: Callable[P, Generator[Value, Any, Any]]
+    ) -> Cached[P, Value, Generator[Value, Any, Any]]: ...
 
     @overload
-    def __call__[**P, T](self, func: Callable[P, T]) -> Cached[P, T, T]: ...
+    def __call__[**P, Value](self, func: Callable[P, Value]) -> Cached[P, Value, Value]: ...
 
     def __call__(self, func: Callable[..., Any]) -> Cached[..., Any, Any]:
         """
@@ -118,22 +118,22 @@ class AsyncCacheDecorator(_CacheDecorator):
     __slots__ = ()
 
     @overload
-    def __call__[**P, T](
-        self, func: Callable[P, AsyncGenerator[T, Any]]
-    ) -> Cached[P, Awaitable[T], AsyncGenerator[T, Any]]: ...
+    def __call__[**P, Value](
+        self, func: Callable[P, AsyncGenerator[Value, Any]]
+    ) -> Cached[P, Awaitable[Value], AsyncGenerator[Value, Any]]: ...
 
     @overload
-    def __call__[**P, T](
-        self, func: Callable[P, Generator[T, Any, Any]]
-    ) -> Cached[P, T, Generator[T, Any, Any]]: ...
+    def __call__[**P, Value](
+        self, func: Callable[P, Generator[Value, Any, Any]]
+    ) -> Cached[P, Value, Generator[Value, Any, Any]]: ...
 
     @overload
-    def __call__[**P, T](
-        self, func: Callable[P, Awaitable[T]]
-    ) -> Cached[P, Awaitable[T], Awaitable[T]]: ...
+    def __call__[**P, Value](
+        self, func: Callable[P, Awaitable[Value]]
+    ) -> Cached[P, Awaitable[Value], Awaitable[Value]]: ...
 
     @overload
-    def __call__[**P, T](self, func: Callable[P, T]) -> Cached[P, T, T]: ...
+    def __call__[**P, Value](self, func: Callable[P, Value]) -> Cached[P, Value, Value]: ...
 
     def __call__(self, func: Callable[..., Any]) -> Cached[..., Any, Any]:
         """

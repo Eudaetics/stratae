@@ -19,7 +19,7 @@ together. {py:func}`only_responder` finds a request's responder, for a dispatche
 """
 
 import asyncio
-from collections.abc import Awaitable, Collection, Coroutine, Generator, Iterable
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
 from contextvars import Context, copy_context
 from typing import Any, cast
 
@@ -34,8 +34,17 @@ from stratae.events.middleware import HandleCall
 from stratae.events.patterns import PubSub, Request
 from stratae.events.protocols import AnyEvent
 
+type Dispatcher[Event] = Callable[[Event, Handlers[Handler[Any, Any]], HandleCall], Any]
+"""
+Delivers a message to an event's handlers: given the event, its handlers and the message.
 
-def only_responder[H: Handler[Any, Any, Any]](event: AnyEvent, handlers: Collection[H]) -> H:
+It returns what emitting the event returns, or an awaitable resolving to it on an async bus.
+"""
+
+
+def only_responder[Registered: Handler[Any, Any]](
+    event: AnyEvent, handlers: Collection[Registered]
+) -> Registered:
     """Return a request event's sole responder, or raise if there isn't exactly one."""
     if not handlers:
         raise NoResponderError(event.name)
@@ -45,20 +54,20 @@ def only_responder[H: Handler[Any, Any, Any]](event: AnyEvent, handlers: Collect
     return responder
 
 
-def dispatch_request[S, R](
-    event: Request[S, R, Any],
-    handlers: Collection[Handler[[HandleCall], Any, R]],
+def dispatch_request[Payload, Reply](
+    event: Request[Payload, Reply, Any],
+    handlers: Collection[Handler[Any, Reply]],
     message: HandleCall,
-) -> R:
+) -> Reply:
     """Call a request event's sole responder and return its reply."""
     return only_responder(event, handlers).call(message)
 
 
-def dispatch_request_async[S, R](
-    event: Request[S, R, Any],
-    handlers: Collection[Handler[[HandleCall], Any, R | Awaitable[R]]],
+def dispatch_request_async[Payload, Reply](
+    event: Request[Payload, Reply, Any],
+    handlers: Collection[Handler[Any, Reply | Awaitable[Reply]]],
     message: HandleCall,
-) -> Awaitable[R]:
+) -> Awaitable[Reply]:
     """
     Call a request event's sole responder, returning an awaitable of its reply.
 
@@ -67,13 +76,13 @@ def dispatch_request_async[S, R](
     """
     responder = only_responder(event, handlers)
     if responder.is_async:
-        return cast(Awaitable[R], responder.call(message))
+        return cast(Awaitable[Reply], responder.call(message))
     return invoke(responder, message)
 
 
-def fan_out[S](
-    _event: PubSub[S, Any],
-    handlers: Handlers[Handler[[HandleCall], Any, None]],
+def fan_out[Payload](
+    _event: PubSub[Payload, Any],
+    handlers: Handlers[Handler[Any, None]],
     message: HandleCall,
 ) -> None:
     """
@@ -134,7 +143,7 @@ Anything else, such as `KeyboardInterrupt`, propagates at once.
 
 
 def _run_sync_handlers(
-    handlers: Iterable[Handler[[HandleCall], Any, Any]],
+    handlers: Iterable[Handler[Any, Any]],
     message: HandleCall,
     failures: list[BaseException],
 ) -> None:
@@ -152,7 +161,7 @@ def _run_sync_handlers(
 
 
 async def _await_handler(
-    handler: Handler[[HandleCall], Any, Any],
+    handler: Handler[Any, Any],
     message: HandleCall,
     failures: list[BaseException],
 ) -> None:
@@ -180,9 +189,9 @@ def _raise_failures(failures: list[BaseException]) -> None:
         raise HandlerErrors(errors)
 
 
-async def fan_out_async[S](
-    _event: PubSub[S, Any],
-    handlers: Handlers[Handler[[HandleCall], Any, Any]],
+async def fan_out_async[Payload](
+    _event: PubSub[Payload, Any],
+    handlers: Handlers[Handler[Any, Any]],
     message: HandleCall,
 ) -> None:
     """
@@ -204,9 +213,9 @@ async def fan_out_async[S](
     _raise_failures(failures)
 
 
-async def fan_out_concurrent[S](
-    _event: PubSub[S, Any],
-    handlers: Handlers[Handler[[HandleCall], Any, Any]],
+async def fan_out_concurrent[Payload](
+    _event: PubSub[Payload, Any],
+    handlers: Handlers[Handler[Any, Any]],
     message: HandleCall,
 ) -> None:
     """

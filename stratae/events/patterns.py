@@ -113,7 +113,7 @@ class Immutable:
 
 
 @dataclass(init=False, slots=True)
-class Request[S, R, Signal: bool](Immutable):
+class Request[Payload, Reply, Signal: bool](Immutable):
     """
     Request/reply event: exactly one responder, whose `reply` the emitter receives.
 
@@ -124,11 +124,11 @@ class Request[S, R, Signal: bool](Immutable):
     """
 
     name: str
-    schema: type[S]
+    schema: type[Payload]
     is_signal: Signal = field(compare=False, repr=False)
-    emit_returns: type[R]
+    emit_returns: type[Reply]
     """The reply type, as {py:class}`EventType <stratae.events.protocols.EventType>` needs it."""
-    handler_returns: type[R] = field(compare=False, repr=False)
+    handler_returns: type[Reply] = field(compare=False, repr=False)
     """The reply type, as {py:class}`EventType <stratae.events.protocols.EventType>` needs it."""
     _hash: int = field(compare=False, repr=False)
 
@@ -137,24 +137,24 @@ class Request[S, R, Signal: bool](Immutable):
         self: "Request[NoPayload, None, Literal[True]]", *, name: str, reply: None = None
     ) -> None: ...
     @overload
-    def __init__[R2](
-        self: "Request[NoPayload, R2, Literal[True]]", *, name: str, reply: type[R2]
+    def __init__[ReplyType](
+        self: "Request[NoPayload, ReplyType, Literal[True]]", *, name: str, reply: type[ReplyType]
     ) -> None: ...
     @overload
-    def __init__[S2](
-        self: "Request[S2, None, Literal[False]]",
-        schema: type[S2],
+    def __init__[SchemaType](
+        self: "Request[SchemaType, None, Literal[False]]",
+        schema: type[SchemaType],
         *,
         name: str | None = None,
         reply: None = None,
     ) -> None: ...
     @overload
-    def __init__[S2, R2](
-        self: "Request[S2, R2, Literal[False]]",
-        schema: type[S2],
+    def __init__[SchemaType, ReplyType](
+        self: "Request[SchemaType, ReplyType, Literal[False]]",
+        schema: type[SchemaType],
         *,
         name: str | None = None,
-        reply: type[R2],
+        reply: type[ReplyType],
     ) -> None: ...
     def __init__(
         self,
@@ -188,13 +188,13 @@ class Request[S, R, Signal: bool](Immutable):
         return self._hash
 
     @property
-    def reply(self) -> type[R]:
+    def reply(self) -> type[Reply]:
         """What the responder returns and the emitter gets; `NoneType` for a command."""
         return self.emit_returns
 
 
 @dataclass(init=False, slots=True)
-class PubSub[S, Signal: bool](Immutable):
+class PubSub[Payload, Signal: bool](Immutable):
     """
     Fire-and-forget event: every handler runs, and returns `None`.
 
@@ -207,7 +207,7 @@ class PubSub[S, Signal: bool](Immutable):
     """
 
     name: str
-    schema: type[S]
+    schema: type[Payload]
     is_signal: Signal = field(compare=False, repr=False)
     emit_returns: type[None] = field(compare=False, repr=False)
     """`NoneType`: emitting a pub/sub event returns nothing."""
@@ -218,8 +218,11 @@ class PubSub[S, Signal: bool](Immutable):
     @overload
     def __init__(self: "PubSub[NoPayload, Literal[True]]", *, name: str) -> None: ...
     @overload
-    def __init__[S2](
-        self: "PubSub[S2, Literal[False]]", schema: type[S2], *, name: str | None = None
+    def __init__[SchemaType](
+        self: "PubSub[SchemaType, Literal[False]]",
+        schema: type[SchemaType],
+        *,
+        name: str | None = None,
     ) -> None: ...
     def __init__(self, schema: type[Any] = NoPayload, *, name: str | None = None) -> None:
         """
