@@ -21,8 +21,8 @@ from stratae.events.exceptions import AlreadyConnectedError
 from stratae.events.failure import DeadLetter, Drop, Reject, Retry, failure_action
 from stratae.events.handler import invoke
 from stratae.events.hooks import Hooks
-from stratae.events.middleware import Middleware
-from stratae.events.pipeline import receiving, wrap_handler
+from stratae.events.middleware import HandleCall, Middleware, from_fields
+from stratae.events.pipeline import wrap_handler
 from stratae.integrations.rabbitmq._link import RECONNECT, Link
 from stratae.integrations.rabbitmq._retry import retry_queue_name
 from stratae.integrations.rabbitmq._topology import declare
@@ -51,7 +51,7 @@ class _Registration:
     def __init__(
         self,
         event: PubSub[Any, Any],
-        handler: Handler[[Any], RabbitMQConsumeConfig, Any],
+        handler: Handler[[HandleCall], RabbitMQConsumeConfig, Any],
         deserializer: Deserializer | None,
     ) -> None:
         self.event = event
@@ -69,7 +69,7 @@ class _ConsumeDecorator[S: Any](Protocol):
 
     def __call__[R: _Returns](
         self, fn: Callable[[S], R]
-    ) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
+    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, R]: ...
 
 
 class _SignalConsumeDecorator(Protocol):
@@ -77,7 +77,7 @@ class _SignalConsumeDecorator(Protocol):
 
     def __call__[R: _Returns](
         self, fn: Callable[[], R]
-    ) -> Handler[[], RabbitMQConsumeConfig, R]: ...
+    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, R]: ...
 
 
 class RabbitMQConsumer:
@@ -145,7 +145,9 @@ class RabbitMQConsumer:
         self._prefetch_count = prefetch_count
         self._drain_timeout = drain_timeout
         self._link = Link("consumer", url, reconnect, self._resume, self._forget_consumers)
-        self._registrations: dict[Handler[[Any], RabbitMQConsumeConfig, Any], _Registration] = {}
+        self._registrations: dict[
+            Handler[[HandleCall], RabbitMQConsumeConfig, Any], _Registration
+        ] = {}
         self._starting: set[asyncio.Task[None]] = set()
         self._in_flight: set[asyncio.Task[Any]] = set()
 
@@ -241,7 +243,7 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
         hooks: Hooks[NoPayload, None] | None = None,
-    ) -> Handler[[], RabbitMQConsumeConfig, R]: ...
+    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, R]: ...
 
     @overload
     def handle(
@@ -263,7 +265,7 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
         hooks: Hooks[S, None] | None = None,
-    ) -> Handler[[S], RabbitMQConsumeConfig, R]: ...
+    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, R]: ...
 
     @overload
     def handle[S](
@@ -312,7 +314,7 @@ class RabbitMQConsumer:
 
         return decorator
 
-    async def remove(self, handler: Handler[[Any], RabbitMQConsumeConfig, Any]) -> None:
+    async def remove(self, handler: Handler[[HandleCall], RabbitMQConsumeConfig, Any]) -> None:
         """
         Cancel and remove a registered handler.
 
@@ -333,12 +335,10 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None,
         hooks: Hooks[Any, Any] | None,
-    ) -> Handler[[Any], RabbitMQConsumeConfig, Any]:
+    ) -> Handler[[HandleCall], RabbitMQConsumeConfig, Any]:
         """Wrap fn and its hooks as a Handler, consuming immediately if connected."""
-        call, is_async = wrap_handler(
-            event, config, fn, hooks, self._handle_middleware, asynchronous=True
-        )
-        handler: Handler[[Any], RabbitMQConsumeConfig, Any] = Handler(call, config, is_async)
+        call, is_async = wrap_handler(event, fn, hooks, self._handle_middleware, asynchronous=True)
+        handler: Handler[[HandleCall], RabbitMQConsumeConfig, Any] = Handler(call, config, is_async)
         registration = _Registration(event, handler, deserializer)
         self._registrations[handler] = registration
         channel = self._link.channel
@@ -397,11 +397,11 @@ class RabbitMQConsumer:
             return
         try:
             with Envelope.scope(envelope_from(message, self._new_id), new_id=self._new_id):
-                if self._handle_middleware:
-                    with receiving(headers_from(message)):
-                        await invoke(registration.handler, payload)
-                else:
-                    await invoke(registration.handler, payload)
+                handler = registration.handler
+                received = from_fields(
+                    HandleCall, (registration.event, handler.config, payload, headers_from(message))
+                )
+                await invoke(handler, received)
         except Exception as exc:
             await self._fail(registration, message, exc, retryable=True)
             return

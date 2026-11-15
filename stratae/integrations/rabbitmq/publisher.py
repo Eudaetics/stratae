@@ -199,7 +199,7 @@ class RabbitMQPublisher:
         *,
         hooks: Hooks[S, None] | None = None,
         envelope: Envelope | None = None,
-        headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, object] | None = None,
     ) -> None:
         """
         Serialize a payload and publish it on the event's route.

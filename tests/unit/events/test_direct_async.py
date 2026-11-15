@@ -62,8 +62,8 @@ AsyncDirectBus (middleware):
 - Handle middleware reads the headers async publish middleware added, on every handler of a
   concurrent fan-out, and concurrent emits each read their own.
 - Publish middleware adding a reserved header refuses the emit; no handler runs.
-- Handle middleware without publish middleware sees no headers, even inside another message's
-  receiving block.
+- Handle middleware without publish middleware sees no headers, even when emitted from the
+  handler of another message that carries one.
 - emit is reported as a coroutine function, and returns a coroutine for every event: nothing
   runs and nothing is raised until it's awaited, a sync responder included.
 - A custom dispatcher's awaitable that isn't a coroutine still makes emit return a coroutine,
@@ -109,7 +109,6 @@ from stratae.events import (
     fan_out_concurrent,
 )
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
-from stratae.events.pipeline import receiving
 from stratae.middleware import MiddlewareKindError
 
 
@@ -357,12 +356,14 @@ def test_handle_returns_handler(bus: AsyncDirectBus):
 
     Given: An AsyncDirectBus
     When: handle is called with a callable
-    Then: The returned Handler should wrap that callable
+    Then: The returned Handler should call it with the payload of the message it's given
     """
     fn = Mock()
     handler = bus.handle(_task_created, fn)
 
-    assert handler.call is fn
+    handler.call(HandleCall(_task_created, None, _TaskCreated(1)))
+
+    fn.assert_called_once_with(_TaskCreated(1))
 
 
 async def test_remove_prevents_further_dispatch(bus: AsyncDirectBus):
@@ -1547,7 +1548,7 @@ async def test_handle_middleware_reads_publish_headers():
     Then: Each handler's middleware read its own emit's tag
     """
     # Arrange
-    seen: list[tuple[int, str]] = []
+    seen: list[tuple[int, object]] = []
 
     async def tag(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         return await next(call.with_headers({"x-task": str(call.payload.task_id)}))
@@ -1608,24 +1609,32 @@ async def test_handle_middleware_without_publish_middleware_sees_no_headers():
     """
     Handle middleware on a bus without publish middleware should see no headers.
 
-    Given: A bus with only async handle middleware recording the headers
-    When: An event is emitted inside another message's delivery, which carries a header
+    Given: A bus with only async handle middleware recording the headers, and an outer bus
+           whose publish middleware adds a header
+    When: The outer bus's handler, handling a message with that header, emits on the first bus
     Then: The middleware saw no headers, not the enclosing message's
     """
     # Arrange
-    seen: list[dict[str, str]] = []
+    seen: list[dict[str, object]] = []
 
     async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         await asyncio.sleep(0)
         seen.append(dict(call.headers))
         return await next(call)
 
+    async def tenant(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+        return await next(call.with_headers({"x-tenant": "acme"}))
+
     bus = AsyncDirectBus(middleware=Middleware(handle=(record,)))
     bus.handle(_task_created, lambda task: None)
+    outer = AsyncDirectBus(middleware=Middleware(publish=(tenant,)))
+
+    @outer.handle(_task_created)
+    async def relay(task: _TaskCreated) -> None:
+        await bus.emit(_task_created, task)
 
     # Act
-    with receiving({"x-tenant": "acme"}):
-        await bus.emit(_task_created, _TaskCreated(1))
+    await outer.emit(_task_created, _TaskCreated(1))
 
     # Assert
     assert seen == [{}]

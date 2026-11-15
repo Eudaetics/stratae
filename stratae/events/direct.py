@@ -116,7 +116,7 @@ from stratae.events.dispatch import (
 from stratae.events.envelope import EnvelopeConfig
 from stratae.events.handler import Handler, Handlers
 from stratae.events.hooks import Hooks
-from stratae.events.middleware import Middleware
+from stratae.events.middleware import NO_HEADERS, HandleCall, Middleware, from_fields
 from stratae.events.patterns import NoPayload, PubSub, Request
 from stratae.events.pipeline import (
     Outgoing,
@@ -124,7 +124,6 @@ from stratae.events.pipeline import (
     Send,
     publish,
     publish_async,
-    receiving,
     wrap_handler,
 )
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
@@ -181,18 +180,20 @@ class _AsyncHandlerDecorator[S: Any, R](Protocol):
     @overload
     def __call__(
         self, fn: Callable[[S], Awaitable[R]]
-    ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
+    ) -> Handler[[HandleCall], _AnyEvent, Awaitable[R]]: ...
     @overload
-    def __call__(self, fn: Callable[[S], R]) -> Handler[[S], _AnyEvent, R]: ...
+    def __call__(self, fn: Callable[[S], R]) -> Handler[[HandleCall], _AnyEvent, R]: ...
 
 
 class _AsyncSignalHandlerDecorator[R](Protocol):
     """Decorator form of handle for a schema-less event, returning the Handler."""
 
     @overload
-    def __call__(self, fn: Callable[[], Awaitable[R]]) -> Handler[[], _AnyEvent, Awaitable[R]]: ...
+    def __call__(
+        self, fn: Callable[[], Awaitable[R]]
+    ) -> Handler[[HandleCall], _AnyEvent, Awaitable[R]]: ...
     @overload
-    def __call__(self, fn: Callable[[], R]) -> Handler[[], _AnyEvent, R]: ...
+    def __call__(self, fn: Callable[[], R]) -> Handler[[HandleCall], _AnyEvent, R]: ...
 
 
 class _Failed:
@@ -238,14 +239,16 @@ class Dispatch:
     """
     Pair a pattern class with the dispatcher a direct bus delivers it with.
 
-    The dispatcher is called with the event, its handlers and the payload, and returns what
+    The dispatcher is called with the event, its handlers and the message being handled, a
+    {py:class}`HandleCall <stratae.events.middleware.HandleCall>`, and returns what
     emitting the event returns, or an awaitable resolving to it on an
     {py:class}`AsyncDirectBus`. The handlers are a
     {py:class}`Handlers <stratae.events.handler.Handlers>` tuple, which doesn't change while
     the dispatcher runs, so it can be run as given. A dispatcher may take any collection of
     handlers in its place. Write it generic in the pattern's type parameters, e.g.
-    `def gather[S, R](event: Gather[S, R], handlers: Collection[Handler[[S], Any, R]],
-    payload: S) -> list[R]`, so its body is checked. A dispatcher whose first parameter
+    `def gather[S, R](event: Gather[S, R],
+    handlers: Collection[Handler[[HandleCall], Any, R]], message: HandleCall) -> list[R]`,
+    so its body is checked. A dispatcher whose first parameter
     doesn't accept `pattern` is a type error. That its declared return matches what the
     pattern emits is the dispatcher author's to ensure.
     """
@@ -274,35 +277,15 @@ _ASYNC_DEFAULTS = (Dispatch(Request, dispatch_request_async), Dispatch(PubSub, f
 """The patterns an AsyncDirectBus supports by default."""
 
 
-def _sender(route: _Route, received: bool, asynchronous: bool) -> Send:
-    """
-    Return what dispatches a message to the route's handlers.
+def _sender(route: _Route) -> Send:
+    """Return what dispatches a message to the route's handlers, current when it's sent."""
 
-    :param received: Whether handle middleware reads the message's headers, which are then made
-        the received headers around the dispatch.
-    :param asynchronous: Whether the dispatcher returns an awaitable, which is awaited inside
-        the received headers.
-    """
-    dispatcher = route.dispatcher
-    if not received:
+    def send(message: Outgoing) -> Any:
+        event, config, payload, _, headers = message
+        received = from_fields(HandleCall, (event, config, payload, headers))
+        return route.dispatcher(event, route.handlers, received)
 
-        def send(message: Outgoing) -> Any:
-            return dispatcher(message.event, route.handlers, message.payload)
-
-        return send
-    if asynchronous:
-
-        async def send_received_async(message: Outgoing) -> Any:
-            with receiving(message.headers):
-                return await dispatcher(message.event, route.handlers, message.payload)
-
-        return send_received_async
-
-    def send_received(message: Outgoing) -> Any:
-        with receiving(message.headers):
-            return dispatcher(message.event, route.handlers, message.payload)
-
-    return send_received
+    return send
 
 
 class _Core:
@@ -381,7 +364,8 @@ class _Core:
             event: _AnyEvent, payload: Any, *, hooks: Hooks[Any, Any] | None = None
         ) -> Any:
             if hooks is None and plain:
-                return route.dispatcher(event, route.handlers, payload)
+                message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
+                return route.dispatcher(event, route.handlers, message)
             return publish_(publishing, route.send, event, payload, None, hooks)
 
         return emit_routed
@@ -409,7 +393,7 @@ class _Core:
     def _new_route(self, dispatcher: Callable[..., Any]) -> _Route:
         """Make a route with no handlers yet, and the `send` that delivers to them."""
         route = _Route(dispatcher, _NO_HANDLERS)
-        route.send = _sender(route, bool(self._middleware.handle), self._asynchronous)
+        route.send = _sender(route)
         return route
 
     def check_hooks(self, event: _AnyEvent, hooks: Hooks[Any, Any]) -> None:
@@ -427,7 +411,7 @@ class _Core:
         if hooks is not None:
             self.check_hooks(config, hooks)
         call, is_async = wrap_handler(
-            config, None, fn, hooks, self._middleware.handle, self._asynchronous
+            config, fn, hooks, self._middleware.handle, self._asynchronous
         )
         handler: Handler[Any, _AnyEvent, Any] = Handler(call, config, is_async)
         with self._registering:
@@ -457,12 +441,14 @@ class _Core:
         if route is None:
             dispatcher = self._resolve(event)
             if hooks is None and self._plain:
-                return dispatcher(event, _NO_HANDLERS, payload)
+                message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
+                return dispatcher(event, _NO_HANDLERS, message)
             route = self._new_route(dispatcher)
         if hooks is not None:
             self.check_hooks(event, hooks)
         elif self._plain:
-            return route.dispatcher(event, route.handlers, payload)
+            message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
+            return route.dispatcher(event, route.handlers, message)
         return self._publish(self._publishing, route.send, event, payload, None, hooks)
 
     def remove(self, handler: Handler[Any, _AnyEvent, Any]) -> None:
@@ -590,7 +576,7 @@ class DirectBus:
         fn: Callable[[], R],
         *,
         hooks: Hooks[NoPayload, R] | None = None,
-    ) -> Handler[[], _AnyEvent, R]: ...
+    ) -> Handler[[HandleCall], _AnyEvent, R]: ...
 
     @overload
     def handle[R](
@@ -599,7 +585,7 @@ class DirectBus:
         fn: None = None,
         *,
         hooks: Hooks[NoPayload, R] | None = None,
-    ) -> Callable[[Callable[[], R]], Handler[[], _AnyEvent, R]]: ...
+    ) -> Callable[[Callable[[], R]], Handler[[HandleCall], _AnyEvent, R]]: ...
 
     @overload
     def handle[S, R](
@@ -608,7 +594,7 @@ class DirectBus:
         fn: Callable[[S], R],
         *,
         hooks: Hooks[S, R] | None = None,
-    ) -> Handler[[S], _AnyEvent, R]: ...
+    ) -> Handler[[HandleCall], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](
@@ -617,7 +603,7 @@ class DirectBus:
         fn: None = None,
         *,
         hooks: Hooks[S, R] | None = None,
-    ) -> Callable[[Callable[[S], R]], Handler[[S], _AnyEvent, R]]: ...
+    ) -> Callable[[Callable[[S], R]], Handler[[HandleCall], _AnyEvent, R]]: ...
 
     def handle(
         self,
@@ -776,7 +762,7 @@ class AsyncDirectBus:
         fn: Callable[[], Awaitable[R]],
         *,
         hooks: Hooks[NoPayload, R] | None = None,
-    ) -> Handler[[], _AnyEvent, Awaitable[R]]: ...
+    ) -> Handler[[HandleCall], _AnyEvent, Awaitable[R]]: ...
 
     @overload
     def handle[R](
@@ -785,7 +771,7 @@ class AsyncDirectBus:
         fn: Callable[[], R],
         *,
         hooks: Hooks[NoPayload, R] | None = None,
-    ) -> Handler[[], _AnyEvent, R]: ...
+    ) -> Handler[[HandleCall], _AnyEvent, R]: ...
 
     @overload
     def handle[R](
@@ -803,7 +789,7 @@ class AsyncDirectBus:
         fn: Callable[[S], Awaitable[R]],
         *,
         hooks: Hooks[S, R] | None = None,
-    ) -> Handler[[S], _AnyEvent, Awaitable[R]]: ...
+    ) -> Handler[[HandleCall], _AnyEvent, Awaitable[R]]: ...
 
     @overload
     def handle[S, R](
@@ -812,7 +798,7 @@ class AsyncDirectBus:
         fn: Callable[[S], R],
         *,
         hooks: Hooks[S, R] | None = None,
-    ) -> Handler[[S], _AnyEvent, R]: ...
+    ) -> Handler[[HandleCall], _AnyEvent, R]: ...
 
     @overload
     def handle[S, R](

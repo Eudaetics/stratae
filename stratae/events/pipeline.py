@@ -10,23 +10,23 @@ the message's envelope, and builds the headers publish middleware can add to. It
 middleware and hooks, then calls `send` with the {py:class}`Outgoing` message. The adapter
 writes only `send`: it delivers the message, with its headers, however its transport does.
 
-Its `handle` registers the call {py:func}`wrap_handler` builds, which takes the payload
-whatever the event, as a {py:class}`Handler <stratae.events.handler.Handler>`, and calls it
-with {py:func}`invoke <stratae.events.handler.invoke>`. It handles a message inside
-{py:func}`receiving`, with the headers it arrived with, so handle middleware can read them.
-Only handle middleware reads them, so an adapter without any can skip `receiving`.
+Its `handle` registers the call {py:func}`wrap_handler` builds as a
+{py:class}`Handler <stratae.events.handler.Handler>`. That call takes the message being
+handled, a {py:class}`HandleCall <stratae.events.middleware.HandleCall>` holding its event,
+config, payload and headers, whatever the event. Handle middleware sees that message, hooks
+see its payload, and the handler is called with its payload, or with nothing for a
+payload-less event. An adapter builds the message once for each one it handles, and calls the
+handler with {py:func}`invoke <stratae.events.handler.invoke>`.
 """
 
 from collections.abc import Awaitable, Callable, Collection, Mapping
-from contextlib import AbstractContextManager, nullcontext
-from contextvars import ContextVar, Token
+from contextlib import AbstractContextManager
 from types import MappingProxyType
 from typing import Any, NamedTuple
 from uuid import UUID
 
 from stratae.callables import is_async_callable
 from stratae.events.envelope import ENVELOPE_HEADERS, Envelope
-from stratae.events.handler import WithoutPayload
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
 from stratae.events.middleware import NO_HEADERS, HandleCall, PublishCall, from_fields
 from stratae.events.protocols import AnyEvent
@@ -44,47 +44,6 @@ _RELABELLED = (
     "describe the message being handled"
 )
 
-_received: ContextVar[Mapping[str, str]] = ContextVar("_received_headers")
-
-_UNCHANGED: AbstractContextManager[None] = nullcontext()
-"""What `receiving` returns for no headers outside any message: it would change nothing."""
-
-
-class _Receiving:
-    """
-    The context manager {py:func}`receiving` returns.
-
-    A class rather than a `contextlib.contextmanager` generator: a bus with handle middleware
-    opens one per emit, and a generator costs about twice as much to enter and exit.
-    """
-
-    __slots__ = ("_headers", "_token")
-
-    def __init__(self, headers: Mapping[str, str]) -> None:
-        self._headers = headers
-        self._token: Token[Mapping[str, str]]
-
-    def __enter__(self) -> None:
-        self._token = _received.set(MappingProxyType(self._headers))
-
-    def __exit__(self, *_: object) -> None:
-        _received.reset(self._token)
-
-
-def receiving(headers: Mapping[str, str]) -> AbstractContextManager[None]:
-    """
-    Make `headers` the headers handle middleware sees, for a block that handles a message.
-
-    Handle middleware outside any `receiving` block sees no headers.
-
-    :param headers: The headers the message arrived with, as a mapping the caller doesn't
-        change afterwards. Handle middleware reads it read-only, without a copy.
-    :returns: A context manager for the block.
-    """
-    if not headers and _received.get(None) is None:
-        return _UNCHANGED
-    return _Receiving(headers)
-
 
 class Outgoing(NamedTuple):
     """One message on its way out: what an adapter's `send` receives."""
@@ -97,7 +56,7 @@ class Outgoing(NamedTuple):
     """The payload being emitted."""
     envelope: Envelope | None
     """The envelope it's sent under, or `None` on a bus without envelopes."""
-    headers: Mapping[str, str]
+    headers: Mapping[str, object]
     """The headers to send with it: those given, plus any publish middleware added."""
 
 
@@ -105,7 +64,7 @@ type Send = Callable[[Outgoing], Any]
 """Sends one message: the only part of an emit an adapter writes."""
 
 
-def _refuse_reserved(headers: Mapping[str, str], reserved: Collection[str]) -> None:
+def _refuse_reserved(headers: Mapping[str, object], reserved: Collection[str]) -> None:
     """
     Refuse a header the adapter sets itself.
 
@@ -223,7 +182,7 @@ class Publishing:
             return None
         return Envelope.scope(new_id=new_id)
 
-    def stamped(self, headers: Mapping[str, str] | None) -> Mapping[str, str]:
+    def stamped(self, headers: Mapping[str, object] | None) -> Mapping[str, object]:
         """
         Return the headers an emit starts with, read-only.
 
@@ -266,7 +225,7 @@ def publish(
     config: Any = None,
     hooks: Hooks[Any, Any] | None = None,
     envelope: Envelope | None = None,
-    headers: Mapping[str, str] | None = None,
+    headers: Mapping[str, object] | None = None,
 ) -> Any:
     """
     Emit through a sync adapter: open the envelope, run middleware and hooks, then `send`.
@@ -302,7 +261,7 @@ async def publish_async(
     config: Any = None,
     hooks: Hooks[Any, Any] | None = None,
     envelope: Envelope | None = None,
-    headers: Mapping[str, str] | None = None,
+    headers: Mapping[str, object] | None = None,
 ) -> Any:
     """Emit through an async adapter, as {py:func}`publish` does, awaiting `send`."""
     if publishing.bare and hooks is None and envelope is None and headers is None:
@@ -317,24 +276,42 @@ async def publish_async(
         return await _emit_async(publishing, hooks, message, send)
 
 
-def _hooked(
-    hooks: Hooks[Any, Any], event: AnyEvent, call: Callable[[Any], Any]
-) -> Callable[[Any], Any]:
-    """Return `call` run inside sync hooks."""
+def _payload_of(fn: Callable[[Any], Any]) -> Callable[[HandleCall], Any]:
+    """Return `fn`, called with the payload of the message it's given."""
 
-    def hooked(payload: Any, /) -> Any:
-        return run_hooks(hooks, event, payload, call, payload)
+    def unpacked(message: HandleCall, /) -> Any:
+        return fn(message.payload)
+
+    return unpacked
+
+
+def _without_payload(fn: Callable[[], Any]) -> Callable[[HandleCall], Any]:
+    """Return a payload-less event's `fn`, called with nothing for the message it's given."""
+
+    def unpacked(_: HandleCall, /) -> Any:
+        return fn()
+
+    return unpacked
+
+
+def _hooked(
+    hooks: Hooks[Any, Any], event: AnyEvent, call: Callable[[HandleCall], Any]
+) -> Callable[[HandleCall], Any]:
+    """Return `call` run inside sync hooks, which see the message's payload."""
+
+    def hooked(message: HandleCall, /) -> Any:
+        return run_hooks(hooks, event, message.payload, call, message)
 
     return hooked
 
 
 def _hooked_async(
-    hooks: Hooks[Any, Any], event: AnyEvent, call: Callable[[Any], Awaitable[Any]]
-) -> Callable[[Any], Awaitable[Any]]:
+    hooks: Hooks[Any, Any], event: AnyEvent, call: Callable[[HandleCall], Awaitable[Any]]
+) -> Callable[[HandleCall], Awaitable[Any]]:
     """Return `call` run inside hooks, sync or async, as an awaitable."""
 
-    def hooked(payload: Any, /) -> Awaitable[Any]:
-        return run_hooks_async(hooks, event, payload, call, payload)
+    def hooked(message: HandleCall, /) -> Awaitable[Any]:
+        return run_hooks_async(hooks, event, message.payload, call, message)
 
     return hooked
 
@@ -356,45 +333,19 @@ def _refuse_relabelled(seen: HandleCall, received: HandleCall) -> None:
 
 
 def _handled(
-    middleware: tuple[Callable[..., object], ...],
-    event: AnyEvent,
-    config: Any,
-    call: Callable[[Any], Any],
-) -> Callable[[Any], Any]:
-    """Return `call` run inside sync handle middleware, which sees the received headers."""
+    middleware: tuple[Callable[..., object], ...], call: Callable[[HandleCall], Any]
+) -> Callable[[HandleCall], Any]:
+    """Return `call` run inside handle middleware, sync or async, which sees the message."""
 
     def finish(seen: HandleCall, received: HandleCall) -> Any:
         if seen is not received:
             _refuse_relabelled(seen, received)
-        return call(seen.payload)
+        return call(seen)
 
     chained = chain(middleware, finish)
 
-    def handled(payload: Any, /) -> Any:
-        seen = from_fields(HandleCall, (event, config, payload, _received.get(NO_HEADERS)))
-        return chained(seen, seen)
-
-    return handled
-
-
-def _handled_async(
-    middleware: tuple[Callable[..., object], ...],
-    event: AnyEvent,
-    config: Any,
-    call: Callable[[Any], Awaitable[Any]],
-) -> Callable[[Any], Awaitable[Any]]:
-    """Return `call` run inside async handle middleware, which sees the received headers."""
-
-    def finish(seen: HandleCall, received: HandleCall) -> Awaitable[Any]:
-        if seen is not received:
-            _refuse_relabelled(seen, received)
-        return call(seen.payload)
-
-    chained = chain(middleware, finish)
-
-    def handled(payload: Any, /) -> Awaitable[Any]:
-        seen = from_fields(HandleCall, (event, config, payload, _received.get(NO_HEADERS)))
-        return chained(seen, seen)
+    def handled(message: HandleCall, /) -> Any:
+        return chained(message, message)
 
     return handled
 
@@ -409,33 +360,31 @@ class _Awaitable:
 
     __slots__ = ("call",)
 
-    def __init__(self, call: Callable[[Any], Any]) -> None:
+    def __init__(self, call: Callable[[HandleCall], Any]) -> None:
         self.call = call
 
-    async def __call__(self, payload: Any, /) -> Any:
-        return self.call(payload)
+    async def __call__(self, message: HandleCall, /) -> Any:
+        return self.call(message)
 
 
 def wrap_handler(
     event: AnyEvent,
-    config: Any,
     fn: Callable[..., Any],
     hooks: Hooks[Any, Any] | None,
     middleware: tuple[Callable[..., object], ...],
     asynchronous: bool,
-) -> tuple[Callable[[Any], Any], bool]:
+) -> tuple[Callable[[HandleCall], Any], bool]:
     """
     Build the call an adapter registers for a handler: the handler, its hooks, then middleware.
 
-    :param event: The event the handler is for, which hooks and middleware see.
-    :param config: The registration's routing config, which middleware sees as `call.config`.
+    :param event: The event the handler is for, which hooks see.
     :param fn: The handler, taking the payload, or nothing for a payload-less event.
     :param hooks: The handler's hooks, or `None`.
     :param middleware: The adapter's handle middleware, outermost first.
     :param asynchronous: Whether the adapter runs middleware asynchronously.
-    :returns: The call to register, taking the payload, and whether it's async.
+    :returns: The call to register, taking the message being handled, and whether it's async.
     """
-    call: Callable[[Any], Any] = WithoutPayload(fn) if event.is_signal else fn
+    call = _without_payload(fn) if event.is_signal else _payload_of(fn)
     is_async = is_async_callable(fn)
     if hooks is not None:
         if is_async or hooks.has_async:
@@ -444,9 +393,8 @@ def wrap_handler(
         else:
             call = _hooked(hooks, event, call)
     if middleware:
-        if asynchronous:
-            call = _handled_async(middleware, event, config, call if is_async else _Awaitable(call))
+        if asynchronous and not is_async:
+            call = _Awaitable(call)
             is_async = True
-        else:
-            call = _handled(middleware, event, config, call)
+        call = _handled(middleware, call)
     return call, is_async

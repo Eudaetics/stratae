@@ -11,28 +11,25 @@ publish:
 - Publish middleware adds to the headers the emit was given, and the emit sends them.
 
 wrap_handler:
-- Leaves a handler unwrapped without hooks or middleware.
+- Without hooks or middleware, calls the handler with the message's payload, as a sync call.
 - Wraps a sync handler in sync hooks, then sync middleware, as a sync call; middleware sees
-  the event and payload.
+  the message, and hooks its payload.
 - Wraps a handler as an async call when the handler, a hook or the middleware is async.
 - A sync handler under an async hook or async middleware runs only when its call is awaited.
-- Adapts a payload-less event's handler to take the payload.
-- Handle middleware, sync or async, reads the headers of the enclosing receiving block, as a
-  copy taken when it was entered; outside one, it reads none.
-
-receiving:
-- A nested block's headers replace the outer block's, which are restored when it exits,
-  including when it raises.
+- Calls a payload-less event's handler with nothing.
+- Handle middleware, sync or async, reads the headers of the message it's given.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, Mapping
+from types import MappingProxyType
 from typing import Any
 
 import pytest
 
 from stratae.events import HandleCall, Hooks, PublishCall, PubSub, Request
-from stratae.events.pipeline import Outgoing, Publishing, publish, receiving, wrap_handler
+from stratae.events.middleware import NO_HEADERS
+from stratae.events.pipeline import Outgoing, Publishing, publish, wrap_handler
 
 
 class _Order:
@@ -41,6 +38,11 @@ class _Order:
 
 
 _order_placed = PubSub(_Order)
+
+
+def _received(order: _Order, headers: Mapping[str, object] = NO_HEADERS) -> HandleCall:
+    """Return the message a direct bus hands its handlers for `order`."""
+    return HandleCall(_order_placed, None, order, headers)
 
 
 @pytest.mark.parametrize(
@@ -99,17 +101,17 @@ async def _ashout(order: _Order) -> str:
 
 def test_wrap_handler_without_hooks_or_middleware() -> None:
     """
-    A handler without hooks or middleware should be registered as it is.
+    A handler without hooks or middleware should be called with the message's payload.
 
     Given: A sync handler, no hooks and no middleware
-    When: wrap_handler builds its call
-    Then: The handler itself is returned, still sync
+    When: wrap_handler builds its call, and it's called with a message
+    Then: It's sync, and returns what the handler returns for the message's payload
     """
     # Act
-    call, is_async = wrap_handler(_order_placed, None, _shout, None, (), asynchronous=False)
+    call, is_async = wrap_handler(_order_placed, _shout, None, (), asynchronous=False)
 
     # Assert
-    assert call is _shout
+    assert call(_received(_Order("lamp"))) == "LAMP"
     assert is_async is False
 
 
@@ -134,9 +136,9 @@ def test_wrap_handler_sync_layers() -> None:
 
     # Act
     call, is_async = wrap_handler(
-        _order_placed, None, _shout, Hooks(before=(hook,)), (middleware,), asynchronous=False
+        _order_placed, _shout, Hooks(before=(hook,)), (middleware,), asynchronous=False
     )
-    reply = call(_Order("lamp"))
+    reply = call(_received(_Order("lamp")))
 
     # Assert
     assert is_async is False
@@ -175,8 +177,8 @@ async def test_wrap_handler_async(handler: Any, hook_is_async: bool, with_middle
     stack = (middleware,) if with_middleware else ()
 
     # Act
-    call, is_async = wrap_handler(_order_placed, None, handler, hooks, stack, asynchronous=True)
-    reply = await call(_Order("lamp"))
+    call, is_async = wrap_handler(_order_placed, handler, hooks, stack, asynchronous=True)
+    reply = await call(_received(_Order("lamp")))
 
     # Assert
     assert is_async is True
@@ -208,11 +210,11 @@ async def test_wrap_handler_sync_handler_runs_when_awaited(through: str) -> None
 
     hooks: Hooks[Any, Any] | None = Hooks(before=(async_hook,)) if through == "async hook" else None
     stack = (middleware,) if through == "async middleware" else ()
-    call, is_async = wrap_handler(_order_placed, None, handler, hooks, stack, asynchronous=True)
+    call, is_async = wrap_handler(_order_placed, handler, hooks, stack, asynchronous=True)
     order = _Order("lamp")
 
     # Act
-    pending = call(order)
+    pending = call(_received(order))
     before_await = list(ran)
     reply = await pending
 
@@ -225,20 +227,20 @@ async def test_wrap_handler_sync_handler_runs_when_awaited(through: str) -> None
 
 def test_wrap_handler_payload_less() -> None:
     """
-    A payload-less event's handler should be adapted to take, and ignore, the payload.
+    A payload-less event's handler should be called with nothing.
 
     Given: A payload-less event and a handler taking no arguments
-    When: The built call is called with a payload
+    When: The built call is called with a message
     Then: The handler runs, and its return is returned
     """
     # Arrange
     ping = Request(reply=str, name="ping")
 
     # Act
-    call, _ = wrap_handler(ping, None, lambda: "pong", None, (), asynchronous=False)
+    call, _ = wrap_handler(ping, lambda: "pong", None, (), asynchronous=False)
 
     # Assert
-    assert call(object()) == "pong"
+    assert call(HandleCall(ping, None, object())) == "pong"
 
 
 def test_publish_middleware_adds_headers() -> None:
@@ -269,81 +271,36 @@ def test_publish_middleware_adds_headers() -> None:
 
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-async def test_wrap_handler_middleware_reads_received_headers(asynchronous: bool) -> None:
+async def test_wrap_handler_middleware_reads_message_headers(asynchronous: bool) -> None:
     """
-    Handle middleware should read the headers of the enclosing receiving block, or none.
+    Handle middleware should read the headers of the message it's given.
 
     Given: A handler wrapped in handle middleware recording the headers it reads
-    When: It's called inside a receiving block, then outside
-    Then: The middleware read the headers as received, read-only, then none
+    When: It's called with a message carrying a header, then with one carrying none
+    Then: The middleware read each message's headers
     """
     # Arrange
-    seen: list[dict[str, str]] = []
-    writable: list[bool] = []
+    seen: list[dict[str, object]] = []
 
     def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
         seen.append(dict(call.headers))
-        writable.append(isinstance(call.headers, MutableMapping))
         return next(call)
 
     async def arecord(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
-        record(call, lambda passed: None)
+        seen.append(dict(call.headers))
         return await next(call)
 
     stack = (arecord,) if asynchronous else (record,)
-    call, is_async = wrap_handler(_order_placed, None, _shout, None, stack, asynchronous)
+    call, is_async = wrap_handler(_order_placed, _shout, None, stack, asynchronous)
 
-    async def handle() -> None:
-        reply = call(_Order("lamp"))
+    async def handle(message: HandleCall) -> None:
+        reply = call(message)
         if is_async:
             await reply
 
     # Act
-    with receiving({"x-tenant": "acme"}):
-        await handle()
-    await handle()
+    await handle(_received(_Order("lamp"), MappingProxyType({"x-tenant": "acme"})))
+    await handle(_received(_Order("lamp")))
 
     # Assert
     assert seen == [{"x-tenant": "acme"}, {}]
-    assert writable == [False, False]
-
-
-def test_receiving_restores_outer_headers_on_exit_and_error() -> None:
-    """
-    A nested receiving block should restore the outer block's headers when it exits or raises.
-
-    Given: Handle middleware recording the headers it reads, inside an outer receiving block
-    When: It's called inside a nested block, after that block exits, inside a nested block
-        that raises, and after that one
-    Then: It read the nested headers inside each nested block, and the outer ones after each
-    """
-    # Arrange
-    seen: list[dict[str, str]] = []
-
-    def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
-        seen.append(dict(call.headers))
-        return next(call)
-
-    call, _ = wrap_handler(_order_placed, None, _shout, None, (record,), False)
-
-    def handle_then_fail() -> None:
-        with receiving({"x-tenant": "failing"}):
-            call(_Order("lamp"))
-            raise RuntimeError("boom")
-
-    # Act
-    with receiving({"x-tenant": "outer"}):
-        with receiving({"x-tenant": "inner"}):
-            call(_Order("lamp"))
-        call(_Order("lamp"))
-        with pytest.raises(RuntimeError, match="boom"):
-            handle_then_fail()
-        call(_Order("lamp"))
-
-    # Assert
-    assert seen == [
-        {"x-tenant": "inner"},
-        {"x-tenant": "outer"},
-        {"x-tenant": "failing"},
-        {"x-tenant": "outer"},
-    ]

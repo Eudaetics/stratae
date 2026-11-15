@@ -1,11 +1,12 @@
 """
-Dispatchers: functions that deliver an event's payload to its handlers.
+Dispatchers: functions that deliver a message to an event's handlers.
 
-A dispatcher takes an event, its handlers and a payload, and delivers the payload as the
-event's pattern requires. A direct bus picks one by the event's class, and takes more with
-`dispatchers=`, as {py:class}`Dispatch <stratae.events.direct.Dispatch>` pairs. Each is
-generic in its pattern's type parameters, so its body is checked against what the pattern
-promises.
+A dispatcher takes an event, its handlers and the message being handled, a
+{py:class}`HandleCall <stratae.events.middleware.HandleCall>`, and calls each handler with the
+message as the event's pattern requires. A direct bus picks one by the event's class, and
+takes more with `dispatchers=`, as {py:class}`Dispatch <stratae.events.direct.Dispatch>`
+pairs. Each is generic in its pattern's type parameters, so its body is checked against what
+the pattern promises.
 
 {py:func}`dispatch_request` and {py:func}`dispatch_request_async` call a
 {py:class}`Request <stratae.events.patterns.Request>` event's sole responder.
@@ -29,6 +30,7 @@ from stratae.events.exceptions import (
     NoResponderError,
 )
 from stratae.events.handler import Handler, Handlers, invoke
+from stratae.events.middleware import HandleCall
 from stratae.events.patterns import PubSub, Request
 from stratae.events.protocols import AnyEvent
 
@@ -44,16 +46,18 @@ def only_responder[H: Handler[Any, Any, Any]](event: AnyEvent, handlers: Collect
 
 
 def dispatch_request[S, R](
-    event: Request[S, R, Any], handlers: Collection[Handler[[S], Any, R]], payload: S
+    event: Request[S, R, Any],
+    handlers: Collection[Handler[[HandleCall], Any, R]],
+    message: HandleCall,
 ) -> R:
     """Call a request event's sole responder and return its reply."""
-    return only_responder(event, handlers).call(payload)
+    return only_responder(event, handlers).call(message)
 
 
 def dispatch_request_async[S, R](
     event: Request[S, R, Any],
-    handlers: Collection[Handler[[S], Any, R | Awaitable[R]]],
-    payload: S,
+    handlers: Collection[Handler[[HandleCall], Any, R | Awaitable[R]]],
+    message: HandleCall,
 ) -> Awaitable[R]:
     """
     Call a request event's sole responder, returning an awaitable of its reply.
@@ -63,12 +67,14 @@ def dispatch_request_async[S, R](
     """
     responder = only_responder(event, handlers)
     if responder.is_async:
-        return cast(Awaitable[R], responder.call(payload))
-    return invoke(responder, payload)
+        return cast(Awaitable[R], responder.call(message))
+    return invoke(responder, message)
 
 
 def fan_out[S](
-    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, None]], payload: S
+    _event: PubSub[S, Any],
+    handlers: Handlers[Handler[[HandleCall], Any, None]],
+    message: HandleCall,
 ) -> None:
     """
     Call every handler in turn, each in its own copy of the context.
@@ -82,7 +88,7 @@ def fan_out[S](
         `CancelledError`.
     """
     failures: list[BaseException] = []
-    _run_sync_handlers(handlers, payload, failures)
+    _run_sync_handlers(handlers, message, failures)
     if failures:
         _raise_failures(failures)
 
@@ -128,7 +134,9 @@ Anything else, such as `KeyboardInterrupt`, propagates at once.
 
 
 def _run_sync_handlers(
-    handlers: Iterable[Handler[[Any], Any, Any]], payload: Any, failures: list[BaseException]
+    handlers: Iterable[Handler[[HandleCall], Any, Any]],
+    message: HandleCall,
+    failures: list[BaseException],
 ) -> None:
     """
     Call each sync handler in its own copy of the context, collecting its failure.
@@ -138,13 +146,15 @@ def _run_sync_handlers(
     """
     for handler in handlers:
         try:
-            copy_context().run(handler.call, payload)
+            copy_context().run(handler.call, message)
         except _HANDLER_FAILURES as failure:
             failures.append(failure)
 
 
 async def _await_handler(
-    handler: Handler[[Any], Any, Any], payload: Any, failures: list[BaseException]
+    handler: Handler[[HandleCall], Any, Any],
+    message: HandleCall,
+    failures: list[BaseException],
 ) -> None:
     """
     Await one async handler in its own copy of the context, collecting its failure.
@@ -153,7 +163,7 @@ async def _await_handler(
     cancellation, so it propagates rather than being collected.
     """
     try:
-        await _InContext(handler.call(payload), copy_context())
+        await _InContext(handler.call(message), copy_context())
     except _HANDLER_FAILURES as failure:
         task = asyncio.current_task()
         if isinstance(failure, asyncio.CancelledError) and task is not None and task.cancelling():
@@ -171,7 +181,9 @@ def _raise_failures(failures: list[BaseException]) -> None:
 
 
 async def fan_out_async[S](
-    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, Any]], payload: S
+    _event: PubSub[S, Any],
+    handlers: Handlers[Handler[[HandleCall], Any, Any]],
+    message: HandleCall,
 ) -> None:
     """
     Run every handler one at a time, each in its own copy of the context.
@@ -186,14 +198,16 @@ async def fan_out_async[S](
         `CancelledError`.
     """
     failures: list[BaseException] = []
-    _run_sync_handlers(handlers.sync, payload, failures)
+    _run_sync_handlers(handlers.sync, message, failures)
     for handler in handlers.asynchronous:
-        await _await_handler(handler, payload, failures)
+        await _await_handler(handler, message, failures)
     _raise_failures(failures)
 
 
 async def fan_out_concurrent[S](
-    _event: PubSub[S, Any], handlers: Handlers[Handler[[S], Any, Any]], payload: S
+    _event: PubSub[S, Any],
+    handlers: Handlers[Handler[[HandleCall], Any, Any]],
+    message: HandleCall,
 ) -> None:
     """
     Run every handler in its own copy of the context, several async ones concurrently.
@@ -209,9 +223,9 @@ async def fan_out_concurrent[S](
         `CancelledError`.
     """
     failures: list[BaseException] = []
-    _run_sync_handlers(handlers.sync, payload, failures)
+    _run_sync_handlers(handlers.sync, message, failures)
     results = await asyncio.gather(
-        *(handler.call(payload) for handler in handlers.asynchronous), return_exceptions=True
+        *(handler.call(message) for handler in handlers.asynchronous), return_exceptions=True
     )
     failures.extend(result for result in results if isinstance(result, BaseException))
     _raise_failures(failures)

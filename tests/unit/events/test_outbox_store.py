@@ -8,6 +8,10 @@ blocks, so the recipe readers copy is the code under test.
 This test suite verifies the following behaviors:
 
 - A record added in a unit of work that commits is claimable, with every field as written.
+- A record's headers come back as they were added: text, numbers, booleans, timestamps, lists
+  and tables, a timestamp inside a table included. Text that looks like a timestamp stays text.
+- The SQLAlchemy store refuses a header value it can't hold, such as bytes, when the record is
+  added, and the unit of work keeps nothing.
 - A record added in a unit of work that rolls back is never kept.
 - A claim returns due records oldest first, up to its limit; a record not yet due waits.
 - A claimed record isn't claimed again until it's rescheduled.
@@ -35,6 +39,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 import pytest
+from sqlalchemy.exc import StatementError
 from sybil import Sybil
 from sybil.parsers.myst import PythonCodeBlockParser
 
@@ -161,6 +166,62 @@ async def test_committed_record_claimable_as_written(harness: _Harness):
 
     # Assert
     assert await _claim(store) == [record]
+
+
+async def test_headers_come_back_as_added(harness: _Harness):
+    """
+    A record's headers should come back as they were added, each value with its own type.
+
+    Given: A record whose headers hold text, a number, a boolean, a timestamp, text that looks
+           like a timestamp, a list and a table holding a timestamp
+    When: It's added in a unit of work that commits, then claimed
+    Then: The claimed record's headers equal the ones added, each value with its own type
+    """
+    # Arrange
+    store = harness.store()
+    headers = {
+        "x-tenant": "acme",
+        "x-priority": 3,
+        "x-replay": True,
+        "x-sent-at": datetime(2026, 11, 15, 9, 30, tzinfo=UTC),
+        "x-label": "2026-11-15T09:30:00+00:00",
+        "x-route": ["eu", "west"],
+        "x-meta": {"source": "checkout", "version": 2, "at": datetime(2026, 11, 15, tzinfo=UTC)},
+    }
+    record = _record(1)
+    record = replace(record, headers={**record.headers, **headers})
+
+    # Act
+    async with _added(harness, store, record):
+        pass
+
+    # Assert
+    (claimed,) = await _claim(store)
+    assert claimed.headers == record.headers
+    assert {name: type(claimed.headers[name]) for name in headers} == {
+        name: type(value) for name, value in headers.items()
+    }
+
+
+@pytest.mark.parametrize("harness", ["sqlalchemy"], indirect=True)
+async def test_header_store_cannot_hold_refused(harness: _Harness):
+    """
+    The SQLAlchemy store should refuse a header value it can't hold.
+
+    Given: A record whose headers hold bytes
+    When: It's added in a unit of work
+    Then: Adding it raises, naming the type, and no record is kept
+    """
+    # Arrange
+    store = harness.store()
+    record = _record(1)
+    record = replace(record, headers={**record.headers, "x-digest": b"\x00\x01"})
+
+    # Act / Assert
+    with pytest.raises(StatementError, match="bytes is not JSON serializable"):
+        async with _added(harness, store, record):
+            pass
+    assert await _claim(store) == []
 
 
 async def test_rolled_back_record_never_kept(harness: _Harness):

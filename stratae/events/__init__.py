@@ -87,7 +87,7 @@ from .envelope import (
     Envelope,
     EnvelopeConfig,
 )
-from .handler import Handler, Handlers, WithoutPayload
+from .handler import Handler, Handlers
 from .hooks import Hooks
 from .middleware import HandleCall, Middleware, PublishCall
 from .patterns import Immutable, NoPayload, PubSub, Request
@@ -150,7 +150,6 @@ __all__ = [
     "Serializer",
     "Serializing",
     "SignalEvent",
-    "WithoutPayload",
     "abind",
     "bind",
     "destination_of",

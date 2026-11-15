@@ -28,8 +28,10 @@ headers, so correlation ids propagate across publishes and handlers. Each publis
 new envelope, a child of the active one, unless `emit` is given one: re-publishing a message
 with the envelope it was first sent with, as an outbox relay or a job retry would, keeps its
 message id, so consumers can deduplicate on it. Redelivery keeps it too.
-Headers that publish middleware adds are sent with the message, and handle middleware reads
-a delivered message's text headers. `emit` can be given headers as well, so a message can be
+Headers that publish middleware adds are sent with the message, as AMQP field values: text,
+numbers, booleans, timestamps, bytes, and lists and tables of them. A value AMQP can't carry
+is refused with `TypeError` when the message is sent. Handle middleware reads a delivered
+message's headers as they arrived. `emit` can be given headers as well, so a message can be
 re-published with the ones it was first sent with.
 {py:class}`Hooks <stratae.events.hooks.Hooks>` passed to `bind` or `emit` run around each
 publish, and those passed to `handle` around each delivery's handler, before its ack or nack.

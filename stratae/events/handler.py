@@ -4,9 +4,8 @@ Wrap event handler callables with their routing config, compared by identity.
 {py:class}`Handler` pairs a callable with its routing config and records whether it's async.
 Each registration returns a distinct `Handler`, which is the token `remove` takes back.
 {py:class}`Handlers` holds an event's handlers as an immutable tuple, which a bus replaces
-when a handler is added or removed. {py:class}`WithoutPayload` adapts a payload-less event's
-handler, so an adapter can call every handler with one argument, and {py:func}`invoke` calls
-one, sync or async, from async code.
+when a handler is added or removed. {py:func}`invoke` calls one, sync or async, from async
+code.
 
 ````{example} Using a returned Handler to unregister it later
 ```{code-block} python
@@ -54,8 +53,8 @@ class Handler[**P, HandlerConfig, R]:
         """
         Wrap a handler.
 
-        :param call: Sync or async callable taking the payload: what the bus invokes, which may
-            wrap the registered function, e.g. in hooks.
+        :param call: Sync or async callable taking the message being handled: what the bus
+            invokes, which wraps the registered function, and any hooks and middleware.
         :param config: The handler's routing config.
         :param is_async: Whether `call` is async: whether calling it gives a coroutine.
         """
@@ -102,28 +101,6 @@ class Handlers[H: Handler[Any, Any, Any]](tuple[H, ...]):
         if handler not in self:
             return self
         return type(self)(registered for registered in self if registered is not handler)
-
-
-class WithoutPayload:
-    """
-    Adapt a payload-less event's handler to take, and ignore, one argument.
-
-    Lets an adapter call every handler with one argument, whatever the event.
-    """
-
-    __slots__ = ("fn",)
-
-    def __init__(self, fn: Callable[[], Any]) -> None:
-        """
-        Wrap a handler.
-
-        :param fn: The handler, taking no arguments.
-        """
-        self.fn: Callable[[], Any] = fn
-
-    def __call__(self, _: object, /) -> Any:
-        """Call the handler without the argument."""
-        return self.fn()
 
 
 async def invoke(handler: Handler[..., Any, Any], *args: Any) -> Any:

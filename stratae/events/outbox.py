@@ -182,7 +182,7 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _added(headers: Mapping[str, str]) -> dict[str, str]:
+def _added(headers: Mapping[str, object]) -> dict[str, object]:
     """Return the headers publish middleware added to a record, without its envelope's."""
     return {name: value for name, value in headers.items() if name not in ENVELOPE_HEADERS}
 
@@ -202,7 +202,7 @@ async def _settle[T](result: T | Awaitable[T]) -> T:
 
 @dataclass(frozen=True, slots=True)
 class OutboxRecord:
-    """One event waiting in the outbox, as plain data any store can keep."""
+    """One event waiting in the outbox, as plain data a store keeps."""
 
     id: UUID
     """The message id, from the envelope it was emitted with. Unique per record."""
@@ -213,10 +213,10 @@ class OutboxRecord:
     body: bytes
     """The serialized payload."""
 
-    headers: Mapping[str, str]
+    headers: Mapping[str, object]
     """
-    The headers it's published with: the envelope it was emitted with, and any its publish
-    middleware added.
+    The headers it's published with, as they were emitted: the envelope it was emitted with,
+    whose values are text, and any its publish middleware added, whatever their values.
     """
 
     created_at: datetime
@@ -256,6 +256,13 @@ class OutboxStore(Protocol):
 
     `add` must write in the same transaction as the data the event describes. That's what
     makes the outbox transactional. The rest are called by the relay.
+
+    A store gives back each record as it was added, its headers included, so the relay
+    publishes what was emitted. How it keeps them is its own choice. An in-memory store keeps
+    the values themselves, and a database store picks a column that holds the values its
+    application sends, such as JSON for text, numbers, booleans, lists and tables. A value a
+    store can't keep, it refuses when the record is added, inside the unit of work. It never
+    gives back a different value.
 
     Each method may be sync or async: a store backed by an async database awaits, and one
     that doesn't need to, doesn't. The outbox awaits whichever returns an awaitable.
@@ -642,7 +649,7 @@ class OutboxPublisher(Protocol):
         payload: Any,
         *,
         envelope: Envelope | None = ...,
-        headers: Mapping[str, str] | None = ...,
+        headers: Mapping[str, object] | None = ...,
     ) -> Awaitable[Any]:
         """
         Publish a payload under `envelope` with `headers`, returning once the broker has it.

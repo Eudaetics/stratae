@@ -182,7 +182,7 @@ class _Publisher:
 
     def __init__(self, *outcomes: Exception | None) -> None:
         self.published: list[tuple[Any, Any, bytes, Envelope | None]] = []
-        self.headers: list[Mapping[str, str] | None] = []
+        self.headers: list[Mapping[str, object] | None] = []
         self.addresses: list[str | None] = []
         self.routes: dict[Any, Any] = {}
         self.outcomes = list(outcomes)
@@ -197,7 +197,7 @@ class _Publisher:
         payload: Encoded,
         *,
         envelope: Envelope | None = None,
-        headers: Mapping[str, str] | None = None,
+        headers: Mapping[str, object] | None = None,
     ) -> None:
         outcome = self.outcomes.pop(0) if self.outcomes else None
         if outcome is not None:
