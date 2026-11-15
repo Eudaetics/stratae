@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from pamqp.commands import Queue
 
-from stratae.integrations.rabbitmq._retry import milliseconds, retry_delays, retry_queue_name
+from stratae.integrations.rabbitmq._retry import milliseconds, retry_queue_name
 from stratae.integrations.rabbitmq.config import RabbitMQConsumeConfig, RabbitMQFailurePolicy
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ async def _declare_failure_queues(
     channel: AbstractChannel, queue: str, policy: RabbitMQFailurePolicy
 ) -> None:
     """Declare a policy's retry queues, each expiring back into `queue`, and dead letters."""
-    for delay in dict.fromkeys(retry_delays(policy.backoff)):
+    for delay in dict.fromkeys(policy.backoff.delays):
         await channel.queue_declare(
             retry_queue_name(queue, delay),
             durable=True,

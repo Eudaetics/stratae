@@ -19,7 +19,7 @@ _SIGNATURE_OPTIONS: dict[str, Any] = (
 )
 
 
-def read_signature(func: Callable[..., Any]) -> Signature:
+def read_signature(func: Callable[..., object]) -> Signature:
     """Return `func`'s signature, leaving annotations that can't be resolved unresolved."""
     return signature(func, **_SIGNATURE_OPTIONS)
 
@@ -39,16 +39,15 @@ def render_parameters(parameters: Sequence[Parameter]) -> str:
     unless `*args` already does.
     """
     parts: list[str] = []
-    previous: Any = None
-    for param in parameters:
+    kinds = [param.kind for param in parameters]
+    for previous, param in zip([None, *kinds], parameters, strict=False):
         kind = param.kind
         if previous is Parameter.POSITIONAL_ONLY and kind is not Parameter.POSITIONAL_ONLY:
             parts.append("/")
         if kind is Parameter.KEYWORD_ONLY and previous not in _BEFORE_KEYWORD_ONLY:
             parts.append("*")
         parts.append(_PREFIX.get(kind, "") + param.name)
-        previous = kind
-    if previous is Parameter.POSITIONAL_ONLY:
+    if kinds and kinds[-1] is Parameter.POSITIONAL_ONLY:
         parts.append("/")
     return ", ".join(parts)
 
@@ -111,7 +110,7 @@ def render_key(parameters: Sequence[Parameter]) -> str:
     return "(" + "".join(f"{part(param)}, " for param in parameters) + ")"
 
 
-def defaults(parameters: Sequence[Parameter]) -> tuple[Any, ...] | None:
+def defaults(parameters: Sequence[Parameter]) -> tuple[object, ...] | None:
     """
     Return the `__defaults__` of a function with `parameters`: its positional defaults.
 
@@ -129,7 +128,7 @@ def defaults(parameters: Sequence[Parameter]) -> tuple[Any, ...] | None:
     )
 
 
-def kwdefaults(parameters: Sequence[Parameter]) -> dict[str, Any] | None:
+def kwdefaults(parameters: Sequence[Parameter]) -> dict[str, object] | None:
     """Return the `__kwdefaults__` of a function with `parameters`: its keyword-only defaults."""
     return {
         param.name: param.default

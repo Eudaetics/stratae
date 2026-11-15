@@ -13,7 +13,7 @@ refuses a coroutine or an async generator.
 """
 
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Hashable
-from typing import Any, overload
+from typing import overload
 
 from stratae.callables import Gives, call_result
 from stratae.lifecycle._slots import SlotStore
@@ -28,7 +28,7 @@ from stratae.lifecycle._wrappers import (
 )
 from stratae.lifecycle.exceptions import AsyncInSyncScopeError
 
-_WRAPPERS: dict[Gives, Callable[..., Cached[..., Any, Any]]] = {
+_WRAPPERS: dict[Gives, Callable[..., Cached[..., object, object]]] = {
     Gives.VALUE: create_sync_wrapper,
     Gives.COROUTINE: create_async_wrapper,
     Gives.GENERATOR: create_generator_wrapper,
@@ -37,14 +37,14 @@ _WRAPPERS: dict[Gives, Callable[..., Cached[..., Any, Any]]] = {
 """The wrapper for a callable known to give each kind of thing."""
 
 
-def _wrap(
-    func: Callable[..., Any],
+def _wrap[**P](
+    func: Callable[P, object],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
     *,
     can_await: bool,
-) -> Cached[..., Any, Any]:
+) -> Cached[P, object, object]:
     """
     Wrap `func` for its scope, from what calling it gives.
 
@@ -92,13 +92,13 @@ class CacheDecorator(_CacheDecorator):
 
     @overload
     def __call__[**P, Value](
-        self, func: Callable[P, Generator[Value, Any, Any]]
-    ) -> Cached[P, Value, Generator[Value, Any, Any]]: ...
+        self, func: Callable[P, Generator[Value, None, object]]
+    ) -> Cached[P, Value, Generator[Value, None, object]]: ...
 
     @overload
     def __call__[**P, Value](self, func: Callable[P, Value]) -> Cached[P, Value, Value]: ...
 
-    def __call__(self, func: Callable[..., Any]) -> Cached[..., Any, Any]:
+    def __call__[**P](self, func: Callable[P, object]) -> Cached[P, object, object]:
         """
         Wrap `func` so its result is cached per scope activation.
 
@@ -119,13 +119,13 @@ class AsyncCacheDecorator(_CacheDecorator):
 
     @overload
     def __call__[**P, Value](
-        self, func: Callable[P, AsyncGenerator[Value, Any]]
-    ) -> Cached[P, Awaitable[Value], AsyncGenerator[Value, Any]]: ...
+        self, func: Callable[P, AsyncGenerator[Value, None]]
+    ) -> Cached[P, Awaitable[Value], AsyncGenerator[Value, None]]: ...
 
     @overload
     def __call__[**P, Value](
-        self, func: Callable[P, Generator[Value, Any, Any]]
-    ) -> Cached[P, Value, Generator[Value, Any, Any]]: ...
+        self, func: Callable[P, Generator[Value, None, object]]
+    ) -> Cached[P, Value, Generator[Value, None, object]]: ...
 
     @overload
     def __call__[**P, Value](
@@ -135,7 +135,7 @@ class AsyncCacheDecorator(_CacheDecorator):
     @overload
     def __call__[**P, Value](self, func: Callable[P, Value]) -> Cached[P, Value, Value]: ...
 
-    def __call__(self, func: Callable[..., Any]) -> Cached[..., Any, Any]:
+    def __call__[**P](self, func: Callable[P, object]) -> Cached[P, object, object]:
         """
         Wrap `func` so its result is cached per scope activation.
 

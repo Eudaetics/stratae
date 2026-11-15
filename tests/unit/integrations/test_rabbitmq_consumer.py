@@ -92,7 +92,7 @@ RabbitMQConsumer:
 RabbitMQFailurePolicy:
 - It's an immutable value: assignment is refused, and policies with the same fields are equal
   and hash alike.
-- A non-positive retry delay, or a backoff that never runs out, raises ValueError.
+- A non-positive retry delay raises ValueError.
 - A dead-letter queue name when give_up isn't DeadLetter raises ValueError.
 - A failure policy that retries or dead-letters on a config without a named queue raises
   ValueError; by default, and when rejecting or dropping without retries, none is needed.
@@ -138,7 +138,7 @@ import pytest
 from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
-from stratae.backoff import Delays, Exponential
+from stratae.backoff import Delays, Exponential, Limited
 from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
@@ -2138,18 +2138,6 @@ def test_failure_policy_refuses_non_positive_delay():
         RabbitMQFailurePolicy(Delays(1, 0))
 
 
-def test_failure_policy_refuses_endless_backoff():
-    """
-    RabbitMQFailurePolicy should refuse a backoff that never runs out.
-
-    Given: An exponential backoff without a retry limit
-    When: A RabbitMQFailurePolicy is created
-    Then: A ValueError should be raised, since each delay names a retry queue
-    """
-    with pytest.raises(ValueError, match="must run out"):
-        RabbitMQFailurePolicy(Exponential(1))
-
-
 def test_failure_policy_refuses_queue_when_dropping():
     """
     RabbitMQFailurePolicy should refuse a dead-letter queue name when it drops failures.
@@ -2225,7 +2213,7 @@ def test_failure_policy_takes_exponential_backoff():
     When: Its retry queues are named for the "orders" queue
     Then: The attempts map to the 1, 2, 4 and 4 second queues, then None
     """
-    policy = RabbitMQFailurePolicy(Exponential(1, cap=4, retries=4))
+    policy = RabbitMQFailurePolicy(Limited(Exponential(1, cap=4), retries=4))
 
     assert [policy.retry_queue("orders", n) for n in range(1, 6)] == [
         "orders.retry.1000",

@@ -255,13 +255,13 @@ False
 
 ### Backoff
 
-How long to wait after each failure, as a value. `delay(n)` is the wait after the nth failure in a row, or `None` once there are no retries left. A backoff holds no progress of its own, so whatever retries keeps the count. The outbox relay and the RabbitMQ adapters each take one.
+How long to wait after each failure, as a value. `delay(n)` is the wait after the nth failure in a row, or `None` once there are no retries left. A backoff holds no progress of its own, so whatever retries keeps the count. The outbox relay and the RabbitMQ adapters each take one. `Exponential` never runs out, and `Limited` gives any backoff a number of retries.
 
 ````{example} Retrying after 30 seconds, doubling to an hour, then giving up
 ```{code-block} python
-from stratae.backoff import Exponential
+from stratae.backoff import Exponential, Limited
 
-retry = Exponential(30, cap=3600, retries=9)
+retry = Limited(Exponential(30, cap=3600), retries=9)
 print(retry.delay(1), retry.delay(9), retry.delay(10))
 ```
 ```{output}

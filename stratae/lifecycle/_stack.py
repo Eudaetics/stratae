@@ -22,7 +22,7 @@ from stratae.lifecycle.exceptions import (
 Entered = list[tuple[bool, Any, Callable[[Any, BaseException | None], Any]]]
 
 
-def exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) -> bool:
+def exit_generator(gen: Generator[object, None, None], exc: BaseException | None) -> bool:
     """
     Finish a resource generator as `contextlib.contextmanager`'s `__exit__` would.
 
@@ -63,7 +63,9 @@ def exit_generator(gen: Generator[Any, None, None], exc: BaseException | None) -
         gen.close()
 
 
-async def exit_async_generator(gen: AsyncGenerator[Any, None], exc: BaseException | None) -> bool:
+async def exit_async_generator(
+    gen: AsyncGenerator[object, None], exc: BaseException | None
+) -> bool:
     """
     Finish a resource async generator as `contextlib.asynccontextmanager`'s `__aexit__` would.
 

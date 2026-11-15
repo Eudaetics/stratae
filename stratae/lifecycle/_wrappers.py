@@ -139,7 +139,7 @@ def _box_class() -> type:
     class Owned:
         __slots__ = ("value",)
 
-        def __init__(self, value: Any) -> None:
+        def __init__(self, value: object) -> None:
             self.value = value
 
     return Owned
@@ -555,7 +555,7 @@ def _raise_ended(store: SlotStore) -> NoReturn:
     raise ActivationEndedError(store.name)
 
 
-def _refuse_async(func: Callable[..., Any], store: SlotStore, value: object) -> NoReturn:
+def _refuse_async(func: Callable[..., object], store: SlotStore, value: object) -> NoReturn:
     """Refuse a coroutine or async generator returned to a sync checked wrapper."""
     if isinstance(value, CoroutineType):
         value.close()
@@ -635,7 +635,7 @@ def _source(params: Sequence[Parameter], key: str | None, parts: _Parts) -> Line
     return miss.mode.define(render_parameters(params), [*body, "return __value__"])
 
 
-def _read_params(func: Callable[..., Any], store: SlotStore) -> list[Parameter]:
+def _read_params(func: Callable[..., object], store: SlotStore) -> list[Parameter]:
     """
     Return `func`'s parameters, which its wrapper mirrors.
 
@@ -648,7 +648,7 @@ def _read_params(func: Callable[..., Any], store: SlotStore) -> list[Parameter]:
 
 
 def _create_wrapper(
-    func: Callable[..., Any],
+    func: Callable[..., object],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None,
     ignore_params: bool,
@@ -713,11 +713,11 @@ def create_async_wrapper[**P, Value](
 
 
 def create_generator_wrapper[**P, Value](
-    func: Callable[P, Generator[Value, Any, Any]],
+    func: Callable[P, Generator[Value, None, object]],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[P, Value, Generator[Value, Any, Any]]:
+) -> Cached[P, Value, Generator[Value, None, object]]:
     """
     Create a wrapper that enters a generator function's generator and caches its yielded value.
 
@@ -730,17 +730,17 @@ def create_generator_wrapper[**P, Value](
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
-        Cached[P, Value, Generator[Value, Any, Any]],
+        Cached[P, Value, Generator[Value, None, object]],
         _create_wrapper(func, store, cache_key, ignore_params, _ENTER_GENERATOR),
     )
 
 
 def create_async_generator_wrapper[**P, Value](
-    func: Callable[P, AsyncGenerator[Value, Any]],
+    func: Callable[P, AsyncGenerator[Value, None]],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[P, Awaitable[Value], AsyncGenerator[Value, Any]]:
+) -> Cached[P, Awaitable[Value], AsyncGenerator[Value, None]]:
     """
     Create an async wrapper that enters an async generator and caches its yielded value.
 
@@ -755,17 +755,17 @@ def create_async_generator_wrapper[**P, Value](
         attribute.
     """
     return cast(
-        Cached[P, Awaitable[Value], AsyncGenerator[Value, Any]],
+        Cached[P, Awaitable[Value], AsyncGenerator[Value, None]],
         _create_wrapper(func, store, cache_key, ignore_params, _ENTER_ASYNC_GENERATOR),
     )
 
 
-def create_checked_sync_wrapper(
-    func: Callable[..., Any],
+def create_checked_sync_wrapper[**P, Result](
+    func: Callable[P, Result],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[..., Any, Any]:
+) -> Cached[P, object, Result]:
     """
     Create a sync wrapper for a function whose decorator hides one giving something else.
 
@@ -781,17 +781,17 @@ def create_checked_sync_wrapper(
     :returns: A wrapper matching `func`'s signature, with `func` as its `uncached` attribute.
     """
     return cast(
-        Cached[..., Any, Any],
+        Cached[P, object, Result],
         _create_wrapper(func, store, cache_key, ignore_params, _CHECK_SYNC),
     )
 
 
-def create_checked_async_wrapper(
-    func: Callable[..., Any],
+def create_checked_async_wrapper[**P, Result](
+    func: Callable[P, Result],
     store: SlotStore,
     cache_key: Callable[..., Hashable] | None = None,
     ignore_params: bool = False,
-) -> Cached[..., Any, Any]:
+) -> Cached[P, Awaitable[object], Result]:
     """
     Create an async wrapper for a function whose decorator hides one giving something else.
 
@@ -808,6 +808,6 @@ def create_checked_async_wrapper(
         attribute.
     """
     return cast(
-        Cached[..., Any, Any],
+        Cached[P, Awaitable[object], Result],
         _create_wrapper(func, store, cache_key, ignore_params, _CHECK_ASYNC),
     )

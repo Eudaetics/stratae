@@ -46,7 +46,7 @@ RabbitMQPublisher:
 - A failed publish reaches the failure hook, and still propagates.
 - Publish hooks run inside the message's envelope, seeing the ids it's sent with.
 - Publish middleware runs around the publish and its hooks, inside the message's envelope.
-- Publish middleware sees the emit's RabbitMQConfig as call.config.
+- Publish middleware sees where the emit is published, a RabbitMQPublish, as call.config.
 - A publish middleware that isn't an async def is refused when the publisher is built;
   handle middleware isn't checked, so one Middleware can be shared with a consumer.
 - emit given an envelope sends its ids and timestamp unchanged, as x- headers and native
@@ -101,7 +101,7 @@ from aiormq.exceptions import PublishError
 from pamqp.commands import Basic
 from pytest_mock import MockerFixture
 
-from stratae.backoff import Delays, Exponential
+from stratae.backoff import Delays, Exponential, Limited
 from stratae.events import (
     CAUSATION_ID_HEADER,
     CORRELATION_ID_HEADER,
@@ -126,6 +126,7 @@ from stratae.integrations.rabbitmq import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
     RabbitMQFailurePolicy,
+    RabbitMQPublish,
     RabbitMQPublisher,
 )
 from stratae.middleware import MiddlewareKindError
@@ -207,7 +208,7 @@ def test_outbox_accepts_equal_configs_on_one_route():
     When: The same event binds the route again with an equal config, then a different one
     Then: The equal config is accepted, and the different one raises ValueError
     """
-    outbox = OutboxProducer(InMemoryOutboxStore(), serializer=lambda payload: b"")
+    outbox = OutboxProducer[RabbitMQConfig](InMemoryOutboxStore(), serializer=lambda payload: b"")
     outbox.bind(_order_placed, config=OutboxConfig(RabbitMQConfig("events", "order.placed")))
 
     outbox.bind(_order_placed, config=OutboxConfig(RabbitMQConfig("events", "order.placed")))
@@ -516,10 +517,9 @@ def test_config_with_routing_key_function():
     A config whose routing key is a function should address each payload, and have a destination.
 
     Given: A config whose routing key comes from the payload, and one with a fixed key
-    When: Each is asked for a payload's address, and the first gives a message's config
-    Then: The first gives the payload's key, and the fixed one gives None. The message's config
-          equals a config built with that key. The function config's destination is its
-          exchange, and it's Addressed
+    When: Each is asked for a payload's address
+    Then: The first gives the payload's key, and the fixed one gives None. The function config's
+          destination is its exchange, and it's Addressed
     """
     # Arrange
     by_order = RabbitMQConfig("events", lambda order: f"order.{order.order_id}")
@@ -527,7 +527,6 @@ def test_config_with_routing_key_function():
     # Act / Assert
     assert by_order.address(_OrderPlaced(3)) == "order.3"
     assert _config.address(_OrderPlaced(3)) is None
-    assert by_order.at("order.3") == RabbitMQConfig("events", "order.3")
     assert by_order.messaging_destination.name == "events"
     assert isinstance(by_order, Addressed)
 
@@ -539,21 +538,21 @@ async def test_emit_routes_by_payload(connect_mock: AsyncMock, channel: AsyncMoc
     Given: An event routed to a config whose routing key comes from the payload, and publish
            middleware recording each call's config
     When: Two payloads with different keys are emitted
-    Then: Each is published with its own key, and middleware saw each one's concrete config
+    Then: Each is published with its own key, and middleware saw each one's publish: the route
+          and the message's key
     """
     # Arrange
-    seen: list[tuple[object, str | None]] = []
+    seen: list[RabbitMQPublish] = []
 
     async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
-        seen.append((call.config.routing_key, call.config.messaging_destination.name))
+        seen.append(call.config)
         return await next(call)
 
     publisher = RabbitMQPublisher(
         _URL, serializer=_encode, middleware=Middleware(publish=(record,))
     )
-    publisher.route(
-        _order_placed, RabbitMQConfig("events", lambda order: f"order.{order.order_id}")
-    )
+    by_order = RabbitMQConfig("events", lambda order: f"order.{order.order_id}")
+    publisher.route(_order_placed, by_order)
 
     # Act
     async with publisher:
@@ -563,7 +562,11 @@ async def test_emit_routes_by_payload(connect_mock: AsyncMock, channel: AsyncMoc
     # Assert
     keys = [call.kwargs["routing_key"] for call in channel.basic_publish.await_args_list]
     assert keys == ["order.1", "order.2"]
-    assert seen == [("order.1", "events:order.1"), ("order.2", "events:order.2")]
+    assert seen == [RabbitMQPublish(by_order, "order.1"), RabbitMQPublish(by_order, "order.2")]
+    assert [publish.messaging_destination.name for publish in seen] == [
+        "events:order.1",
+        "events:order.2",
+    ]
 
 
 async def test_emit_sends_encoded_payloads_as_they_are(
@@ -610,7 +613,7 @@ async def test_outbox_relays_to_each_records_address(
     """
     # Arrange
     store = InMemoryOutboxStore()
-    outbox = OutboxProducer(store, serializer=_encode)
+    outbox = OutboxProducer[RabbitMQConfig](store, serializer=_encode)
     by_order = RabbitMQConfig("events", lambda order: f"order.{order.order_id}")
     place = outbox.bind(_order_placed, factory=_OrderPlaced, config=OutboxConfig(by_order))
 
@@ -640,7 +643,7 @@ async def test_outbox_encodes_with_the_configs_serializer(
     """
     # Arrange
     store = InMemoryOutboxStore()
-    outbox = OutboxProducer(store, serializer=_encode)
+    outbox = OutboxProducer[RabbitMQConfig](store, serializer=_encode)
 
     def custom(_: _OrderPlaced) -> bytes:
         return b"custom"
@@ -1031,14 +1034,14 @@ def test_publisher_accepts_shared_middleware():
 
 async def test_publish_middleware_sees_config(connect_mock: AsyncMock, channel: AsyncMock):
     """
-    Publish middleware should see the emit's routing config.
+    Publish middleware should see where the emit is published: its route and routing key.
 
     Given: A publisher with publish middleware recording call.config
-    When: An event is emitted with a RabbitMQConfig
-    Then: The middleware sees that config, exchange and routing key included
+    When: An event routed to a RabbitMQConfig is emitted
+    Then: The middleware sees a RabbitMQPublish of that route at its routing key
     """
     # Arrange
-    seen: list[RabbitMQConfig] = []
+    seen: list[RabbitMQPublish] = []
 
     async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         seen.append(call.config)
@@ -1054,8 +1057,8 @@ async def test_publish_middleware_sees_config(connect_mock: AsyncMock, channel: 
         await publisher.emit(_order_placed, _OrderPlaced(1))
 
     # Assert
-    assert seen == [_config]
-    assert (seen[0].exchange, seen[0].routing_key) == ("events", "order.placed")
+    assert seen == [RabbitMQPublish(_config, "order.placed")]
+    assert seen[0].messaging_destination.name == "events:order.placed"
 
 
 async def test_emit_sends_given_envelope(publisher: RabbitMQPublisher, channel: AsyncMock):
@@ -1660,7 +1663,7 @@ async def test_reconnect_gives_up_once_backoff_runs_out(
     # Arrange
     channels = _new_channels(connection)
     publisher = RabbitMQPublisher(
-        _URL, serializer=_encode, reconnect=Exponential(0.001, factor=1, retries=2)
+        _URL, serializer=_encode, reconnect=Limited(Exponential(0.001, factor=1), retries=2)
     )
 
     async with publisher:

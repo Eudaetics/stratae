@@ -1,7 +1,6 @@
 """Exceptions for errors in dependency injection, subclassing {py:exc}`DependencyInjectionError`."""
 
 from collections.abc import Callable
-from typing import Any
 
 
 class DependencyInjectionError(Exception):
@@ -15,7 +14,7 @@ class ResolutionError(DependencyInjectionError):
 class CircularDependencyError(ResolutionError):
     """Raised when providers depend on each other in a cycle."""
 
-    def __init__(self, func: Callable[..., Any]) -> None:
+    def __init__(self, func: Callable[..., object]) -> None:
         """:param func: The provider that depends on itself, directly or not."""
         super().__init__(f"Circular dependency detected for {func}.")
 
@@ -49,7 +48,7 @@ class UninjectableCallableError(InjectionSignatureError):
 class PostponedAnnotationsError(InjectionSignatureError):
     """Raised when injecting into a function from a module with postponed annotations."""
 
-    def __init__(self, func: Callable[..., Any]) -> None:
+    def __init__(self, func: Callable[..., object]) -> None:
         """:param func: The function."""
         super().__init__(
             f"{func.__qualname__} is from a module using 'from __future__ import annotations', "
@@ -61,7 +60,7 @@ class PostponedAnnotationsError(InjectionSignatureError):
 class StringAnnotationError(InjectionSignatureError):
     """Raised when an injected parameter's dependency is in a string annotation."""
 
-    def __init__(self, func: Callable[..., Any], parameter: str) -> None:
+    def __init__(self, func: Callable[..., object], parameter: str) -> None:
         """
         Name the function and its quoted parameter.
 
@@ -86,6 +85,6 @@ class InjectedDefaultError(InjectionSignatureError):
 class AsyncDependencyError(InjectionSignatureError):
     """Raised when a sync function has async dependencies."""
 
-    def __init__(self, func: Callable[..., Any]) -> None:
+    def __init__(self, func: Callable[..., object]) -> None:
         """:param func: The sync function."""
         super().__init__(f"Sync function '{func.__name__}' cannot have async dependencies.")

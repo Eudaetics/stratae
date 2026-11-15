@@ -221,11 +221,11 @@ from stratae.lifecycle.exceptions import (
 IsolationType = Literal["shared", "context"]
 StorageType = Literal["dense", "sparse"]
 
-type ScopeMiddleware = Callable[["Scope"], Generator[Any, None, None]]
+type ScopeMiddleware = Callable[["Scope"], Generator[object, None, None]]
 """A generator function given the scope, yielding once around one of its activations."""
 
 type AsyncScopeMiddleware = Callable[
-    ["AsyncScope"], Generator[Any, None, None] | AsyncGenerator[Any, None]
+    ["AsyncScope"], Generator[object, None, None] | AsyncGenerator[object, None]
 ]
 """A generator function, sync or async, given the scope, yielding once around an activation."""
 

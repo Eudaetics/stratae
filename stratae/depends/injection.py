@@ -59,7 +59,7 @@ import __future__
 
 from collections.abc import Callable
 from inspect import Parameter, Signature, isclass, isfunction, ismethod, unwrap
-from typing import Annotated, Any, get_origin, overload
+from typing import Annotated, Protocol, get_origin, overload
 
 from stratae.callables import Gives, call_result
 from stratae.codegen import read_signature
@@ -80,7 +80,7 @@ from stratae.depends.exceptions import (
 )
 
 
-def Depends(dependency: Callable[..., Any]) -> Provider:  # noqa: S1542
+def Depends(dependency: Callable[..., object]) -> Provider:  # noqa: S1542
     """
     Mark a callable as the provider for an injected parameter.
 
@@ -95,9 +95,9 @@ def Depends(dependency: Callable[..., Any]) -> Provider:  # noqa: S1542
 
 
 @overload
-def inject[Declared: Callable[..., Any]](
+def inject[Declared: Callable[..., object]](
     *, sig: Declared
-) -> Callable[[Callable[..., Any]], Declared]: ...
+) -> Callable[[Callable[..., object]], Declared]: ...
 
 
 @overload
@@ -109,10 +109,10 @@ def inject[Result]() -> Callable[[Callable[..., Result]], Callable[..., Result]]
 
 
 def inject(
-    func: Callable[..., Any] | None = None,
+    func: Callable[..., object] | None = None,
     *,
-    sig: Callable[..., Any] | None = None,
-) -> Any:
+    sig: Callable[..., object] | None = None,
+) -> Callable[..., object]:
     """
     Fill a function's injected parameters from their providers at call time.
 
@@ -129,7 +129,7 @@ def inject(
     :raises CircularDependencyError: If providers depend on each other in a cycle.
     """
 
-    def decorator(f: Callable[..., Any]) -> Any:
+    def decorator[Result](f: Callable[..., Result]) -> Callable[..., Result]:
         return _resolve_function(f)
 
     if sig is not None or func is None:
@@ -139,7 +139,7 @@ def inject(
 
 def _resolve_function[**P, Result](
     func: Callable[P, Result],
-    _resolving: set[Callable[..., Any]] | None = None,
+    _resolving: set[Callable[..., object]] | None = None,
 ) -> Callable[..., Result]:
     """Resolve a function to its dependencies."""
     if getattr(func, "__stratae_resolved__", False):
@@ -159,7 +159,17 @@ def _resolve_function[**P, Result](
     return _injected(func, resolved_deps)
 
 
-_WRAPPERS: dict[Gives, Callable[[Callable[..., Any], dict[str, Provider]], Callable[..., Any]]] = {
+class _Wrapper(Protocol):
+    """Wraps a function to inject its dependencies, keeping what calling it gives."""
+
+    def __call__[Result](
+        self, func: Callable[..., Result], resolved_deps: dict[str, Provider], /
+    ) -> Callable[..., Result]:
+        """Return `func` with `resolved_deps` injected."""
+        ...
+
+
+_WRAPPERS: dict[Gives, _Wrapper] = {
     Gives.VALUE: create_sync_wrapper,
     Gives.COROUTINE: create_async_wrapper,
     Gives.GENERATOR: create_sync_gen_wrapper,
@@ -168,7 +178,9 @@ _WRAPPERS: dict[Gives, Callable[[Callable[..., Any], dict[str, Provider]], Calla
 """The wrapper injecting a function's dependencies, for what calling it gives."""
 
 
-def _reject_callable_objects(func: Callable[..., Any], resolved_deps: dict[str, Provider]) -> None:
+def _reject_callable_objects(
+    func: Callable[..., object], resolved_deps: dict[str, Provider]
+) -> None:
     """
     Raise if `func` has injected parameters but is a callable object.
 
@@ -179,18 +191,18 @@ def _reject_callable_objects(func: Callable[..., Any], resolved_deps: dict[str, 
         raise UninjectableCallableError(func)
 
 
-def _annotated_function(func: Callable[..., Any]) -> Any:
+def _annotated_function(func: Callable[..., object]) -> Callable[..., object]:
     """Return the function whose globals `func`'s annotations come from."""
     return unwrap(func.__init__ if isclass(func) else func)
 
 
-def _uses_future_annotations(func: Callable[..., Any]) -> bool:
+def _uses_future_annotations(func: Callable[..., object]) -> bool:
     """Whether `func`'s module uses `from __future__ import annotations`."""
     code = getattr(_annotated_function(func), "__code__", None)
     return code is not None and bool(code.co_flags & __future__.annotations.compiler_flag)
 
 
-def _reject_future_annotations(func: Callable[..., Any], sig: Signature) -> None:
+def _reject_future_annotations(func: Callable[..., object], sig: Signature) -> None:
     """Raise if `func` has a required parameter in a module with stringified annotations."""
     variadic = (Parameter.VAR_POSITIONAL, Parameter.VAR_KEYWORD)
     required = any(
@@ -201,7 +213,7 @@ def _reject_future_annotations(func: Callable[..., Any], sig: Signature) -> None
         raise PostponedAnnotationsError(func)
 
 
-def _is_quoted_dependency(annotation: Any, namespace: dict[str, Any]) -> bool:
+def _is_quoted_dependency(annotation: object, namespace: dict[str, object]) -> bool:
     """Whether `annotation` is a string evaluating to an injected annotation."""
     if not isinstance(annotation, str):
         return False
@@ -214,19 +226,21 @@ def _is_quoted_dependency(annotation: Any, namespace: dict[str, Any]) -> bool:
     return get_origin(value) is Annotated and _get_annotated_info(value) is not None
 
 
-def _reject_quoted_dependencies(func: Callable[..., Any], sig: Signature) -> None:
+def _reject_quoted_dependencies(func: Callable[..., object], sig: Signature) -> None:
     """
     Raise if one of `func`'s injected parameters is annotated with a string.
 
     Catches hand-quoted annotations and generated `__init__`s, such as a dataclass's.
     """
-    namespace: dict[str, Any] = getattr(_annotated_function(func), "__globals__", {})
+    namespace: dict[str, object] = getattr(_annotated_function(func), "__globals__", {})
     for param in sig.parameters.values():
         if _is_quoted_dependency(param.annotation, namespace):
             raise StringAnnotationError(func, param.name)
 
 
-def _resolve_parameters(sig: Signature, _resolving: set[Callable[..., Any]]) -> dict[str, Provider]:
+def _resolve_parameters(
+    sig: Signature, _resolving: set[Callable[..., object]]
+) -> dict[str, Provider]:
     """Resolve a list of parameters."""
     return {
         name: value
@@ -235,21 +249,22 @@ def _resolve_parameters(sig: Signature, _resolving: set[Callable[..., Any]]) -> 
     }
 
 
-def _get_annotated_info(annotation: Annotated[Any, ...]) -> Provider | None:
+def _get_annotated_info(annotation: object) -> Provider | None:
     """Extract the Provider from an Annotated parameter."""
+    metadata: tuple[object, ...] = getattr(annotation, "__metadata__", ())
     depends_wrapper = next(
-        (x for x in reversed(annotation.__metadata__) if isinstance(x, Provider)),
+        (x for x in reversed(metadata) if isinstance(x, Provider)),
         None,
     )
     return depends_wrapper
 
 
-def _unwrap_type(annotation: Any) -> Any:
+def _unwrap_type(annotation: object) -> object:
     """Unwrap Annotated types to get the actual type."""
     return getattr(annotation, "__value__", annotation)
 
 
-def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., Any]]) -> Provider | None:
+def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., object]]) -> Provider | None:
     """Resolve a single parameter to its dependency, if it has one."""
     annotation = _unwrap_type(param.annotation)
     if get_origin(annotation) is not Annotated:
@@ -267,7 +282,9 @@ def _resolve_parameter(param: Parameter, _resolving: set[Callable[..., Any]]) ->
     return depends
 
 
-def _injected(func: Callable[..., Any], resolved_deps: dict[str, Provider]) -> Callable[..., Any]:
+def _injected[Result](
+    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+) -> Callable[..., Result]:
     """
     Return `func` with its dependencies injected, by the wrapper for what calling it gives.
 

@@ -70,7 +70,7 @@ def _cancelling() -> bool:
 
 def _leaving(
     middleware: object, asynchronous: bool
-) -> Callable[[Generator[Any, None, None], BaseException | None], bool]:
+) -> Callable[[Generator[object, None, None], BaseException | None], bool]:
     """
     Return the exit for a middleware's generator, which refuses a swallowed error.
 
@@ -78,7 +78,7 @@ def _leaving(
         checked against the task.
     """
 
-    def leave(gen: Generator[Any, None, None], exc: BaseException | None) -> bool:
+    def leave(gen: Generator[object, None, None], exc: BaseException | None) -> bool:
         if exit_generator(gen, exc) and exc is not None:
             _refuse_swallow(exc, middleware, _cancelling() if asynchronous else True)
         return False
@@ -88,10 +88,10 @@ def _leaving(
 
 def _leaving_async(
     middleware: object,
-) -> Callable[[AsyncGenerator[Any, None], BaseException | None], Awaitable[bool]]:
+) -> Callable[[AsyncGenerator[object, None], BaseException | None], Awaitable[bool]]:
     """Return the exit for a middleware's async generator, as {py:func}`_leaving` does."""
 
-    async def leave(gen: AsyncGenerator[Any, None], exc: BaseException | None) -> bool:
+    async def leave(gen: AsyncGenerator[object, None], exc: BaseException | None) -> bool:
         if await exit_async_generator(gen, exc) and exc is not None:
             _refuse_swallow(exc, middleware, _cancelling())
         return False

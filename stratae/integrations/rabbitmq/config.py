@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import KW_ONLY, InitVar, dataclass, field, replace
+from dataclasses import KW_ONLY, InitVar, dataclass, field
 from typing import Any
 
 from pamqp.commands import Basic
+from pamqp.common import FieldValue
 
 from stratae._frozen import FrozenMapping
-from stratae.backoff import Backoff, Delays
+from stratae.backoff import Delays, Finite
 from stratae.events import Destination, Serializer
 from stratae.events.failure import DeadLetter, Drop, Reject
-from stratae.integrations.rabbitmq._retry import retry_delays, retry_queue_name
+from stratae.integrations.rabbitmq._retry import retry_queue_name
 
 _NO_CONSUME_TARGET = "consume config requires a queue, an exchange, or both"
 
@@ -21,8 +22,6 @@ _FAILURE_POLICY_NEEDS_QUEUE = (
 )
 
 _NON_POSITIVE_DELAY = "retry delays must be positive, got {!r}"
-
-_ENDLESS_RETRIES = "a failure policy's backoff must run out, since each delay names a retry queue"
 
 _QUEUE_WITHOUT_DEAD_LETTER = "dead_letter_queue is set, but give_up doesn't dead-letter"
 
@@ -51,8 +50,8 @@ class RabbitMQConfig:
     Route or bind an event to one on a
     {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher>`.
     The routing key is a string, or a function giving each message's routing key from its
-    payload. Each emit publishes with a config whose routing key is a string: this one, or the
-    one {py:meth}`at` makes for the message's key. So middleware sees where each message went.
+    payload. Each message is published as a {py:class}`RabbitMQPublish`: this route, and the
+    message's routing key. So middleware sees where each message went.
 
     An immutable value: configs with the same fields are equal.
     """
@@ -84,16 +83,14 @@ class RabbitMQConfig:
     Where messages published with this config go, for tracing.
 
     Named `exchange:routing_key`, leaving out an empty part, or `amq.default` when both are
-    empty. The routing key is also its own attribute.
+    empty. The routing key is also its own attribute. A routing key that's a function is left
+    out, since each message's differs.
     """
 
     def __post_init__(self) -> None:
         """Work out the destination once, since the config can't change."""
-        exchange = self.exchange
-        key = self.routing_key if isinstance(self.routing_key, str) else ""
-        name = ":".join(part for part in (exchange, key) if part) or "amq.default"
-        attributes = {_ROUTING_KEY: key} if key else {}
-        destination = Destination(_SYSTEM, name, attributes=attributes)
+        key = self.routing_key
+        destination = _destination(self.exchange, key if isinstance(key, str) else "")
         object.__setattr__(self, "messaging_destination", destination)
 
     def address(self, payload: Any, /) -> str | None:
@@ -105,13 +102,37 @@ class RabbitMQConfig:
         key = self.routing_key
         return None if isinstance(key, str) else key(payload)
 
-    def at(self, routing_key: str) -> RabbitMQConfig:
-        """
-        Return this config with one message's routing key.
 
-        :param routing_key: The message's routing key.
-        """
-        return replace(self, routing_key=routing_key)
+def _destination(exchange: str, routing_key: str) -> Destination:
+    """Return where messages published to `exchange` with `routing_key` go, for tracing."""
+    name = ":".join(part for part in (exchange, routing_key) if part) or "amq.default"
+    attributes = {_ROUTING_KEY: routing_key} if routing_key else {}
+    return Destination(_SYSTEM, name, attributes=attributes)
+
+
+@dataclass(frozen=True, slots=True)
+class RabbitMQPublish:
+    """
+    Where one message is published: its route, and its routing key.
+
+    A {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher>`
+    publishes each message as one, and publish middleware sees it as the call's config. Its
+    routing key is the route's, or the one the route's function gave the message.
+
+    An immutable value: publishes with the same route and routing key are equal.
+    """
+
+    route: RabbitMQConfig
+    """The route the message is published on."""
+    routing_key: str
+    """The message's routing key."""
+    messaging_destination: Destination = field(init=False, repr=False, compare=False)
+    """Where the message goes, for tracing, named as {py:class}`RabbitMQConfig` names it."""
+
+    def __post_init__(self) -> None:
+        """Work out the destination once, since the publish can't change."""
+        destination = _destination(self.route.exchange, self.routing_key)
+        object.__setattr__(self, "messaging_destination", destination)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +141,7 @@ class RabbitMQFailurePolicy:
     What a RabbitMQ consumer does with a message whose handling fails.
 
     Give one to a {py:class}`RabbitMQConsumeConfig` as `on_failure`. A failed message is retried
-    after each delay of its {py:class}`Backoff <stratae.backoff.Backoff>`. Once the backoff runs
+    after each delay of its {py:class}`Finite <stratae.backoff.Finite>` backoff. Once it runs
     out, it's given up on by `give_up`: dead-lettered, dropped, or rejected for the broker to
     handle. With no retries, it's given up on at its first failure. A message that fails to
     decode would fail every attempt, so it skips the retries.
@@ -139,13 +160,13 @@ class RabbitMQFailurePolicy:
 
     An immutable value: policies with the same fields are equal and hash alike.
 
-    :raises ValueError: If the backoff never runs out, a delay isn't positive, or
-        `dead_letter_queue` is given when `give_up` isn't `DeadLetter()`.
+    :raises ValueError: If a delay isn't positive, or `dead_letter_queue` is given when
+        `give_up` isn't `DeadLetter()`.
     """
 
-    backoff: Backoff = _NO_RETRIES
+    backoff: Finite = _NO_RETRIES
     """
-    The delay before each retry, e.g. `Delays(1, 10, 60)` for three retries. It must run out,
+    The delay before each retry, e.g. `Delays(1, 10, 60)` for three retries. It runs out,
     since each delay names a retry queue.
     """
     _: KW_ONLY
@@ -155,10 +176,8 @@ class RabbitMQFailurePolicy:
     """The dead-letter queue's name; defaults to `<queue>.dead-letter`."""
 
     def __post_init__(self) -> None:
-        """Check the backoff runs out with positive delays, and the dead-letter settings agree."""
-        if self.backoff.retries is None:
-            raise ValueError(_ENDLESS_RETRIES)
-        for delay in retry_delays(self.backoff):
+        """Check the backoff's delays are positive, and the dead-letter settings agree."""
+        for delay in self.backoff.delays:
             if delay <= 0:
                 raise ValueError(_NON_POSITIVE_DELAY.format(delay))
         if self.dead_letter_queue is not None and not isinstance(self.give_up, DeadLetter):
@@ -167,7 +186,7 @@ class RabbitMQFailurePolicy:
     @property
     def needs_queues(self) -> bool:
         """Whether it routes failed messages through queues: retry queues or dead letters."""
-        return bool(retry_delays(self.backoff)) or isinstance(self.give_up, DeadLetter)
+        return bool(self.backoff.delays) or isinstance(self.give_up, DeadLetter)
 
     def retry_queue(self, queue: str, attempt: int) -> str | None:
         """
@@ -226,7 +245,7 @@ class RabbitMQConsumeConfig:
     """Overrides the inferred queue exclusivity."""
     auto_delete: bool | None = None
     """Overrides the inferred queue auto-delete flag."""
-    arguments: Mapping[str, Any] | None = None
+    arguments: Mapping[str, FieldValue] | None = None
     """Queue declaration arguments, e.g. a message TTL. Kept as a read-only copy."""
     on_failure: RabbitMQFailurePolicy = _REJECT
     """

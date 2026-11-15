@@ -68,7 +68,7 @@ def test_publish_nests_middleware_outside_hooks(
     # Arrange
     log: list[str] = []
 
-    def call(message: Outgoing) -> str:
+    def call(message: Outgoing[None, None]) -> str:
         log.append("call")
         return message.payload.item
 
@@ -83,7 +83,8 @@ def test_publish_nests_middleware_outside_hooks(
     stack = (middleware,) if with_middleware else ()
 
     # Act
-    reply = publish(Publishing(stack), call, _order_placed, _Order("lamp"), hooks=hooks)
+    publishing: Publishing[None, None] = Publishing(stack)
+    reply = publish(publishing, call, _order_placed, _Order("lamp"), None, hooks=hooks)
 
     # Assert
     assert reply == "lamp"
@@ -252,18 +253,16 @@ def test_publish_middleware_adds_headers() -> None:
     Then: The message sent holds both headers
     """
     # Arrange
-    sent: list[Outgoing] = []
+    sent: list[Outgoing[None, None]] = []
 
     def trace(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
         return next(call.with_headers({"traceparent": "00-trace"}))
 
+    publishing: Publishing[None, None] = Publishing((trace,))
+
     # Act
     publish(
-        Publishing((trace,)),
-        sent.append,
-        _order_placed,
-        _Order("lamp"),
-        headers={"x-tenant": "acme"},
+        publishing, sent.append, _order_placed, _Order("lamp"), None, headers={"x-tenant": "acme"}
     )
 
     # Assert

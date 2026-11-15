@@ -27,9 +27,6 @@ _ALREADY_CONNECTED = "{} is already connected; exit it before entering it again"
 RECONNECT = Exponential(0.5, cap=30.0)
 """How long publishers and consumers wait before each attempt to reconnect, by default."""
 
-_CHANNEL_OPTIONS: dict[str, Any] = {"publisher_confirms": True, "on_return_raises": True}
-"""Every channel waits for the broker's confirm on publish, and raises for a returned message."""
-
 
 class _Event(Enum):
     """Something that happens to a link's connection."""
@@ -95,7 +92,7 @@ def _next(state: ConnectionState, event: _Event) -> ConnectionState:
         raise _RefusedMoveError(state, event) from None
 
 
-def _closing(channel: Any) -> asyncio.Future[Any]:
+def _closing(channel: Any) -> asyncio.Future[object]:
     """Return a channel's closing future, typed: aiormq leaves its result unknown."""
     return channel.closing
 
@@ -117,7 +114,7 @@ class Link:
         self._on_open = on_open
         self._on_lost = on_lost
         self._connection: AbstractConnection | None = None
-        self._watch: asyncio.Future[Any] | None = None
+        self._watch: asyncio.Future[object] | None = None
         self._reconnecting: asyncio.Task[None] | None = None
         self.channel: AbstractChannel | None = None
         self._state = ConnectionState.CLOSED
@@ -157,7 +154,7 @@ class Link:
         """Connect, open a channel and run `on_open`, closing the connection if any step fails."""
         connection = await connect(self._url)
         try:
-            channel = await connection.channel(**_CHANNEL_OPTIONS)
+            channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
             await self._on_open(channel)
         except BaseException:
             await connection.close()
@@ -167,7 +164,7 @@ class Link:
         self._watch = _closing(channel)
         self._watch.add_done_callback(self._on_closed)
 
-    def _on_closed(self, closing: asyncio.Future[Any]) -> None:
+    def _on_closed(self, closing: asyncio.Future[object]) -> None:
         """Start reconnecting when the channel closes, unless `close` closed it."""
         if closing.cancelled():
             return

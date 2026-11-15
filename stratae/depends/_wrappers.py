@@ -56,7 +56,7 @@ type _Source = Callable[[str, str], Lines]
 
 
 def _compile(
-    func: Callable[..., Any], resolved_deps: dict[str, Provider], source: _Source
+    func: Callable[..., object], resolved_deps: dict[str, Provider], source: _Source
 ) -> Callable[..., Any]:
     """
     Compile `source` for `func`, and copy func's metadata onto it.
@@ -81,18 +81,18 @@ def _compile(
     return wrapper
 
 
-def create_sync_wrapper(
-    func: Callable[..., Any], resolved_deps: dict[str, Provider]
-) -> Callable[..., Any]:
+def create_sync_wrapper[Result](
+    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+) -> Callable[..., Result]:
     """Create a synchronous wrapper."""
     return _compile(
         func, resolved_deps, lambda params, args: def_wrapper(params, [f"return __func__({args})"])
     )
 
 
-def create_sync_gen_wrapper(
-    func: Callable[..., Any], resolved_deps: dict[str, Provider]
-) -> Callable[..., Any]:
+def create_sync_gen_wrapper[Result](
+    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+) -> Callable[..., Result]:
     """Create a synchronous generator wrapper, delegating with `yield from`."""
     return _compile(
         func,
@@ -105,9 +105,9 @@ def _has_async_deps(resolved_deps: dict[str, Provider]) -> bool:
     return any(dep.is_async for dep in resolved_deps.values())
 
 
-def create_async_wrapper(
-    func: Callable[..., Any], resolved_deps: dict[str, Provider]
-) -> Callable[..., Any]:
+def create_async_wrapper[Result](
+    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+) -> Callable[..., Result]:
     """Create an asynchronous wrapper."""
     if not _has_async_deps(resolved_deps):
         return markcoroutinefunction(create_sync_wrapper(func, resolved_deps))
@@ -147,9 +147,9 @@ def _async_gen_body(arguments: str) -> Lines:
     ]
 
 
-def create_async_gen_wrapper(
-    func: Callable[..., Any], resolved_deps: dict[str, Provider]
-) -> Callable[..., Any]:
+def create_async_gen_wrapper[Result](
+    func: Callable[..., Result], resolved_deps: dict[str, Provider]
+) -> Callable[..., Result]:
     """Create an async generator wrapper, itself an async generator function."""
     return _compile(
         func,

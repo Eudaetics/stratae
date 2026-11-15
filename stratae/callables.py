@@ -47,10 +47,10 @@ from collections.abc import Awaitable, Callable
 from enum import Enum
 from functools import partial
 from inspect import isasyncgenfunction, iscoroutinefunction, isgeneratorfunction, unwrap
-from typing import Any, NamedTuple, TypeGuard
+from typing import NamedTuple, TypeGuard
 
 
-def unwrap_partial(fn: Callable[..., Any]) -> Callable[..., Any]:
+def unwrap_partial[Result](fn: Callable[..., Result]) -> Callable[..., Result]:
     """
     Return the callable a `functools.partial` calls, through any number of them.
 
@@ -126,7 +126,7 @@ def _gives(target: object) -> Gives:
     return Gives.VALUE
 
 
-def call_result(fn: Callable[..., Any]) -> CallResult:
+def call_result(fn: Callable[..., object]) -> CallResult:
     """
     Tell what calling `fn` gives.
 

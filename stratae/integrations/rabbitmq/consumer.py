@@ -147,7 +147,7 @@ class RabbitMQConsumer:
         self._link = Link("consumer", url, reconnect, self._resume, self._forget_consumers)
         self._registrations: dict[Handler[RabbitMQConsumeConfig, Any], _Registration] = {}
         self._starting: set[asyncio.Task[None]] = set()
-        self._in_flight: set[asyncio.Task[Any]] = set()
+        self._in_flight: set[asyncio.Task[None]] = set()
 
     @property
     def state(self) -> ConnectionState:
@@ -375,7 +375,7 @@ class RabbitMQConsumer:
         """Return the delivery callback, tracked as in flight until it acks or nacks."""
 
         async def on_message(message: DeliveredMessage) -> None:
-            task = cast(asyncio.Task[Any], asyncio.current_task())
+            task = cast(asyncio.Task[None], asyncio.current_task())
             self._in_flight.add(task)
             try:
                 await self._deliver(registration, message)

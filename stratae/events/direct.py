@@ -100,7 +100,7 @@ scheduled shipment for order 1
 
 import threading
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
-from functools import singledispatch
+from functools import partial, singledispatch
 from inspect import markcoroutinefunction
 from types import CoroutineType
 from typing import Any, NoReturn, Protocol, overload
@@ -114,10 +114,16 @@ from stratae.events.dispatch import (
     fan_out,
     fan_out_async,
 )
-from stratae.events.envelope import EnvelopeConfig
+from stratae.events.envelope import Envelope, EnvelopeConfig
 from stratae.events.handler import Handler, Handlers
 from stratae.events.hooks import Hooks
-from stratae.events.middleware import NO_HEADERS, HandleCall, Middleware, from_fields
+from stratae.events.middleware import (
+    NO_HEADERS,
+    HandleCall,
+    Middleware,
+    PublishMiddleware,
+    from_fields,
+)
 from stratae.events.patterns import NoPayload, PubSub, Request
 from stratae.events.pipeline import (
     Outgoing,
@@ -125,6 +131,8 @@ from stratae.events.pipeline import (
     Send,
     publish,
     publish_async,
+    publish_enveloped,
+    publish_enveloped_async,
     wrap_handler,
 )
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
@@ -224,7 +232,7 @@ class _Route:
 
     __slots__ = ("dispatcher", "handlers", "send")
 
-    send: Send
+    send: Send[None, Envelope | None]
     """Delivers one message to the handlers current when it's sent."""
 
     def __init__(
@@ -276,10 +284,31 @@ _ASYNC_DEFAULTS = (Dispatch(Request, dispatch_request_async), Dispatch(PubSub, f
 """The patterns an AsyncDirectBus supports by default."""
 
 
-def _sender(route: _Route) -> Send:
+type _Publish = Callable[
+    [Send[None, Envelope | None], AnyEvent, Any, None, Hooks[Any, Any] | None], Any
+]
+"""Emits through the pipeline with a route's `send`: the entry point a bus binds once."""
+
+
+def _publisher(
+    middleware: tuple[PublishMiddleware, ...], envelope: EnvelopeConfig | None, asynchronous: bool
+) -> _Publish:
+    """Return the pipeline's entry point for a bus, with its middleware and envelopes bound."""
+    if envelope is None:
+        bare: Publishing[None, None] = Publishing(middleware, asynchronous=asynchronous)
+        if asynchronous:
+            return partial(publish_async, bare)
+        return partial(publish, bare)
+    enveloped: Publishing[None, Envelope] = Publishing(middleware, asynchronous=asynchronous)
+    if asynchronous:
+        return partial(publish_enveloped_async, enveloped, envelope.new_id)
+    return partial(publish_enveloped, enveloped, envelope.new_id)
+
+
+def _sender(route: _Route) -> Send[None, Envelope | None]:
     """Return what dispatches a message to the route's handlers, current when it's sent."""
 
-    def send(message: Outgoing) -> Any:
+    def send(message: Outgoing[None, Envelope | None]) -> Any:
         event, config, payload, _, headers = message
         received = from_fields(HandleCall, (event, config, payload, headers))
         return route.dispatcher(event, route.handlers, received)
@@ -309,7 +338,6 @@ class _Core:
         "_name",
         "_plain",
         "_publish",
-        "_publishing",
         "_registering",
         "_routes",
     )
@@ -337,12 +365,7 @@ class _Core:
         pairs = (*(_ASYNC_DEFAULTS if asynchronous else _SYNC_DEFAULTS), *dispatchers)
         self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
-        self._publish: Callable[..., Any] = publish_async if asynchronous else publish
-        self._publishing = Publishing(
-            middleware.publish,
-            None if envelope is None else envelope.new_id,
-            asynchronous=asynchronous,
-        )
+        self._publish = _publisher(middleware.publish, envelope, asynchronous)
         self._plain = not (middleware.publish or middleware.handle) and envelope is None
 
     def emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
@@ -357,7 +380,7 @@ class _Core:
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
         route, plain = self._route(event), self._plain
-        publish_, publishing = self._publish, self._publishing
+        publish_ = self._publish
 
         def emit_routed(
             event: AnyEvent, payload: Any, *, hooks: Hooks[Any, Any] | None = None
@@ -365,7 +388,7 @@ class _Core:
             if hooks is None and plain:
                 message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
                 return route.dispatcher(event, route.handlers, message)
-            return publish_(publishing, route.send, event, payload, None, hooks)
+            return publish_(route.send, event, payload, None, hooks)
 
         return emit_routed
 
@@ -448,7 +471,7 @@ class _Core:
         elif self._plain:
             message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
             return route.dispatcher(event, route.handlers, message)
-        return self._publish(self._publishing, route.send, event, payload, None, hooks)
+        return self._publish(route.send, event, payload, None, hooks)
 
     def remove(self, handler: Handler[AnyEvent, Any]) -> None:
         """Remove a registered handler, ignoring one the bus doesn't have."""

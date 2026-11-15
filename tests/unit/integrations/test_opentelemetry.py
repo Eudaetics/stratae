@@ -553,7 +553,7 @@ async def test_outbox_write_is_create_span(
     """
     # Arrange
     store = InMemoryOutboxStore()
-    outbox = OutboxProducer(
+    outbox = OutboxProducer[object](
         store, lambda order: b"{}", middleware=tracing(provider, asynchronous=True)
     )
 

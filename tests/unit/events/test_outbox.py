@@ -3,7 +3,7 @@ Unit tests for the transactional outbox.
 
 This test suite verifies the following behaviors:
 
-OutboxProducer:
+OutboxProducer[object]:
 - bind registers each binding's route before anything is emitted, under the event's name or
   a given route.
 - Emitting writes a record carrying the envelope's message id and headers, the serialized
@@ -170,7 +170,8 @@ _order_placed = PubSub(_Order)
 _heartbeat = PubSub(name="heartbeat")
 
 
-def _encode(order: _Order) -> bytes:
+def _encode(order: object) -> bytes:
+    assert isinstance(order, _Order)
     return str(order.order_id).encode()
 
 
@@ -290,15 +291,15 @@ def store() -> _WatchedStore:
 
 
 @pytest.fixture
-def outbox(store: InMemoryOutboxStore) -> OutboxProducer:
+def outbox(store: InMemoryOutboxStore) -> OutboxProducer[object]:
     """Return an outbox producer writing to the store."""
-    return OutboxProducer(store, serializer=_encode)
+    return OutboxProducer[object](store, serializer=_encode)
 
 
-# region: OutboxProducer
+# region: OutboxProducer[object]
 
 
-def test_bind_registers_routes(outbox: OutboxProducer):
+def test_bind_registers_routes(outbox: OutboxProducer[object]):
     """
     ``bind`` should register each binding's route before anything is emitted.
 
@@ -317,7 +318,7 @@ def test_bind_registers_routes(outbox: OutboxProducer):
     }
 
 
-async def test_emit_writes_record(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_emit_writes_record(outbox: OutboxProducer[object], store: InMemoryOutboxStore):
     """
     Emitting should write a record of the payload and its envelope.
 
@@ -355,7 +356,7 @@ class _Encoding:
 
 
 async def test_route_config_serializer_and_signal_body(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     A publisher config's serializer should override the producer's; a signal has no body.
@@ -383,7 +384,9 @@ async def test_route_config_serializer_and_signal_body(
     assert [record.body for record in store.pending()] == [b"custom", b"2", b""]
 
 
-async def test_hooks_run_inside_record_envelope(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_hooks_run_inside_record_envelope(
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
+):
     """
     Hooks should run around the write, inside the record's envelope.
 
@@ -422,7 +425,7 @@ async def test_middleware_headers_stored(store: InMemoryOutboxStore):
     Then: The record holds the tenant header, added inside its envelope, and the envelope's
     """
     # Arrange
-    outbox = OutboxProducer(store, _encode, middleware=Middleware(publish=(_tag_tenant,)))
+    outbox = OutboxProducer[object](store, _encode, middleware=Middleware(publish=(_tag_tenant,)))
     place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
 
     # Act
@@ -446,7 +449,7 @@ async def test_middleware_reserved_header_writes_nothing(store: InMemoryOutboxSt
     async def forge(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         return await next(call.with_headers({"x-message-id": "forged"}))
 
-    outbox = OutboxProducer(store, _encode, middleware=Middleware(publish=(forge,)))
+    outbox = OutboxProducer[object](store, _encode, middleware=Middleware(publish=(forge,)))
     outbox.route(_order_placed, OutboxConfig("orders"))
 
     # Act / Assert
@@ -470,10 +473,10 @@ def test_sync_middleware_refused(store: InMemoryOutboxStore):
 
     # Act / Assert
     with pytest.raises(MiddlewareKindError, match="OutboxProducer middleware must be an async"):
-        OutboxProducer(store, _encode, middleware=Middleware(publish=(sync,)))
+        OutboxProducer[object](store, _encode, middleware=Middleware(publish=(sync,)))
 
 
-async def test_request_events_refused(outbox: OutboxProducer):
+async def test_request_events_refused(outbox: OutboxProducer[object]):
     """
     The outbox should refuse a request event, which needs its reply straight away.
 
@@ -501,7 +504,7 @@ async def test_request_events_refused(outbox: OutboxProducer):
             await outbox.emit(event, _Order(1))  # pyright: ignore[reportArgumentType]
 
 
-def test_outbox_matches_pubsub_producer_only(outbox: OutboxProducer):
+def test_outbox_matches_pubsub_producer_only(outbox: OutboxProducer[object]):
     """
     OutboxProducer should match PubSubProducer, and not Producer, which emits any event.
 
@@ -520,7 +523,7 @@ def test_outbox_matches_pubsub_producer_only(outbox: OutboxProducer):
     assert producer is outbox
 
 
-def test_bound_pubsub_events_are_typed_as_giving_none(outbox: OutboxProducer):
+def test_bound_pubsub_events_are_typed_as_giving_none(outbox: OutboxProducer[object]):
     """
     A PubSub event bound to the outbox should be typed as giving `None`.
 
@@ -578,7 +581,7 @@ def test_outbox_config_describes_itself(config: object, destination: Destination
     assert outbox_config.messaging_destination == destination
 
 
-def test_route_clash_refused(outbox: OutboxProducer):
+def test_route_clash_refused(outbox: OutboxProducer[object]):
     """
     A route bound to another event or config should be refused.
 
@@ -600,7 +603,7 @@ def test_route_clash_refused(outbox: OutboxProducer):
     outbox.bind(_order_placed, config=OutboxConfig("orders-config", route="orders"))
 
 
-async def test_emit_needs_a_route(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_emit_needs_a_route(outbox: OutboxProducer[object], store: InMemoryOutboxStore):
     """
     Emitting should write on the event's route, and refuse an event with none.
 
@@ -621,7 +624,7 @@ async def test_emit_needs_a_route(outbox: OutboxProducer, store: InMemoryOutboxS
     assert len(store.pending()) == 1
 
 
-def test_equal_event_binds_existing_route(outbox: OutboxProducer):
+def test_equal_event_binds_existing_route(outbox: OutboxProducer[object]):
     """
     A route should accept an equal event built separately, and refuse a different one.
 
@@ -661,7 +664,7 @@ class _SlowName(str):
 class _WatchedTarget:
     """A publisher config that records whether the routing lock is held when it's read."""
 
-    def __init__(self, outbox: OutboxProducer, delay: float = 0.0) -> None:
+    def __init__(self, outbox: OutboxProducer[object], delay: float = 0.0) -> None:
         self._outbox = outbox
         self._delay = delay
         self.locked: list[bool] = []
@@ -692,7 +695,7 @@ def _at_once(*calls: Callable[[], None]) -> list[BaseException]:
     return errors
 
 
-def test_routes_from_threads_at_once_all_kept(outbox: OutboxProducer):
+def test_routes_from_threads_at_once_all_kept(outbox: OutboxProducer[object]):
     """
     Routes added from several threads at once should all be kept.
 
@@ -717,7 +720,7 @@ def test_routes_from_threads_at_once_all_kept(outbox: OutboxProducer):
     assert dict(outbox.routes) == {event.name: (event, event.name) for event in events}
 
 
-def test_route_name_taken_from_threads_at_once(outbox: OutboxProducer):
+def test_route_name_taken_from_threads_at_once(outbox: OutboxProducer[object]):
     """
     Only one of several events routed to one name at once should get it.
 
@@ -742,7 +745,7 @@ def test_route_name_taken_from_threads_at_once(outbox: OutboxProducer):
     assert config == "orders"
 
 
-def test_same_route_from_threads_at_once_kept_once(outbox: OutboxProducer):
+def test_same_route_from_threads_at_once_kept_once(outbox: OutboxProducer[object]):
     """
     Threads routing one event to one config at once should all succeed, adding it once.
 
@@ -763,7 +766,7 @@ def test_same_route_from_threads_at_once_kept_once(outbox: OutboxProducer):
     assert dict(outbox.routes) == {"orders": (_order_placed, target)}
 
 
-def test_rebinding_a_routed_event_takes_no_lock(outbox: OutboxProducer):
+def test_rebinding_a_routed_event_takes_no_lock(outbox: OutboxProducer[object]):
     """
     Binding an event that's already routed should only read the routes.
 
@@ -789,7 +792,7 @@ def test_rebinding_a_routed_event_takes_no_lock(outbox: OutboxProducer):
     assert finished
 
 
-def test_route_writer_built_outside_the_lock(outbox: OutboxProducer):
+def test_route_writer_built_outside_the_lock(outbox: OutboxProducer[object]):
     """
     A new route's writer should be built before the routing lock is taken.
 
@@ -811,7 +814,9 @@ def test_route_writer_built_outside_the_lock(outbox: OutboxProducer):
 # region: InMemoryOutboxStore
 
 
-async def test_transaction_keeps_or_drops(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_transaction_keeps_or_drops(
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
+):
     """
     Records should be kept outside a transaction, and inside one only if it exits cleanly.
 
@@ -840,7 +845,7 @@ async def test_transaction_keeps_or_drops(outbox: OutboxProducer, store: InMemor
     assert [record.body for record in store.pending()] == [b"1", b"2"]
 
 
-async def test_nested_transactions(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_nested_transactions(outbox: OutboxProducer[object], store: InMemoryOutboxStore):
     """
     A nested transaction's records should join the outer one, kept or dropped with it.
 
@@ -947,7 +952,7 @@ def test_marking_moves_records(store: InMemoryOutboxStore):
 
 
 async def test_run_once_publishes_and_marks_sent(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     run_once should publish each record under its envelope, then mark them sent.
@@ -977,7 +982,7 @@ async def test_run_once_publishes_and_marks_sent(
 
 
 async def test_relay_publishes_at_each_records_address(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     A route that addresses each payload should have its records relayed to their addresses.
@@ -1017,7 +1022,7 @@ async def test_relay_publishes_added_headers(store: InMemoryOutboxStore):
     Then: The record is published under its envelope, with the tenant header alone
     """
     # Arrange
-    outbox = OutboxProducer(store, _encode, middleware=Middleware(publish=(_tag_tenant,)))
+    outbox = OutboxProducer[object](store, _encode, middleware=Middleware(publish=(_tag_tenant,)))
     place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
     await place(order_id=1)
     (record,) = store.pending()
@@ -1173,7 +1178,7 @@ def test_lanes_follow_what_outcomes_hold_back():
 
 
 async def test_failed_publish_retried_after_growing_delay(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     A failed publish should be an attempt, retried after a delay that doubles up to a cap.
@@ -1208,7 +1213,9 @@ async def test_failed_publish_retried_after_growing_delay(
     assert publisher.published == []
 
 
-async def test_out_of_attempts_parked_as_failed(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_out_of_attempts_parked_as_failed(
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
+):
     """
     A record out of attempts should be parked as failed; without a limit, never.
 
@@ -1222,7 +1229,7 @@ async def test_out_of_attempts_parked_as_failed(outbox: OutboxProducer, store: I
     await place(order_id=1)
     limited = OutboxRelay(store, _Publisher(RuntimeError("refused")), outbox, retry=Delays())
     unlimited_store = InMemoryOutboxStore()
-    unlimited_outbox = OutboxProducer(unlimited_store, serializer=_encode)
+    unlimited_outbox = OutboxProducer[object](unlimited_store, serializer=_encode)
     await unlimited_outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))(
         order_id=2
     )
@@ -1245,7 +1252,7 @@ async def test_out_of_attempts_parked_as_failed(outbox: OutboxProducer, store: I
 
 
 async def test_failed_publish_logged_by_its_action(
-    outbox: OutboxProducer, store: InMemoryOutboxStore, caplog: pytest.LogCaptureFixture
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore, caplog: pytest.LogCaptureFixture
 ):
     """
     A failed publish should be logged at its action's level, worded by the action.
@@ -1275,7 +1282,7 @@ async def test_failed_publish_logged_by_its_action(
 
 
 async def test_failure_holds_back_rest_of_its_key(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     A failed publish should hold back the rest of its key's records until it's retried.
@@ -1314,7 +1321,7 @@ async def test_failure_holds_back_rest_of_its_key(
 
 
 async def test_parked_failure_holds_nothing_back(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     A record parked as failed shouldn't hold back the later records with its key.
@@ -1340,7 +1347,9 @@ async def test_parked_failure_holds_nothing_back(
     assert [payload for _, _, payload, _ in publisher.published] == [b"2"]
 
 
-def test_relay_routes_the_outbox_when_built(outbox: OutboxProducer, store: InMemoryOutboxStore):
+def test_relay_routes_the_outbox_when_built(
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
+):
     """
     A relay should route each of the outbox's events on its publisher when it's built.
 
@@ -1362,7 +1371,7 @@ def test_relay_routes_the_outbox_when_built(outbox: OutboxProducer, store: InMem
 
 
 async def test_relay_routes_events_bound_after_it(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     A relay should relay an event bound after it was built.
@@ -1385,7 +1394,9 @@ async def test_relay_routes_events_bound_after_it(
     assert publisher.published[0][:3] == (_order_placed, "orders", b"1")
 
 
-async def test_unknown_route_fails_attempt(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_unknown_route_fails_attempt(
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
+):
     """
     A record whose route has no binding should fail its attempt.
 
@@ -1409,7 +1420,7 @@ async def test_unknown_route_fails_attempt(outbox: OutboxProducer, store: InMemo
 
 @pytest.mark.parametrize("outage", [NotConnectedError("reconnecting"), ConnectionError("reset")])
 async def test_outage_is_not_an_attempt(
-    outbox: OutboxProducer, store: InMemoryOutboxStore, outage: Exception
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore, outage: Exception
 ):
     """
     A publisher outage shouldn't count as an attempt.
@@ -1447,7 +1458,7 @@ async def test_crash_before_marking_sent_resends_same_id():
     # Arrange
     memory = InMemoryOutboxStore(lease=0)
     store = _AsyncStore(memory, mark_sent=RuntimeError("relay died"))
-    producer = OutboxProducer(store, serializer=_encode)
+    producer = OutboxProducer[object](store, serializer=_encode)
     await producer.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))(order_id=1)
     publisher = _Publisher()
     relay = OutboxRelay(store, publisher, producer)
@@ -1464,7 +1475,7 @@ async def test_crash_before_marking_sent_resends_same_id():
     assert len(memory.sent()) == 1
 
 
-async def test_background_relay_woken(outbox: OutboxProducer, store: _WatchedStore):
+async def test_background_relay_woken(outbox: OutboxProducer[object], store: _WatchedStore):
     """
     Entered with async with, the relay should relay in the background, at once when woken.
 
@@ -1489,7 +1500,9 @@ async def test_background_relay_woken(outbox: OutboxProducer, store: _WatchedSto
     await relay.__aexit__(None, None, None)
 
 
-async def test_relay_entered_twice_refused(outbox: OutboxProducer, store: InMemoryOutboxStore):
+async def test_relay_entered_twice_refused(
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
+):
     """
     Entering a running relay again should raise.
 
@@ -1517,7 +1530,7 @@ async def test_background_store_failure_logged(caplog: pytest.LogCaptureFixture)
     # Arrange
     memory = _WatchedStore()
     store = _AsyncStore(memory, claim=RuntimeError("database gone"))
-    producer = OutboxProducer(store, serializer=_encode)
+    producer = OutboxProducer[object](store, serializer=_encode)
     await producer.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))(order_id=1)
     publisher = _Publisher()
 
@@ -1531,7 +1544,7 @@ async def test_background_store_failure_logged(caplog: pytest.LogCaptureFixture)
     assert len(memory.sent()) == 1
 
 
-async def test_full_batch_followed_at_once(outbox: OutboxProducer, store: _WatchedStore):
+async def test_full_batch_followed_at_once(outbox: OutboxProducer[object], store: _WatchedStore):
     """
     A full batch should be followed straight away by the next.
 
@@ -1574,7 +1587,9 @@ async def test_record_ids_come_from_producer_source(store: InMemoryOutboxStore):
     Then: The record's id and correlation id are the source's first two
     """
     # Arrange
-    outbox = OutboxProducer(store, serializer=_encode, envelope=EnvelopeConfig(new_id=_Ids()))
+    outbox = OutboxProducer[object](
+        store, serializer=_encode, envelope=EnvelopeConfig(new_id=_Ids())
+    )
     place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
 
     # Act
@@ -1646,7 +1661,7 @@ def _keyed(store: InMemoryOutboxStore, *keys: str | None) -> list[OutboxRecord]:
 
 
 async def test_concurrent_publishes_keep_each_key_in_order(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     With max_in_flight above one, different keys should publish concurrently, each in order.
@@ -1677,7 +1692,7 @@ async def test_concurrent_publishes_keep_each_key_in_order(
 
 
 async def test_unkeyed_records_publish_concurrently(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     Records with no key should publish concurrently, up to the limit.
@@ -1700,7 +1715,7 @@ async def test_unkeyed_records_publish_concurrently(
 
 
 async def test_concurrent_outage_puts_back_what_hasnt_finished(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     An outage should put back what hasn't started, while publishes in flight finish.
@@ -1731,7 +1746,7 @@ async def test_concurrent_outage_puts_back_what_hasnt_finished(
 
 
 async def test_concurrent_retry_holds_back_its_key(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     With max_in_flight above one, a record being retried should still hold back its key.
@@ -1758,7 +1773,7 @@ async def test_concurrent_retry_holds_back_its_key(
 
 
 async def test_cancelled_batch_cancels_publishes_in_flight(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     Cancelling a batch should cancel its publishes in flight, and mark sent what finished.
@@ -1788,7 +1803,7 @@ async def test_cancelled_batch_cancels_publishes_in_flight(
 
 
 async def test_cancelled_lane_marks_sent_what_it_sent(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     Cancelling a batch should mark sent a key's records sent before the one in flight.
@@ -1820,7 +1835,7 @@ async def test_cancelled_lane_marks_sent_what_it_sent(
 
 
 async def test_cancelled_batch_puts_back_what_it_didnt_publish(
-    outbox: OutboxProducer, store: InMemoryOutboxStore
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
     """
     Cancelling a batch should put back at once what it didn't publish, counting no attempt.
@@ -1850,7 +1865,9 @@ async def test_cancelled_batch_puts_back_what_it_didnt_publish(
     assert [(r.id, r.attempts) for r in claimed] == [(r.id, 0) for r in records]
 
 
-def test_max_in_flight_below_one_refused(outbox: OutboxProducer, store: InMemoryOutboxStore):
+def test_max_in_flight_below_one_refused(
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore
+):
     """
     A relay should refuse a max_in_flight below one.
 
@@ -1861,18 +1878,6 @@ def test_max_in_flight_below_one_refused(outbox: OutboxProducer, store: InMemory
     # Act / Assert
     with pytest.raises(ValueError, match="at least 1, got 0"):
         OutboxRelay(store, _OverlapPublisher(), outbox, max_in_flight=0)
-
-
-def test_poll_that_runs_out_refused(outbox: OutboxProducer, store: InMemoryOutboxStore):
-    """
-    A relay should refuse a poll backoff that runs out, since it polls until it exits.
-
-    Given: A poll backoff with a retry limit
-    When: A relay is built with it
-    Then: ValueError says it must never run out
-    """
-    with pytest.raises(ValueError, match="never run out"):
-        OutboxRelay(store, _Publisher(), outbox, poll=Exponential(1, retries=3))
 
 
 def test_relay_default_backoffs():
@@ -1903,7 +1908,7 @@ def test_relay_default_backoffs():
 
 
 async def test_poll_waits_longer_while_empty_and_starts_over(
-    outbox: OutboxProducer, store: InMemoryOutboxStore, mocker: MockerFixture
+    outbox: OutboxProducer[object], store: InMemoryOutboxStore, mocker: MockerFixture
 ):
     """
     Polling should wait longer while the store stays empty, and start over once records arrive.

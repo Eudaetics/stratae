@@ -150,6 +150,7 @@ from .config import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
     RabbitMQFailurePolicy,
+    RabbitMQPublish,
 )
 from .connection import ConnectionState
 from .consumer import RabbitMQConsumer
@@ -163,5 +164,6 @@ __all__ = [
     "RabbitMQConsumeConfig",
     "RabbitMQConsumer",
     "RabbitMQFailurePolicy",
+    "RabbitMQPublish",
     "RabbitMQPublisher",
 ]

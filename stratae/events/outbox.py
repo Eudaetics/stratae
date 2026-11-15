@@ -123,7 +123,7 @@ from typing import (
 )
 from uuid import UUID
 
-from stratae.backoff import Backoff, Exponential
+from stratae.backoff import Backoff, Endless, Exponential, Limited
 from stratae.events.binding import abind
 from stratae.events.envelope import ENVELOPE_HEADERS, Envelope, EnvelopeConfig
 from stratae.events.exceptions import NotConnectedError
@@ -131,7 +131,7 @@ from stratae.events.failure import Retry, failure_action, failure_reason
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
 from stratae.events.patterns import NoPayload, PubSub
-from stratae.events.pipeline import Outgoing, Publishing, Send, publish_async
+from stratae.events.pipeline import Outgoing, Publishing, Send, publish_enveloped_async
 from stratae.events.protocols import (
     Addressed,
     AnyEvent,
@@ -139,6 +139,7 @@ from stratae.events.protocols import (
     Encoded,
     EventType,
     Operation,
+    Serializer,
     Serializing,
     destination_of,
 )
@@ -161,12 +162,10 @@ _EVENT_ROUTED = "{!r} is already routed to another OutboxConfig; give it one rou
 
 _IN_FLIGHT = "max_in_flight must be at least 1, got {}"
 
-_FINITE_POLL = "the relay's poll backoff must never run out, since it polls until it exits"
-
 _POLL = Exponential(0.5, cap=5.0)
 """How long a relay waits after each poll in a row that doesn't fill a batch, by default."""
 
-_RETRY = Exponential(30.0, cap=3600.0, retries=9)
+_RETRY = Limited(Exponential(30.0, cap=3600.0), retries=9)
 """How long a relay waits before retrying a failed record, by default; parked on the 10th."""
 
 _ALREADY_RUNNING = "the relay is already running; exit it before entering it again"
@@ -378,29 +377,29 @@ class OutboxConfig[Target]:
 
 
 @dataclass(frozen=True, slots=True)
-class _Route:
+class _Route[Target]:
     """One outbox route: its name, its event and config, and the writer that adds its records."""
 
     name: str
-    event: AnyEvent
-    config: OutboxConfig[Any]
-    send: Send
+    event: PubSub[Any, Any]
+    config: OutboxConfig[Target]
+    send: Send[OutboxConfig[Target], Envelope]
 
 
 @dataclass(frozen=True, slots=True)
-class _Routes:
+class _Routes[Target]:
     """
     Every route of an outbox producer, by name for the relay and by event for emits.
 
     It's never changed. Adding a route makes a new one, so a reader sees all of one or the other.
     """
 
-    by_name: Mapping[str, tuple[AnyEvent, Any]]
+    by_name: Mapping[str, tuple[PubSub[Any, Any], Target]]
     """Each route's event and publisher config."""
-    by_event: Mapping[AnyEvent, _Route]
+    by_event: Mapping[AnyEvent, _Route[Target]]
     """Each event's route."""
 
-    def routed(self, event: AnyEvent, config: OutboxConfig[Any]) -> _Route | None:
+    def routed(self, event: AnyEvent, config: OutboxConfig[Target]) -> _Route[Target] | None:
         """
         Return the event's route, or `None` if it has none.
 
@@ -411,7 +410,7 @@ class _Routes:
             raise ValueError(_EVENT_ROUTED.format(event.name))
         return routed
 
-    def add(self, route: _Route) -> _Routes:
+    def add(self, route: _Route[Target]) -> _Routes[Target]:
         """
         Return these routes with one more.
 
@@ -426,10 +425,7 @@ class _Routes:
         )
 
 
-_NO_ROUTES = _Routes(MappingProxyType({}), MappingProxyType({}))
-
-
-class OutboxProducer:
+class OutboxProducer[Target]:
     """
     An async bus that writes events to an outbox store instead of publishing them.
 
@@ -442,12 +438,16 @@ class OutboxProducer:
     An outbox can't wait for a reply, so it takes PubSub events only and matches
     {py:class}`PubSubProducer <stratae.events.protocols.PubSubProducer>`. Binding or emitting a
     request is a type error, and raises `TypeError`.
+
+    Typed by the routing config of the publisher its records are relayed to, such as a
+    {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.config.RabbitMQConfig>`. Nothing
+    it's built with says which, so give it: `OutboxProducer[RabbitMQConfig](store, ...)`.
     """
 
     def __init__(
         self,
         store: OutboxStore,
-        serializer: Callable[[Any], bytes],
+        serializer: Serializer[object],
         *,
         middleware: Middleware = Middleware(),
         envelope: EnvelopeConfig = EnvelopeConfig(),
@@ -470,18 +470,21 @@ class OutboxProducer:
         :raises MiddlewareKindError: If any `publish` middleware isn't an `async def`.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
-        self._publishing = Publishing(middleware.publish, envelope.new_id, asynchronous=True)
+        self._publishing: Publishing[OutboxConfig[Target], Envelope] = Publishing(
+            middleware.publish, asynchronous=True
+        )
+        self._new_id = envelope.new_id
         self._store = store
         self._serializer = serializer
-        self._routes = _NO_ROUTES
+        self._routes = _Routes[Target](MappingProxyType({}), MappingProxyType({}))
         self._routing = threading.Lock()
 
     @property
-    def routes(self) -> Mapping[str, tuple[AnyEvent, Any]]:
+    def routes(self) -> Mapping[str, tuple[PubSub[Any, Any], Target]]:
         """Each route's event and publisher config, for the relay, as they are now."""
         return self._routes.by_name
 
-    def route(self, event: PubSub[Any, Any], config: OutboxConfig[Any]) -> None:
+    def route(self, event: PubSub[Any, Any], config: OutboxConfig[Target]) -> None:
         """
         Route an event's records, registering the route for the relay.
 
@@ -494,9 +497,14 @@ class OutboxProducer:
         """
         self._route(event, config)
 
-    def _route(self, event: AnyEvent, config: OutboxConfig[Any]) -> _Route:
-        """Return the event's route, adding it if the event has none."""
-        _require_pubsub(event)
+    def _route(self, event: AnyEvent, config: OutboxConfig[Target]) -> _Route[Target]:
+        """
+        Return the event's route, adding it if the event has none.
+
+        :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
+        """
+        if not isinstance(event, PubSub):
+            raise TypeError(_PUBSUB_ONLY.format(event))
         routed = self._routes.routed(event, config)
         if routed is not None:
             return routed
@@ -510,7 +518,7 @@ class OutboxProducer:
             self._routes = routes.add(route)
         return route
 
-    def _writer(self, name: str, target: Any) -> Send:
+    def _writer(self, name: str, target: Target) -> Send[OutboxConfig[Target], Envelope]:
         """Return what writes a route's records, with its config's serializer and address."""
         serializer = target.serializer if isinstance(target, Serializing) else None
         address = target.address if isinstance(target, Addressed) else None
@@ -522,7 +530,7 @@ class OutboxProducer:
         event: PubSub[Payload, Literal[False]],
         *,
         factory: Callable[P, Payload] | Callable[P, Awaitable[Payload]],
-        config: OutboxConfig[Any],
+        config: OutboxConfig[Target],
         hooks: Hooks[Payload, None] | None = None,
     ) -> Callable[P, Awaitable[None]]: ...
     @overload
@@ -531,7 +539,7 @@ class OutboxProducer:
         event: PubSub[NoPayload, Literal[True]],
         *,
         factory: None = None,
-        config: OutboxConfig[Any],
+        config: OutboxConfig[Target],
         hooks: Hooks[NoPayload, None] | None = None,
     ) -> Callable[[], Awaitable[None]]: ...
     @overload
@@ -540,7 +548,7 @@ class OutboxProducer:
         event: PubSub[Payload, Literal[False]],
         *,
         factory: None = None,
-        config: OutboxConfig[Any],
+        config: OutboxConfig[Target],
         hooks: Hooks[Payload, None] | None = None,
     ) -> Callable[[Payload], Awaitable[None]]: ...
 
@@ -549,7 +557,7 @@ class OutboxProducer:
         event: AnyEvent,
         *,
         factory: Callable[..., Any] | None = None,
-        config: OutboxConfig[Any],
+        config: OutboxConfig[Target],
         hooks: Hooks[Any, Any] | None = None,
     ) -> Callable[..., Awaitable[Any]]:
         """
@@ -593,7 +601,7 @@ class OutboxProducer:
 
     def _emit_on[Payload](
         self,
-        route: _Route,
+        route: _Route[Target],
         event: EventType[Payload, Any, Any, Any],
         payload: Payload,
         *,
@@ -605,18 +613,20 @@ class OutboxProducer:
         Typed for any event, so `bind` can hand it to `abind`. Only PubSub events reach it:
         `bind` and `emit` take nothing else, and refuse anything else at runtime.
         """
-        return publish_async(self._publishing, route.send, event, payload, route.config, hooks)
+        return publish_enveloped_async(
+            self._publishing, self._new_id, route.send, event, payload, route.config, hooks
+        )
 
     async def _write(
         self,
         route: str,
-        serializer: Callable[[Any], bytes],
+        serializer: Serializer[Any],
         address: Callable[[Any], str | None] | None,
-        message: Outgoing,
+        message: Outgoing[OutboxConfig[Target], Envelope],
     ) -> None:
         """Serialize a message's payload and add it to the store as a record, with its headers."""
         event, config, payload = message.event, message.config, message.payload
-        envelope = cast(Envelope, message.envelope)
+        envelope = message.envelope
         body = b"" if event.is_signal else serializer(payload)
         now = _now()
         record = OutboxRecord(
@@ -632,29 +642,30 @@ class OutboxProducer:
         await _settle(self._store.add(record))
 
 
-class OutboxPublisher(Protocol):
+class OutboxPublisher[Target](Protocol):
     """
     A publisher the relay can use.
 
     It routes events, and publishes an already-encoded payload under a given envelope and
-    headers.
+    headers. Typed by its routing config, which an outbox's routes give it.
 
     {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher>` is
     one.
     """
 
-    def route(self, event: Any, config: Any) -> None:
+    def route(self, event: PubSub[Any, Any], config: Target, /) -> None:
         """Route an event's messages; routing it again to an equal config does nothing."""
         ...
 
     def emit(
         self,
-        event: Any,
-        payload: Any,
+        event: PubSub[Any, Any],
+        payload: Encoded,
+        /,
         *,
         envelope: Envelope | None = None,
         headers: Mapping[str, object] | None = None,
-    ) -> Awaitable[Any]:
+    ) -> Awaitable[object]:
         """
         Publish a payload under `envelope` with `headers`, returning once the broker has it.
 
@@ -820,7 +831,7 @@ async def _cancel(running: Iterable[asyncio.Task[_Outcome]]) -> list[_Outcome]:
     return [result for result in results if isinstance(result, _Sent | _Failed | _Outage)]
 
 
-class OutboxRelay:
+class OutboxRelay[Target]:
     """
     Publishes an outbox's committed records, and marks them sent.
 
@@ -852,11 +863,11 @@ class OutboxRelay:
     def __init__(
         self,
         store: OutboxStore,
-        publisher: OutboxPublisher,
-        outbox: OutboxProducer,
+        publisher: OutboxPublisher[Target],
+        outbox: OutboxProducer[Target],
         *,
         batch_size: int = 100,
-        poll: Backoff = _POLL,
+        poll: Endless = _POLL,
         retry: Backoff = _RETRY,
         max_in_flight: int = 1,
     ) -> None:
@@ -868,17 +879,15 @@ class OutboxRelay:
         :param outbox: The producer whose bindings map routes to events and configs.
         :param batch_size: Records claimed at a time.
         :param poll: The wait after each poll in a row that doesn't fill a batch, counted from
-            the last that found records. It must never run out. By default 0.5 s, doubling up
-            to 5 s.
+            the last that found records. It never runs out. By default 0.5 s, doubling up to
+            5 s.
         :param retry: The wait before each retry of a record that failed. Once it runs out,
             the record is parked as failed. By default 30 s, doubling up to an hour, with the
             record parked on its 10th failure.
         :param max_in_flight: Publishes waiting on the broker at once. At most one per key.
-        :raises ValueError: If `poll` runs out, `max_in_flight` is less than one, or the
-            publisher already routes one of the outbox's events to a different config.
+        :raises ValueError: If `max_in_flight` is less than one, or the publisher already
+            routes one of the outbox's events to a different config.
         """
-        if poll.retries is not None:
-            raise ValueError(_FINITE_POLL)
         if max_in_flight < 1:
             raise ValueError(_IN_FLIGHT.format(max_in_flight))
         for event, config in outbox.routes.values():
@@ -893,7 +902,7 @@ class OutboxRelay:
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
 
-    async def __aenter__(self) -> OutboxRelay:
+    async def __aenter__(self) -> OutboxRelay[Target]:
         """
         Start relaying in the background.
 
@@ -944,7 +953,7 @@ class OutboxRelay:
                 if claimed == self._batch_size:
                     continue
             idle += 1
-            await self._sleep(cast(float, self._poll.delay(idle)))
+            await self._sleep(self._poll.delay(idle))
 
     async def _sleep(self, seconds: float) -> None:
         """Wait `seconds`, or until woken."""

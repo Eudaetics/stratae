@@ -59,7 +59,7 @@ class AsyncPending:
 
     __slots__ = ("owner", "waiters")
 
-    def __init__(self, owner: asyncio.Task[Any] | None) -> None:
+    def __init__(self, owner: asyncio.Task[object] | None) -> None:
         """Claim for task `owner`."""
         self.owner = owner
         self.waiters: list[asyncio.Future[None]] | None = None
@@ -97,7 +97,7 @@ class WatchedClaim:
 
     __slots__ = ("done", "owner")
 
-    def __init__(self, owner: asyncio.Task[Any]) -> None:
+    def __init__(self, owner: asyncio.Task[object]) -> None:
         """Watch `owner`'s claim, with an event for it to set on release."""
         self.owner = owner
         self.done = asyncio.Event()

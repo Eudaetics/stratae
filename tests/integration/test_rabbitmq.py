@@ -768,7 +768,7 @@ def _failure_queues(broker: _Broker, prefix: str, policy: RabbitMQFailurePolicy)
     broker.queues.extend(
         name
         for name in (
-            *(policy.retry_queue(queue, n) for n in range(1, (policy.backoff.retries or 0) + 1)),
+            *(policy.retry_queue(queue, n) for n in range(1, len(policy.backoff.delays) + 1)),
             policy.dead_letter_target(queue),
         )
         if name is not None
@@ -1348,7 +1348,7 @@ async def test_outbox_relays_committed_events(broker: _Broker):
     queue = _unique("stratae-it-outbox")
     broker.queues.append(queue)
     store = InMemoryOutboxStore()
-    outbox = OutboxProducer(store, serializer=msgspec.json.encode)
+    outbox = OutboxProducer[RabbitMQConfig](store, serializer=msgspec.json.encode)
     send = outbox.bind(
         message_event, factory=Message, config=OutboxConfig(RabbitMQConfig("", queue))
     )
@@ -1405,7 +1405,7 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
     async def prioritize(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
         return await next(call.with_headers({"x-priority": 3}))
 
-    outbox = OutboxProducer(
+    outbox = OutboxProducer[RabbitMQConfig](
         store,
         serializer=msgspec.json.encode,
         middleware=Middleware(publish=(_tag_tenant, prioritize)),
@@ -1544,7 +1544,7 @@ async def test_outbox_trace_links_relay_to_write(broker: _Broker):
     broker.queues.append(queue)
     provider, exporter, ended = _traced()
     store = InMemoryOutboxStore()
-    outbox = OutboxProducer(
+    outbox = OutboxProducer[RabbitMQConfig](
         store, msgspec.json.encode, middleware=tracing(provider, asynchronous=True)
     )
     send = outbox.bind(
@@ -1593,7 +1593,7 @@ async def test_outbox_waits_out_an_outage(broker: _Broker, proxy: _Proxy):
     broker.queues.append(queue)
     config = RabbitMQConsumeConfig(queue)
     store = InMemoryOutboxStore()
-    outbox = OutboxProducer(store, serializer=msgspec.json.encode)
+    outbox = OutboxProducer[RabbitMQConfig](store, serializer=msgspec.json.encode)
     send = outbox.bind(
         message_event, factory=Message, config=OutboxConfig(RabbitMQConfig("", queue))
     )
