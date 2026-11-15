@@ -301,18 +301,23 @@ committed
 ```
 ````
 
-**Messages.** Give {py:class}`RabbitMQConsumer <stratae.integrations.rabbitmq.consumer.RabbitMQConsumer>` the session's scope as its `scope`. A message is acked only once its scope has closed, so its transaction has committed first. A failed commit fails the message. It's nacked, or retried and dead-lettered under its {py:class}`RabbitMQFailurePolicy <stratae.integrations.rabbitmq.config.RabbitMQFailurePolicy>`. A message cancelled at shutdown, or by a dropped connection, rolls back and is redelivered.
+**Messages.** Activate the session's scope in the first handle middleware of {py:class}`RabbitMQConsumer <stratae.integrations.rabbitmq.consumer.RabbitMQConsumer>`. A message is acked only once its middleware returns, so its scope has closed and its transaction has committed first. A failed commit fails the message. It's nacked, or retried and dead-lettered under its {py:class}`RabbitMQFailurePolicy <stratae.integrations.rabbitmq.config.RabbitMQFailurePolicy>`. A message cancelled at shutdown, or by a dropped connection, rolls back and is redelivered.
 
 <!--- skip: next -->
 ```{code-block} python
 import msgspec
+from stratae.events import Middleware
 from stratae.integrations.rabbitmq import RabbitMQConsumer
+
+async def in_work(call, next):
+    async with work:
+        return await next(call)
 
 consumer = RabbitMQConsumer(
     "amqp://guest:guest@localhost/",
     deserializer=msgspec.json.decode,
-    scope=work,
     prefetch_count=10,
+    middleware=Middleware(handle=(in_work,)),
 )
 ```
 

@@ -34,11 +34,28 @@ re-published with the ones it was first sent with.
 {py:class}`Hooks <stratae.events.hooks.Hooks>` passed to `bind` or `emit` run around each
 publish, and those passed to `handle` around each delivery's handler, before its ack or nack.
 
-Give the consumer a `scope` to run each message's work in its own
+Run each message's work in its own
 {py:class}`AsyncScope <stratae.lifecycle.scope.AsyncScope>`, as
-{py:func}`scoped_route <stratae.integrations.starlette.scoped_route>` does per request. It's
-activated inside the message's envelope, around its middleware, hooks and handler, and the
-message is acked only once it has closed, so a commit in its cleanup lands before the ack.
+{py:func}`scoped_route <stratae.integrations.starlette.scoped_route>` does per request, by
+activating it in a handle middleware. As the first one, it holds the other middleware, the
+hooks and the handler. The message is acked only once the middleware returns, so a commit in
+the scope's cleanup lands before the ack. A middleware placed outside it, such as one that
+retries, gets a fresh activation for each attempt.
+
+````{example} A scope for each message
+```{code-block} python
+from stratae.events import Middleware
+from stratae.lifecycle import AsyncScope
+
+message = AsyncScope("message")
+
+async def in_message(call, next):
+    async with message:
+        return await next(call)
+
+middleware = Middleware(handle=(in_message,))
+```
+````
 
 Give a registration a
 {py:class}`RabbitMQFailurePolicy <stratae.integrations.rabbitmq.config.RabbitMQFailurePolicy>`
