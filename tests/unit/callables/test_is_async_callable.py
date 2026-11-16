@@ -21,7 +21,7 @@ Typing:
 """
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from functools import partial
 from inspect import markcoroutinefunction
 from typing import Any, assert_type
@@ -133,13 +133,13 @@ def test_narrows_to_the_async_form():
 
     Given: A callable typed as giving an int or an awaitable of one
     When: is_async_callable is true for it
-    Then: Type checkers see it as giving an awaitable of an int
+    Then: Type checkers see it as giving a coroutine of an int
     """
     # Arrange
     fn: Callable[[], int] | Callable[[], Awaitable[int]] = _async_function
 
     # Act / Assert
     if is_async_callable(fn):
-        assert_type(fn, Callable[[], Awaitable[int]])
+        assert_type(fn, Callable[[], Coroutine[Any, Any, int]])
     else:
         pytest.fail("an async function read as sync")

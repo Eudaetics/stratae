@@ -115,7 +115,7 @@ from stratae.events.dispatch import (
     fan_out_async,
 )
 from stratae.events.envelope import Envelope, EnvelopeConfig
-from stratae.events.handler import Handler, Handlers
+from stratae.events.handler import AsyncHandler, Handler, Handlers, SyncHandler
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import (
     NO_HEADERS,
@@ -137,7 +137,7 @@ from stratae.events.pipeline import (
 )
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
 
-_NO_HANDLERS: Handlers[Handler[AnyEvent, Any]] = Handlers()
+_NO_HANDLERS: Handlers[AnyEvent, Any] = Handlers()
 """The handlers of an event nothing handles."""
 
 _UNSUPPORTED_PATTERN = (
@@ -187,7 +187,7 @@ class _AsyncHandlerDecorator[Payload: Any, Result](Protocol):
     @overload
     def __call__(
         self, fn: Callable[[Payload], Awaitable[Result]]
-    ) -> Handler[AnyEvent, Awaitable[Result]]: ...
+    ) -> AsyncHandler[AnyEvent, Result]: ...
     @overload
     def __call__(self, fn: Callable[[Payload], Result]) -> Handler[AnyEvent, Result]: ...
 
@@ -196,9 +196,7 @@ class _AsyncSignalHandlerDecorator[Result](Protocol):
     """Decorator form of handle for a schema-less event, returning the Handler."""
 
     @overload
-    def __call__(
-        self, fn: Callable[[], Awaitable[Result]]
-    ) -> Handler[AnyEvent, Awaitable[Result]]: ...
+    def __call__(self, fn: Callable[[], Awaitable[Result]]) -> AsyncHandler[AnyEvent, Result]: ...
     @overload
     def __call__(self, fn: Callable[[], Result]) -> Handler[AnyEvent, Result]: ...
 
@@ -235,9 +233,7 @@ class _Route:
     send: Send[None, Envelope | None]
     """Delivers one message to the handlers current when it's sent."""
 
-    def __init__(
-        self, dispatcher: Dispatcher[Any], handlers: Handlers[Handler[AnyEvent, Any]]
-    ) -> None:
+    def __init__(self, dispatcher: Dispatcher[Any], handlers: Handlers[AnyEvent, Any]) -> None:
         self.dispatcher = dispatcher
         self.handlers = handlers
 
@@ -251,10 +247,11 @@ class Dispatch:
     emitting the event returns, or an awaitable resolving to it on an
     {py:class}`AsyncDirectBus`. The handlers are a
     {py:class}`Handlers <stratae.events.handler.Handlers>` tuple, which doesn't change while
-    the dispatcher runs, so it can be run as given. A dispatcher may take any collection of
+    the dispatcher runs, so it can be run as given. It keeps its sync and async handlers apart,
+    and a {py:class}`DirectBus`'s are all sync. A dispatcher may take any collection of
     handlers in its place. Write it generic in the pattern's type parameters, e.g.
     `def gather[Payload, Result](event: Gather[Payload, Result],
-    handlers: Collection[Handler[Any, Result]], message: HandleCall) -> list[Result]`,
+    handlers: Handlers[Any, Result], message: HandleCall) -> list[Result]`,
     so its body is checked. A dispatcher whose first parameter
     doesn't accept `pattern` is a type error. That its declared return matches what the
     pattern emits is the dispatcher author's to ensure.
@@ -432,10 +429,9 @@ class _Core:
         route = self._route(config)
         if hooks is not None:
             self.check_hooks(config, hooks)
-        call, is_async = wrap_handler(
-            config, fn, hooks, self._middleware.handle, self._asynchronous
+        handler = wrap_handler(
+            config, fn, config, hooks, self._middleware.handle, self._asynchronous
         )
-        handler: Handler[AnyEvent, Any] = Handler(call, config, is_async)
         with self._registering:
             route.handlers = route.handlers.adding(handler)
         return handler
@@ -480,7 +476,7 @@ class _Core:
             with self._registering:
                 route.handlers = route.handlers.removing(handler)
 
-    def handlers(self, event: AnyEvent) -> Handlers[Handler[AnyEvent, Any]]:
+    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any]:
         """Return the handlers registered for an event, empty if it has none."""
         route = self._routes.get(event)
         return _NO_HANDLERS if route is None else route.handlers
@@ -598,7 +594,7 @@ class DirectBus:
         fn: Callable[[], Result],
         *,
         hooks: Hooks[NoPayload, Result] | None = None,
-    ) -> Handler[AnyEvent, Result]: ...
+    ) -> SyncHandler[AnyEvent, Result]: ...
 
     @overload
     def handle[Result](
@@ -607,7 +603,7 @@ class DirectBus:
         fn: None = None,
         *,
         hooks: Hooks[NoPayload, Result] | None = None,
-    ) -> Callable[[Callable[[], Result]], Handler[AnyEvent, Result]]: ...
+    ) -> Callable[[Callable[[], Result]], SyncHandler[AnyEvent, Result]]: ...
 
     @overload
     def handle[Payload, Result](
@@ -616,7 +612,7 @@ class DirectBus:
         fn: Callable[[Payload], Result],
         *,
         hooks: Hooks[Payload, Result] | None = None,
-    ) -> Handler[AnyEvent, Result]: ...
+    ) -> SyncHandler[AnyEvent, Result]: ...
 
     @overload
     def handle[Payload, Result](
@@ -625,7 +621,7 @@ class DirectBus:
         fn: None = None,
         *,
         hooks: Hooks[Payload, Result] | None = None,
-    ) -> Callable[[Callable[[Payload], Result]], Handler[AnyEvent, Result]]: ...
+    ) -> Callable[[Callable[[Payload], Result]], SyncHandler[AnyEvent, Result]]: ...
 
     def handle(
         self,
@@ -657,7 +653,7 @@ class DirectBus:
         """
         self._core.remove(handler)
 
-    def handlers(self, event: AnyEvent) -> Handlers[Handler[AnyEvent, Any]]:
+    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any]:
         """
         Return the handlers registered for an event, in no particular order.
 
@@ -784,7 +780,7 @@ class AsyncDirectBus:
         fn: Callable[[], Awaitable[Result]],
         *,
         hooks: Hooks[NoPayload, Result] | None = None,
-    ) -> Handler[AnyEvent, Awaitable[Result]]: ...
+    ) -> AsyncHandler[AnyEvent, Result]: ...
 
     @overload
     def handle[Result](
@@ -811,7 +807,7 @@ class AsyncDirectBus:
         fn: Callable[[Payload], Awaitable[Result]],
         *,
         hooks: Hooks[Payload, Result] | None = None,
-    ) -> Handler[AnyEvent, Awaitable[Result]]: ...
+    ) -> AsyncHandler[AnyEvent, Result]: ...
 
     @overload
     def handle[Payload, Result](
@@ -861,7 +857,7 @@ class AsyncDirectBus:
         """
         self._core.remove(handler)
 
-    def handlers(self, event: AnyEvent) -> Handlers[Handler[AnyEvent, Any]]:
+    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any]:
         """
         Return the handlers registered for an event, in no particular order.
 

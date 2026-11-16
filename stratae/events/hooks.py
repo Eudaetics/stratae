@@ -83,7 +83,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from inspect import isawaitable
 from types import CoroutineType
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 from stratae._checked import checked_callables
 from stratae.callables import is_async_callable
@@ -154,7 +154,9 @@ def _refuse_value(result: object, hook: object) -> NoReturn:
     raise TypeError(_RETURNED_VALUE.format(hook, result))
 
 
-def _observe(hooks: tuple[Callable[..., _Returns], ...], event: Any, *args: Any) -> None:
+def _observe[*Args](
+    hooks: tuple[Callable[["AnyEvent", *Args], _Returns], ...], event: "AnyEvent", *args: *Args
+) -> None:
     """Run every observing hook, logging any that raises instead of propagating it."""
     for hook in hooks:
         try:
@@ -164,10 +166,10 @@ def _observe(hooks: tuple[Callable[..., _Returns], ...], event: Any, *args: Any)
             _log.exception("hook %r for event '%s' failed", hook, event.name)
 
 
-def run_hooks[**P, Result](
-    hooks: Hooks[Any, Any],
-    event: Any,
-    payload: Any,
+def run_hooks[**P, Payload, Result](
+    hooks: Hooks[Payload, Result],
+    event: "AnyEvent",
+    payload: Payload,
     call: Callable[P, Result],
     *args: P.args,
     **kwargs: P.kwargs,
@@ -199,7 +201,9 @@ def run_hooks[**P, Result](
     return reply
 
 
-async def _observe_one(hook: Callable[..., _Returns], event: Any, *args: Any) -> None:
+async def _observe_one[*Args](
+    hook: Callable[["AnyEvent", *Args], _Returns], event: "AnyEvent", *args: *Args
+) -> None:
     """Run one observing hook, sync or async, logging it if it raises."""
     try:
         result: object = hook(event, *args)
@@ -212,8 +216,8 @@ async def _observe_one(hook: Callable[..., _Returns], event: Any, *args: Any) ->
         _log.exception("hook %r for event '%s' failed", hook, event.name)
 
 
-async def _observe_async(
-    hooks: tuple[Callable[..., _Returns], ...], event: Any, *args: Any
+async def _observe_async[*Args](
+    hooks: tuple[Callable[["AnyEvent", *Args], _Returns], ...], event: "AnyEvent", *args: *Args
 ) -> None:
     """Run every observing hook concurrently, so a slow one doesn't hold up the rest."""
     if len(hooks) == 1:
@@ -222,10 +226,10 @@ async def _observe_async(
         await asyncio.gather(*(_observe_one(hook, event, *args) for hook in hooks))
 
 
-async def run_hooks_async[**P, Result](
-    hooks: Hooks[Any, Any],
-    event: Any,
-    payload: Any,
+async def run_hooks_async[**P, Payload, Result](
+    hooks: Hooks[Payload, Result],
+    event: "AnyEvent",
+    payload: Payload,
     call: Callable[P, Awaitable[Result]],
     *args: P.args,
     **kwargs: P.kwargs,

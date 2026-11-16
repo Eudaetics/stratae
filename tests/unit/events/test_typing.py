@@ -42,6 +42,7 @@ from typing import Any, Literal, assert_type
 
 from stratae.events import (
     AsyncDirectBus,
+    AsyncHandler,
     DirectBus,
     HandleCall,
     Handler,
@@ -50,6 +51,7 @@ from stratae.events import (
     NoPayload,
     PubSub,
     Request,
+    SyncHandler,
     abind,
     bind,
 )
@@ -151,10 +153,10 @@ def test_direct_bus_types() -> None:
     """
     # Arrange
     bus = DirectBus()
-    assert_type(bus.handle(_place_order, _make_order), Handler[_AnyEvent, _Order])
+    assert_type(bus.handle(_place_order, _make_order), SyncHandler[_AnyEvent, _Order])
     bus.handle(_cancel_order, _cancel)
     bus.handle(_order_placed, _on_placed)
-    assert_type(bus.handle(_ping, _pong), Handler[_AnyEvent, str])
+    assert_type(bus.handle(_ping, _pong), SyncHandler[_AnyEvent, str])
     bus.handle(_heartbeat, _beat)
 
     place = bus.bind(_place_order, factory=_PlaceOrder)
@@ -195,7 +197,7 @@ async def test_async_direct_bus_types() -> None:
         return _Order(command.item)
 
     bus = AsyncDirectBus()
-    assert_type(bus.handle(_place_order, make_order), Handler[_AnyEvent, Awaitable[_Order]])
+    assert_type(bus.handle(_place_order, make_order), AsyncHandler[_AnyEvent, _Order])
     bus.handle(_order_placed, _on_placed)
     bus.handle(_ping, _pong)
 
@@ -234,20 +236,20 @@ def test_builtin_dispatchers_fit_their_patterns() -> None:
     """
     # Act
     request: Callable[
-        [Request[_S, _R, Any], Collection[Handler[Any, _R]], HandleCall],
+        [Request[_S, _R, Any], Handlers[Any, _R], HandleCall],
         _R,
     ] = dispatch_request
     request_async: Callable[
         [
             Request[_S, _R, Any],
-            Collection[Handler[Any, _R | Awaitable[_R]]],
+            Collection[Handler[Any, _R]],
             HandleCall,
         ],
         Awaitable[_R],
     ] = dispatch_request_async
-    pubsub: Callable[[PubSub[_S, Any], Handlers[Handler[Any, None]], HandleCall], None] = fan_out
+    pubsub: Callable[[PubSub[_S, Any], Handlers[Any, None], HandleCall], None] = fan_out
     pubsub_async: Callable[
-        [PubSub[_S, Any], Handlers[Handler[Any, Any]], HandleCall],
+        [PubSub[_S, Any], Handlers[Any, None], HandleCall],
         Awaitable[None],
     ] = fan_out_async
 

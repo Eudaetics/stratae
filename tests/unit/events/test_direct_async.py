@@ -109,6 +109,7 @@ from stratae.events import (
     fan_out_concurrent,
 )
 from stratae.events.exceptions import MultipleRespondersError, NoResponderError
+from stratae.events.handler import invoke
 from stratae.middleware import MiddlewareKindError
 
 
@@ -163,10 +164,10 @@ class _Gather[S, R](Immutable):
 
 
 async def _gather_replies[S, R](
-    event: _Gather[S, R], handlers: Collection[Handler[Any, Awaitable[R]]], message: HandleCall
+    event: _Gather[S, R], handlers: Handlers[Any, R], message: HandleCall
 ) -> list[R]:
-    """Dispatch a _Gather event of async handlers: await each and collect the replies."""
-    return [await handler(message) for handler in handlers]
+    """Dispatch a _Gather event: call each handler, awaiting async ones, and collect replies."""
+    return [await invoke(handler, message) for handler in handlers]
 
 
 _quotes = _Gather(_BookQuery, reply=int)
@@ -360,6 +361,7 @@ def test_handle_returns_handler(bus: AsyncDirectBus):
     """
     fn = Mock()
     handler = bus.handle(_task_created, fn)
+    assert handler.is_async is False
 
     handler.call(HandleCall(_task_created, None, _TaskCreated(1)))
 

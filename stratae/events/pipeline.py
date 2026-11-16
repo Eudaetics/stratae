@@ -23,13 +23,14 @@ payload-less event. An adapter builds the message once for each one it handles, 
 handler with {py:func}`invoke <stratae.events.handler.invoke>`.
 """
 
-from collections.abc import Awaitable, Callable, Collection, Mapping
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
 from types import MappingProxyType
 from typing import Any, NamedTuple
 from uuid import UUID
 
 from stratae.callables import is_async_callable
 from stratae.events.envelope import ENVELOPE_HEADERS, Envelope
+from stratae.events.handler import AsyncHandler, Handler, SyncHandler
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
 from stratae.events.middleware import (
     NO_HEADERS,
@@ -348,41 +349,50 @@ async def publish_enveloped_async[Config](
         return await _emit_async(publishing, hooks, message, send)
 
 
-def _payload_of(fn: Callable[[Any], Any]) -> Callable[[HandleCall], Any]:
+def _payload_of[Result](fn: Callable[[Any], Result]) -> Callable[[HandleCall], Result]:
     """Return `fn`, called with the payload of the message it's given."""
 
-    def unpacked(message: HandleCall, /) -> Any:
+    def unpacked(message: HandleCall, /) -> Result:
         return fn(message.payload)
 
     return unpacked
 
 
-def _without_payload(fn: Callable[[], Any]) -> Callable[[HandleCall], Any]:
+def _without_payload[Result](fn: Callable[[], Result]) -> Callable[[HandleCall], Result]:
     """Return a payload-less event's `fn`, called with nothing for the message it's given."""
 
-    def unpacked(_: HandleCall, /) -> Any:
+    def unpacked(_: HandleCall, /) -> Result:
         return fn()
 
     return unpacked
 
 
-def _hooked(
-    hooks: Hooks[Any, Any], event: AnyEvent, call: Callable[[HandleCall], Any]
-) -> Callable[[HandleCall], Any]:
+def _unpacking[Result](
+    event: AnyEvent, fn: Callable[..., Result]
+) -> Callable[[HandleCall], Result]:
+    """Return `fn`, called with the message's payload, or with nothing for a payload-less event."""
+    return _without_payload(fn) if event.is_signal else _payload_of(fn)
+
+
+def _hooked[Result](
+    hooks: Hooks[Any, Result], event: AnyEvent, call: Callable[[HandleCall], Result]
+) -> Callable[[HandleCall], Result]:
     """Return `call` run inside sync hooks, which see the message's payload."""
 
-    def hooked(message: HandleCall, /) -> Any:
+    def hooked(message: HandleCall, /) -> Result:
         return run_hooks(hooks, event, message.payload, call, message)
 
     return hooked
 
 
-def _hooked_async(
-    hooks: Hooks[Any, Any], event: AnyEvent, call: Callable[[HandleCall], Awaitable[Any]]
-) -> Callable[[HandleCall], Awaitable[Any]]:
-    """Return `call` run inside hooks, sync or async, as an awaitable."""
+def _hooked_async[Result](
+    hooks: Hooks[Any, Result],
+    event: AnyEvent,
+    call: Callable[[HandleCall], Coroutine[Any, Any, Result]],
+) -> Callable[[HandleCall], Coroutine[Any, Any, Result]]:
+    """Return `call` run inside hooks, sync or async, as a coroutine."""
 
-    def hooked(message: HandleCall, /) -> Awaitable[Any]:
+    def hooked(message: HandleCall, /) -> Coroutine[Any, Any, Result]:
         return run_hooks_async(hooks, event, message.payload, call, message)
 
     return hooked
@@ -404,25 +414,25 @@ def _refuse_relabelled(seen: HandleCall, received: HandleCall) -> None:
         raise ValueError(_RELABELLED)
 
 
-def _handled(
-    middleware: tuple[HandleMiddleware, ...], call: Callable[[HandleCall], Any]
-) -> Callable[[HandleCall], Any]:
+def _handled[Result](
+    middleware: tuple[HandleMiddleware, ...], call: Callable[[HandleCall], Result]
+) -> Callable[[HandleCall], Result]:
     """Return `call` run inside handle middleware, sync or async, which sees the message."""
 
-    def finish(seen: HandleCall, received: HandleCall) -> Any:
+    def finish(seen: HandleCall, received: HandleCall) -> Result:
         if seen is not received:
             _refuse_relabelled(seen, received)
         return call(seen)
 
     chained = chain(middleware, finish)
 
-    def handled(message: HandleCall, /) -> Any:
+    def handled(message: HandleCall, /) -> Result:
         return chained(message, message)
 
     return handled
 
 
-class _Awaitable:
+class _Awaitable[Result]:
     """
     A sync handler call, made awaitable for an async runner. It runs when awaited.
 
@@ -432,41 +442,59 @@ class _Awaitable:
 
     __slots__ = ("call",)
 
-    def __init__(self, call: Callable[[HandleCall], Any]) -> None:
+    def __init__(self, call: Callable[[HandleCall], Result]) -> None:
         self.call = call
 
-    async def __call__(self, message: HandleCall, /) -> Any:
+    async def __call__(self, message: HandleCall, /) -> Result:
         return self.call(message)
 
 
-def wrap_handler(
+def wrap_handler[Config](
     event: AnyEvent,
     fn: Callable[..., Any],
+    config: Config,
     hooks: Hooks[Any, Any] | None,
     middleware: tuple[HandleMiddleware, ...],
     asynchronous: bool,
-) -> tuple[Callable[[HandleCall], Any], bool]:
+) -> Handler[Config, Any]:
     """
-    Build the call an adapter registers for a handler: the handler, its hooks, then middleware.
+    Build the handler an adapter registers: the function, its hooks, then middleware.
+
+    It's async if the function is, if any hook is, or if the adapter runs its middleware
+    asynchronously. Otherwise it's sync.
 
     :param event: The event the handler is for, which hooks see.
     :param fn: The handler, taking the payload, or nothing for a payload-less event.
+    :param config: The handler's routing config.
     :param hooks: The handler's hooks, or `None`.
     :param middleware: The adapter's handle middleware, outermost first.
     :param asynchronous: Whether the adapter runs middleware asynchronously.
-    :returns: The call to register, taking the message being handled, and whether it's async.
+    :returns: The handler to register, taking the message being handled.
     """
-    call = _without_payload(fn) if event.is_signal else _payload_of(fn)
-    is_async = is_async_callable(fn)
+    if is_async_callable(fn):
+        return _async_handler(event, _unpacking(event, fn), config, hooks, middleware)
+    call = _unpacking(event, fn)
+    if hooks is not None and hooks.has_async:
+        return _async_handler(event, _Awaitable(call), config, hooks, middleware)
     if hooks is not None:
-        if is_async or hooks.has_async:
-            call = _hooked_async(hooks, event, call if is_async else _Awaitable(call))
-            is_async = True
-        else:
-            call = _hooked(hooks, event, call)
+        call = _hooked(hooks, event, call)
     if middleware:
-        if asynchronous and not is_async:
-            call = _Awaitable(call)
-            is_async = True
+        if asynchronous:
+            return AsyncHandler(_handled(middleware, _Awaitable(call)), config)
         call = _handled(middleware, call)
-    return call, is_async
+    return SyncHandler(call, config)
+
+
+def _async_handler[Config](
+    event: AnyEvent,
+    call: Callable[[HandleCall], Coroutine[Any, Any, Any]],
+    config: Config,
+    hooks: Hooks[Any, Any] | None,
+    middleware: tuple[HandleMiddleware, ...],
+) -> AsyncHandler[Config, Any]:
+    """Return an async call as a handler, inside its hooks, then the adapter's middleware."""
+    if hooks is not None:
+        call = _hooked_async(hooks, event, call)
+    if middleware:
+        call = _handled(middleware, call)
+    return AsyncHandler(call, config)

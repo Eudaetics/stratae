@@ -142,15 +142,16 @@ from stratae.backoff import Delays, Exponential, Limited
 from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
+    AsyncHandler,
     Envelope,
     EnvelopeConfig,
     HandleCall,
-    Handler,
     Hooks,
     Middleware,
     NoPayload,
     PubSub,
     Request,
+    SyncHandler,
 )
 from stratae.events.exceptions import AlreadyConnectedError
 from stratae.events.failure import Drop, Reject
@@ -518,7 +519,7 @@ def test_handle_returns_handler_directly(consumer: RabbitMQConsumer):
     """
     handler = consumer.handle(_order_placed, lambda payload: None, config=_config)
 
-    assert isinstance(handler, Handler)
+    assert isinstance(handler, (SyncHandler, AsyncHandler))
     assert handler.config is _config
 
 
@@ -534,7 +535,7 @@ def test_handle_as_decorator_returns_handler(consumer: RabbitMQConsumer):
     @consumer.handle(_order_placed, config=_config)
     def on_order(payload: _OrderPlaced) -> None: ...
 
-    assert isinstance(on_order, Handler)
+    assert isinstance(on_order, (SyncHandler, AsyncHandler))
 
 
 def test_handle_refuses_non_pubsub_event(consumer: RabbitMQConsumer):

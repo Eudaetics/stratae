@@ -43,11 +43,11 @@ False
 The last is false because calling `Client` builds an instance; it doesn't give a coroutine.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from enum import Enum
 from functools import partial
 from inspect import isasyncgenfunction, iscoroutinefunction, isgeneratorfunction, unwrap
-from typing import NamedTuple, TypeGuard
+from typing import Any, NamedTuple, TypeGuard
 
 
 def unwrap_partial[Result](fn: Callable[..., Result]) -> Callable[..., Result]:
@@ -67,7 +67,7 @@ def unwrap_partial[Result](fn: Callable[..., Result]) -> Callable[..., Result]:
 
 def is_async_callable[**P, Result](
     fn: Callable[P, Result] | Callable[P, Awaitable[Result]],
-) -> TypeGuard[Callable[P, Awaitable[Result]]]:
+) -> TypeGuard[Callable[P, Coroutine[Any, Any, Result]]]:
     """
     Tell whether calling `fn` gives a coroutine.
 
