@@ -2,7 +2,7 @@
 
 import linecache
 import weakref
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from functools import wraps
 from inspect import Parameter
 from itertools import count
@@ -15,7 +15,7 @@ _serial = count(1)
 """Numbers each wrapper filename, so wrappers of the same object never share one."""
 
 
-def wrapper_filename(obj: Any) -> str:
+def wrapper_filename(obj: object) -> str:
     """
     Create a filename for a wrapper of `obj`, naming `obj` for tracebacks.
 
@@ -28,7 +28,10 @@ def wrapper_filename(obj: Any) -> str:
 
 
 def compile_wrapper(
-    lines: Lines, target: Any, namespace: dict[str, Any], parameters: Sequence[Parameter]
+    lines: Lines,
+    target: Callable[..., object],
+    namespace: dict[str, Any],
+    parameters: Sequence[Parameter],
 ) -> Any:
     """
     Compile `lines`, which define a function named `wrapper`, and return it dressed as `target`.

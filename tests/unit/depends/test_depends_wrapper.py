@@ -3,7 +3,7 @@
 from unittest.mock import AsyncMock, Mock
 
 from stratae.depends import override
-from stratae.depends._provide import Provider
+from stratae.depends._provide import provider
 
 
 def test_depends_wrapper_initialization():
@@ -18,7 +18,7 @@ def test_depends_wrapper_initialization():
     sample_dependency = Mock()
 
     # Act
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Assert
     assert depends.dependency == sample_dependency
@@ -34,7 +34,7 @@ def test_depends_wrapper_call():
     """
     # Arrange
     sample_dependency = Mock(return_value="sample")
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Act
     result = depends.provide()
@@ -55,7 +55,7 @@ def test_depends_wrapper_with_lambda():
     sample_lambda = lambda: "sample"  # noqa: E731
 
     # Act
-    depends = Provider(sample_lambda)
+    depends = provider(sample_lambda)
 
     # Assert
     assert depends.dependency == sample_lambda
@@ -71,7 +71,7 @@ def test_sync_depends_is_async():
     """
     # Arrange
     sample_dependency = Mock()
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Act
     result = depends.is_async
@@ -90,7 +90,7 @@ def test_async_depends_is_async():
     """
     # Arrange
     sample_dependency = AsyncMock()
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Act
     result = depends.is_async
@@ -109,7 +109,7 @@ async def test_depends_wrapper_call_with_coroutine():
     """
     # Arrange
     sample_dependency = AsyncMock(return_value="sample")
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Act
     result = await depends.provide()
@@ -128,7 +128,7 @@ def test_depends_wrapper_call_multiple_times():
     """
     # Arrange
     sample_dependency = Mock(side_effect=["sample 1", "sample 2", "sample 3"])
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Act & Assert
     result1 = depends.provide()
@@ -153,8 +153,8 @@ def test_create_returns_same_instance_for_same_dependency():
     sample_dependency = Mock()
 
     # Act
-    first = Provider(sample_dependency)
-    second = Provider(sample_dependency)
+    first = provider(sample_dependency)
+    second = provider(sample_dependency)
 
     # Assert
     assert first is second
@@ -173,8 +173,8 @@ def test_create_returns_different_instance_for_different_dependency():
     second_dependency = Mock()
 
     # Act
-    first = Provider(first_dependency)
-    second = Provider(second_dependency)
+    first = provider(first_dependency)
+    second = provider(second_dependency)
 
     # Assert
     assert first is not second
@@ -192,7 +192,7 @@ def test_create_wraps_the_given_dependency():
     sample_dependency = Mock()
 
     # Act
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Assert
     assert depends.dependency == sample_dependency
@@ -210,7 +210,7 @@ def test_update_dependency():
     original_dependency = Mock()
     updated_dependency = Mock()
 
-    depends = Provider(original_dependency)
+    depends = provider(original_dependency)
 
     # Act
     depends.update(updated_dependency)
@@ -232,7 +232,7 @@ def test_update_dependency_during_override():
     original_dependency = Mock()
     updated_dependency = Mock()
 
-    depends = Provider(original_dependency)
+    depends = provider(original_dependency)
     depends.live = 1
 
     # Act
@@ -255,11 +255,11 @@ def test_returns_same_instance_after_update():
     original_dependency = Mock()
     updated_dependency = Mock()
 
-    depends = Provider(original_dependency)
+    depends = provider(original_dependency)
 
     # Act
     depends.update(updated_dependency)
-    same = Provider(original_dependency)
+    same = provider(original_dependency)
 
     # Assert
     assert same is depends
@@ -275,7 +275,7 @@ def test_provide_held_unset():
     """
     # Arrange
     sample_dependency = Mock(return_value="sample")
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Act
     result = depends.provide_held()
@@ -294,7 +294,7 @@ def test_provide_held_set():
     """
     # Arrange
     sample_dependency = Mock()
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
     with override(sample_dependency).to("overridden"):
         # Act
         result = depends.provide_held()
@@ -315,7 +315,7 @@ def test_provide_held_nested():
     """
     # Arrange
     sample_dependency = Mock(return_value="sample")
-    depends = Provider(sample_dependency)
+    depends = provider(sample_dependency)
 
     # Act & Assert
     with override(sample_dependency).to("outer"):

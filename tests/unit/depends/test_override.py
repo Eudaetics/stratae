@@ -4,13 +4,28 @@ import asyncio
 import contextvars
 import gc
 import threading
-from typing import Annotated
+from collections.abc import Callable
+from typing import Annotated, Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from stratae.depends import Depends, inject, override
-from stratae.depends._provide import Provider
+from stratae.depends._provide import AsyncProvider, SyncProvider, provider
+
+
+def _sync_provider(dependency: Callable[..., object]) -> SyncProvider[Any]:
+    """Return a sync dependency's provider, as the registry holds it."""
+    found = provider(dependency)
+    assert isinstance(found, SyncProvider)
+    return found
+
+
+def _async_provider(dependency: Callable[..., object]) -> AsyncProvider[Any]:
+    """Return an async dependency's provider, as the registry holds it."""
+    found = provider(dependency)
+    assert isinstance(found, AsyncProvider)
+    return found
 
 
 def test_override_returns_value_while_active():
@@ -23,7 +38,7 @@ def test_override_returns_value_while_active():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
 
     # Act & Assert
     with override(dep).to("overridden"):
@@ -40,7 +55,7 @@ async def test_override_returns_value_while_active_async():
     """
     # Arrange
     dep = AsyncMock(return_value="real")
-    depends = Provider(dep)
+    depends = _async_provider(dep)
 
     # Act & Assert
     with override(dep).to("overridden"):
@@ -57,7 +72,7 @@ async def test_override_supports_repeated_provide_calls_async():
     """
     # Arrange
     dep = AsyncMock(return_value="real")
-    depends = Provider(dep)
+    depends = _async_provider(dep)
 
     # Act & Assert
     with override(dep).to("overridden"):
@@ -75,7 +90,7 @@ def test_override_restores_dependency_after_exit():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
 
     # Act
     with override(dep).to("overridden"):
@@ -95,7 +110,7 @@ def test_override_does_not_call_dependency_while_active():
     """
     # Arrange
     dep = Mock()
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
 
     # Act
     with override(dep).to("overridden"):
@@ -115,7 +130,7 @@ def test_override_returns_provide_to_the_dependency_after_exit():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
 
     # Act & Assert
     assert depends.provide is dep
@@ -137,7 +152,7 @@ def test_nested_override_same_dependency():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
 
     # Act & Assert
     with override(dep).to("outer"):
@@ -163,8 +178,8 @@ def test_several_overrides_apply_and_restore_together():
     # Arrange
     dep_a = Mock(return_value="real-a")
     dep_b = Mock(return_value="real-b")
-    wrapper_a = Provider(dep_a)
-    wrapper_b = Provider(dep_b)
+    wrapper_a = provider(dep_a)
+    wrapper_b = provider(dep_b)
 
     # Act & Assert
     with override(dep_a).to("override-a"), override(dep_b).to("override-b"):
@@ -188,8 +203,8 @@ def test_several_overrides_unwind_entered_on_partial_failure():
     # Arrange
     dep_a = Mock(return_value="real-a")
     dep_b = Mock(return_value="real-b")
-    wrapper_a = Provider(dep_a)
-    wrapper_b = Provider(dep_b)
+    wrapper_a = provider(dep_a)
+    wrapper_b = provider(dep_b)
 
     failing_lock = Mock()
     failing_lock.__enter__ = Mock(side_effect=RuntimeError("forced failure"))
@@ -244,7 +259,7 @@ async def test_override_holds_in_a_task_that_outlives_it():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
     block_exited = asyncio.Event()
 
     async def read_later() -> str:
@@ -272,7 +287,7 @@ async def test_async_override_held_by_a_task_falls_back_outside_it():
     """
     # Arrange
     dep = AsyncMock(return_value="real")
-    depends = Provider(dep)
+    depends = _async_provider(dep)
     block_exited = asyncio.Event()
 
     async def read_later() -> str:
@@ -301,7 +316,7 @@ async def test_override_holds_in_a_task_group_child():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
     block_exited = asyncio.Event()
 
     async def read_later() -> str:
@@ -328,7 +343,7 @@ async def test_override_holds_in_to_thread():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
     block_exited = threading.Event()
 
     def read_later() -> str:
@@ -355,7 +370,7 @@ async def test_override_returns_provide_to_the_dependency_once_a_task_finishes()
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
     release = asyncio.Event()
 
     async def hold() -> None:
@@ -385,7 +400,7 @@ def test_override_thread_isolation():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
     results: dict[str, str] = {}
     barrier = threading.Barrier(2)
 
@@ -419,7 +434,7 @@ def test_override_can_be_reentered_while_held():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
     ctx = override(dep).to("fake")
 
     # Act & Assert
@@ -440,7 +455,7 @@ def test_override_released_by_garbage_collection_while_lock_is_held():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
     context = contextvars.copy_context()
     context.run(override(dep).to("cyclic").__enter__)
     cycle: list[object] = [context]
@@ -473,7 +488,7 @@ def test_override_exit_in_other_context_keeps_it_where_it_was_entered():
     """
     # Arrange
     dep = Mock(return_value="real")
-    depends = Provider(dep)
+    depends = _sync_provider(dep)
     ctx = override(dep).to("fake")
     ctx.__enter__()
 

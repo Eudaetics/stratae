@@ -149,9 +149,10 @@ class PublishCall(NamedTuple):
     """The event being emitted."""
     config: Any
     """
-    The adapter's routing config for the call, such as RabbitMQ's exchange and routing key.
-    It's the config of the event's route, with a message's own routing key when the route
-    makes one from its payload. It's `None` on a direct bus.
+    Where the adapter publishes the call, as the adapter describes it. On RabbitMQ, it's a
+    {py:class}`RabbitMQPublish <stratae.integrations.rabbitmq.config.RabbitMQPublish>`: the
+    event's route, and the message's routing key. On the outbox, it's the route's
+    {py:class}`OutboxConfig <stratae.events.outbox.OutboxConfig>`. It's `None` on a direct bus.
     """
     payload: Any
     """The payload being emitted."""

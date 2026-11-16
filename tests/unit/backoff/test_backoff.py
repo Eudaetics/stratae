@@ -2,16 +2,19 @@
 Test suite for backoff values.
 
 Exponential:
-- Its delays start at first, multiply by factor, and stop at cap; None past retries.
-- Without retries, it never runs out, and a huge failure count gives the cap.
-- It refuses a negative first delay, a factor below 1, a cap below first, and negative
-  retries.
+- Its delays start at first, multiply by factor, and stop at cap.
+- It never runs out, and a huge failure count gives the cap.
+- It refuses a negative first delay, a factor below 1, and a cap below first.
 
 Delays:
-- Its delays are the ones given, in order, then None; retries is how many were given.
+- Its delays are the ones given, in order, then None, and it lists them as floats.
 - It refuses a negative delay.
 
-Both:
+Limited:
+- Its delays are its backoff's, then None past retries, and it lists them.
+- It refuses negative retries.
+
+All:
 - The same failure count always gives the same delay.
 - Equal fields compare equal, and the delays are floats whatever they were given as.
 - A failure count below one is refused.
@@ -21,33 +24,32 @@ from typing import Any
 
 import pytest
 
-from stratae.backoff import Backoff, Delays, Exponential
+from stratae.backoff import Backoff, Delays, Exponential, Limited
 
 
-def test_exponential_delays_grow_to_cap_then_run_out():
+def test_exponential_delays_grow_to_cap():
     """
-    An exponential backoff should multiply its delay up to the cap, then run out.
+    An exponential backoff should multiply its delay up to the cap.
 
-    Given: A backoff starting at 1 second, doubling, capped at 5, with four retries
+    Given: A backoff starting at 1 second, doubling, capped at 5
     When: Its delays after one to five failures are read
-    Then: They're 1, 2, 4 and 5 seconds, then None
+    Then: They're 1, 2, 4, 5 and 5 seconds
     """
-    backoff = Exponential(1, cap=5, retries=4)
+    backoff = Exponential(1, cap=5)
 
-    assert [backoff.delay(n) for n in range(1, 6)] == [1.0, 2.0, 4.0, 5.0, None]
+    assert [backoff.delay(n) for n in range(1, 6)] == [1.0, 2.0, 4.0, 5.0, 5.0]
 
 
-def test_exponential_without_retries_never_runs_out():
+def test_exponential_never_runs_out():
     """
-    An exponential backoff without retries should never run out.
+    An exponential backoff should never run out.
 
-    Given: A backoff starting at half a second, capped at 30, with no retry limit
+    Given: A backoff starting at half a second, capped at 30
     When: Its delay after a huge number of failures is read
-    Then: It's the cap, not None, and not an overflow
+    Then: It's the cap, not an overflow
     """
     backoff = Exponential(0.5, cap=30)
 
-    assert backoff.retries is None
     assert backoff.delay(10_000) == 30.0
 
 
@@ -57,15 +59,13 @@ def test_exponential_without_retries_never_runs_out():
         ({"first": -1}, "negative"),
         ({"first": 1, "factor": 0.5}, "factor"),
         ({"first": 2, "cap": 1}, "cap"),
-        ({"first": 1, "retries": -1}, "retries"),
     ],
 )
 def test_exponential_refuses_bad_fields(fields: dict[str, Any], match: str):
     """
     An exponential backoff should refuse fields that can't make sensible delays.
 
-    Given: A negative first delay, a shrinking factor, a cap below the first delay, or
-           negative retries
+    Given: A negative first delay, a shrinking factor, or a cap below the first delay
     When: The backoff is built
     Then: ValueError names the problem
     """
@@ -79,12 +79,38 @@ def test_delays_are_given_ones_then_run_out():
 
     Given: Delays of 1, 10 and 60 seconds
     When: Its delays after one to four failures are read
-    Then: They're 1, 10 and 60 seconds, then None, and it has three retries
+    Then: They're 1, 10 and 60 seconds, then None, and it lists those three
     """
     backoff = Delays(1, 10, 60)
 
     assert [backoff.delay(n) for n in range(1, 5)] == [1.0, 10.0, 60.0, None]
-    assert backoff.retries == 3
+    assert backoff.delays == (1.0, 10.0, 60.0)
+
+
+def test_limited_runs_out_after_retries():
+    """
+    A limited backoff should give its backoff's delays, then run out after its retries.
+
+    Given: An exponential backoff limited to four retries
+    When: Its delays are read past its limit, and listed
+    Then: It gives the exponential delays, then None, and lists those four
+    """
+    limited = Limited(Exponential(1, cap=5), retries=4)
+
+    assert [limited.delay(n) for n in range(1, 6)] == [1.0, 2.0, 4.0, 5.0, None]
+    assert limited.delays == (1.0, 2.0, 4.0, 5.0)
+
+
+def test_limited_refuses_negative_retries():
+    """
+    A limited backoff should refuse a negative number of retries.
+
+    Given: Negative retries
+    When: The backoff is built
+    Then: ValueError names the retries
+    """
+    with pytest.raises(ValueError, match="retries"):
+        Limited(Exponential(1), retries=-1)
 
 
 def test_delays_refuse_negative_delay():
@@ -99,12 +125,14 @@ def test_delays_refuse_negative_delay():
         Delays(1, -1)
 
 
-@pytest.mark.parametrize("backoff", [Exponential(1, cap=8), Delays(1, 2, 3)])
+@pytest.mark.parametrize(
+    "backoff", [Exponential(1, cap=8), Delays(1, 2, 3), Limited(Exponential(1), retries=3)]
+)
 def test_same_failure_count_gives_same_delay(backoff: Backoff):
     """
     A backoff should hold no progress: the same failure count always gives the same delay.
 
-    Given: An exponential and an explicit backoff
+    Given: An exponential, an explicit and a limited backoff
     When: Their delays are read in order twice, and the second one read again first
     Then: Every read of the same count gives the same delay
     """
@@ -122,17 +150,18 @@ def test_equal_fields_compare_equal():
     When: They're compared
     Then: Each pair is equal, and different fields aren't
     """
-    assert Exponential(30, cap=3600, retries=9) == Exponential(30.0, cap=3600.0, retries=9)
+    assert Exponential(30, cap=3600) == Exponential(30.0, cap=3600.0)
+    assert Limited(Exponential(30), retries=9) == Limited(Exponential(30.0), retries=9)
     assert Delays(1, 10) == Delays(1.0, 10.0)
     assert Exponential(1) != Exponential(2)
 
 
-@pytest.mark.parametrize("backoff", [Exponential(1), Delays(1)])
+@pytest.mark.parametrize("backoff", [Exponential(1), Delays(1), Limited(Exponential(1), 1)])
 def test_failure_count_below_one_refused(backoff: Backoff):
     """
     A backoff should refuse a failure count below one, since a delay follows a failure.
 
-    Given: An exponential and an explicit backoff
+    Given: An exponential, an explicit and a limited backoff
     When: Their delay after zero failures is asked for
     Then: ValueError says failures must be at least 1
     """

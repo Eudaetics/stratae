@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from aiormq.exceptions import PublishError
 
@@ -21,11 +22,15 @@ from stratae.events.binding import abind
 from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
-from stratae.events.pipeline import Outgoing, Publishing, publish_async
+from stratae.events.pipeline import Outgoing, Publishing, publish_enveloped_async
 from stratae.integrations.rabbitmq._link import RECONNECT, Link
 from stratae.integrations.rabbitmq._topology import declare
 from stratae.integrations.rabbitmq._wire import RESERVED, stamp
-from stratae.integrations.rabbitmq.config import RabbitMQConfig, RabbitMQConsumeConfig
+from stratae.integrations.rabbitmq.config import (
+    RabbitMQConfig,
+    RabbitMQConsumeConfig,
+    RabbitMQPublish,
+)
 from stratae.integrations.rabbitmq.connection import ConnectionState
 
 if TYPE_CHECKING:
@@ -51,6 +56,29 @@ _ROUTE_TAKEN = "{!r} is already routed to another RabbitMQConfig; give it one ro
 _TOPOLOGY_NEEDS_QUEUE = (
     "a publisher's topology declares queues for consumers, so each config needs a named queue"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _Keyed:
+    """A route whose messages each get their routing key from their payload."""
+
+    route: RabbitMQConfig
+    """The route."""
+    key: Callable[[Any], str]
+    """Gives each message's routing key from its payload."""
+
+
+type _Route = RabbitMQPublish | _Keyed
+"""
+An event's route: what each of its messages is published as, when they share a routing key,
+or how to make it from the payload.
+"""
+
+
+def _route(config: RabbitMQConfig) -> _Route:
+    """Return the route a config describes, settling a fixed routing key once."""
+    key = config.routing_key
+    return RabbitMQPublish(config, key) if isinstance(key, str) else _Keyed(config, key)
 
 
 def _require_pubsub(event: AnyEvent) -> None:
@@ -123,11 +151,12 @@ class RabbitMQPublisher:
         for config in self._topology:
             if config.queue is None:
                 raise ValueError(_TOPOLOGY_NEEDS_QUEUE)
-        self._publishing = Publishing(
-            middleware.publish, envelope.new_id, RESERVED, asynchronous=True
+        self._publishing: Publishing[RabbitMQPublish, Envelope] = Publishing(
+            middleware.publish, RESERVED, asynchronous=True
         )
+        self._new_id = envelope.new_id
         self._serializer = serializer
-        self._routes: dict[AnyEvent, RabbitMQConfig] = {}
+        self._routes: dict[AnyEvent, _Route] = {}
         self._declared: set[str] = set()
         self._link = Link("publisher", url, reconnect, self._declare_topology, self._declared.clear)
 
@@ -189,7 +218,7 @@ class RabbitMQPublisher:
         :raises ValueError: If the event is already routed to a different config.
         """
         _require_pubsub(event)
-        if self._routes.setdefault(event, config) != config:
+        if self._routes.setdefault(event, _route(config)).route != config:
             raise ValueError(_ROUTE_TAKEN.format(event.name))
 
     async def emit[Payload](
@@ -226,41 +255,53 @@ class RabbitMQPublisher:
             confirms, e.g. because the exchange doesn't exist.
         """
         _require_pubsub(event)
-        config = self._routes.get(event)
-        if config is None:
+        route = self._routes.get(event)
+        if route is None:
             raise LookupError(_NO_ROUTE.format(event.name))
-        if payload.__class__ is Encoded:
-            address = cast(Encoded, payload).address
+        if isinstance(payload, Encoded):
+            address = payload.address
             if address is not None:
-                config = config.at(address)
-            elif config.routing_key.__class__ is not str:
+                publish = RabbitMQPublish(route.route, address)
+            elif isinstance(route, _Keyed):
                 raise ValueError(_NO_ADDRESS.format(event.name))
-        elif config.routing_key.__class__ is not str:
-            config = config.at(cast(Callable[[Any], str], config.routing_key)(payload))
-        await publish_async(
-            self._publishing, self._send, event, payload, config, hooks, envelope, headers
+            else:
+                publish = route
+        elif isinstance(route, _Keyed):
+            publish = RabbitMQPublish(route.route, route.key(payload))
+        else:
+            publish = route
+        await publish_enveloped_async(
+            self._publishing,
+            self._new_id,
+            self._send,
+            event,
+            payload,
+            publish,
+            hooks,
+            envelope,
+            headers,
         )
 
-    async def _send(self, message: Outgoing) -> None:
-        """Serialize a message's payload and publish it to its config's exchange."""
-        event, config, payload = message.event, message.config, message.payload
-        envelope, headers = cast(Envelope, message.envelope), message.headers
+    async def _send(self, message: Outgoing[RabbitMQPublish, Envelope]) -> None:
+        """Serialize a message's payload and publish it to its route's exchange."""
+        event, publish, payload = message.event, message.config, message.payload
+        envelope, headers, route = message.envelope, message.headers, publish.route
         channel = self._link.channel
         if channel is None:
             reconnecting = self._link.state is ConnectionState.RECONNECTING
             raise NotConnectedError(_RECONNECTING if reconnecting else _NOT_CONNECTED)
-        await self._declare_exchange(channel, config)
-        body = self._encode(event, payload, config)
+        await self._declare_exchange(channel, route)
+        body = self._encode(event, payload, route)
         try:
             await channel.basic_publish(
                 body,
-                exchange=config.exchange,
-                routing_key=cast(str, config.routing_key),
-                properties=stamp(config.properties, envelope, headers),
-                mandatory=config.mandatory,
+                exchange=route.exchange,
+                routing_key=publish.routing_key,
+                properties=stamp(route.properties, envelope, headers),
+                mandatory=route.mandatory,
             )
         except PublishError as exc:
-            raise UnroutableError(_UNROUTABLE.format(config.exchange, config.routing_key)) from exc
+            raise UnroutableError(_UNROUTABLE.format(route.exchange, publish.routing_key)) from exc
 
     @overload
     def bind[**P, Payload](

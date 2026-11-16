@@ -50,7 +50,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from functools import wraps
 from inspect import isawaitable
 from types import CoroutineType
-from typing import Any, Literal, Self, cast, overload
+from typing import Literal, Self, cast, overload
 
 from stratae.callables import is_async_callable
 
@@ -108,7 +108,7 @@ class AwaitableCheckError(TypeError):
 class AsyncCheckOnSyncError(TypeError):
     """Raised when {py:func}`require` is given async checks for a sync function."""
 
-    def __init__(self, fn: Callable[..., Any], count: int) -> None:
+    def __init__(self, fn: Callable[..., object], count: int) -> None:
         """
         Describe the sync function and its async checks.
 

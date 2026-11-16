@@ -8,7 +8,7 @@ from typing import Annotated, Any
 import pytest
 
 from stratae.depends import Depends, inject, override
-from stratae.depends._provide import Provider
+from stratae.depends._provide import AnyProvider, Provider
 from stratae.depends.exceptions import InjectionSignatureError
 
 
@@ -92,7 +92,7 @@ class _SlowHash:
         return id(self)
 
 
-def _depends_at_once(dependency: _SlowHash) -> list[Provider]:
+def _depends_at_once(dependency: _SlowHash) -> list[AnyProvider]:
     """Call Depends on a slow dependency from eight threads at once, and return what each got."""
     start = threading.Barrier(8)
     got: list[Any] = [None] * 8

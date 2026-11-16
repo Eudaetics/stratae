@@ -16,7 +16,7 @@ chain as `__context__`, as nested `with` blocks do.
 """
 
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Literal
 
 from stratae.callables import Gives
 
@@ -70,7 +70,7 @@ class SharedRequiresContextError(LifecycleConfigurationError):
 class UnreadableSignatureError(LifecycleConfigurationError):
     """Raised when caching a callable whose signature can't be read, such as `dict`."""
 
-    def __init__(self, func: Callable[..., Any], scope: str) -> None:
+    def __init__(self, func: Callable[..., object], scope: str) -> None:
         """
         Name the callable and the scope.
 
@@ -86,7 +86,7 @@ class UnreadableSignatureError(LifecycleConfigurationError):
 class AsyncInSyncScopeError(LifecycleConfigurationError, TypeError):
     """Raised when a sync scope is asked to cache a coroutine or async generator it can't await."""
 
-    def __init__(self, func: Callable[..., Any], scope: str, gives: Gives) -> None:
+    def __init__(self, func: Callable[..., object], scope: str, gives: Gives) -> None:
         """
         Name the function, the sync scope, and what the function gives.
 

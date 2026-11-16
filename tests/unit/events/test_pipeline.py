@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 
 from stratae.events import HandleCall, Hooks, PublishCall, PubSub, Request
+from stratae.events.handler import invoke
 from stratae.events.middleware import NO_HEADERS
 from stratae.events.pipeline import Outgoing, Publishing, publish, wrap_handler
 
@@ -68,7 +69,7 @@ def test_publish_nests_middleware_outside_hooks(
     # Arrange
     log: list[str] = []
 
-    def call(message: Outgoing) -> str:
+    def call(message: Outgoing[None, None]) -> str:
         log.append("call")
         return message.payload.item
 
@@ -83,7 +84,8 @@ def test_publish_nests_middleware_outside_hooks(
     stack = (middleware,) if with_middleware else ()
 
     # Act
-    reply = publish(Publishing(stack), call, _order_placed, _Order("lamp"), hooks=hooks)
+    publishing: Publishing[None, None] = Publishing(stack)
+    reply = publish(publishing, call, _order_placed, _Order("lamp"), None, hooks=hooks)
 
     # Assert
     assert reply == "lamp"
@@ -108,11 +110,11 @@ def test_wrap_handler_without_hooks_or_middleware() -> None:
     Then: It's sync, and returns what the handler returns for the message's payload
     """
     # Act
-    call, is_async = wrap_handler(_order_placed, _shout, None, (), asynchronous=False)
+    handler = wrap_handler(_order_placed, _shout, None, None, (), asynchronous=False)
 
     # Assert
-    assert call(_received(_Order("lamp"))) == "LAMP"
-    assert is_async is False
+    assert handler.is_async is False
+    assert handler(_received(_Order("lamp"))) == "LAMP"
 
 
 def test_wrap_handler_sync_layers() -> None:
@@ -135,13 +137,13 @@ def test_wrap_handler_sync_layers() -> None:
         return next(call)
 
     # Act
-    call, is_async = wrap_handler(
-        _order_placed, _shout, Hooks(before=(hook,)), (middleware,), asynchronous=False
+    handler = wrap_handler(
+        _order_placed, _shout, None, Hooks(before=(hook,)), (middleware,), asynchronous=False
     )
-    reply = call(_received(_Order("lamp")))
+    assert handler.is_async is False
+    reply = handler(_received(_Order("lamp")))
 
     # Assert
-    assert is_async is False
     assert reply == "LAMP"
     assert log == ["middleware _Order lamp", "hook"]
 
@@ -177,11 +179,11 @@ async def test_wrap_handler_async(handler: Any, hook_is_async: bool, with_middle
     stack = (middleware,) if with_middleware else ()
 
     # Act
-    call, is_async = wrap_handler(_order_placed, handler, hooks, stack, asynchronous=True)
-    reply = await call(_received(_Order("lamp")))
+    built = wrap_handler(_order_placed, handler, None, hooks, stack, asynchronous=True)
+    assert built.is_async is True
+    reply = await built(_received(_Order("lamp")))
 
     # Assert
-    assert is_async is True
     assert reply == "LAMP"
     assert log == (["middleware", "hook"] if with_middleware else ["hook"])
 
@@ -210,16 +212,16 @@ async def test_wrap_handler_sync_handler_runs_when_awaited(through: str) -> None
 
     hooks: Hooks[Any, Any] | None = Hooks(before=(async_hook,)) if through == "async hook" else None
     stack = (middleware,) if through == "async middleware" else ()
-    call, is_async = wrap_handler(_order_placed, handler, hooks, stack, asynchronous=True)
+    built = wrap_handler(_order_placed, handler, None, hooks, stack, asynchronous=True)
     order = _Order("lamp")
+    assert built.is_async is True
 
     # Act
-    pending = call(_received(order))
+    pending = built(_received(order))
     before_await = list(ran)
     reply = await pending
 
     # Assert
-    assert is_async is True
     assert before_await == []
     assert ran == [order]
     assert reply == "LAMP"
@@ -237,10 +239,11 @@ def test_wrap_handler_payload_less() -> None:
     ping = Request(reply=str, name="ping")
 
     # Act
-    call, _ = wrap_handler(ping, lambda: "pong", None, (), asynchronous=False)
+    handler = wrap_handler(ping, lambda: "pong", None, None, (), asynchronous=False)
 
     # Assert
-    assert call(HandleCall(ping, None, object())) == "pong"
+    assert handler.is_async is False
+    assert handler(HandleCall(ping, None, object())) == "pong"
 
 
 def test_publish_middleware_adds_headers() -> None:
@@ -252,18 +255,16 @@ def test_publish_middleware_adds_headers() -> None:
     Then: The message sent holds both headers
     """
     # Arrange
-    sent: list[Outgoing] = []
+    sent: list[Outgoing[None, None]] = []
 
     def trace(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
         return next(call.with_headers({"traceparent": "00-trace"}))
 
+    publishing: Publishing[None, None] = Publishing((trace,))
+
     # Act
     publish(
-        Publishing((trace,)),
-        sent.append,
-        _order_placed,
-        _Order("lamp"),
-        headers={"x-tenant": "acme"},
+        publishing, sent.append, _order_placed, _Order("lamp"), None, headers={"x-tenant": "acme"}
     )
 
     # Assert
@@ -291,12 +292,10 @@ async def test_wrap_handler_middleware_reads_message_headers(asynchronous: bool)
         return await next(call)
 
     stack = (arecord,) if asynchronous else (record,)
-    call, is_async = wrap_handler(_order_placed, _shout, None, stack, asynchronous)
+    handler = wrap_handler(_order_placed, _shout, None, None, stack, asynchronous)
 
     async def handle(message: HandleCall) -> None:
-        reply = call(message)
-        if is_async:
-            await reply
+        await invoke(handler, message)
 
     # Act
     await handle(_received(_Order("lamp"), MappingProxyType({"x-tenant": "acme"})))

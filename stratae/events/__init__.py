@@ -88,7 +88,7 @@ from .envelope import (
     Envelope,
     EnvelopeConfig,
 )
-from .handler import Handler, Handlers
+from .handler import AsyncHandler, Handler, Handlers, SyncHandler
 from .hooks import Hooks
 from .middleware import HandleCall, HandleMiddleware, Middleware, PublishCall, PublishMiddleware
 from .patterns import Immutable, NoPayload, PubSub, Request
@@ -122,6 +122,7 @@ __all__ = [
     "Addressed",
     "AnyEvent",
     "AsyncDirectBus",
+    "AsyncHandler",
     "Consumer",
     "Deserializer",
     "Destination",
@@ -154,6 +155,7 @@ __all__ = [
     "Serializer",
     "Serializing",
     "SignalEvent",
+    "SyncHandler",
     "abind",
     "bind",
     "destination_of",

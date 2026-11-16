@@ -11,6 +11,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Callable, Generator
 from contextlib import contextmanager
 from functools import wraps
+from types import GeneratorType
 from typing import Any
 
 import pytest
@@ -162,6 +163,7 @@ def test_driven_generator_matches_contextmanager(body_name: str, exc_name: str):
 
     def driven(events: list[str]) -> str:
         generator = body(events)
+        assert isinstance(generator, GeneratorType)
         events.append(enter_generator([[]], generator))
         error = None if make_exc is None else make_exc()
         suppressed = exit_generator(generator, error)

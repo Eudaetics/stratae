@@ -25,21 +25,20 @@ So a scope's middleware is a generator function instead, as
 """
 
 from collections.abc import Callable
-from typing import Any
 
 from stratae.callables import Gives, call_result
 
 type Next[Call, Result] = Callable[[Call], Result]
 """The rest of the chain, as a middleware is given it: the next middleware, or else the call."""
 
-type Finish[Call, Run] = Callable[[Call, Run], Any]
+type Finish[Call, Run, Result] = Callable[[Call, Run], Result]
 """
 The innermost call of a chain: given the call value the last middleware passed on, and what
 the chain was run with for this call, such as an emit's message and how to send it.
 """
 
-type _Layer = Callable[[Any, Callable[[Any], Any]], Any]
-"""One middleware: given the call and `next`."""
+type Layer[Call, Result] = Callable[[Call, Next[Call, Result]], Result]
+"""One middleware: given the call and `next`, returning what the chain returns."""
 
 
 class MiddlewareKindError(TypeError):
@@ -56,7 +55,9 @@ class MiddlewareKindError(TypeError):
         super().__init__(f"{owner} middleware must be {wanted}, not {middleware!r}")
 
 
-def refuse_kind(middleware: tuple[Callable[..., Any], ...], owner: str, asynchronous: bool) -> None:
+def refuse_kind(
+    middleware: tuple[Callable[..., object], ...], owner: str, asynchronous: bool
+) -> None:
     """
     Refuse a middleware `owner` can't run.
 
@@ -75,9 +76,9 @@ def refuse_kind(middleware: tuple[Callable[..., Any], ...], owner: str, asynchro
             raise MiddlewareKindError(owner, item, kind)
 
 
-def chain[Call, Run](
-    middleware: tuple[_Layer, ...], finish: Finish[Call, Run]
-) -> Finish[Call, Run]:
+def chain[Call, Run, Result](
+    middleware: tuple[Layer[Call, Result], ...], finish: Finish[Call, Run, Result]
+) -> Finish[Call, Run, Result]:
     """
     Compose middleware around `finish`, outermost first, sync or async alike.
 
@@ -87,14 +88,14 @@ def chain[Call, Run](
     :param finish: The innermost call.
     :returns: The composed chain, taking the call value and the context to finish it with.
     """
-    inner: Finish[Any, Any] = finish
+    inner = finish
     for item in reversed(middleware):
         inner = _step(item, inner)
     return inner
 
 
-def _step(item: _Layer, inner: Finish[Any, Any]) -> Finish[Any, Any]:
-    def step(call: Any, context: Any) -> Any:
-        return item(call, lambda passed: inner(passed, context))
-
-    return step
+def _step[Call, Run, Result](
+    item: Layer[Call, Result], inner: Finish[Call, Run, Result]
+) -> Finish[Call, Run, Result]:
+    """Return `inner` with `item` run around it."""
+    return lambda call, context: item(call, lambda passed: inner(passed, context))

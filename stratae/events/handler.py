@@ -36,78 +36,124 @@ log: first
 
 """
 
-from collections.abc import Callable, Iterable
-from typing import Any, Self
+from collections.abc import Callable, Coroutine, Iterable
+from typing import Any, ClassVar, Literal, Self
 
 from stratae.events.middleware import HandleCall
 
 
-class Handler[Config, Result]:
+class SyncHandler[Config, Result]:
     """
-    An event handler callable with its routing config.
+    A sync event handler with its routing config: calling it gives its result.
 
     Compared by identity, so the same callable can be registered more than once.
     """
 
-    __slots__ = ("call", "config", "is_async")
+    __slots__ = ("call", "config")
 
-    def __init__(
-        self, call: Callable[[HandleCall], Result], config: Config, is_async: bool
-    ) -> None:
+    is_async: ClassVar[Literal[False]] = False
+    """Whether calling it gives an awaitable: never."""
+
+    def __init__(self, call: Callable[[HandleCall], Result], config: Config) -> None:
         """
-        Wrap a handler.
+        Wrap a sync handler.
 
-        :param call: Sync or async callable taking the message being handled: what the bus
-            invokes, which wraps the registered function, and any hooks and middleware.
+        :param call: Callable taking the message being handled: what the bus invokes, which
+            wraps the registered function, and any hooks and middleware.
         :param config: The handler's routing config.
-        :param is_async: Whether `call` is async: whether calling it gives a coroutine.
         """
         self.call: Callable[[HandleCall], Result] = call
         self.config: Config = config
-        self.is_async: bool = is_async
 
     def __call__(self, message: HandleCall, /) -> Result:
-        """Call the handler with a message. An async handler returns an unawaited coroutine."""
+        """Call the handler with a message."""
         return self.call(message)
 
 
-class Handlers[Registered: Handler[Any, Any]](tuple[Registered, ...]):
+class AsyncHandler[Config, Result]:
+    """
+    An async event handler with its routing config: calling it gives a coroutine of its result.
+
+    Compared by identity, so the same callable can be registered more than once.
+    """
+
+    __slots__ = ("call", "config")
+
+    is_async: ClassVar[Literal[True]] = True
+    """Whether calling it gives an awaitable: always."""
+
+    def __init__(
+        self, call: Callable[[HandleCall], Coroutine[Any, Any, Result]], config: Config
+    ) -> None:
+        """
+        Wrap an async handler.
+
+        :param call: Callable taking the message being handled and returning a coroutine:
+            what the bus invokes, which wraps the registered function, and any hooks and
+            middleware.
+        :param config: The handler's routing config.
+        """
+        self.call: Callable[[HandleCall], Coroutine[Any, Any, Result]] = call
+        self.config: Config = config
+
+    def __call__(self, message: HandleCall, /) -> Coroutine[Any, Any, Result]:
+        """Call the handler with a message, returning a coroutine of its result."""
+        return self.call(message)
+
+
+type Handler[Config, Result] = SyncHandler[Config, Result] | AsyncHandler[Config, Result]
+"""
+A registered event handler, sync or async, typed by its config and what it produces.
+
+A bus's `handle` returns one, to pass to `remove`. Its `is_async` says which kind it is.
+"""
+
+
+class Handlers[Config, Result](tuple[Handler[Config, Result], ...]):
     """
     An event's registered handlers, as an immutable tuple.
 
     A bus never changes it. Registering or removing a handler makes a new one, so a dispatcher
     can run the handlers it was given while others register. The sync and async handlers are
-    also kept apart, once, for dispatchers that run them differently.
+    also kept apart, once, for dispatchers that run them differently. A sync bus has only sync
+    handlers.
     """
 
-    sync: tuple[Registered, ...]
-    """The handlers that aren't async."""
-    asynchronous: tuple[Registered, ...]
+    sync: tuple[SyncHandler[Config, Result], ...]
+    """The sync handlers."""
+    asynchronous: tuple[AsyncHandler[Config, Result], ...]
     """The async handlers."""
 
-    def __new__(cls, handlers: Iterable[Registered] = ()) -> Self:
+    def __new__(cls, handlers: Iterable[Handler[Config, Result]] = ()) -> Self:
         """
         Hold `handlers`, keeping the sync and async ones apart.
 
         :param handlers: The registered handlers.
         """
         instance = super().__new__(cls, handlers)
-        instance.sync = tuple(handler for handler in instance if not handler.is_async)
-        instance.asynchronous = tuple(handler for handler in instance if handler.is_async)
+        sync: list[SyncHandler[Config, Result]] = []
+        asynchronous: list[AsyncHandler[Config, Result]] = []
+        for handler in instance:
+            if handler.is_async is True:
+                asynchronous.append(handler)
+            else:
+                sync.append(handler)
+        instance.sync = tuple(sync)
+        instance.asynchronous = tuple(asynchronous)
         return instance
 
-    def adding(self, handler: Registered) -> Self:
+    def adding(self, handler: Handler[Config, Result]) -> Self:
         """Return these handlers with `handler` added."""
         return type(self)((*self, handler))
 
-    def removing(self, handler: Registered) -> Self:
+    def removing(self, handler: Handler[Config, Result]) -> Self:
         """Return these handlers without `handler`, or these same handlers if it isn't one."""
         if handler not in self:
             return self
         return type(self)(registered for registered in self if registered is not handler)
 
 
-async def invoke(handler: Handler[Any, Any], message: HandleCall) -> Any:
+async def invoke[Config, Result](handler: Handler[Config, Result], message: HandleCall) -> Result:
     """
     Call `handler` with `message`, awaiting it if it's async.
 
@@ -117,6 +163,6 @@ async def invoke(handler: Handler[Any, Any], message: HandleCall) -> Any:
     :param message: The message being handled.
     :returns: What the handler returns, or resolves to.
     """
-    if handler.is_async:
-        return await handler(message)
-    return handler(message)
+    if handler.is_async is True:
+        return await handler.call(message)
+    return handler.call(message)

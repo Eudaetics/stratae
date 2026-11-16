@@ -21,7 +21,7 @@ together. {py:func}`only_responder` finds a request's responder, for a dispatche
 import asyncio
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
 from contextvars import Context, copy_context
-from typing import Any, cast
+from typing import Any
 
 from stratae.events.exceptions import (
     BaseHandlerErrors,
@@ -29,12 +29,12 @@ from stratae.events.exceptions import (
     MultipleRespondersError,
     NoResponderError,
 )
-from stratae.events.handler import Handler, Handlers, invoke
+from stratae.events.handler import AsyncHandler, Handler, Handlers, SyncHandler, invoke
 from stratae.events.middleware import HandleCall
 from stratae.events.patterns import PubSub, Request
 from stratae.events.protocols import AnyEvent
 
-type Dispatcher[Event] = Callable[[Event, Handlers[Handler[Any, Any]], HandleCall], Any]
+type Dispatcher[Event] = Callable[[Event, Handlers[Any, Any], HandleCall], Any]
 """
 Delivers a message to an event's handlers: given the event, its handlers and the message.
 
@@ -42,9 +42,7 @@ It returns what emitting the event returns, or an awaitable resolving to it on a
 """
 
 
-def only_responder[Registered: Handler[Any, Any]](
-    event: AnyEvent, handlers: Collection[Registered]
-) -> Registered:
+def only_responder[Registered](event: AnyEvent, handlers: Collection[Registered]) -> Registered:
     """Return a request event's sole responder, or raise if there isn't exactly one."""
     if not handlers:
         raise NoResponderError(event.name)
@@ -56,16 +54,20 @@ def only_responder[Registered: Handler[Any, Any]](
 
 def dispatch_request[Payload, Reply](
     event: Request[Payload, Reply, Any],
-    handlers: Collection[Handler[Any, Reply]],
+    handlers: Handlers[Any, Reply],
     message: HandleCall,
 ) -> Reply:
-    """Call a request event's sole responder and return its reply."""
-    return only_responder(event, handlers).call(message)
+    """
+    Call a request event's sole responder and return its reply.
+
+    A sync bus's handlers are all sync, so its responder is among `handlers.sync`.
+    """
+    return only_responder(event, handlers.sync).call(message)
 
 
 def dispatch_request_async[Payload, Reply](
     event: Request[Payload, Reply, Any],
-    handlers: Collection[Handler[Any, Reply | Awaitable[Reply]]],
+    handlers: Collection[Handler[Any, Reply]],
     message: HandleCall,
 ) -> Awaitable[Reply]:
     """
@@ -75,14 +77,14 @@ def dispatch_request_async[Payload, Reply](
     still runs only when the result is awaited, as an async one does.
     """
     responder = only_responder(event, handlers)
-    if responder.is_async:
-        return cast(Awaitable[Reply], responder.call(message))
+    if responder.is_async is True:
+        return responder.call(message)
     return invoke(responder, message)
 
 
 def fan_out[Payload](
     _event: PubSub[Payload, Any],
-    handlers: Handlers[Handler[Any, None]],
+    handlers: Handlers[Any, None],
     message: HandleCall,
 ) -> None:
     """
@@ -97,26 +99,26 @@ def fan_out[Payload](
         `CancelledError`.
     """
     failures: list[BaseException] = []
-    _run_sync_handlers(handlers, message, failures)
+    _run_sync_handlers(handlers.sync, message, failures)
     if failures:
         _raise_failures(failures)
 
 
-class _InContext:
+class _InContext[Result]:
     """
     Await a coroutine with each of its steps run in `context`, as a task would.
 
-    It gives one handler its own copy of the context without a task's cost. The coroutine runs
+    It gives one handler its own copy of the context without a task's cost. The awaitable runs
     in the awaiting task, so cancelling that task cancels it.
     """
 
     __slots__ = ("_context", "_coro")
 
-    def __init__(self, coro: Coroutine[Any, Any, Any], context: Context) -> None:
+    def __init__(self, coro: Coroutine[Any, Any, Result], context: Context) -> None:
         self._coro = coro
         self._context = context
 
-    def __await__(self) -> Generator[Any, Any, Any]:
+    def __await__(self) -> Generator[Any, Any, Result]:
         run, coro = self._context.run, self._coro
         value: Any = None
         error: BaseException | None = None
@@ -142,8 +144,8 @@ Anything else, such as `KeyboardInterrupt`, propagates at once.
 """
 
 
-def _run_sync_handlers(
-    handlers: Iterable[Handler[Any, Any]],
+def _run_sync_handlers[Config, Result](
+    handlers: Iterable[SyncHandler[Config, Result]],
     message: HandleCall,
     failures: list[BaseException],
 ) -> None:
@@ -160,8 +162,8 @@ def _run_sync_handlers(
             failures.append(failure)
 
 
-async def _await_handler(
-    handler: Handler[Any, Any],
+async def _await_handler[Config, Result](
+    handler: AsyncHandler[Config, Result],
     message: HandleCall,
     failures: list[BaseException],
 ) -> None:
@@ -191,7 +193,7 @@ def _raise_failures(failures: list[BaseException]) -> None:
 
 async def fan_out_async[Payload](
     _event: PubSub[Payload, Any],
-    handlers: Handlers[Handler[Any, Any]],
+    handlers: Handlers[Any, None],
     message: HandleCall,
 ) -> None:
     """
@@ -215,7 +217,7 @@ async def fan_out_async[Payload](
 
 async def fan_out_concurrent[Payload](
     _event: PubSub[Payload, Any],
-    handlers: Handlers[Handler[Any, Any]],
+    handlers: Handlers[Any, None],
     message: HandleCall,
 ) -> None:
     """

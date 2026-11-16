@@ -1,14 +1,14 @@
 """
-Unit tests for the Handler class.
+Unit tests for the handler classes.
 
 This test suite verifies the following behaviors:
 
-Handler:
-- is_async is stored as given, for sync and async functions and callable objects.
+SyncHandler and AsyncHandler:
+- Each kind says whether calling it gives an awaitable.
 - call stores the wrapped callable.
 - config stores the supplied value.
-- Calling a Handler with a message invokes the wrapped sync callable.
-- Calling a Handler wrapping an async callable with a message returns an awaitable.
+- Calling a SyncHandler with a message invokes the wrapped callable.
+- Calling an AsyncHandler with a message returns an awaitable of the wrapped callable's result.
 
 Handlers:
 - Holds its handlers as a tuple, equal to a plain tuple of them.
@@ -20,12 +20,8 @@ Handlers:
 """
 
 import asyncio
-from collections.abc import Callable
-from typing import Any
 
-import pytest
-
-from stratae.events import HandleCall, Handler, Handlers, PubSub
+from stratae.events import AsyncHandler, HandleCall, Handlers, PubSub, SyncHandler
 
 _ticked = PubSub(int)
 _message = HandleCall(_ticked, None, 1)
@@ -52,25 +48,16 @@ class _AsyncCallable:
         return 4
 
 
-@pytest.mark.parametrize(
-    ("call", "is_async"),
-    [
-        (_sync_handler, False),
-        (_async_handler, True),
-        (_SyncCallable(), False),
-        (_AsyncCallable(), True),
-    ],
-    ids=["sync_function", "async_function", "sync_callable", "async_callable"],
-)
-def test_is_async_stored_as_given(call: Callable[[Any], Any], is_async: bool):
+def test_each_kind_says_whether_it_is_async():
     """
-    is_async should be what the bus that built the Handler says, which it works out once.
+    A handler's kind should say whether calling it gives an awaitable.
 
-    Given: A sync or async callable, and whether it's async
-    When: A Handler is constructed with both
-    Then: is_async is the value given
+    Given: A sync and an async handler
+    When: Each is asked whether it's async
+    Then: The sync one says no, and the async one says yes
     """
-    assert Handler(call, object(), is_async=is_async).is_async is is_async
+    assert SyncHandler(_sync_handler, object()).is_async is False
+    assert AsyncHandler(_async_handler, object()).is_async is True
 
 
 def test_call_stores_wrapped_callable():
@@ -81,7 +68,7 @@ def test_call_stores_wrapped_callable():
     When: A Handler is constructed with it
     Then: call should be that callable
     """
-    handler = Handler(_sync_handler, object(), is_async=False)
+    handler = SyncHandler(_sync_handler, object())
 
     assert handler.call is _sync_handler
 
@@ -95,7 +82,7 @@ def test_config_stores_supplied_value():
     Then: config should reference the supplied value
     """
     config = {"test": 1}
-    handler = Handler(_sync_handler, config, is_async=False)
+    handler = SyncHandler(_sync_handler, config)
 
     assert handler.config is config
 
@@ -108,7 +95,7 @@ def test_calling_handler_invokes_sync_callable():
     When: The Handler is called with a message
     Then: The result should be the callable's return value
     """
-    handler = Handler(_sync_handler, object(), is_async=False)
+    handler = SyncHandler(_sync_handler, object())
 
     assert handler(_message) == 1
 
@@ -121,7 +108,7 @@ async def test_calling_handler_wrapping_async_callable_returns_awaitable():
     When: The Handler is called with a message
     Then: The result should be awaitable and resolve to the callable's return value
     """
-    handler = Handler(_async_handler, object(), is_async=True)
+    handler = AsyncHandler(_async_handler, object())
 
     result = await handler(_message)
 
@@ -138,8 +125,8 @@ def test_handlers_equal_plain_tuple():
     """
     # Arrange
     first, second = (
-        Handler(_sync_handler, None, is_async=False),
-        Handler(_async_handler, None, is_async=True),
+        SyncHandler(_sync_handler, None),
+        AsyncHandler(_async_handler, None),
     )
 
     # Act
@@ -159,12 +146,12 @@ def test_handlers_keeps_sync_and_async_apart():
     """
     # Arrange
     sync_a, sync_b = (
-        Handler(_sync_handler, None, is_async=False),
-        Handler(_SyncCallable(), None, is_async=False),
+        SyncHandler(_sync_handler, None),
+        SyncHandler(_SyncCallable(), None),
     )
     async_a, async_b = (
-        Handler(_async_handler, None, is_async=True),
-        Handler(_AsyncCallable(), None, is_async=True),
+        AsyncHandler(_async_handler, None),
+        AsyncHandler(_AsyncCallable(), None),
     )
 
     # Act
@@ -185,10 +172,10 @@ def test_handlers_adding_leaves_original_unchanged():
     """
     # Arrange
     first, added = (
-        Handler(_sync_handler, None, is_async=False),
-        Handler(_async_handler, None, is_async=True),
+        SyncHandler(_sync_handler, None),
+        AsyncHandler(_async_handler, None),
     )
-    original: Handlers[Handler[Any, Any]] = Handlers((first,))
+    original: Handlers[None, int] = Handlers((first,))
 
     # Act
     result = original.adding(added)
@@ -210,8 +197,8 @@ def test_handlers_removing_leaves_original_unchanged():
     """
     # Arrange
     kept, removed = (
-        Handler(_sync_handler, None, is_async=False),
-        Handler(_async_handler, None, is_async=True),
+        SyncHandler(_sync_handler, None),
+        AsyncHandler(_async_handler, None),
     )
     original = Handlers((kept, removed))
 
@@ -233,10 +220,10 @@ def test_handlers_removing_absent_handler_returns_same_handlers():
     Then: The same Handlers should be returned
     """
     # Arrange
-    original = Handlers((Handler(_sync_handler, None, is_async=False),))
+    original = Handlers((SyncHandler(_sync_handler, None),))
 
     # Act
-    result = original.removing(Handler(_sync_handler, None, is_async=False))
+    result = original.removing(SyncHandler(_sync_handler, None))
 
     # Assert
     assert result is original
@@ -252,8 +239,8 @@ def test_handlers_removing_takes_out_only_that_registration():
     """
     # Arrange
     kept, removed = (
-        Handler(_sync_handler, None, is_async=False),
-        Handler(_sync_handler, None, is_async=False),
+        SyncHandler(_sync_handler, None),
+        SyncHandler(_sync_handler, None),
     )
 
     # Act

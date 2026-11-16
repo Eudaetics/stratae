@@ -14,7 +14,7 @@ from typing import Annotated, Any
 from weakref import ReferenceType
 
 from stratae.depends import Depends, inject
-from stratae.depends._provide import Provider
+from stratae.depends._provide import AnyProvider, provider
 
 
 def test_dropped_injection_graph_is_collected():
@@ -30,7 +30,7 @@ def test_dropped_injection_graph_is_collected():
     # Arrange
     # The graph is built in a nested call so its frame is gone before collection runs;
     # only these weak references survive into the test frame.
-    def build() -> tuple[ReferenceType[Any], ReferenceType[Any], ReferenceType[Provider]]:
+    def build() -> tuple[ReferenceType[Any], ReferenceType[Any], ReferenceType[AnyProvider]]:
         def local_dep() -> int:
             return 1
 
@@ -42,7 +42,7 @@ def test_dropped_injection_graph_is_collected():
         return (
             weakref.ref(local_func),
             weakref.ref(local_dep),
-            weakref.ref(Provider(local_dep)),
+            weakref.ref(provider(local_dep)),
         )
 
     wrapper_ref, dep_ref, depends_ref = build()
@@ -84,12 +84,12 @@ def test_live_consumer_keeps_dependency_registered():
     def local_func(dep: Annotated[int, Depends(local_dep)]) -> int:
         return dep
 
-    depends_ref = weakref.ref(Provider(local_dep))
+    depends_ref = weakref.ref(provider(local_dep))
 
     # Act
     gc.collect()
 
     # Assert
     assert depends_ref() is not None
-    assert Provider(local_dep) is depends_ref()
+    assert provider(local_dep) is depends_ref()
     assert local_func() == 2

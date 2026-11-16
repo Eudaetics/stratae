@@ -227,7 +227,7 @@ class SyncWebSocketEndpointError(UnsupportedEndpointError):
         super().__init__(f"scoped_websocket_route needs an async endpoint, got {endpoint!r}.")
 
 
-def _refuse_class_endpoint(endpoint: Callable[..., Any]) -> None:
+def _refuse_class_endpoint(endpoint: Callable[..., object]) -> None:
     """
     Refuse an endpoint that isn't a function or method, or a `functools.partial` of one.
 

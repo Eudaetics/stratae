@@ -2,7 +2,7 @@ import threading
 from collections.abc import Callable
 from contextvars import ContextVar
 from functools import partial
-from typing import Any
+from typing import Any, Final
 
 from stratae.lifecycle.exceptions import (
     ActivationEndedError,
@@ -10,8 +10,8 @@ from stratae.lifecycle.exceptions import (
     ScopeAlreadyActiveError,
 )
 
-UNSET: Any = object()
-_MISSING: Any = object()
+UNSET: Final = object()
+"""What an unwritten slot holds, so a slot can hold `None` as a value."""
 
 
 class SlotDict(dict[int, Any]):
@@ -44,28 +44,28 @@ class SharedVar:
 
     def __init__(self, name: str) -> None:
         self.name: str = name
-        self.storage: SlotStorage = UNSET
+        self.storage: SlotStorage | None = None
+        """The live storage, or `None` while the scope is inactive."""
         self.lock: threading.Lock = threading.Lock()
 
-    def get(self, default: Any = _MISSING) -> SlotStorage:
-        """Return the live storage, or default when inactive, else raise LookupError."""
-        value = self.storage
-        if value is not UNSET:
-            return value
-        if default is _MISSING:
-            raise LookupError(self.name)
-        return default
+    def get(self, _default: None, /) -> SlotStorage | None:
+        """
+        Return the live storage, or `None` while inactive.
+
+        The default is unused, kept to match `ContextVar.get(None)`.
+        """
+        return self.storage
 
     def set(self, value: SlotStorage) -> None:
         """Activate the scope, raising if it's already active."""
         with self.lock:
-            if self.storage is not UNSET:
+            if self.storage is not None:
                 raise ScopeAlreadyActiveError(self.name)
             self.storage = value
 
     def reset(self, _token: None) -> None:
         """Deactivate the scope; the token is unused, kept to match `ContextVar.reset`."""
-        self.storage = UNSET
+        self.storage = None
 
 
 ScopeVar = ContextVar[SlotStorage] | SharedVar
@@ -154,10 +154,9 @@ class SlotStore:
 
         :raises ScopeInactiveError: If the scope isn't active in the calling context.
         """
-        try:
-            slots = self.var.get()
-        except LookupError:
-            raise NoActivationError(self.name) from None
+        slots = self.var.get(None)
+        if slots is None:
+            raise NoActivationError(self.name)
         if not slots:
             raise ActivationEndedError(self.name)
         self._extend(slots)

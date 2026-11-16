@@ -87,11 +87,13 @@ emit OrderPlaced: INTERNAL, parent none
 
 from __future__ import annotations
 
+from types import TracebackType
 from typing import Any
 
 from opentelemetry import context, propagate, trace
 from opentelemetry.context import Context
 from opentelemetry.trace import Link, Span, SpanKind, Status, StatusCode, Tracer, TracerProvider
+from opentelemetry.util.types import AttributeValue
 
 from stratae.events.envelope import Envelope
 from stratae.events.middleware import HandleCall, Middleware, PublishCall
@@ -106,11 +108,12 @@ def _name(destination: Destination | None, event: str) -> str:
     return destination.name or event if destination is not None else event
 
 
-def _envelope_attributes(messaging: bool) -> dict[str, Any]:
+def _envelope_attributes(messaging: bool) -> dict[str, AttributeValue]:
     """Return the current envelope's ids as span attributes, if there's an envelope."""
     envelope = Envelope.current()
     if envelope is None:
         return {}
+    attributes: dict[str, AttributeValue]
     if messaging:
         attributes = {
             "messaging.message.id": str(envelope.message_id),
@@ -126,16 +129,16 @@ def _envelope_attributes(messaging: bool) -> dict[str, Any]:
     return attributes
 
 
-def _internal_attributes(event: str) -> dict[str, Any]:
+def _internal_attributes(event: str) -> dict[str, AttributeValue]:
     """Return an in-process span's attributes."""
     return {"stratae.event": event} | _envelope_attributes(messaging=False)
 
 
 def _messaging_attributes(
     event: str, destination: Destination | None, operation: Operation
-) -> dict[str, Any]:
+) -> dict[str, AttributeValue]:
     """Return a messaging span's attributes, per the messaging semantic conventions."""
-    attributes: dict[str, Any] = {
+    attributes: dict[str, AttributeValue] = {
         "stratae.event": event,
         "messaging.operation.name": operation.name,
         "messaging.operation.type": operation.type,
@@ -178,7 +181,7 @@ class _Traced:
         tracer: Tracer,
         name: str,
         kind: SpanKind,
-        attributes: dict[str, Any],
+        attributes: dict[str, AttributeValue],
         *,
         parent: Context | None = None,
         links: tuple[Link, ...] = (),
@@ -213,7 +216,12 @@ class _Traced:
             propagate.inject(self._inject)
         return self._span
 
-    def __exit__(self, kind: object, error: BaseException | None, traceback: object) -> None:
+    def __exit__(
+        self,
+        kind: type[BaseException] | None,
+        error: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         """Record the call's error, if any, end the span, and restore the context."""
         try:
             if error is not None:

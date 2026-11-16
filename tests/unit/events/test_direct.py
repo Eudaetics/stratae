@@ -188,10 +188,10 @@ class _Gather[S, R](Immutable):
 
 
 def _gather_replies[S, R](
-    event: _Gather[S, R], handlers: Collection[Handler[Any, R]], message: HandleCall
+    event: _Gather[S, R], handlers: Handlers[Any, R], message: HandleCall
 ) -> list[R]:
-    """Dispatch a _Gather event: call every handler and collect the replies."""
-    return [handler(message) for handler in handlers]
+    """Dispatch a _Gather event: call every handler, all sync here, and collect the replies."""
+    return [handler(message) for handler in handlers.sync]
 
 
 class _Command(Request[_BookQuery, _BookResult, Literal[False]]):
