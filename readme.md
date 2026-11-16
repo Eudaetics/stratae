@@ -79,7 +79,7 @@ def get_session():
     try:
         yield session
         session.commit()
-    except:
+    except Exception:
         session.rollback()
         raise
     finally:
@@ -197,7 +197,25 @@ def price(order: PriceOrder) -> Quote:
 quote = bus.emit(price_order, PriceOrder(42))  # typed as Quote
 ```
 
-`AsyncDirectBus` offers the same surface for async code, accepting both sync and async handlers. Handlers are ordinary functions, so `@inject` and lifecycle-cached dependencies compose with them unchanged.
+`AsyncDirectBus` offers the same surface for async code, accepting both sync and async handlers. It runs an event's async handlers one at a time by default. This is so they can share a resource that refuses concurrent use, such as a database session. To run them concurrently, build it with `AsyncDirectBus(dispatchers=(Dispatch(PubSub, fan_out_concurrent),))`. Handlers are ordinary functions, so `@inject` and lifecycle-cached dependencies compose with them unchanged.
+
+Middleware runs around every emit and every handler call. Each one takes the call and `next`, the rest of the chain, as web frameworks' middleware does:
+
+```python
+from stratae.events import Middleware
+
+
+def tag_tenant(call, next):
+    return next(call.with_headers({"x-tenant": "acme"}))
+
+
+def log_tenant(call, next):
+    print(f"handling for {call.headers['x-tenant']}")
+    return next(call)
+
+
+bus = DirectBus(middleware=Middleware(publish=(tag_tenant,), handle=(log_tenant,)))
+```
 
 ### Async Support
 
@@ -268,17 +286,17 @@ def get_config():
     return {"env": "prod"}
 
 
-with override(get_config, {"env": "test"}):
+with override(get_config).to({"env": "test"}):
     endpoint()  # sees {"env": "test"}
 endpoint()  # back to {"env": "prod"}
 ```
 
 ### Guard Checks
 
-`require` runs zero-arg checks ahead of a function call, in order. A check's return value is discarded - only its side effects and raises matter, and the first one to raise aborts the call.
+`require` runs zero-argument checks ahead of a function call, in order. A check passes by returning `None` and fails by raising, and the first one to raise aborts the call. A check that returns anything else is refused with `CheckResultError`, so a predicate such as `lambda: user.is_admin` can't pass by mistake.
 
 ```python
-from stratae.check import require
+from stratae.checks import require
 
 
 def is_admin():
@@ -316,11 +334,11 @@ async def get_session():
     try:
         yield session
         await session.commit()
-    except:
-        session.rollback()
+    except Exception:
+        await session.rollback()
         raise
     finally:
-        session.close()
+        await session.close()
 
 
 @app.post("/users")
@@ -328,9 +346,28 @@ async def get_session():
 async def post_user(
     name: str,
     # Using Stratae Depends
-    db: Annotated[Session, Depends(get_session)],
+    db: Annotated[AsyncSession, Depends(get_session)],
 ):
     await db.users.create(name=name)
+```
+
+The request scope closes once the response has been sent, with the error the request ended with, if any. So a resource like this session rolls back on an `HTTPException` too.
+
+### More Integrations
+
+Each integration is a module of `stratae.integrations`, installed with the extra of the same name:
+
+- **`fastapi`** and **`starlette`**: route classes that open a scope around each request. Starlette's also cover WebSocket connections.
+- **`rabbitmq`**: a publisher and a consumer for RabbitMQ, with per-route routing keys, retry queues and dead letters, and reconnecting with backoff.
+- **`opentelemetry`**: tracing middleware for any bus or adapter, following OpenTelemetry's messaging conventions.
+- **`asgi`**: middleware that gives each request to any ASGI application its own envelope, so events it emits share its correlation id. It needs no extra.
+
+The **`uuid`** extra makes envelope ids faster to create, and can make them time-ordered.
+
+`stratae.events.outbox` writes events to an outbox store in the same transaction as your data, and a relay publishes what committed. `stratae.backoff` holds the backoff values reconnects, retries and the relay's polling share.
+
+```bash
+pip install "stratae[rabbitmq,opentelemetry]"
 ```
 
 ## Contributing
@@ -341,8 +378,8 @@ Before contributing, please:
 
 1. Check for open issues or open a new issue to start a discussion
 2. Fork the repository on GitHub
-3. Install development dependencies with `uv sync --extra dev --extra test` (or, without uv, `pip install -e ".[dev,test]"`)
-4. Run pre-commit hooks with `pre-commit install`
+3. Install the development dependencies and every extra with `uv sync --all-extras --all-groups`
+4. Install the pre-commit hooks with `uv run pre-commit install`
 5. Make your changes following the project's coding style
 6. Write tests that cover your changes
 7. Update documentation if needed

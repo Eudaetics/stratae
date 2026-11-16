@@ -50,16 +50,16 @@ Enhancement suggestions are welcome! When submitting an enhancement suggestion:
    git checkout -b your-branch-name
    ```
 
-4. Install the package in development mode with development dependencies:
+4. Install the package with its development dependencies and every extra, as CI does:
 
    ```bash
-   pip install -e ".[dev]"
+   uv sync --all-extras --all-groups
    ```
 
 5. Install pre-commit hooks:
 
    ```bash
-   pre-commit install
+   uv run pre-commit install
    ```
 
 #### Making Changes
@@ -69,11 +69,24 @@ Enhancement suggestions are welcome! When submitting an enhancement suggestion:
 3. Ensure your code follows the project's style guidelines:
    - Code is formatted with Ruff
    - Passes all Ruff linting checks
-   - Type hints are used appropriately and checked with Pyright
-4. Run the tests to make sure your changes don't break existing functionality:
+   - Type hints are used throughout, and pass Pyright in strict mode
+4. Run every check CI runs. It formats and lints, type-checks, checks the public API's type completeness, runs the tests at 100% coverage, and checks complexity:
 
    ```bash
-   pytest
+   just check
+   ```
+
+5. If you changed the RabbitMQ integration, run its tests against a live broker. They read `RABBITMQ_URL`, by default `amqp://guest:guest@localhost/`:
+
+   ```bash
+   just test-rabbitmq
+   ```
+
+6. If you changed documentation or a docstring's example, run the examples and build the docs:
+
+   ```bash
+   just test-docs
+   just docs
    ```
 
 #### Submitting a Pull Request
@@ -115,8 +128,8 @@ When submitting a pull request:
 - **Python**: Follow PEP 8 guidelines with the modifications specified in our setup
 - **Formatting**: We use Ruff for code formatting
 - **Linting**: We use Ruff for linting
-- **Type Hints**: Use type hints throughout the codebase
-- **Docstrings**: Use [Google-style docstrings](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings)
+- **Type Hints**: Use type hints throughout the codebase. Pyright runs in strict mode, and the package has no type or coverage suppressions
+- **Docstrings**: Write them in MyST Markdown, with `:param:`, `:returns:` and `:raises:` fields and runnable examples, as in `stratae/checks.py`
 
 ### Git Commit Messages
 
@@ -127,18 +140,24 @@ When submitting a pull request:
 
 ## Project Structure
 
-```stratae/       # Main package
-├── __init__.py              # Package exports
-├── submodule1/              # Organize code into modules
-│   └── ...                  # Module implementation
-├── submodule2/
-│   └── ...
-└── ...
-tests/                      # Test directory
-├── __init__.py
-├── unit/
-    └── test_submodule1.py  # Tests for submodule1
-└── ...
+```text
+stratae/                # The package
+├── backoff.py          # Backoff values for retries and reconnects
+├── callables.py        # Telling what calling a callable gives
+├── checks.py           # Guard checks
+├── codegen/            # Building generated wrappers
+├── context.py          # Context variables
+├── depends/            # Dependency injection
+├── events/             # Events, buses, the emit pipeline and the outbox
+├── integrations/       # FastAPI, Starlette, ASGI, RabbitMQ and OpenTelemetry
+├── lifecycle/          # Scopes, cached resources and scope middleware
+└── middleware.py       # The (call, next) middleware chain
+tests/
+├── unit/               # Tests for each module
+├── integration/        # Tests against frameworks and a live broker
+└── e2e/                # End-to-end tests
+docs/                   # Sphinx documentation and tutorials
+benchmarks/             # Benchmarks for performance changes
 ```
 
 ## Development Workflow
