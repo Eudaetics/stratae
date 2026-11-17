@@ -53,6 +53,8 @@ autodoc2_hidden_regexes = [
 ]
 autodoc2_index_template = None
 
+sd_card_legacy_separators = False
+
 myst_enable_extensions = [
     "colon_fence",
     "deflist",

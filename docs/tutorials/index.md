@@ -122,6 +122,8 @@ Standalone, no dependency on the core three or on each other:
 
 ## Looking for something specific?
 
+::::{accordion}
+
 :::{dropdown} I want to improve testability.
 Use [Dependency Injection](../apidocs/stratae.depends/stratae.depends) and `override` to swap in a mock for the duration of a `with` block, without restructuring the function it's injected into.
 :::
@@ -153,3 +155,5 @@ Use [Lifecycle](../apidocs/stratae.lifecycle/stratae.lifecycle)'s `resource` to 
 :::{dropdown} I need a different implementation depending on the user, tenant, environment, or feature flag.
 Use a Dependency Injection provider that returns the correct implementation, or use [Context](context.md) as a shortcut to set it explicitly. Either way, the routing logic lives in one place instead of scattered through business logic.
 :::
+
+::::
