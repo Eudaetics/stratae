@@ -8,12 +8,14 @@ This test suite verifies the following behaviors:
 
 Injected:
 - `Annotated[..., Depends(...)]` inline, with `Depends` imported however it is: directly,
-  renamed, or through a module alias or dotted module name.
+  renamed, assigned another name, or through a module alias or dotted module name.
 - Through a plain or annotated alias, a `type` alias, a plain alias of a `type` alias, a
   generic `type` alias subscripted, and an alias imported from another module, absolutely or
   relatively.
-- Nested `Annotated`, `typing.Annotated` through a module alias, and a provider kept in a
-  variable.
+- Nested `Annotated`, `typing.Annotated` through a module alias or `typing_extensions`, and
+  a provider kept in a variable.
+- A module name used in an assignment's target, as a key or an object, still names the
+  module.
 
 Not injected, as at runtime:
 - A `type` alias of a `type` alias, which `inject` unwraps only once.
@@ -51,6 +53,12 @@ _INJECTED = [
     pytest.param(
         "from stratae.depends import Depends as D", "Annotated[int, D(get_one)]", id="renamed"
     ),
+    pytest.param("D = Depends", "Annotated[int, D(get_one)]", id="assigned"),
+    pytest.param(
+        "from typing import Final\nD: Final = Depends",
+        "Annotated[int, D(get_one)]",
+        id="assigned with an annotation",
+    ),
     pytest.param(
         "import stratae.depends as sd", "Annotated[int, sd.Depends(get_one)]", id="module"
     ),
@@ -73,6 +81,16 @@ _INJECTED = [
     pytest.param("from . import deps", "deps.StripeDep", id="module attribute"),
     pytest.param("", 'Annotated[Annotated[int, Depends(get_one)], "doc"]', id="nested"),
     pytest.param("import typing as t", "t.Annotated[int, Depends(get_one)]", id="typing module"),
+    pytest.param(
+        "import typing as t\nseen = {}\nseen[t] = True",
+        "t.Annotated[int, Depends(get_one)]",
+        id="module in a target",
+    ),
+    pytest.param(
+        "from typing_extensions import Annotated as A",
+        "A[int, Depends(get_one)]",
+        id="typing_extensions",
+    ),
     pytest.param("one = Depends(get_one)", "Annotated[int, one]", id="provider variable"),
 ]
 

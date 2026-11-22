@@ -17,16 +17,12 @@ from ._names import Found, Seen, Symbol, Unread, identity, resolve
 type Def = ast.FunctionDef | ast.AsyncFunctionDef
 """A function definition."""
 
-ANNOTATED = frozenset({("typing", "Annotated"), ("typing_extensions", "Annotated")})
-FINAL = frozenset({("typing", "Final"), ("typing_extensions", "Final")})
+ANNOTATED = frozenset({("typing", "Annotated")})
+FINAL = frozenset({("typing", "Final")})
 LITERAL = frozenset({("typing", "Literal"), ("typing_extensions", "Literal")})
-DEPENDS = frozenset({("stratae.depends.injection", "Depends"), ("stratae.depends", "Depends")})
-INJECT = frozenset({("stratae.depends.injection", "inject"), ("stratae.depends", "inject")})
-"""
-The definitions each rule recognises, by module and name.
-
-The second of each pair is how a name reads when Stratae's own source can't be found.
-"""
+"""`Literal`, and `typing_extensions`'s, which its last binding defines rather than aliases."""
+DEPENDS = frozenset({("stratae.depends.injection", "Depends")})
+INJECT = frozenset({("stratae.depends.injection", "inject")})
 
 
 @dataclass(frozen=True)

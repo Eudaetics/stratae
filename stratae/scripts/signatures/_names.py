@@ -54,7 +54,7 @@ def identity(symbol: Symbol | None) -> tuple[str, str] | None:
 
 
 def lookup(load: Load, module: Module, name: str, seen: Seen = frozenset()) -> Symbol | None:
-    """Return what `name` refers to in `module`, following its imports."""
+    """Return what `name` refers to in `module`, following its imports and its aliases."""
     key = (module.name, name)
     if key in seen:
         return None
@@ -64,6 +64,11 @@ def lookup(load: Load, module: Module, name: str, seen: Seen = frozenset()) -> S
             return member(load, source, original, seen)
         case ModuleImport(module=target):
             return Package(target)
+        case Defined(
+            node=ast.Assign(value=ast.Name() | ast.Attribute() as value)
+            | ast.AnnAssign(value=ast.Name() | ast.Attribute() as value)
+        ):
+            return resolve(load, value, module, seen)
         case Defined(node=node):
             return Found(module, name, node)
         case _:
@@ -76,22 +81,26 @@ def member(load: Load, module: str, name: str, seen: Seen = frozenset()) -> Symb
     return Unread(module, name) if found is None else lookup(load, found, name, seen)
 
 
-def resolve(load: Load, expr: ast.expr, module: Module) -> Symbol | None:
-    """Return what a name or dotted name refers to, or `None` for any other expression."""
+def resolve(load: Load, expr: ast.expr, module: Module, seen: Seen = frozenset()) -> Symbol | None:
+    """
+    Return what a name or dotted name refers to, or `None` for any other expression.
+
+    A name assigned another name, or a dotted one, refers to what that one does.
+    """
     match expr:
         case ast.Name(id=name):
-            return lookup(load, module, name)
+            return lookup(load, module, name, seen)
         case ast.Attribute(value=value, attr=attr):
-            return _attribute(load, resolve(load, value, module), attr)
+            return _attribute(load, resolve(load, value, module, seen), attr, seen)
         case _:
             return None
 
 
-def _attribute(load: Load, base: Symbol | None, attr: str) -> Symbol | None:
+def _attribute(load: Load, base: Symbol | None, attr: str, seen: Seen) -> Symbol | None:
     """Return what an attribute of `base` refers to, when `base` is a module."""
     match base:
         case Package(name=package):
-            return member(load, package, attr)
+            return member(load, package, attr, seen)
         case Unread(module=module, name=name):
             return Unread(module, f"{name}.{attr}")
         case _:

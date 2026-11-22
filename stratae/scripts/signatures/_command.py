@@ -37,8 +37,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     options = _parser().parse_args(argv)
     results = [result for name in options.modules for result in _results(name)]
     problems = _problems(results)
-    pending = (_check if options.check else _make)(_all_changes(results))
-    return int(bool(problems or pending))
+    changes = _all_changes(results)
+    if options.check:
+        _check(changes)
+    else:
+        _make(changes)
+    stale = options.check and changes
+    return 1 if problems or stale else 0
 
 
 def _parser() -> ArgumentParser:
@@ -88,19 +93,17 @@ def _all_changes(results: Iterable[Stub | Unneeded | Unreadable]) -> list[_Chang
     return [change for result in results for change in _changes(result)]
 
 
-def _check(changes: list[_Change]) -> list[_Change]:
-    """Report each change a run would make, and return them, since they're still to do."""
+def _check(changes: Iterable[_Change]) -> None:
+    """Report each change a run would make."""
     for change in changes:
         print(f"{change.path}: {change.pending}", file=sys.stderr)
-    return changes
 
 
-def _make(changes: list[_Change]) -> list[_Change]:
-    """Make each change, and return what's still to do, which is nothing."""
+def _make(changes: Iterable[_Change]) -> None:
+    """Make each change, and report it."""
     for change in changes:
         change.make()
         print(f"{change.path}: {change.done}")
-    return []
 
 
 def _stale(stub: Stub) -> bool:

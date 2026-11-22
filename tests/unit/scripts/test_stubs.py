@@ -21,8 +21,8 @@ Stubbing:
   `Final`, and `if` blocks keep their branches. Other statements are dropped, and so is an
   `if` left empty.
 - Statements keep the source's order, laid out by `ast.unparse`.
-- Quoted annotations are unquoted, nested ones too, but not `Literal` values, `Annotated`
-  metadata or defaults.
+- Quoted annotations are unquoted, nested ones too, but not `Literal` values, from `typing`
+  or `typing_extensions`, `Annotated` metadata or defaults.
 - A `try` block keeps what its body binds, and what only its other clauses bind. A name bound
   again outside its body is warned about.
 - `__all__` is kept, assigned among other names or extended, and the imports it names stay.
@@ -208,8 +208,8 @@ def test_stub_unquotes_annotations_but_not_values(write: Write) -> None:
     """
     A stub should unquote forward references, but not strings that are values.
 
-    Given: Annotations quoting a type, nested in a generic, in `Literal` imported plainly and
-        renamed, and in `Annotated`, and a default that's a string
+    Given: Annotations quoting a type, nested in a generic, in `Literal` imported plainly,
+        renamed and from `typing_extensions`, and in `Annotated`, and a default that's a string
     When: The stub is generated
     Then: Types are unquoted, and `Literal` values, `Annotated` metadata and the default stay
         quoted
@@ -219,12 +219,14 @@ def test_stub_unquotes_annotations_but_not_values(write: Write) -> None:
         from typing import Literal
         from typing import Literal as L
 
+        from typing_extensions import Literal as TL
+
         class Box: ...
 
         @inject
         def pack(
             box: "Box", boxes: list["Box"], kind: Literal["a"], tagged: Annotated["Box", "tag"],
-            label: str = "box", short: L["b"] = "b",
+            label: str = "box", short: L["b"] = "b", extended: TL["c"] = "c",
         ) -> "list[Box]":
             return [box]
         """)
@@ -242,6 +244,7 @@ def test_stub_unquotes_annotations_but_not_values(write: Write) -> None:
             tagged: Annotated[Box, "tag"],
             label: str = "box",
             short: L["b"] = "b",
+            extended: TL["c"] = "c",
         ) -> list[Box]: ...
         """)
         in result.source

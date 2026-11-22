@@ -132,7 +132,11 @@ def _target_names(targets: list[ast.expr]) -> set[str]:
     """Return the names assignment targets bind, unpacked ones included."""
     names: set[str] = set()
     for target in targets:
-        names |= {node.id for node in ast.walk(target) if isinstance(node, ast.Name)}
+        names |= {
+            node.id
+            for node in ast.walk(target)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
     return names
 
 
