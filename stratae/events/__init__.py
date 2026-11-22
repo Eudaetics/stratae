@@ -95,6 +95,7 @@ from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
     Addressed,
     AnyEvent,
+    AsyncPubSubProducer,
     Consumer,
     Deserializer,
     Destination,
@@ -123,6 +124,7 @@ __all__ = [
     "AnyEvent",
     "AsyncDirectBus",
     "AsyncHandler",
+    "AsyncPubSubProducer",
     "Consumer",
     "Deserializer",
     "Destination",

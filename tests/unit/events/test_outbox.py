@@ -106,6 +106,7 @@ from pytest_mock import MockerFixture
 
 from stratae.backoff import Delays, Exponential
 from stratae.events import (
+    AsyncPubSubProducer,
     Destination,
     Encoded,
     Envelope,
@@ -506,20 +507,22 @@ async def test_request_events_refused(outbox: OutboxProducer[object]):
 
 def test_outbox_matches_pubsub_producer_only(outbox: OutboxProducer[object]):
     """
-    OutboxProducer should match PubSubProducer, and not Producer, which emits any event.
+    OutboxProducer should match PubSubProducer and AsyncPubSubProducer, and not Producer.
 
     The `# pyright: ignore[...]` marks an expected type error.
 
     Given: An outbox producer
-    When: It's assigned to PubSubProducer, and to Producer
-    Then: The first type-checks, and the second is a type error
+    When: It's assigned to PubSubProducer, AsyncPubSubProducer and Producer
+    Then: The first two type-check, and the last is a type error
     """
     # Act
     pubsub_producer: PubSubProducer = outbox
+    async_producer: AsyncPubSubProducer = outbox
     producer: Producer = outbox  # pyright: ignore[reportAssignmentType]
 
     # Assert
     assert isinstance(pubsub_producer, PubSubProducer)
+    assert async_producer is outbox
     assert producer is outbox
 
 

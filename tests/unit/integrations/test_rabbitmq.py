@@ -107,6 +107,7 @@ from stratae.events import (
     CORRELATION_ID_HEADER,
     MESSAGE_ID_HEADER,
     Addressed,
+    AsyncPubSubProducer,
     Encoded,
     Envelope,
     EnvelopeConfig,
@@ -394,20 +395,22 @@ def test_bind_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
 
 def test_publisher_matches_pubsub_producer_only(publisher: RabbitMQPublisher):
     """
-    RabbitMQPublisher should match PubSubProducer, and not Producer, which emits any event.
+    RabbitMQPublisher should match PubSubProducer and AsyncPubSubProducer, and not Producer.
 
     The `# pyright: ignore[...]` marks an expected type error.
 
     Given: A publisher
-    When: It's assigned to PubSubProducer, and to Producer
-    Then: The first type-checks, and the second is a type error
+    When: It's assigned to PubSubProducer, AsyncPubSubProducer and Producer
+    Then: The first two type-check, and the last is a type error
     """
     # Act
     pubsub_producer: PubSubProducer = publisher
+    async_producer: AsyncPubSubProducer = publisher
     producer: Producer = publisher  # pyright: ignore[reportAssignmentType]
 
     # Assert
     assert isinstance(pubsub_producer, PubSubProducer)
+    assert async_producer is publisher
     assert producer is publisher
 
 
