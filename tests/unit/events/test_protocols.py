@@ -10,6 +10,11 @@ Producer:
 PubSubProducer:
 - Every Producer, such as the direct buses, also satisfies PubSubProducer.
 
+AsyncPubSubProducer:
+- AsyncDirectBus satisfies it, and DirectBus, whose emit isn't awaited, is a type error.
+- An event bound with abind through it, with a payload or without, gives an awaitable of
+  `object`.
+
 Consumer:
 - An implementation satisfies the Consumer protocol.
 
@@ -26,14 +31,15 @@ destination_of and operation_of:
   destination and sends each message.
 """
 
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, assert_type
 
 import msgspec
 import pytest
 
 from stratae.events import (
     AsyncDirectBus,
+    AsyncPubSubProducer,
     Consumer,
     Deserializer,
     Destination,
@@ -42,8 +48,10 @@ from stratae.events import (
     EventType,
     Operation,
     Producer,
+    PubSub,
     PubSubProducer,
     Serializer,
+    abind,
     destination_of,
     operation_of,
 )
@@ -170,6 +178,57 @@ def test_every_producer_is_a_pubsub_producer():
         # Assert
         assert isinstance(producer, Producer)
         assert isinstance(pubsub_producer, PubSubProducer)
+
+
+def test_only_async_producers_are_async_pubsub_producers():
+    """
+    A producer whose emit is awaited should match AsyncPubSubProducer, and a sync one shouldn't.
+
+    The `# pyright: ignore[...]` marks an expected type error.
+
+    Given: An AsyncDirectBus and a DirectBus
+    When: Each is assigned to AsyncPubSubProducer
+    Then: The first type-checks, and the second is a type error
+    """
+    # Act
+    async_producer: AsyncPubSubProducer = AsyncDirectBus()
+    sync_producer: AsyncPubSubProducer = DirectBus()  # pyright: ignore[reportAssignmentType]
+
+    # Assert
+    assert isinstance(async_producer, AsyncDirectBus)
+    assert isinstance(sync_producer, DirectBus)
+
+
+async def test_events_bound_through_an_async_pubsub_producer_are_awaited():
+    """
+    An event bound with abind to an AsyncPubSubProducer's emit should give an awaitable.
+
+    Given: A producer typed only as AsyncPubSubProducer, and a PubSub event with a payload
+        and one without
+    When: Each is bound with abind to its emit, and called
+    Then: Each emitter is typed as giving `Awaitable[object]`, and its emit reaches the handler
+    """
+    # Arrange
+    bus = AsyncDirectBus()
+    placed = PubSub(int, name="placed")
+    pinged = PubSub(name="pinged")
+    seen: list[object] = []
+    bus.handle(placed, seen.append)
+    bus.handle(pinged, lambda: seen.append("ping"))
+
+    async def emit_through(producer: AsyncPubSubProducer) -> None:
+        place = abind(placed, producer.emit)
+        ping = abind(pinged, producer.emit)
+        assert_type(place, Callable[[int], Awaitable[object]])
+        assert_type(ping, Callable[[], Awaitable[object]])
+        await place(1)
+        await ping()
+
+    # Act
+    await emit_through(bus)
+
+    # Assert
+    assert seen == [1, "ping"]
 
 
 class _Describing:

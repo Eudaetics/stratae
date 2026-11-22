@@ -5,7 +5,8 @@ Structural protocols for the event system.
 {py:data}`AnyEvent`, {py:data}`PayloadEvent` and {py:data}`SignalEvent` abbreviate it.
 {py:class}`Producer` and {py:class}`Consumer` describe the emit and handle sides of a bus
 adapter. {py:class}`PubSubProducer` describes the emit side of one that emits only PubSub
-events. {py:class}`EmitCallable` describes a single emitter, typed by the events it takes.
+events. {py:class}`AsyncPubSubProducer` describes one whose PubSub emits are awaited.
+{py:class}`EmitCallable` describes a single emitter, typed by the events it takes.
 {py:class}`Serializer` and {py:class}`Deserializer` describe the codecs an adapter takes for
 payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
 one such pair. {py:class}`Serializing` describes a routing config with its own serializer.
@@ -16,7 +17,7 @@ does with them, as an {py:class}`Operation`. {py:func}`destination_of` and
 config without knowing the adapter.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -153,6 +154,36 @@ class PubSubProducer(Protocol):
         :param payload: The payload to emit.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
         :returns: Adapter-defined result, or a coroutine resolving to it.
+        """
+        ...
+
+
+class AsyncPubSubProducer(Protocol):
+    """
+    Structural protocol for the emit side of a bus adapter whose PubSub emits are awaited.
+
+    Its `emit` returns an awaitable, so code typed by it can await each emit. A sync producer,
+    such as {py:class}`DirectBus <stratae.events.direct.DirectBus>`, doesn't match it.
+    {py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>`,
+    {py:class}`OutboxProducer <stratae.events.outbox.OutboxProducer>` and
+    {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher>`
+    do.
+    """
+
+    def emit[Payload](
+        self,
+        event: PubSub[Payload, Any],
+        payload: Payload,
+        *,
+        hooks: Hooks[Payload, None] | None = None,
+    ) -> Awaitable[object]:
+        """
+        Emit a payload on the event's route, returning an awaitable that completes the emit.
+
+        :param event: The PubSub event being emitted.
+        :param payload: The payload to emit.
+        :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this emit.
+        :returns: An awaitable that completes the emit.
         """
         ...
 
