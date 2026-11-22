@@ -541,7 +541,7 @@ def test_unparsable_module_is_a_problem(tmp_path: Path, monkeypatch: pytest.Monk
     ("name", "content", "problem"),
     [
         pytest.param("bad.py", b"def broken(:\n", "can't parse", id="syntax error"),
-        pytest.param("bad.py", b"\xff\xfe\n", "can't parse: Non-UTF-8", id="undecodable"),
+        pytest.param("bad.py", b"\xff\xfe\n", "bad.py:1: can't parse", id="undecodable"),
         pytest.param("missing.py", None, "can't read", id="missing"),
     ],
 )
