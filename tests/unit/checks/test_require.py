@@ -8,7 +8,14 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-from stratae.checks import AsyncCheckOnSyncError, CheckResultError, require
+from stratae.checks import (
+    AsyncCheckOnSyncError,
+    CheckFailures,
+    CheckMode,
+    CheckResultError,
+    check_async,
+    require,
+)
 
 
 def _passing[M: Mock](mock: M, *children: str) -> M:
@@ -330,3 +337,260 @@ def test_require_names_any_sync_callable_it_refuses(fn: Callable[..., object]):
     # Act / Assert
     with pytest.raises(AsyncCheckOnSyncError, match=re.escape(repr(fn))):
         require(async_check)(fn)
+
+
+def _returns_value() -> str:
+    return "ignored"
+
+
+async def _resolves_to_value() -> str:
+    await asyncio.sleep(0)
+    return "ignored"
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        pytest.param(_returns_value, id="sync"),
+        pytest.param(_resolves_to_value, id="async"),
+    ],
+)
+async def test_require_async_function_refuses_check_returning_value(
+    check: Callable[[], object],
+):
+    """
+    An async function refuses a sync or async check that gives a value.
+
+    Given: A check returning, or resolving to, a value, before an async function.
+    When: The decorated function is awaited.
+    Then: CheckResultError should be raised, and the function body shouldn't run.
+    """
+    # Arrange
+    body = Mock()
+
+    @require(check)  # pyright: ignore[reportArgumentType]
+    async def fn() -> None:
+        await asyncio.sleep(0)
+        body()
+
+    # Act / Assert
+    with pytest.raises(CheckResultError, match="returned 'ignored'"):
+        await fn()
+    body.assert_not_called()
+
+
+async def test_require_async_function_awaits_sync_check_returning_awaitable():
+    """
+    An async function awaits the awaitable a sync check returns.
+
+    Given: A sync lambda returning an async check's coroutine, before an async function.
+    When: The decorated function is awaited.
+    Then: The coroutine should be awaited before the function body runs.
+    """
+    # Arrange
+    manager = Mock()
+    async_check = AsyncMock(return_value=None)
+    manager.attach_mock(async_check, "async_check")
+
+    @require(lambda: async_check())
+    async def fn() -> None:
+        await asyncio.sleep(0)
+        manager.fn()
+
+    # Act
+    await fn()
+
+    # Assert
+    assert manager.mock_calls == [call.async_check(), call.fn()]
+    async_check.assert_awaited_once()
+
+
+async def test_require_async_function_raise_stops_remaining_checks():
+    """
+    A raising async check stops the checks after it.
+
+    Given: A raising async check, then a sync check, before an async function.
+    When: The decorated function is awaited.
+    Then: The error should propagate, and neither the later check nor the body should run.
+    """
+    # Arrange
+    later = Mock(return_value=None)
+    body = Mock()
+
+    @require(AsyncMock(side_effect=PermissionError("denied")), later)
+    async def fn() -> None:
+        await asyncio.sleep(0)
+        body()
+
+    # Act / Assert
+    with pytest.raises(PermissionError, match="denied"):
+        await fn()
+    later.assert_not_called()
+    body.assert_not_called()
+
+
+def _denied() -> None:
+    raise PermissionError("denied")
+
+
+async def _denied_async() -> None:
+    await asyncio.sleep(0)
+    raise LookupError("missing")
+
+
+def _sync_target() -> str:
+    return "ran"
+
+
+async def _async_target() -> str:
+    await asyncio.sleep(0)
+    return "ran"
+
+
+async def _call(fn: Callable[[], object]) -> object:
+    result = fn()
+    return await result if asyncio.iscoroutine(result) else result
+
+
+@pytest.mark.parametrize(
+    ("target", "checks", "raised"),
+    [
+        pytest.param(
+            _sync_target, (_denied, _denied), [PermissionError, PermissionError], id="sync"
+        ),
+        pytest.param(
+            _async_target, (_denied, _denied_async), [PermissionError, LookupError], id="async"
+        ),
+    ],
+)
+async def test_require_gather_mode_raises_every_failure(
+    target: Callable[[], object],
+    checks: tuple[Callable[[], object], ...],
+    raised: list[type[Exception]],
+):
+    """
+    In "gather" mode, every check runs and all failures are raised together.
+
+    Given: Two failing checks before a function, in "gather" mode.
+    When: The decorated function is called.
+    Then: CheckFailures should hold both failures, in order.
+    """
+    # Arrange
+    fn = require(*checks, mode="gather")(target)  # pyright: ignore[reportArgumentType]
+
+    # Act / Assert
+    with pytest.raises(CheckFailures) as caught:
+        await _call(fn)
+    assert [type(exc) for exc in caught.value.exceptions] == raised
+
+
+@pytest.mark.parametrize(
+    ("target", "check"),
+    [
+        pytest.param(_sync_target, Mock(return_value=None), id="sync"),
+        pytest.param(_async_target, AsyncMock(return_value=None), id="async"),
+    ],
+)
+async def test_require_any_mode_runs_function_after_a_passing_check(
+    target: Callable[[], object], check: Callable[[], object]
+):
+    """
+    In "any" mode, one passing check lets the function run.
+
+    Given: A failing check then a passing one before a function, in "any" mode.
+    When: The decorated function is called.
+    Then: The function should run and return its result.
+    """
+    # Arrange
+    fn = require(_denied, check, mode="any")(target)  # pyright: ignore[reportArgumentType]
+
+    # Act
+    result = await _call(fn)
+
+    # Assert
+    assert result == "ran"
+
+
+type _Log = list[str]
+
+
+def _make_check(kind: str, log: _Log) -> Callable[[], object]:
+    def sync() -> object:
+        log.append(kind)
+        if kind.startswith("fail"):
+            raise PermissionError(kind)
+        return "value" if kind.startswith("value") else None
+
+    async def resolve() -> object:
+        await asyncio.sleep(0)
+        return sync()
+
+    if kind.endswith("async"):
+        return resolve
+    if kind == "awaitable":
+        return lambda: resolve()
+    return sync
+
+
+def _outcome(exc: BaseException | None) -> object:
+    if exc is None:
+        return None
+    if isinstance(exc, CheckFailures):
+        return (type(exc), exc.message, [_outcome(inner) for inner in exc.exceptions])
+    return (type(exc), re.sub(r" at 0x[0-9a-f]+", "", str(exc)))
+
+
+async def _through_check_async(kinds: tuple[str, ...], mode: CheckMode) -> tuple[object, _Log]:
+    log: _Log = []
+    try:
+        await check_async(*[_make_check(kind, log) for kind in kinds], mode=mode)  # pyright: ignore[reportArgumentType]
+    except Exception as exc:
+        return _outcome(exc), log
+    return None, log
+
+
+async def _through_require(kinds: tuple[str, ...], mode: CheckMode) -> tuple[object, _Log]:
+    log: _Log = []
+
+    async def body() -> None:
+        await asyncio.sleep(0)
+        log.append("body")
+
+    checks = [_make_check(kind, log) for kind in kinds]
+    try:
+        await require(*checks, mode=mode)(body)()  # pyright: ignore[reportArgumentType]
+    except Exception as exc:
+        return _outcome(exc), log
+    assert log[-1] == "body"
+    return None, log[:-1]
+
+
+_CHECK_RUNS = [
+    ("pass", "pass async"),
+    ("fail", "pass async", "pass"),
+    ("pass", "fail async", "fail"),
+    ("value",),
+    ("value async", "pass"),
+    ("awaitable", "pass"),
+    ("fail", "fail async"),
+]
+
+
+@pytest.mark.parametrize("mode", ["all", "gather", "any"])
+@pytest.mark.parametrize("kinds", _CHECK_RUNS, ids=", ".join)
+async def test_require_runs_checks_as_check_async_does(kinds: tuple[str, ...], mode: CheckMode):
+    """
+    An async function's checks run exactly as check_async runs them.
+
+    The async wrapper keeps its own copy of check_async's loop, so this pins the two together.
+
+    Given: Passing, failing, value-giving and awaitable-returning checks, in each mode.
+    When: They run through check_async, and through require before an async function.
+    Then: The same checks should run, with the same outcome, and the body only on a pass.
+    """
+    # Act
+    expected = await _through_check_async(kinds, mode)
+    actual = await _through_require(kinds, mode)
+
+    # Assert
+    assert actual == expected
