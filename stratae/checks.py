@@ -1,13 +1,15 @@
 """
 Run collections of zero-argument checks, raising or gathering their failures.
 
-A check is a zero-argument callable that returns `None` to pass and raises to fail. A check
-that returns anything else is refused with {py:exc}`CheckResultError`, since a check written
-as a predicate, such as `lambda: user.is_admin`, would otherwise always pass. An async check
-resolves to `None` the same way. {py:func}`check` runs sync
-checks, {py:func}`check_async` runs sync or async ones, and {py:func}`require` runs them
-before a decorated function. {py:func}`any_of` and {py:func}`all_of` nest groups. The
-`mode` keyword controls failure handling:
+A check is a zero-argument callable that returns `None` to pass and raises to fail. An async
+check resolves to `None` the same way. A check that returns anything else is refused with
+{py:exc}`CheckResultError`, since a check written as a predicate, such as
+`lambda: user.is_admin`, would otherwise always pass. {py:func}`that` makes a check from a
+predicate, given the error to raise when it's false.
+
+{py:func}`check` runs sync checks, {py:func}`check_async` runs sync or async ones, and
+{py:func}`require` runs them before a decorated function. {py:func}`any_of` and
+{py:func}`all_of` nest groups. The `mode` keyword controls failure handling:
 
 * `"all"` (default): raise the first failure.
 * `"gather"`: run every check, then raise all failures as a {py:exc}`CheckFailures` group.
@@ -82,7 +84,8 @@ class CheckResultError(TypeError):
     Raised when a check returns, or resolves to, something other than `None`.
 
     A check passes by returning `None` and fails by raising, so a returned value is ignored.
-    A check returning `False` would pass, so any value is refused instead.
+    A check returning `False` would pass, so any value is refused instead. The message points
+    to {py:func}`that`, which makes a check from a predicate.
     """
 
     def __init__(self, fn: Callable[[], object], result: object) -> None:
@@ -93,7 +96,8 @@ class CheckResultError(TypeError):
         :param result: What it returned, or resolved to.
         """
         super().__init__(
-            f"{fn!r} returned {result!r}; a check returns None to pass and raises to fail"
+            f"{fn!r} returned {result!r}; a check returns None to pass and raises to fail. "
+            "To check a predicate, wrap it: that(predicate, error)"
         )
 
 
@@ -121,19 +125,6 @@ class AsyncCheckOnSyncError(TypeError):
         )
 
 
-def _settle(exc: Exception, mode: CheckMode, exceptions: list[Exception]) -> None:
-    """Record exc for "gather" or "any" mode, or raise it for "all"."""
-    if mode == "all":
-        raise exc
-    exceptions.append(exc)
-
-
-def _raise_gathered(exceptions: list[Exception], label: str) -> None:
-    """Raise the gathered exceptions as an ExceptionGroup, if there are any."""
-    if exceptions:
-        raise CheckFailures(label, exceptions)
-
-
 def check(*checks: _Check, mode: CheckMode = "all") -> None:
     """
     Run sync checks in order.
@@ -150,7 +141,9 @@ def check(*checks: _Check, mode: CheckMode = "all") -> None:
         try:
             result = fn()
         except Exception as exc:
-            _settle(exc, mode, exceptions)
+            if mode == "all":
+                raise
+            exceptions.append(exc)
             continue
         if result is not None:
             if isawaitable(result):
@@ -159,7 +152,8 @@ def check(*checks: _Check, mode: CheckMode = "all") -> None:
             raise CheckResultError(fn, result)
         if mode == "any":
             return
-    _raise_gathered(exceptions, "check")
+    if exceptions:
+        raise CheckFailures("check", exceptions)
 
 
 async def check_async(*checks: _Check, mode: CheckMode = "all") -> None:
@@ -178,17 +172,19 @@ async def check_async(*checks: _Check, mode: CheckMode = "all") -> None:
     for fn in checks:
         try:
             result: object = fn()
-            # None and coroutines skip isawaitable, which costs several times either test.
             if result is not None and (isinstance(result, CoroutineType) or isawaitable(result)):
                 result = await result
         except Exception as exc:
-            _settle(exc, mode, exceptions)
+            if mode == "all":
+                raise
+            exceptions.append(exc)
             continue
         if result is not None:
             raise CheckResultError(fn, result)
         if mode == "any":
             return
-    _raise_gathered(exceptions, "check_async")
+    if exceptions:
+        raise CheckFailures("check_async", exceptions)
 
 
 def _combined(checks: tuple[_Check, ...], mode: CheckMode) -> _Check:
@@ -230,12 +226,88 @@ def all_of(*checks: _Check) -> _Check:
     return _combined(checks, "all")
 
 
+@overload
+def that[**E](
+    predicate: Callable[[], Awaitable[bool]],
+    error: Callable[E, Exception],
+    *args: E.args,
+    **kwargs: E.kwargs,
+) -> Callable[[], Awaitable[None]]: ...
+@overload
+def that[**E](
+    predicate: Callable[[], bool],
+    error: Callable[E, Exception],
+    *args: E.args,
+    **kwargs: E.kwargs,
+) -> Callable[[], None]: ...
+def that[**E](
+    predicate: Callable[[], bool] | Callable[[], Awaitable[bool]],
+    error: Callable[E, Exception],
+    *args: E.args,
+    **kwargs: E.kwargs,
+) -> _Check:
+    """
+    Make a check from a predicate, raising a new error whenever it's false.
+
+    The result is async if the predicate is, and then needs {py:func}`check_async`.
+
+    :param E: Parameter specification of `error`.
+    :param predicate: A zero-argument callable returning `True` to pass.
+    :param error: An exception class, or a callable building the exception to raise.
+    :param args: Positional arguments for `error`.
+    :param kwargs: Keyword arguments for `error`.
+    :returns: A check calling `error(*args, **kwargs)` and raising the result on a false
+        predicate.
+    """
+    if is_async_callable(predicate):
+
+        async def holds_async() -> None:
+            if not await predicate():
+                raise error(*args, **kwargs)
+
+        return holds_async
+
+    def holds() -> None:
+        if not predicate():
+            raise error(*args, **kwargs)
+
+    return holds
+
+
 def _wrap_async[**P, Result](
-    fn: Callable[P, Awaitable[Result]], checks: tuple[_Check, ...], mode: CheckMode
+    fn: Callable[P, Awaitable[Result]],
+    checks: tuple[_Check, ...],
+    mode: CheckMode,
 ) -> Callable[P, Awaitable[Result]]:
+    """
+    Wrap `fn` to run the checks first, as {py:func}`check_async` would.
+
+    The wrapper runs a copy of `check_async`'s loop instead of awaiting it, which would cost a
+    coroutine on every call. A change to how `check_async` runs checks belongs in both.
+    """
+
     @wraps(fn)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Result:
-        await check_async(*checks, mode=mode)
+        exceptions: list[Exception] = []
+        for guard in checks:
+            try:
+                result: object = guard()
+                if result is not None and (
+                    isinstance(result, CoroutineType) or isawaitable(result)
+                ):
+                    result = await result
+            except Exception as exc:
+                if mode == "all":
+                    raise
+                exceptions.append(exc)
+                continue
+            if result is not None:
+                raise CheckResultError(guard, result)
+            if mode == "any":
+                break
+        else:
+            if exceptions:
+                raise CheckFailures("check_async", exceptions)
         return await fn(*args, **kwargs)
 
     return wrapper
