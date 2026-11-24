@@ -1,11 +1,14 @@
 """Test suite for the require guard decorator."""
 
 import asyncio
+import re
+from collections.abc import Callable
+from functools import partial
 from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-from stratae.checks import CheckResultError, require
+from stratae.checks import AsyncCheckOnSyncError, CheckResultError, require
 
 
 def _passing[M: Mock](mock: M, *children: str) -> M:
@@ -295,3 +298,35 @@ def test_require_any_mode_without_checks_calls_function():
 
     # Act & Assert
     assert handler() == 1
+
+
+def _sync_function(value: int) -> int:
+    return value
+
+
+class _SyncCallable:
+    def __call__(self) -> None: ...
+
+
+@pytest.mark.parametrize(
+    "fn",
+    [
+        pytest.param(_sync_function, id="function"),
+        pytest.param(partial(_sync_function, 1), id="partial"),
+        pytest.param(_SyncCallable(), id="callable object"),
+    ],
+)
+def test_require_names_any_sync_callable_it_refuses(fn: Callable[..., object]):
+    """
+    The refusal of an async check names the sync callable, however it's made.
+
+    Given: A sync callable that may have no `__name__`.
+    When: require applies an async check to it.
+    Then: AsyncCheckOnSyncError should be raised, naming the callable.
+    """
+    # Arrange
+    async_check = AsyncMock()
+
+    # Act / Assert
+    with pytest.raises(AsyncCheckOnSyncError, match=re.escape(repr(fn))):
+        require(async_check)(fn)
