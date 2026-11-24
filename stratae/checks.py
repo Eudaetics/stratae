@@ -116,7 +116,7 @@ class AsyncCheckOnSyncError(TypeError):
         :param count: How many of its checks are async.
         """
         super().__init__(
-            f"require() got {count} async check(s) but {fn.__name__!r} is sync; "
+            f"require() got {count} async check(s) but {fn!r} is sync; "
             "an async check cannot run from inside a sync function"
         )
 
