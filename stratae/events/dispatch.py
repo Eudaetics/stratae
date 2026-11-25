@@ -34,7 +34,7 @@ from stratae.events.middleware import HandleCall
 from stratae.events.patterns import PubSub, Request
 from stratae.events.protocols import AnyEvent
 
-type Dispatcher[Event] = Callable[[Event, Handlers[Any, Any], HandleCall], Any]
+type Dispatcher[Event] = Callable[[Event, Handlers[Any, Any, Any], HandleCall], Any]
 """
 Delivers a message to an event's handlers: given the event, its handlers and the message.
 
@@ -54,7 +54,7 @@ def only_responder[Registered](event: AnyEvent, handlers: Collection[Registered]
 
 def dispatch_request[Payload, Reply](
     event: Request[Payload, Reply, Any],
-    handlers: Handlers[Any, Reply],
+    handlers: Handlers[Any, Payload, Reply],
     message: HandleCall,
 ) -> Reply:
     """
@@ -67,7 +67,7 @@ def dispatch_request[Payload, Reply](
 
 def dispatch_request_async[Payload, Reply](
     event: Request[Payload, Reply, Any],
-    handlers: Collection[Handler[Any, Reply]],
+    handlers: Collection[Handler[Any, Payload, ..., Reply]],
     message: HandleCall,
 ) -> Awaitable[Reply]:
     """
@@ -84,7 +84,7 @@ def dispatch_request_async[Payload, Reply](
 
 def fan_out[Payload](
     _event: PubSub[Payload, Any],
-    handlers: Handlers[Any, None],
+    handlers: Handlers[Any, Payload, None],
     message: HandleCall,
 ) -> None:
     """
@@ -144,8 +144,8 @@ Anything else, such as `KeyboardInterrupt`, propagates at once.
 """
 
 
-def _run_sync_handlers[Config, Result](
-    handlers: Iterable[SyncHandler[Config, Result]],
+def _run_sync_handlers[HandlerConfig, Payload, Result](
+    handlers: Iterable[SyncHandler[HandlerConfig, Payload, ..., Result]],
     message: HandleCall,
     failures: list[BaseException],
 ) -> None:
@@ -162,8 +162,8 @@ def _run_sync_handlers[Config, Result](
             failures.append(failure)
 
 
-async def _await_handler[Config, Result](
-    handler: AsyncHandler[Config, Result],
+async def _await_handler[HandlerConfig, Payload, Result](
+    handler: AsyncHandler[HandlerConfig, Payload, ..., Result],
     message: HandleCall,
     failures: list[BaseException],
 ) -> None:
@@ -193,7 +193,7 @@ def _raise_failures(failures: list[BaseException]) -> None:
 
 async def fan_out_async[Payload](
     _event: PubSub[Payload, Any],
-    handlers: Handlers[Any, None],
+    handlers: Handlers[Any, Payload, None],
     message: HandleCall,
 ) -> None:
     """
@@ -217,7 +217,7 @@ async def fan_out_async[Payload](
 
 async def fan_out_concurrent[Payload](
     _event: PubSub[Payload, Any],
-    handlers: Handlers[Any, None],
+    handlers: Handlers[Any, Payload, None],
     message: HandleCall,
 ) -> None:
     """

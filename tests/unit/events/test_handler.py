@@ -5,23 +5,30 @@ This test suite verifies the following behaviors:
 
 SyncHandler and AsyncHandler:
 - Each kind says whether calling it gives an awaitable.
-- call stores the wrapped callable.
-- config stores the supplied value.
+- fn, hooks, call and config store what they were made from.
 - Calling a SyncHandler with a message invokes the wrapped callable.
 - Calling an AsyncHandler with a message returns an awaitable of the wrapped callable's result.
+- Handlers of one kind with equal functions, hooks and configs are equal and hash alike,
+  whatever their calls.
+- Handlers differing in function, hooks, config or kind are unequal.
+- An unhashable function or hook is refused with TypeError.
 
 Handlers:
 - Holds its handlers as a tuple, equal to a plain tuple of them.
 - Keeps the sync and async handlers apart.
+- Finds a handler by value.
 - adding returns new handlers with the handler added, leaving the original unchanged.
 - removing returns new handlers without the handler, leaving the original unchanged.
 - removing a handler it doesn't hold returns the same handlers.
-- removing takes out only the given registration of a callable registered twice.
+- removing takes out a handler equal to the one given.
 """
 
 import asyncio
+from typing import Any
 
-from stratae.events import AsyncHandler, HandleCall, Handlers, PubSub, SyncHandler
+import pytest
+
+from stratae.events import AsyncHandler, HandleCall, Handlers, Hooks, PubSub, SyncHandler
 
 _ticked = PubSub(int)
 _message = HandleCall(_ticked, None, 1)
@@ -48,6 +55,39 @@ class _AsyncCallable:
         return 4
 
 
+def _other_sync_handler(message: HandleCall) -> int:
+    """Define a second sync handler, unequal to the first."""
+    return 5
+
+
+def _sync(fn: Any = _sync_handler, config: object = None) -> SyncHandler[object, Any, ..., int]:
+    """Make a sync handler of `fn` with no hooks, calling `fn` itself."""
+    return SyncHandler(fn, None, fn, config)
+
+
+def _async(fn: Any = _async_handler, config: object = None) -> AsyncHandler[object, Any, ..., int]:
+    """Make an async handler of `fn` with no hooks, calling `fn` itself."""
+    return AsyncHandler(fn, None, fn, config)
+
+
+def _before(event: object, payload: object) -> None:
+    """Do nothing before a call."""
+
+
+class _Unhashable:
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
+
+    def __call__(self, message: HandleCall) -> int:
+        return 6
+
+
+class _UnhashableHook:
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
+
+    def __call__(self, event: object, payload: object) -> None:
+        """Do nothing, as a hook that can't be hashed."""
+
+
 def test_each_kind_says_whether_it_is_async():
     """
     A handler's kind should say whether calling it gives an awaitable.
@@ -56,35 +96,89 @@ def test_each_kind_says_whether_it_is_async():
     When: Each is asked whether it's async
     Then: The sync one says no, and the async one says yes
     """
-    assert SyncHandler(_sync_handler, object()).is_async is False
-    assert AsyncHandler(_async_handler, object()).is_async is True
+    assert _sync().is_async is False
+    assert _async().is_async is True
 
 
-def test_call_stores_wrapped_callable():
+def test_handler_stores_its_parts():
     """
-    Call should reference the callable passed at construction.
+    A handler should keep the function, hooks, call and config it was made from.
 
-    Given: A callable
-    When: A Handler is constructed with it
-    Then: call should be that callable
+    Given: A function, hooks, a separate call and a config
+    When: A handler is made from them
+    Then: Each field is what it was made from
     """
-    handler = SyncHandler(_sync_handler, object())
+    # Arrange
+    hooks: Hooks[Any, Any] = Hooks(before=(_before,))
+    config = "config"
 
-    assert handler.call is _sync_handler
+    # Act
+    handler = SyncHandler(_sync_handler, hooks, _other_sync_handler, config)
 
-
-def test_config_stores_supplied_value():
-    """
-    Config should store the value passed at construction.
-
-    Given: A callable and a config value
-    When: A Handler is constructed with both
-    Then: config should reference the supplied value
-    """
-    config = {"test": 1}
-    handler = SyncHandler(_sync_handler, config)
-
+    # Assert
+    assert handler.fn is _sync_handler
+    assert handler.hooks is hooks
+    assert handler.call is _other_sync_handler
     assert handler.config is config
+
+
+def test_handlers_with_equal_parts_are_equal_whatever_their_calls():
+    """
+    Handlers of one kind should be equal when their function, hooks and config are.
+
+    Given: Two sync handlers of one function, equal hooks and one config, with different calls
+    When: They're compared and hashed
+    Then: They're equal and hash alike
+    """
+    # Arrange
+    first = SyncHandler(_sync_handler, Hooks(before=(_before,)), _sync_handler, "config")
+    second = SyncHandler(_sync_handler, Hooks(before=(_before,)), _other_sync_handler, "config")
+
+    # Act / Assert
+    assert first == second
+    assert hash(first) == hash(second)
+
+
+def test_handlers_differing_in_any_part_or_kind_are_unequal():
+    """
+    Handlers should be unequal when their function, hooks, config or kind differ.
+
+    Given: A sync handler, and others differing from it in one part each, or in kind
+    When: Each is compared with it
+    Then: None is equal to it, nor to something that isn't a handler
+    """
+    # Arrange
+    handler = _sync()
+    others: list[object] = [
+        _sync(_other_sync_handler),
+        SyncHandler(_sync_handler, Hooks(before=(_before,)), _sync_handler, None),
+        _sync(config="other"),
+        AsyncHandler(_sync_handler, None, _async_handler, None),
+    ]
+
+    # Act / Assert
+    assert all(other != handler for other in others)
+    assert handler != "not a handler"
+
+
+@pytest.mark.parametrize("kind", [SyncHandler, AsyncHandler])
+def test_unhashable_function_or_hook_cannot_be_hashed(kind: type):
+    """
+    A handler with an unhashable function or hook should refuse to be hashed.
+
+    Given: Handlers with an unhashable callable as their function, or as a hook
+    When: Each is hashed
+    Then: TypeError says the callable is unhashable
+    """
+    # Arrange
+    by_function = kind(_Unhashable(), None, _sync_handler, None)
+    by_hook = kind(_sync_handler, Hooks(before=(_UnhashableHook(),)), _sync_handler, None)
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(by_function)
+    with pytest.raises(TypeError, match="unhashable"):
+        hash(by_hook)
 
 
 def test_calling_handler_invokes_sync_callable():
@@ -95,7 +189,7 @@ def test_calling_handler_invokes_sync_callable():
     When: The Handler is called with a message
     Then: The result should be the callable's return value
     """
-    handler = SyncHandler(_sync_handler, object())
+    handler = _sync()
 
     assert handler(_message) == 1
 
@@ -108,7 +202,7 @@ async def test_calling_handler_wrapping_async_callable_returns_awaitable():
     When: The Handler is called with a message
     Then: The result should be awaitable and resolve to the callable's return value
     """
-    handler = AsyncHandler(_async_handler, object())
+    handler = _async()
 
     result = await handler(_message)
 
@@ -125,8 +219,8 @@ def test_handlers_equal_plain_tuple():
     """
     # Arrange
     first, second = (
-        SyncHandler(_sync_handler, None),
-        AsyncHandler(_async_handler, None),
+        _sync(),
+        _async(),
     )
 
     # Act
@@ -146,12 +240,12 @@ def test_handlers_keeps_sync_and_async_apart():
     """
     # Arrange
     sync_a, sync_b = (
-        SyncHandler(_sync_handler, None),
-        SyncHandler(_SyncCallable(), None),
+        _sync(),
+        _sync(_SyncCallable()),
     )
     async_a, async_b = (
-        AsyncHandler(_async_handler, None),
-        AsyncHandler(_AsyncCallable(), None),
+        _async(),
+        _async(_AsyncCallable()),
     )
 
     # Act
@@ -172,10 +266,10 @@ def test_handlers_adding_leaves_original_unchanged():
     """
     # Arrange
     first, added = (
-        SyncHandler(_sync_handler, None),
-        AsyncHandler(_async_handler, None),
+        _sync(),
+        _async(),
     )
-    original: Handlers[None, int] = Handlers((first,))
+    original: Handlers[object, Any, int] = Handlers((first,))
 
     # Act
     result = original.adding(added)
@@ -197,8 +291,8 @@ def test_handlers_removing_leaves_original_unchanged():
     """
     # Arrange
     kept, removed = (
-        SyncHandler(_sync_handler, None),
-        AsyncHandler(_async_handler, None),
+        _sync(),
+        _async(),
     )
     original = Handlers((kept, removed))
 
@@ -220,31 +314,47 @@ def test_handlers_removing_absent_handler_returns_same_handlers():
     Then: The same Handlers should be returned
     """
     # Arrange
-    original = Handlers((SyncHandler(_sync_handler, None),))
+    original = Handlers((_sync(),))
 
     # Act
-    result = original.removing(SyncHandler(_sync_handler, None))
+    result = original.removing(_sync(_other_sync_handler))
 
     # Assert
     assert result is original
 
 
-def test_handlers_removing_takes_out_only_that_registration():
+def test_handlers_removing_takes_out_an_equal_handler():
     """
-    ``removing`` should take out only the given registration of a callable registered twice.
+    ``removing`` should take out the handler equal to the one given.
 
-    Given: Two Handlers wrapping the same callable
-    When: One of them is removed
-    Then: The other should remain
+    Given: Handlers holding two handlers, and a new handler equal to the second
+    When: The new handler is removed
+    Then: Only the first should remain
     """
     # Arrange
-    kept, removed = (
-        SyncHandler(_sync_handler, None),
-        SyncHandler(_sync_handler, None),
+    kept, held = _sync(), _sync(_other_sync_handler)
+    equal: SyncHandler[object, Any, ..., int] = SyncHandler(
+        _other_sync_handler, None, _sync_handler, None
     )
 
     # Act
-    result = Handlers((kept, removed)).removing(removed)
+    result = Handlers((kept, held)).removing(equal)
 
     # Assert
     assert result == (kept,)
+
+
+def test_handlers_find_a_handler_by_value():
+    """
+    Handlers should hold a handler equal to one among them.
+
+    Given: Handlers holding one handler
+    When: An equal handler, and an unequal one, are looked for
+    Then: The equal one is found, and the other isn't
+    """
+    # Arrange
+    handlers = Handlers((_sync(),))
+
+    # Act / Assert
+    assert SyncHandler(_sync_handler, None, _other_sync_handler, None) in handlers
+    assert _sync(_other_sync_handler) not in handlers

@@ -60,8 +60,11 @@ _RELABELLED = (
     "describe the message being handled"
 )
 
+_NO_HOOKS: Hooks[Any, Any] = Hooks()
+"""Empty hooks, which a handler registers as no hooks."""
 
-class Outgoing[Config, Enveloped: Envelope | None](NamedTuple):
+
+class Outgoing[PublishConfig, Enveloped: Envelope | None](NamedTuple):
     """
     One message on its way out: what an adapter's `send` receives.
 
@@ -72,7 +75,7 @@ class Outgoing[Config, Enveloped: Envelope | None](NamedTuple):
 
     event: AnyEvent
     """The event being emitted."""
-    config: Config
+    config: PublishConfig
     """The config of the route it's sent on, or `None` on a bus that doesn't route."""
     payload: Any
     """The payload being emitted."""
@@ -82,7 +85,9 @@ class Outgoing[Config, Enveloped: Envelope | None](NamedTuple):
     """The headers to send with it: those given, plus any publish middleware added."""
 
 
-type Send[Config, Enveloped: Envelope | None] = Callable[[Outgoing[Config, Enveloped]], Any]
+type Send[PublishConfig, Enveloped: Envelope | None] = Callable[
+    [Outgoing[PublishConfig, Enveloped]], Any
+]
 """Sends one message: the only part of an emit an adapter writes."""
 
 
@@ -100,10 +105,10 @@ def _refuse_reserved(headers: Mapping[str, object], reserved: frozenset[str]) ->
             raise ValueError(_RESERVED.format(name))
 
 
-type _Sending[Config, Enveloped: Envelope | None] = tuple[
+type _Sending[PublishConfig, Enveloped: Envelope | None] = tuple[
     Hooks[Any, Any] | None,
-    Send[Config, Enveloped],
-    Outgoing[Config, Enveloped],
+    Send[PublishConfig, Enveloped],
+    Outgoing[PublishConfig, Enveloped],
     frozenset[str],
 ]
 """
@@ -112,9 +117,9 @@ header names its route reserves.
 """
 
 
-def _sent[Config, Enveloped: Envelope | None](
-    call: PublishCall, message: Outgoing[Config, Enveloped]
-) -> Outgoing[Config, Enveloped]:
+def _sent[PublishConfig, Enveloped: Envelope | None](
+    call: PublishCall, message: Outgoing[PublishConfig, Enveloped]
+) -> Outgoing[PublishConfig, Enveloped]:
     """
     Return `message` with the payload and headers publish middleware passed on.
 
@@ -125,32 +130,32 @@ def _sent[Config, Enveloped: Envelope | None](
         raise ValueError(_REROUTED)
     if headers is message.headers and payload is message.payload:
         return message
-    sent: Outgoing[Config, Enveloped] = from_fields(
+    sent: Outgoing[PublishConfig, Enveloped] = from_fields(
         Outgoing, (event, message.config, payload, message.envelope, headers)
     )
     return sent
 
 
-def _finish_send[Config, Enveloped: Envelope | None](
-    call: PublishCall, sending: _Sending[Config, Enveloped]
+def _finish_send[PublishConfig, Enveloped: Envelope | None](
+    call: PublishCall, sending: _Sending[PublishConfig, Enveloped]
 ) -> Any:
     """Send what publish middleware passed on, inside the emit's hooks."""
     hooks, send, message, reserved = sending
     return _hooked_send(hooks, send, _sent(call, message), reserved)
 
 
-def _finish_send_async[Config, Enveloped: Envelope | None](
-    call: PublishCall, sending: _Sending[Config, Enveloped]
+def _finish_send_async[PublishConfig, Enveloped: Envelope | None](
+    call: PublishCall, sending: _Sending[PublishConfig, Enveloped]
 ) -> Awaitable[Any]:
     """Send what publish middleware passed on, as {py:func}`_finish_send` does, to await."""
     hooks, send, message, reserved = sending
     return _hooked_send_async(hooks, send, _sent(call, message), reserved)
 
 
-def _hooked_send[Config, Enveloped: Envelope | None](
+def _hooked_send[PublishConfig, Enveloped: Envelope | None](
     hooks: Hooks[Any, Any] | None,
-    send: Send[Config, Enveloped],
-    message: Outgoing[Config, Enveloped],
+    send: Send[PublishConfig, Enveloped],
+    message: Outgoing[PublishConfig, Enveloped],
     reserved: frozenset[str],
 ) -> Any:
     """Refuse `message` if a header's name is reserved, then send it inside any sync hooks."""
@@ -161,10 +166,10 @@ def _hooked_send[Config, Enveloped: Envelope | None](
     return run_hooks(hooks, message.event, message.payload, send, message)
 
 
-def _hooked_send_async[Config, Enveloped: Envelope | None](
+def _hooked_send_async[PublishConfig, Enveloped: Envelope | None](
     hooks: Hooks[Any, Any] | None,
-    send: Send[Config, Enveloped],
-    message: Outgoing[Config, Enveloped],
+    send: Send[PublishConfig, Enveloped],
+    message: Outgoing[PublishConfig, Enveloped],
     reserved: frozenset[str],
 ) -> Awaitable[Any]:
     """Send `message` inside the emit's hooks, sync or async, as {py:func}`_hooked_send` does."""
@@ -175,7 +180,7 @@ def _hooked_send_async[Config, Enveloped: Envelope | None](
     return run_hooks_async(hooks, message.event, message.payload, send, message)
 
 
-class Publishing[Config, Enveloped: Envelope | None]:
+class Publishing[PublishConfig, Enveloped: Envelope | None]:
     """
     How an adapter emits: its publish middleware.
 
@@ -188,7 +193,7 @@ class Publishing[Config, Enveloped: Envelope | None]:
 
     middleware: tuple[PublishMiddleware, ...]
     """The adapter's publish middleware, outermost first."""
-    chained: Callable[[PublishCall, _Sending[Config, Enveloped]], Any]
+    chained: Callable[[PublishCall, _Sending[PublishConfig, Enveloped]], Any]
     """The middleware composed around sending, built once."""
 
     def __init__(
@@ -214,11 +219,11 @@ def _stamped(headers: Mapping[str, object] | None) -> Mapping[str, object]:
     return MappingProxyType(dict(headers))
 
 
-def _emit[Config, Enveloped: Envelope | None](
-    publishing: Publishing[Config, Enveloped],
+def _emit[PublishConfig, Enveloped: Envelope | None](
+    publishing: Publishing[PublishConfig, Enveloped],
     hooks: Hooks[Any, Any] | None,
-    message: Outgoing[Config, Enveloped],
-    send: Send[Config, Enveloped],
+    message: Outgoing[PublishConfig, Enveloped],
+    send: Send[PublishConfig, Enveloped],
     reserved: frozenset[str],
 ) -> Any:
     """Send `message` inside the emit's sync hooks, then the adapter's sync publish middleware."""
@@ -228,11 +233,11 @@ def _emit[Config, Enveloped: Envelope | None](
     return _hooked_send(hooks, send, message, reserved)
 
 
-def _emit_async[Config, Enveloped: Envelope | None](
-    publishing: Publishing[Config, Enveloped],
+def _emit_async[PublishConfig, Enveloped: Envelope | None](
+    publishing: Publishing[PublishConfig, Enveloped],
     hooks: Hooks[Any, Any] | None,
-    message: Outgoing[Config, Enveloped],
-    send: Send[Config, Enveloped],
+    message: Outgoing[PublishConfig, Enveloped],
+    send: Send[PublishConfig, Enveloped],
     reserved: frozenset[str],
 ) -> Awaitable[Any]:
     """Return `send(message)` inside the emit's hooks, then async publish middleware, to await."""
@@ -242,13 +247,13 @@ def _emit_async[Config, Enveloped: Envelope | None](
     return _hooked_send_async(hooks, send, message, reserved)
 
 
-def publish[Config](
-    publishing: Publishing[Config, None],
-    send: Send[Config, None],
+def publish[PublishConfig](
+    publishing: Publishing[PublishConfig, None],
+    send: Send[PublishConfig, None],
     reserved: frozenset[str],
     event: AnyEvent,
     payload: Any,
-    config: Config,
+    config: PublishConfig,
     hooks: Hooks[Any, Any] | None = None,
     headers: Mapping[str, object] | None = None,
 ) -> Any:
@@ -269,44 +274,48 @@ def publish[Config](
         refused after publish middleware runs, before the emit's hooks and `send`.
     """
     if hooks is None and headers is None and not publishing.middleware:
-        plain: Outgoing[Config, None] = from_fields(
+        plain: Outgoing[PublishConfig, None] = from_fields(
             Outgoing, (event, config, payload, None, NO_HEADERS)
         )
         return send(plain)
     stamped = _stamped(headers)
-    message: Outgoing[Config, None] = from_fields(Outgoing, (event, config, payload, None, stamped))
+    message: Outgoing[PublishConfig, None] = from_fields(
+        Outgoing, (event, config, payload, None, stamped)
+    )
     return _emit(publishing, hooks, message, send, reserved)
 
 
-async def publish_async[Config](
-    publishing: Publishing[Config, None],
-    send: Callable[[Outgoing[Config, None]], Awaitable[Any]],
+async def publish_async[PublishConfig](
+    publishing: Publishing[PublishConfig, None],
+    send: Callable[[Outgoing[PublishConfig, None]], Awaitable[Any]],
     reserved: frozenset[str],
     event: AnyEvent,
     payload: Any,
-    config: Config,
+    config: PublishConfig,
     hooks: Hooks[Any, Any] | None = None,
     headers: Mapping[str, object] | None = None,
 ) -> Any:
     """Emit through an async adapter that opens no envelope, as {py:func}`publish` does."""
     if hooks is None and headers is None and not publishing.middleware:
-        plain: Outgoing[Config, None] = from_fields(
+        plain: Outgoing[PublishConfig, None] = from_fields(
             Outgoing, (event, config, payload, None, NO_HEADERS)
         )
         return await send(plain)
     stamped = _stamped(headers)
-    message: Outgoing[Config, None] = from_fields(Outgoing, (event, config, payload, None, stamped))
+    message: Outgoing[PublishConfig, None] = from_fields(
+        Outgoing, (event, config, payload, None, stamped)
+    )
     return await _emit_async(publishing, hooks, message, send, reserved)
 
 
-def publish_enveloped[Config](
-    publishing: Publishing[Config, Envelope],
+def publish_enveloped[PublishConfig](
+    publishing: Publishing[PublishConfig, Envelope],
     factory: EnvelopeFactory,
-    send: Send[Config, Envelope],
+    send: Send[PublishConfig, Envelope],
     reserved: frozenset[str],
     event: AnyEvent,
     payload: Any,
-    config: Config,
+    config: PublishConfig,
     hooks: Hooks[Any, Any] | None = None,
     envelope: Envelope | None = None,
     headers: Mapping[str, object] | None = None,
@@ -333,20 +342,20 @@ def publish_enveloped[Config](
     """
     stamped = _stamped(headers)
     with factory.scope(envelope) as opened:
-        message: Outgoing[Config, Envelope] = from_fields(
+        message: Outgoing[PublishConfig, Envelope] = from_fields(
             Outgoing, (event, config, payload, opened, stamped)
         )
         return _emit(publishing, hooks, message, send, reserved)
 
 
-async def publish_enveloped_async[Config](
-    publishing: Publishing[Config, Envelope],
+async def publish_enveloped_async[PublishConfig](
+    publishing: Publishing[PublishConfig, Envelope],
     factory: EnvelopeFactory,
-    send: Callable[[Outgoing[Config, Envelope]], Awaitable[Any]],
+    send: Callable[[Outgoing[PublishConfig, Envelope]], Awaitable[Any]],
     reserved: frozenset[str],
     event: AnyEvent,
     payload: Any,
-    config: Config,
+    config: PublishConfig,
     hooks: Hooks[Any, Any] | None = None,
     envelope: Envelope | None = None,
     headers: Mapping[str, object] | None = None,
@@ -354,7 +363,7 @@ async def publish_enveloped_async[Config](
     """Emit through an async adapter inside an envelope, as {py:func}`publish_enveloped` does."""
     stamped = _stamped(headers)
     with factory.scope(envelope) as opened:
-        message: Outgoing[Config, Envelope] = from_fields(
+        message: Outgoing[PublishConfig, Envelope] = from_fields(
             Outgoing, (event, config, payload, opened, stamped)
         )
         return await _emit_async(publishing, hooks, message, send, reserved)
@@ -460,19 +469,20 @@ class _Awaitable[Result]:
         return self.call(message)
 
 
-def wrap_handler[Config](
+def wrap_handler[HandlerConfig](
     event: AnyEvent,
     fn: Callable[..., Any],
-    config: Config,
+    config: HandlerConfig,
     hooks: Hooks[Any, Any] | None,
     middleware: tuple[HandleMiddleware, ...],
     asynchronous: bool,
-) -> Handler[Config, Any]:
+) -> Handler[HandlerConfig, Any, ..., Any]:
     """
     Build the handler an adapter registers: the function, its hooks, then middleware.
 
     It's async if the function is, if any hook is, or if the adapter runs its middleware
-    asynchronously. Otherwise it's sync.
+    asynchronously. Otherwise it's sync. Empty hooks are no hooks, so the handler is the same
+    as one given `None`.
 
     :param event: The event the handler is for, which hooks see.
     :param fn: The handler, taking the payload, or nothing for a payload-less event.
@@ -481,31 +491,35 @@ def wrap_handler[Config](
     :param middleware: The adapter's handle middleware, outermost first.
     :param asynchronous: Whether the adapter runs middleware asynchronously.
     :returns: The handler to register, taking the message being handled.
+    :raises TypeError: If `fn`, a hook or `config` is unhashable.
     """
+    if hooks == _NO_HOOKS:
+        hooks = None
     if is_async_callable(fn):
-        return _async_handler(event, _unpacking(event, fn), config, hooks, middleware)
+        return _async_handler(event, fn, _unpacking(event, fn), config, hooks, middleware)
     call = _unpacking(event, fn)
     if hooks is not None and hooks.has_async:
-        return _async_handler(event, _Awaitable(call), config, hooks, middleware)
+        return _async_handler(event, fn, _Awaitable(call), config, hooks, middleware)
     if hooks is not None:
         call = _hooked(hooks, event, call)
     if middleware:
         if asynchronous:
-            return AsyncHandler(_handled(middleware, _Awaitable(call)), config)
+            return AsyncHandler(fn, hooks, _handled(middleware, _Awaitable(call)), config)
         call = _handled(middleware, call)
-    return SyncHandler(call, config)
+    return SyncHandler(fn, hooks, call, config)
 
 
-def _async_handler[Config](
+def _async_handler[HandlerConfig](
     event: AnyEvent,
+    fn: Callable[..., Any],
     call: Callable[[HandleCall], Coroutine[Any, Any, Any]],
-    config: Config,
+    config: HandlerConfig,
     hooks: Hooks[Any, Any] | None,
     middleware: tuple[HandleMiddleware, ...],
-) -> AsyncHandler[Config, Any]:
+) -> AsyncHandler[HandlerConfig, Any, ..., Any]:
     """Return an async call as a handler, inside its hooks, then the adapter's middleware."""
     if hooks is not None:
         call = _hooked_async(hooks, event, call)
     if middleware:
         call = _handled(middleware, call)
-    return AsyncHandler(call, config)
+    return AsyncHandler(fn, hooks, call, config)

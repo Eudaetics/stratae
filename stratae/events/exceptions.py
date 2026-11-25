@@ -1,8 +1,10 @@
 """
-Exceptions for errors in event dispatch, all subclassing {py:exc}`EventDispatchError`.
+Exceptions for errors in registering and dispatching events.
 
-Handlers' failures are raised together as a {py:exc}`HandlerErrors` group, or a
-{py:exc}`BaseHandlerErrors` one if any is a `BaseException` such as `CancelledError`.
+Errors in dispatch subclass {py:exc}`EventDispatchError`. Handlers' failures are raised
+together as a {py:exc}`HandlerErrors` group, or a {py:exc}`BaseHandlerErrors` one if any is a
+`BaseException` such as `CancelledError`. {py:exc}`DuplicateHandlerError` is raised when a
+handler is registered, before anything is dispatched.
 """
 
 from collections.abc import Sequence
@@ -60,3 +62,16 @@ class AlreadyConnectedError(EventDispatchError):
 
 class UnroutableError(EventDispatchError):
     """Raised when a message that must be routed reaches no queue or handler."""
+
+
+class DuplicateHandlerError(ValueError):
+    """Raised when an event is given a handler equal to one it already has."""
+
+    def __init__(self, event: str, fn: object) -> None:
+        """
+        Name the event and the function registered for it again.
+
+        :param event: The event's name.
+        :param fn: The function, already registered with the same hooks.
+        """
+        super().__init__(f"{fn!r} is already registered with these hooks for event '{event}'")
