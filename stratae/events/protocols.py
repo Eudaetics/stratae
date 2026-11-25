@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
-from stratae.events.envelope import ENVELOPE_HEADERS
+from stratae.events.envelope import EnvelopeHeaders
 from stratae.events.hooks import Hooks
 from stratae.events.patterns import NoPayload, PubSub
 
@@ -290,6 +290,10 @@ class Reserving(Protocol):
         ...
 
 
+_ENVELOPE_NAMES = frozenset(name.lower() for name in EnvelopeHeaders().names)
+"""The default envelope header names, in lower case, as every route reserves them."""
+
+
 def reserved_for(config: object) -> frozenset[str]:
     """
     Return the header names an emit on a route with `config` can't be given or have added.
@@ -302,8 +306,8 @@ def reserved_for(config: object) -> frozenset[str]:
     :returns: The names, in lower case.
     """
     if isinstance(config, Reserving):
-        return ENVELOPE_HEADERS | {name.lower() for name in config.reserved_headers}
-    return ENVELOPE_HEADERS
+        return _ENVELOPE_NAMES | {name.lower() for name in config.reserved_headers}
+    return _ENVELOPE_NAMES
 
 
 class Deserializer(Protocol):

@@ -140,8 +140,6 @@ from pytest_mock import MockerFixture
 
 from stratae.backoff import Delays, Exponential, Limited
 from stratae.events import (
-    CORRELATION_ID_HEADER,
-    MESSAGE_ID_HEADER,
     AsyncHandler,
     Envelope,
     EnvelopeConfig,
@@ -153,6 +151,7 @@ from stratae.events import (
     Request,
     SyncHandler,
 )
+from stratae.events.envelope import EnvelopeHeaders
 from stratae.events.exceptions import AlreadyConnectedError
 from stratae.events.failure import Drop, Reject
 from stratae.integrations.rabbitmq import (
@@ -165,6 +164,9 @@ from stratae.integrations.rabbitmq import (
 )
 from stratae.lifecycle import AsyncScope
 from stratae.middleware import MiddlewareKindError
+
+_HEADERS = EnvelopeHeaders()
+"""The default names an envelope travels under."""
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -1089,7 +1091,7 @@ async def test_handler_runs_in_delivered_envelope_scope(
     seen: list[Envelope | None] = []
     consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
     envelope = Envelope()
-    message = _message(b'{"order_id": 7}', headers=envelope.to_headers())
+    message = _message(b'{"order_id": 7}', headers=_HEADERS.write(envelope))
 
     # Act
     async with consumer:
@@ -1168,7 +1170,7 @@ async def test_malformed_envelope_headers_log_and_scope_fresh(
     # Arrange
     seen: list[Envelope | None] = []
     consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
-    headers = {MESSAGE_ID_HEADER: "junk", CORRELATION_ID_HEADER: "junk"}
+    headers = {_HEADERS.message_id: "junk", _HEADERS.correlation_id: "junk"}
     message = _message(b'{"order_id": 7}', headers=headers)
 
     # Act
@@ -1197,7 +1199,7 @@ async def test_partial_envelope_headers_log_info(
     seen: list[Envelope | None] = []
     consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
     correlation_id = uuid4()
-    message = _message(b'{"order_id": 7}', headers={CORRELATION_ID_HEADER: str(correlation_id)})
+    message = _message(b'{"order_id": 7}', headers={_HEADERS.correlation_id: str(correlation_id)})
 
     # Act
     async with consumer:
@@ -1686,7 +1688,7 @@ async def test_handle_middleware_reads_headers_as_delivered(
 
     # Act
     async with consumer:
-        delivered = _message(b'{"order_id": 7}', application | sent.to_headers())
+        delivered = _message(b'{"order_id": 7}', application | _HEADERS.write(sent))
         await _delivery_callback(channel)(delivered)
         await _delivery_callback(channel)(_message(b'{"order_id": 8}'))
 

@@ -80,14 +80,7 @@ from .dispatch import (
     fan_out_concurrent,
     only_responder,
 )
-from .envelope import (
-    CAUSATION_ID_HEADER,
-    CORRELATION_ID_HEADER,
-    MESSAGE_ID_HEADER,
-    TIMESTAMP_HEADER,
-    Envelope,
-    EnvelopeConfig,
-)
+from .envelope import Envelope, EnvelopeConfig, EnvelopeHeaders
 from .handler import AsyncHandler, Handler, Handlers, SyncHandler
 from .hooks import Hooks
 from .middleware import HandleCall, HandleMiddleware, Middleware, PublishCall, PublishMiddleware
@@ -118,10 +111,6 @@ from .protocols import (
 )
 
 __all__ = [
-    "CAUSATION_ID_HEADER",
-    "CORRELATION_ID_HEADER",
-    "MESSAGE_ID_HEADER",
-    "TIMESTAMP_HEADER",
     "Addressed",
     "AnyEvent",
     "AsyncDirectBus",
@@ -137,6 +126,7 @@ __all__ = [
     "Encoded",
     "Envelope",
     "EnvelopeConfig",
+    "EnvelopeHeaders",
     "EventType",
     "HandleCall",
     "HandleMiddleware",

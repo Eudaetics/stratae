@@ -30,10 +30,13 @@ from typing import Any
 import pytest
 
 from stratae.events import HandleCall, Hooks, PublishCall, PubSub, Request
-from stratae.events.envelope import ENVELOPE_HEADERS
+from stratae.events.envelope import EnvelopeHeaders
 from stratae.events.handler import invoke
 from stratae.events.middleware import NO_HEADERS
 from stratae.events.pipeline import Outgoing, Publishing, publish, wrap_handler
+
+_HEADERS = EnvelopeHeaders()
+"""The default names an envelope travels under."""
 
 
 class _Order:
@@ -89,7 +92,7 @@ def test_publish_nests_middleware_outside_hooks(
     # Act
     publishing: Publishing[None, None] = Publishing(stack)
     reply = publish(
-        publishing, call, ENVELOPE_HEADERS, _order_placed, _Order("lamp"), None, hooks=hooks
+        publishing, call, _HEADERS.names, _order_placed, _Order("lamp"), None, hooks=hooks
     )
 
     # Assert
@@ -271,7 +274,7 @@ def test_publish_middleware_adds_headers() -> None:
     publish(
         publishing,
         sent.append,
-        ENVELOPE_HEADERS,
+        _HEADERS.names,
         _order_placed,
         _Order("lamp"),
         None,
@@ -304,7 +307,7 @@ def test_publish_refuses_reserved_header_after_middleware(source: str) -> None:
 
     hooks = Hooks[_Order, None](before=(lambda event, payload: ran.append("hook"),))
     publishing: Publishing[None, None] = Publishing((add,))
-    reserved = ENVELOPE_HEADERS | {"x-attempts"}
+    reserved = _HEADERS.names | {"x-attempts"}
 
     # Act / Assert
     with pytest.raises(ValueError, match="is a header the bus sets itself"):
