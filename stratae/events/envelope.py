@@ -59,7 +59,7 @@ from contextlib import AbstractContextManager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Self
+from typing import final
 from uuid import UUID
 
 type _NewId = Callable[[], UUID]
@@ -99,12 +99,20 @@ def _when(value: object | None) -> datetime:
     return _now() if value is None else datetime.fromisoformat(str(value))
 
 
+_NO_SUBCLASSES = (
+    "Envelope can't be subclassed; carry more with a message in its headers, set by middleware"
+)
+
+
+@final
 @dataclass(frozen=True, slots=True, init=False)
 class Envelope:
     """
     Immutable correlation and causation ids for one message in a causal chain.
 
-    `causation_id` is `None` on a root envelope.
+    `causation_id` is `None` on a root envelope. Its four fields are fixed, and it can't be
+    subclassed. Anything else a message carries, such as a tenant or a trace, travels in its
+    headers, which publish middleware can add to and handle middleware reads.
     """
 
     message_id: UUID = field(default_factory=_new_uuid4)
@@ -135,8 +143,16 @@ class Envelope:
         _set_causation_id(self, causation_id)
         _set_timestamp(self, _now() if timestamp is None else timestamp)
 
-    @classmethod
-    def root(cls, new_id: _NewId = _new_uuid4) -> Self:
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        """
+        Refuse a subclass when it's defined.
+
+        :raises TypeError: Always.
+        """
+        raise TypeError(_NO_SUBCLASSES)
+
+    @staticmethod
+    def root(new_id: _NewId = _new_uuid4) -> Envelope:
         """
         Start a new chain.
 
@@ -144,9 +160,9 @@ class Envelope:
         :returns: An {py:class}`Envelope` with new ids and no `causation_id`.
         """
         # Positional, in field order: cheaper than keywords on this per-emit path.
-        return cls(new_id(), new_id())
+        return Envelope(new_id(), new_id())
 
-    def child(self, new_id: _NewId = _new_uuid4) -> Self:
+    def child(self, new_id: _NewId = _new_uuid4) -> Envelope:
         """
         Derive the next envelope in this chain.
 
@@ -154,16 +170,16 @@ class Envelope:
         :returns: An {py:class}`Envelope` with this `correlation_id`, caused by this message.
         """
         # Positional, in field order: cheaper than keywords on this per-emit path.
-        return type(self)(new_id(), self.correlation_id, self.message_id)
+        return Envelope(new_id(), self.correlation_id, self.message_id)
 
     @staticmethod
     def current() -> Envelope | None:
         """Return the active envelope, or `None` outside any {py:func}`Envelope.scope` block."""
         return _current.get(None)
 
-    @classmethod
+    @staticmethod
     def scope(
-        cls, envelope: Envelope | None = None, *, new_id: _NewId = _new_uuid4
+        envelope: Envelope | None = None, *, new_id: _NewId = _new_uuid4
     ) -> AbstractContextManager[Envelope]:
         """
         Set the active envelope for a block, restoring the previous one on exit.
@@ -173,7 +189,7 @@ class Envelope:
         :param new_id: Makes the new envelope's ids when `envelope` isn't given.
         :returns: A context manager yielding the active {py:class}`Envelope`.
         """
-        return _Scope(cls, envelope, new_id)
+        return _Scope(envelope, new_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,10 +323,9 @@ class _Scope:
     request opens one, and a generator costs about twice as much to enter and exit.
     """
 
-    __slots__ = ("_envelope", "_kind", "_new_id", "_token")
+    __slots__ = ("_envelope", "_new_id", "_token")
 
-    def __init__(self, kind: type[Envelope], envelope: Envelope | None, new_id: _NewId) -> None:
-        self._kind = kind
+    def __init__(self, envelope: Envelope | None, new_id: _NewId) -> None:
         self._envelope = envelope
         self._new_id = new_id
         self._token: Token[Envelope]
@@ -320,7 +335,7 @@ class _Scope:
         if envelope is None:
             new_id, parent = self._new_id, _current.get(None)
             # A root built here, positionally, saves a call to `root` on this per-emit path.
-            envelope = parent.child(new_id) if parent else self._kind(new_id(), new_id())
+            envelope = parent.child(new_id) if parent else Envelope(new_id(), new_id())
         self._token = _current.set(envelope)
         return envelope
 
