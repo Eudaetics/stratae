@@ -21,6 +21,7 @@ AsyncDirectBus (fan_out_concurrent):
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from unittest.mock import AsyncMock, Mock
 
@@ -161,15 +162,18 @@ async def test_handler_context_changes_stay_with_handler(bus: AsyncDirectBus) ->
         before.append(_marker.get())
         _marker.set("sync")
 
-    async def async_handler(placed: _Placed) -> None:
-        before.append(_marker.get())
-        _marker.set(f"async {len(before)}")
-        await asyncio.sleep(0)
-        after.append(_marker.get())
+    def async_handler() -> Callable[[_Placed], Awaitable[None]]:
+        async def handle(placed: _Placed) -> None:
+            before.append(_marker.get())
+            _marker.set(f"async {len(before)}")
+            await asyncio.sleep(0)
+            after.append(_marker.get())
+
+        return handle
 
     bus.handle(_placed, sync_handler)
-    bus.handle(_placed, async_handler)
-    bus.handle(_placed, async_handler)
+    bus.handle(_placed, async_handler())
+    bus.handle(_placed, async_handler())
 
     # Act
     await bus.emit(_placed, _Placed(3))
@@ -245,17 +249,20 @@ async def test_cancelling_emit_stops_at_the_running_handler(bus: AsyncDirectBus)
     started = asyncio.Event()
     seen: list[str] = []
 
-    async def handler(placed: _Placed) -> None:
-        seen.append("started")
-        started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            seen.append("cancelled")
-            raise
+    def handler() -> Callable[[_Placed], Awaitable[None]]:
+        async def handle(placed: _Placed) -> None:
+            seen.append("started")
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                seen.append("cancelled")
+                raise
 
-    bus.handle(_placed, handler)
-    bus.handle(_placed, handler)
+        return handle
+
+    bus.handle(_placed, handler())
+    bus.handle(_placed, handler())
     emitting = asyncio.create_task(bus.emit(_placed, _Placed(6)))
     await started.wait()
 
@@ -284,13 +291,16 @@ async def test_concurrent_handlers_run_together_in_own_contexts(
     both = asyncio.Barrier(2)
     before: list[str] = []
 
-    async def handler(placed: _Placed) -> None:
-        before.append(_marker.get())
-        _marker.set("handler")
-        await asyncio.wait_for(both.wait(), 1)
+    def handler() -> Callable[[_Placed], Awaitable[None]]:
+        async def handle(placed: _Placed) -> None:
+            before.append(_marker.get())
+            _marker.set("handler")
+            await asyncio.wait_for(both.wait(), 1)
 
-    concurrent_bus.handle(_placed, handler)
-    concurrent_bus.handle(_placed, handler)
+        return handle
+
+    concurrent_bus.handle(_placed, handler())
+    concurrent_bus.handle(_placed, handler())
 
     # Act
     await concurrent_bus.emit(_placed, _Placed(8))

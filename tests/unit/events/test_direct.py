@@ -118,8 +118,10 @@ from stratae.events import (
     PublishCall,
     PubSub,
     Request,
+    SyncHandler,
 )
 from stratae.events.exceptions import (
+    DuplicateHandlerError,
     MultipleRespondersError,
     NoResponderError,
 )
@@ -191,7 +193,7 @@ class _Gather[S, R](Immutable):
 
 
 def _gather_replies[S, R](
-    event: _Gather[S, R], handlers: Handlers[Any, R], message: HandleCall
+    event: _Gather[S, R], handlers: Handlers[Any, S, R], message: HandleCall
 ) -> list[R]:
     """Dispatch a _Gather event: call every handler, all sync here, and collect the replies."""
     return [handler(message) for handler in handlers.sync]
@@ -634,10 +636,12 @@ def test_dispatcher_receives_registered_handlers_as_given():
     Then: The dispatcher should receive the same Handlers that handlers returns
     """
     # Arrange
-    received: list[Collection[Handler[Any, Any]]] = []
+    received: list[Collection[Handler[Any, Any, ..., Any]]] = []
 
     def record[S](
-        event: PubSub[S, Any], handlers: Collection[Handler[Any, object]], message: HandleCall
+        event: PubSub[S, Any],
+        handlers: Collection[Handler[Any, S, ..., object]],
+        message: HandleCall,
     ) -> None:
         received.append(handlers)
 
@@ -664,7 +668,7 @@ def test_handler_registered_during_emit_waits_for_next_emit(bus: DirectBus):
     """
     # Arrange
     late = Mock()
-    registered: list[Handler[Any, Any]] = []
+    registered: list[Handler[Any, Any, ..., Any]] = []
 
     def register_late(_: object) -> None:
         if not registered:
@@ -737,25 +741,187 @@ def test_concurrent_registrations_keep_every_handler(bus: DirectBus):
     assert len(bus.handlers(_task_created)) == threads * per_thread
 
 
-def test_same_callable_registered_twice_called_twice(bus: DirectBus):
-    """
-    Registering the same callable twice should produce two independent registrations.
+def _noted(event: object, payload: object) -> None:
+    """Do nothing, as a hook to give."""
 
-    Given: The same callable registered to an event twice
-    When: An event is emitted
-    Then: The callable should be invoked twice
+
+class _Listener:
+    def on_created(self, task: _TaskCreated) -> None:
+        """Do nothing, as a method of one instance."""
+
+
+class _Unhashable:
+    __hash__ = None  # pyright: ignore[reportAssignmentType]
+
+    def __call__(self, task: _TaskCreated) -> None:
+        """Do nothing, as a callable that can't be hashed."""
+
+
+def _directly(bus: Any, fn: Callable[..., Any], hooks: Hooks[Any, Any]) -> object:
+    """Register `fn` with `hooks` by calling handle with it."""
+    return bus.handle(_task_created, fn, hooks=hooks)
+
+
+def _decorating(bus: Any, fn: Callable[..., Any], hooks: Hooks[Any, Any]) -> object:
+    """Register `fn` with `hooks` through handle's decorator."""
+    return bus.handle(_task_created, hooks=hooks)(fn)
+
+
+@pytest.mark.parametrize("register", [_directly, _decorating])
+def test_same_function_with_equal_hooks_is_refused(bus: DirectBus, register: Callable[..., object]):
+    """
+    A function an event already has, with equal hooks, should be refused when it's registered.
+
+    Given: A function registered for an event with hooks
+    When: It's registered again with equal hooks, directly or as a decorator
+    Then: DuplicateHandlerError names the event, and the event keeps its one handler
+    """
+
+    # Arrange
+    def handler(task: _TaskCreated) -> None: ...
+
+    first = bus.handle(_task_created, handler, hooks=Hooks(before=(_noted,)))
+
+    # Act / Assert
+    with pytest.raises(DuplicateHandlerError, match="_TaskCreated"):
+        register(bus, handler, Hooks(before=(_noted,)))
+    assert bus.handlers(_task_created) == (first,)
+
+
+def test_empty_hooks_count_as_none(bus: DirectBus):
+    """
+    A handler registered with empty hooks should be the handler registered with none.
+
+    Given: A function registered for an event with no hooks
+    When: It's registered again with empty Hooks()
+    Then: DuplicateHandlerError is raised, and the first handler holds no hooks
+    """
+
+    # Arrange
+    def handler(task: _TaskCreated) -> None: ...
+
+    first = bus.handle(_task_created, handler)
+
+    # Act / Assert
+    with pytest.raises(DuplicateHandlerError):
+        bus.handle(_task_created, handler, hooks=Hooks())
+    assert first.hooks is None
+
+
+def test_same_method_of_one_instance_is_refused(bus: DirectBus):
+    """
+    The same method of one instance, read twice, should be refused the second time.
+
+    Given: A method of one instance registered for an event
+    When: The same instance's method is read again and registered
+    Then: DuplicateHandlerError is raised
     """
     # Arrange
-    handler = Mock()
-    emit = bus.bind(_task_created, factory=_TaskCreated)
+    listener = _Listener()
+    bus.handle(_task_created, listener.on_created)
+
+    # Act / Assert
+    with pytest.raises(DuplicateHandlerError):
+        bus.handle(_task_created, listener.on_created)
+
+
+def test_unequal_registrations_of_one_function_all_register(bus: DirectBus):
+    """
+    Registrations that aren't equal should all register, even of one function.
+
+    Given: A function, another event, two instances of a class, and a closure factory
+    When: The function is registered with no hooks and with hooks, and on the other event;
+        each instance's method is registered; and two closures from the factory are
+        registered
+    Then: Every registration is kept, and an emit runs each handler of the event once
+    """
+    # Arrange
+    calls: list[str] = []
+
+    def handler(task: _TaskCreated) -> None:
+        calls.append("handler")
+
+    def closure() -> Callable[[_TaskCreated], None]:
+        def handle(task: _TaskCreated) -> None:
+            calls.append("closure")
+
+        return handle
+
+    # Act
     bus.handle(_task_created, handler)
+    bus.handle(_task_created, handler, hooks=Hooks(before=(_noted,)))
+    bus.handle(_heartbeat, lambda: None)
+    bus.handle(_task_created, _Listener().on_created)
+    bus.handle(_task_created, _Listener().on_created)
+    bus.handle(_task_created, closure())
+    bus.handle(_task_created, closure())
+    bus.emit(_task_created, _TaskCreated(1))
+
+    # Assert
+    assert len(bus.handlers(_task_created)) == 6
+    assert sorted(calls) == ["closure", "closure", "handler", "handler"]
+
+
+def test_same_function_on_another_event_registers(bus: DirectBus):
+    """
+    A function should register once on each event it handles.
+
+    Given: A function registered for one event
+    When: It's registered for another event of the same payload
+    Then: Both events have it
+    """
+    # Arrange
+    other = PubSub(_TaskCreated, name="task archived")
+
+    def handler(task: _TaskCreated) -> None: ...
+
     bus.handle(_task_created, handler)
 
     # Act
-    emit(task_id=5)
+    bus.handle(other, handler)
 
     # Assert
-    assert handler.call_count == 2
+    assert len(bus.handlers(_task_created)) == len(bus.handlers(other)) == 1
+
+
+def test_removed_handler_can_be_registered_again(bus: DirectBus):
+    """
+    A handler should register again once it's removed, and remove takes an equal handler.
+
+    Given: A function registered for an event, and a handler equal to it built apart
+    When: The equal handler is removed, and the function registered again
+    Then: The event has no handlers in between, and the new registration runs
+    """
+    # Arrange
+    handler = Mock()
+    registered = bus.handle(_task_created, handler)
+    equal: SyncHandler[Any, _TaskCreated, ..., None] = SyncHandler(
+        handler, None, lambda message: None, registered.config
+    )
+
+    # Act
+    bus.remove(equal)
+    between = bus.handlers(_task_created)
+    bus.handle(_task_created, handler)
+    bus.emit(_task_created, _TaskCreated(2))
+
+    # Assert
+    assert between == ()
+    handler.assert_called_once()
+
+
+def test_unhashable_function_is_refused(bus: DirectBus):
+    """
+    An unhashable function should be refused with TypeError, leaving the event unchanged.
+
+    Given: A callable that can't be hashed
+    When: It's registered for an event
+    Then: TypeError says it's unhashable, and the event has no handlers
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="unhashable"):
+        bus.handle(_task_created, _Unhashable())
+    assert bus.handlers(_task_created) == ()
 
 
 def test_emit_dispatches_payload(bus: DirectBus):
@@ -1177,7 +1343,7 @@ def test_dispatchers_argument_replaces_default():
 
     def record[S](
         event: PubSub[S, Any],
-        handlers: Collection[Handler[Any, object]],
+        handlers: Collection[Handler[Any, S, ..., object]],
         message: HandleCall,
     ) -> None:
         dispatched.append(message.payload)
@@ -1973,12 +2139,15 @@ def test_handler_context_changes_stay_with_handler(bus: DirectBus):
     # Arrange
     seen: list[str] = []
 
-    def handler(task: _TaskCreated) -> None:
-        seen.append(_marker.get())
-        _marker.set(f"handler {len(seen)}")
+    def handler() -> Callable[[_TaskCreated], None]:
+        def handle(task: _TaskCreated) -> None:
+            seen.append(_marker.get())
+            _marker.set(f"handler {len(seen)}")
 
-    bus.handle(_task_created, handler)
-    bus.handle(_task_created, handler)
+        return handle
+
+    bus.handle(_task_created, handler())
+    bus.handle(_task_created, handler())
 
     # Act
     bus.emit(_task_created, _TaskCreated(1))

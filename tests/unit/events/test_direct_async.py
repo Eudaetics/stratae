@@ -108,7 +108,11 @@ from stratae.events import (
     Request,
     fan_out_concurrent,
 )
-from stratae.events.exceptions import MultipleRespondersError, NoResponderError
+from stratae.events.exceptions import (
+    DuplicateHandlerError,
+    MultipleRespondersError,
+    NoResponderError,
+)
 from stratae.events.handler import invoke
 from stratae.middleware import MiddlewareKindError
 
@@ -164,7 +168,7 @@ class _Gather[S, R](Immutable):
 
 
 async def _gather_replies[S, R](
-    event: _Gather[S, R], handlers: Handlers[Any, R], message: HandleCall
+    event: _Gather[S, R], handlers: Handlers[Any, S, R], message: HandleCall
 ) -> list[R]:
     """Dispatch a _Gather event: call each handler, awaiting async ones, and collect replies."""
     return [await invoke(handler, message) for handler in handlers]
@@ -490,10 +494,10 @@ async def test_dispatcher_receives_registered_handlers_as_given():
     Then: The dispatcher should receive the same Handlers that handlers returns
     """
     # Arrange
-    received: list[Collection[Handler[Any, Any]]] = []
+    received: list[Collection[Handler[Any, Any, ..., Any]]] = []
 
     async def record[S](
-        event: PubSub[S, Any], handlers: Collection[Handler[Any, Any]], message: HandleCall
+        event: PubSub[S, Any], handlers: Collection[Handler[Any, S, ..., Any]], message: HandleCall
     ) -> None:
         await asyncio.sleep(0)
         received.append(handlers)
@@ -521,7 +525,7 @@ async def test_handler_registered_during_emit_waits_for_next_emit(bus: AsyncDire
     """
     # Arrange
     late = AsyncMock()
-    registered: list[Handler[Any, Any]] = []
+    registered: list[Handler[Any, Any, ..., Any]] = []
 
     async def register_late(_: object) -> None:
         await asyncio.sleep(0)
@@ -580,14 +584,17 @@ def test_concurrent_registrations_keep_every_handler(bus: AsyncDirectBus):
     threads, per_thread = 8, 100
     start = threading.Barrier(threads)
 
-    async def async_handler(_: object) -> None:
-        """Do nothing, asynchronously."""
+    def async_handler() -> Callable[[object], Awaitable[None]]:
+        async def handle(_: object) -> None:
+            """Do nothing, asynchronously."""
+
+        return handle
 
     def register() -> None:
         start.wait()
         for index in range(per_thread):
             if index % 2:
-                bus.handle(_task_created, async_handler)
+                bus.handle(_task_created, async_handler())
             else:
                 bus.handle(_task_created, lambda _: None)
 
@@ -610,25 +617,65 @@ def test_concurrent_registrations_keep_every_handler(bus: AsyncDirectBus):
     assert len(handlers.sync) == len(handlers.asynchronous) == threads * per_thread // 2
 
 
-async def test_same_callable_registered_twice_called_twice(bus: AsyncDirectBus):
-    """
-    Registering the same callable twice should produce two independent registrations.
+def _noted(event: object, payload: object) -> None:
+    """Do nothing, as a hook to give."""
 
-    Given: The same callable registered to an event twice
-    When: An event is emitted
-    Then: The callable should be invoked twice
+
+def _directly(bus: Any, fn: Callable[..., Any], hooks: Hooks[Any, Any]) -> object:
+    """Register `fn` with `hooks` by calling handle with it."""
+    return bus.handle(_task_created, fn, hooks=hooks)
+
+
+def _decorating(bus: Any, fn: Callable[..., Any], hooks: Hooks[Any, Any]) -> object:
+    """Register `fn` with `hooks` through handle's decorator."""
+    return bus.handle(_task_created, hooks=hooks)(fn)
+
+
+@pytest.mark.parametrize("register", [_directly, _decorating])
+def test_same_function_with_equal_hooks_is_refused(
+    bus: AsyncDirectBus, register: Callable[..., object]
+):
+    """
+    A function an event already has, with equal hooks, should be refused when it's registered.
+
+    Given: An async function registered for an event with hooks
+    When: It's registered again with equal hooks, directly or as a decorator
+    Then: DuplicateHandlerError names the event, and the event keeps its one handler
+    """
+
+    # Arrange
+    async def handler(task: _TaskCreated) -> None: ...
+
+    first = bus.handle(_task_created, handler, hooks=Hooks(before=(_noted,)))
+
+    # Act / Assert
+    with pytest.raises(DuplicateHandlerError, match="_TaskCreated"):
+        register(bus, handler, Hooks(before=(_noted,)))
+    assert bus.handlers(_task_created) == (first,)
+
+
+async def test_empty_hooks_count_as_none(bus: AsyncDirectBus):
+    """
+    A handler registered with empty hooks should be the handler registered with none.
+
+    Given: A sync and an async function registered for an event with no hooks
+    When: Each is registered again with empty Hooks()
+    Then: DuplicateHandlerError is raised for both, and an emit runs each once
     """
     # Arrange
-    handler = AsyncMock()
-    emit = bus.bind(_task_created, factory=_TaskCreated)
-    bus.handle(_task_created, handler)
-    bus.handle(_task_created, handler)
+    sync_handler, async_handler = Mock(), AsyncMock()
+    bus.handle(_task_created, sync_handler)
+    bus.handle(_task_created, async_handler)
 
     # Act
-    await emit(task_id=7)
+    for handler in (sync_handler, async_handler):
+        with pytest.raises(DuplicateHandlerError):
+            bus.handle(_task_created, handler, hooks=Hooks())
+    await bus.emit(_task_created, _TaskCreated(3))
 
     # Assert
-    assert handler.call_count == 2
+    sync_handler.assert_called_once()
+    async_handler.assert_awaited_once()
 
 
 async def test_emit_dispatches_directly(bus: AsyncDirectBus):
@@ -732,9 +779,12 @@ async def test_handler_context_changes_stay_with_handler(bus: AsyncDirectBus):
     before: list[str] = []
     after: list[str] = []
 
-    def sync_handler(task: _TaskCreated) -> None:
-        before.append(_marker.get())
-        _marker.set("sync")
+    def sync_handler() -> Callable[[_TaskCreated], None]:
+        def handle(task: _TaskCreated) -> None:
+            before.append(_marker.get())
+            _marker.set("sync")
+
+        return handle
 
     async def async_handler(task: _TaskCreated) -> None:
         before.append(_marker.get())
@@ -742,8 +792,8 @@ async def test_handler_context_changes_stay_with_handler(bus: AsyncDirectBus):
         await asyncio.sleep(0)
         after.append(_marker.get())
 
-    bus.handle(_task_created, sync_handler)
-    bus.handle(_task_created, sync_handler)
+    bus.handle(_task_created, sync_handler())
+    bus.handle(_task_created, sync_handler())
     bus.handle(_task_created, async_handler)
 
     # Act
@@ -1560,15 +1610,18 @@ async def test_handle_middleware_reads_publish_headers():
         seen.append((call.payload.task_id, call.headers["x-task"]))
         return await next(call)
 
-    async def handler(task: _TaskCreated) -> None:
-        await asyncio.sleep(0)
+    def handler() -> Callable[[_TaskCreated], Awaitable[None]]:
+        async def handle(task: _TaskCreated) -> None:
+            await asyncio.sleep(0)
+
+        return handle
 
     bus = AsyncDirectBus(
         middleware=Middleware(publish=(tag,), handle=(record,)),
         dispatchers=[Dispatch(PubSub, fan_out_concurrent)],
     )
-    bus.handle(_task_created, handler)
-    bus.handle(_task_created, handler)
+    bus.handle(_task_created, handler())
+    bus.handle(_task_created, handler())
 
     # Act
     await asyncio.gather(

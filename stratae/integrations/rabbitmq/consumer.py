@@ -16,7 +16,7 @@ from stratae.events import (
     NoPayload,
     PubSub,
 )
-from stratae.events.exceptions import AlreadyConnectedError
+from stratae.events.exceptions import AlreadyConnectedError, DuplicateHandlerError
 from stratae.events.failure import DeadLetter, Drop, Reject, Retry, failure_action
 from stratae.events.handler import invoke
 from stratae.events.hooks import Hooks
@@ -50,7 +50,7 @@ class _Registration:
     def __init__(
         self,
         event: PubSub[Any, Any],
-        handler: Handler[RabbitMQConsumeConfig, None],
+        handler: Handler[RabbitMQConsumeConfig, Any, ..., None],
         deserializer: Deserializer | None,
     ) -> None:
         self.event = event
@@ -66,7 +66,9 @@ type _Returns = Awaitable[None] | None
 class _ConsumeDecorator[Payload: Any](Protocol):
     """Decorator form of `handle`, returning the Handler."""
 
-    def __call__(self, fn: Callable[[Payload], _Returns]) -> Handler[RabbitMQConsumeConfig, None]:
+    def __call__(
+        self, fn: Callable[[Payload], _Returns]
+    ) -> Handler[RabbitMQConsumeConfig, Payload, [Payload], None]:
         """Register `fn` as a handler, returning it as a Handler."""
         ...
 
@@ -74,7 +76,9 @@ class _ConsumeDecorator[Payload: Any](Protocol):
 class _SignalConsumeDecorator(Protocol):
     """Decorator form of `handle` for a schema-less event, returning the Handler."""
 
-    def __call__(self, fn: Callable[[], _Returns]) -> Handler[RabbitMQConsumeConfig, None]:
+    def __call__(
+        self, fn: Callable[[], _Returns]
+    ) -> Handler[RabbitMQConsumeConfig, NoPayload, [], None]:
         """Register `fn` as a handler, returning it as a Handler."""
         ...
 
@@ -145,7 +149,9 @@ class RabbitMQConsumer:
         self._prefetch_count = prefetch_count
         self._drain_timeout = drain_timeout
         self._link = Link("consumer", url, reconnect, self._resume, self._forget_consumers)
-        self._registrations: dict[Handler[RabbitMQConsumeConfig, None], _Registration] = {}
+        self._registrations: dict[
+            Handler[RabbitMQConsumeConfig, Any, ..., None], _Registration
+        ] = {}
         self._starting: set[asyncio.Task[None]] = set()
         self._in_flight: set[asyncio.Task[None]] = set()
 
@@ -241,7 +247,7 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
         hooks: Hooks[NoPayload, None] | None = None,
-    ) -> Handler[RabbitMQConsumeConfig, None]: ...
+    ) -> Handler[RabbitMQConsumeConfig, NoPayload, [], None]: ...
 
     @overload
     def handle(
@@ -263,7 +269,7 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
         hooks: Hooks[Payload, None] | None = None,
-    ) -> Handler[RabbitMQConsumeConfig, None]: ...
+    ) -> Handler[RabbitMQConsumeConfig, Payload, [Payload], None]: ...
 
     @overload
     def handle[Payload](
@@ -284,11 +290,19 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None = None,
         hooks: Hooks[Any, Any] | None = None,
-    ) -> Handler[RabbitMQConsumeConfig, None] | _ConsumeDecorator[Any] | _SignalConsumeDecorator:
+    ) -> (
+        Handler[RabbitMQConsumeConfig, Any, ..., None]
+        | _ConsumeDecorator[Any]
+        | _SignalConsumeDecorator
+    ):
         """
         Register a handler for an event, as a decorator or direct call.
 
-        Consumption starts now if connected, otherwise on entering the context.
+        Consumption starts now if connected, otherwise on entering the context. A function is
+        registered once per config with the same hooks, whatever the event: registering it
+        again raises, so a module imported twice can't start two consumers competing for one
+        queue. Empty hooks count as none, and the deserializer doesn't make a registration
+        different.
 
         :param event: The {py:class}`PubSub <stratae.events.patterns.PubSub>` event to handle.
         :param fn: The handler, returning `None`. If omitted, returns a decorator.
@@ -298,23 +312,27 @@ class RabbitMQConsumer:
             each delivery. A message that fails to decode never reaches the handler, so its
             hooks don't see it.
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
-        :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
+        :raises DuplicateHandlerError: If `fn` is already registered for `config` with equal
+            hooks.
+        :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`,
+            or `fn`, a hook or `config` is unhashable.
         """
         if not isinstance(event, PubSub):
             raise TypeError(_PUBSUB_ONLY.format(event))
         if fn is not None:
             return self._register(event, fn, config, deserializer, hooks)
 
-        def decorator(fn: Callable[..., Any]) -> Handler[RabbitMQConsumeConfig, None]:
+        def decorator(fn: Callable[..., Any]) -> Handler[RabbitMQConsumeConfig, Any, ..., None]:
             return self._register(event, fn, config, deserializer, hooks)
 
         return decorator
 
-    async def remove(self, handler: Handler[RabbitMQConsumeConfig, None]) -> None:
+    async def remove(self, handler: Handler[RabbitMQConsumeConfig, Any, ..., None]) -> None:
         """
         Cancel and remove a registered handler.
 
-        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
+        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`,
+            or one equal to it.
         """
         registration = self._registrations.pop(handler, None)
         if registration is None:
@@ -331,11 +349,17 @@ class RabbitMQConsumer:
         config: RabbitMQConsumeConfig,
         deserializer: Deserializer | None,
         hooks: Hooks[Any, Any] | None,
-    ) -> Handler[RabbitMQConsumeConfig, None]:
-        """Wrap fn and its hooks as a Handler, consuming immediately if connected."""
-        handler: Handler[RabbitMQConsumeConfig, None] = wrap_handler(
+    ) -> Handler[RabbitMQConsumeConfig, Any, ..., None]:
+        """
+        Wrap fn and its hooks as a Handler, consuming immediately if connected.
+
+        :raises DuplicateHandlerError: If an equal handler is already registered.
+        """
+        handler: Handler[RabbitMQConsumeConfig, Any, ..., None] = wrap_handler(
             event, fn, config, hooks, self._handle_middleware, asynchronous=True
         )
+        if handler in self._registrations:
+            raise DuplicateHandlerError(event.name, fn)
         registration = _Registration(event, handler, deserializer)
         self._registrations[handler] = registration
         channel = self._link.channel

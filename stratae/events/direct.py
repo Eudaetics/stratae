@@ -115,6 +115,7 @@ from stratae.events.dispatch import (
     fan_out_async,
 )
 from stratae.events.envelope import Envelope, EnvelopeFactory
+from stratae.events.exceptions import DuplicateHandlerError
 from stratae.events.handler import AsyncHandler, Handler, Handlers, SyncHandler
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import (
@@ -140,7 +141,7 @@ from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEv
 _NONE_RESERVED: frozenset[str] = frozenset()
 """What a bus that opens no envelope reserves: no header names."""
 
-_NO_HANDLERS: Handlers[AnyEvent, Any] = Handlers()
+_NO_HANDLERS: Handlers[AnyEvent, Any, Any] = Handlers()
 """The handlers of an event nothing handles."""
 
 _UNSUPPORTED_PATTERN = (
@@ -190,18 +191,22 @@ class _AsyncHandlerDecorator[Payload: Any, Result](Protocol):
     @overload
     def __call__(
         self, fn: Callable[[Payload], Awaitable[Result]]
-    ) -> AsyncHandler[AnyEvent, Result]: ...
+    ) -> AsyncHandler[AnyEvent, Payload, [Payload], Result]: ...
     @overload
-    def __call__(self, fn: Callable[[Payload], Result]) -> Handler[AnyEvent, Result]: ...
+    def __call__(
+        self, fn: Callable[[Payload], Result]
+    ) -> Handler[AnyEvent, Payload, [Payload], Result]: ...
 
 
 class _AsyncSignalHandlerDecorator[Result](Protocol):
     """Decorator form of handle for a schema-less event, returning the Handler."""
 
     @overload
-    def __call__(self, fn: Callable[[], Awaitable[Result]]) -> AsyncHandler[AnyEvent, Result]: ...
+    def __call__(
+        self, fn: Callable[[], Awaitable[Result]]
+    ) -> AsyncHandler[AnyEvent, NoPayload, [], Result]: ...
     @overload
-    def __call__(self, fn: Callable[[], Result]) -> Handler[AnyEvent, Result]: ...
+    def __call__(self, fn: Callable[[], Result]) -> Handler[AnyEvent, NoPayload, [], Result]: ...
 
 
 class _Failed:
@@ -236,7 +241,7 @@ class _Route:
     send: Send[None, Envelope | None]
     """Delivers one message to the handlers current when it's sent."""
 
-    def __init__(self, dispatcher: Dispatcher[Any], handlers: Handlers[AnyEvent, Any]) -> None:
+    def __init__(self, dispatcher: Dispatcher[Any], handlers: Handlers[AnyEvent, Any, Any]) -> None:
         self.dispatcher = dispatcher
         self.handlers = handlers
 
@@ -254,7 +259,7 @@ class Dispatch:
     and a {py:class}`DirectBus`'s are all sync. A dispatcher may take any collection of
     handlers in its place. Write it generic in the pattern's type parameters, e.g.
     `def gather[Payload, Result](event: Gather[Payload, Result],
-    handlers: Handlers[Any, Result], message: HandleCall) -> list[Result]`,
+    handlers: Handlers[Any, Payload, Result], message: HandleCall) -> list[Result]`,
     so its body is checked. A dispatcher whose first parameter
     doesn't accept `pattern` is a type error. That its declared return matches what the
     pattern emits is the dispatcher author's to ensure.
@@ -428,8 +433,12 @@ class _Core:
 
     def register(
         self, config: AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
-    ) -> Handler[AnyEvent, Any]:
-        """Wrap fn and its hooks as a Handler, and add it to the event's handlers."""
+    ) -> Handler[AnyEvent, Any, ..., Any]:
+        """
+        Wrap fn and its hooks as a Handler, and add it to the event's handlers.
+
+        :raises DuplicateHandlerError: If the event already has an equal handler.
+        """
         if not self._asynchronous and is_async_callable(fn):
             raise TypeError(_ASYNC_HANDLER_REJECTED)
         route = self._route(config)
@@ -439,15 +448,17 @@ class _Core:
             config, fn, config, hooks, self._middleware.handle, self._asynchronous
         )
         with self._registering:
+            if handler in route.handlers:
+                raise DuplicateHandlerError(config.name, fn)
             route.handlers = route.handlers.adding(handler)
         return handler
 
     def decorator(
         self, config: AnyEvent, hooks: Hooks[Any, Any] | None
-    ) -> Callable[[Callable[..., Any]], Handler[AnyEvent, Any]]:
+    ) -> Callable[[Callable[..., Any]], Handler[AnyEvent, Any, ..., Any]]:
         """Return the decorator form of `handle`, registering what it's applied to."""
 
-        def decorator(fn: Callable[..., Any]) -> Handler[AnyEvent, Any]:
+        def decorator(fn: Callable[..., Any]) -> Handler[AnyEvent, Any, ..., Any]:
             return self.register(config, fn, hooks)
 
         return decorator
@@ -475,14 +486,14 @@ class _Core:
             return route.dispatcher(event, route.handlers, message)
         return self._publish(route.send, self._reserved, event, payload, None, hooks)
 
-    def remove(self, handler: Handler[AnyEvent, Any]) -> None:
+    def remove(self, handler: Handler[AnyEvent, Any, ..., Any]) -> None:
         """Remove a registered handler, ignoring one the bus doesn't have."""
         route = self._routes.get(handler.config)
         if route is not None:
             with self._registering:
                 route.handlers = route.handlers.removing(handler)
 
-    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any]:
+    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any, Any]:
         """Return the handlers registered for an event, empty if it has none."""
         route = self._routes.get(event)
         return _NO_HANDLERS if route is None else route.handlers
@@ -601,7 +612,7 @@ class DirectBus:
         fn: Callable[[], Result],
         *,
         hooks: Hooks[NoPayload, Result] | None = None,
-    ) -> SyncHandler[AnyEvent, Result]: ...
+    ) -> SyncHandler[AnyEvent, NoPayload, [], Result]: ...
 
     @overload
     def handle[Result](
@@ -610,7 +621,7 @@ class DirectBus:
         fn: None = None,
         *,
         hooks: Hooks[NoPayload, Result] | None = None,
-    ) -> Callable[[Callable[[], Result]], SyncHandler[AnyEvent, Result]]: ...
+    ) -> Callable[[Callable[[], Result]], SyncHandler[AnyEvent, NoPayload, [], Result]]: ...
 
     @overload
     def handle[Payload, Result](
@@ -619,7 +630,7 @@ class DirectBus:
         fn: Callable[[Payload], Result],
         *,
         hooks: Hooks[Payload, Result] | None = None,
-    ) -> SyncHandler[AnyEvent, Result]: ...
+    ) -> SyncHandler[AnyEvent, Payload, [Payload], Result]: ...
 
     @overload
     def handle[Payload, Result](
@@ -628,7 +639,9 @@ class DirectBus:
         fn: None = None,
         *,
         hooks: Hooks[Payload, Result] | None = None,
-    ) -> Callable[[Callable[[Payload], Result]], SyncHandler[AnyEvent, Result]]: ...
+    ) -> Callable[
+        [Callable[[Payload], Result]], SyncHandler[AnyEvent, Payload, [Payload], Result]
+    ]: ...
 
     def handle(
         self,
@@ -640,27 +653,31 @@ class DirectBus:
         """
         Register a sync handler for an event, as a decorator or direct call.
 
-        A request event's handler returns the reply; a pub/sub handler's return is ignored.
+        A request event's handler returns the reply; a pub/sub handler's return is ignored. A
+        function is registered once per event with the same hooks: registering it again
+        raises, so a module imported twice can't run it twice. Empty hooks count as none.
 
         :param config: The event to handle.
         :param fn: The handler. If omitted, returns a decorator.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this handler.
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
+        :raises DuplicateHandlerError: If the event already has `fn` with equal hooks.
+        :raises TypeError: If `fn` is async, a hook is async, or `fn` or a hook is unhashable.
         """
         if fn is not None:
             return self._core.register(config, fn, hooks)
         return self._core.decorator(config, hooks)
 
-    def remove(self, handler: Handler[AnyEvent, Any]) -> None:
+    def remove(self, handler: Handler[AnyEvent, Any, ..., Any]) -> None:
         """
         Remove a registered handler.
 
-        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
-            One this bus doesn't have is ignored.
+        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`,
+            or one equal to it. One this bus doesn't have is ignored.
         """
         self._core.remove(handler)
 
-    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any]:
+    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any, Any]:
         """
         Return the handlers registered for an event, in no particular order.
 
@@ -788,7 +805,7 @@ class AsyncDirectBus:
         fn: Callable[[], Awaitable[Result]],
         *,
         hooks: Hooks[NoPayload, Result] | None = None,
-    ) -> AsyncHandler[AnyEvent, Result]: ...
+    ) -> AsyncHandler[AnyEvent, NoPayload, [], Result]: ...
 
     @overload
     def handle[Result](
@@ -797,7 +814,7 @@ class AsyncDirectBus:
         fn: Callable[[], Result],
         *,
         hooks: Hooks[NoPayload, Result] | None = None,
-    ) -> Handler[AnyEvent, Result]: ...
+    ) -> Handler[AnyEvent, NoPayload, [], Result]: ...
 
     @overload
     def handle[Result](
@@ -815,7 +832,7 @@ class AsyncDirectBus:
         fn: Callable[[Payload], Awaitable[Result]],
         *,
         hooks: Hooks[Payload, Result] | None = None,
-    ) -> AsyncHandler[AnyEvent, Result]: ...
+    ) -> AsyncHandler[AnyEvent, Payload, [Payload], Result]: ...
 
     @overload
     def handle[Payload, Result](
@@ -824,7 +841,7 @@ class AsyncDirectBus:
         fn: Callable[[Payload], Result],
         *,
         hooks: Hooks[Payload, Result] | None = None,
-    ) -> Handler[AnyEvent, Result]: ...
+    ) -> Handler[AnyEvent, Payload, [Payload], Result]: ...
 
     @overload
     def handle[Payload, Result](
@@ -845,27 +862,31 @@ class AsyncDirectBus:
         """
         Register a sync or async handler for an event, as a decorator or direct call.
 
-        A request event's handler returns the reply; a pub/sub handler's return is ignored.
+        A request event's handler returns the reply; a pub/sub handler's return is ignored. A
+        function is registered once per event with the same hooks: registering it again
+        raises, so a module imported twice can't run it twice. Empty hooks count as none.
 
         :param config: The event to handle.
         :param fn: The handler. If omitted, returns a decorator.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around this handler.
         :returns: The {py:class}`Handler <stratae.events.handler.Handler>`, for `remove`.
+        :raises DuplicateHandlerError: If the event already has `fn` with equal hooks.
+        :raises TypeError: If `fn` or a hook is unhashable.
         """
         if fn is not None:
             return self._core.register(config, fn, hooks)
         return self._core.decorator(config, hooks)
 
-    def remove(self, handler: Handler[AnyEvent, Any]) -> None:
+    def remove(self, handler: Handler[AnyEvent, Any, ..., Any]) -> None:
         """
         Remove a registered handler.
 
-        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`.
-            One this bus doesn't have is ignored.
+        :param handler: The {py:class}`Handler <stratae.events.handler.Handler>` from `handle`,
+            or one equal to it. One this bus doesn't have is ignored.
         """
         self._core.remove(handler)
 
-    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any]:
+    def handlers(self, event: AnyEvent) -> Handlers[AnyEvent, Any, Any]:
         """
         Return the handlers registered for an event, in no particular order.
 

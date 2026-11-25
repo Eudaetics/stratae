@@ -131,7 +131,7 @@ import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, MutableMapping
 from itertools import count
 from typing import Any, cast
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID, uuid4
 
 import pytest
@@ -152,7 +152,7 @@ from stratae.events import (
     SyncHandler,
 )
 from stratae.events.envelope import EnvelopeHeaders
-from stratae.events.exceptions import AlreadyConnectedError
+from stratae.events.exceptions import AlreadyConnectedError, DuplicateHandlerError
 from stratae.events.failure import Drop, Reject
 from stratae.integrations.rabbitmq import (
     ATTEMPTS_HEADER,
@@ -825,6 +825,79 @@ async def test_remove_cancels_live_consumer(consumer: RabbitMQConsumer, channel:
         # Assert
         tag = channel.basic_consume.return_value.consumer_tag
         channel.basic_cancel.assert_awaited_once_with(tag)
+
+
+def test_same_function_for_one_config_is_refused(consumer: RabbitMQConsumer):
+    """
+    A function already registered for a config should be refused, whatever its deserializer.
+
+    Given: A function registered for an event and a consume config
+    When: It's registered again for that config, with empty hooks and another deserializer,
+        and for another event of the same config
+    Then: DuplicateHandlerError is raised each time, and one registration is kept
+    """
+
+    # Arrange
+    def handler(order: _OrderPlaced) -> None: ...
+
+    other = PubSub(_OrderPlaced, name="order archived")
+    consumer.handle(_order_placed, handler, config=_config)
+
+    # Act / Assert
+    with pytest.raises(DuplicateHandlerError, match="_OrderPlaced"):
+        consumer.handle(_order_placed, handler, config=_config, hooks=Hooks(), deserializer=Mock())
+    with pytest.raises(DuplicateHandlerError, match="order archived"):
+        consumer.handle(other, handler, config=_config)
+    assert len(consumer._registrations) == 1  # pyright: ignore[reportPrivateUsage]
+
+
+def test_same_function_for_another_config_registers(consumer: RabbitMQConsumer):
+    """
+    A function should register once for each consume config.
+
+    Given: A function registered for one queue
+    When: It's registered for another queue
+    Then: Both registrations are kept
+    """
+
+    # Arrange
+    def handler(order: _OrderPlaced) -> None: ...
+
+    consumer.handle(_order_placed, handler, config=_config)
+
+    # Act
+    consumer.handle(_order_placed, handler, config=RabbitMQConsumeConfig("audit"))
+
+    # Assert
+    assert len(consumer._registrations) == 2  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_remove_takes_an_equal_handler(consumer: RabbitMQConsumer, channel: AsyncMock):
+    """
+    ``remove`` should cancel the consumer of a handler equal to the one given.
+
+    Given: A connected consumer with a registered handler, and an equal handler built apart
+    When: remove is awaited with the equal handler
+    Then: The registration's consumer is cancelled, and none is left
+    """
+
+    # Arrange
+    async def handler(order: _OrderPlaced) -> None: ...
+
+    async def call(message: HandleCall) -> None: ...
+
+    consumer.handle(_order_placed, handler, config=_config)
+    equal: AsyncHandler[RabbitMQConsumeConfig, _OrderPlaced, [_OrderPlaced], None] = AsyncHandler(
+        handler, None, call, _config
+    )
+
+    # Act
+    async with consumer:
+        await consumer.remove(equal)
+
+        # Assert
+        channel.basic_cancel.assert_awaited_once()
+    assert consumer._registrations == {}  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_remove_unknown_handler_is_noop(consumer: RabbitMQConsumer, channel: AsyncMock):
@@ -2814,12 +2887,15 @@ def test_handle_types_pubsub_handlers_as_returning_none(consumer: RabbitMQConsum
     def returns_value(order: _OrderPlaced) -> str:
         return "done"
 
+    def decorated_returns_value(order: _OrderPlaced) -> str:
+        return "done"
+
     # Act
     consumer.handle(_order_placed, returns_none, config=_config)
     consumer.handle(_order_placed, resolves_to_none, config=_config)
     consumer.handle(_order_placed, returns_value, config=_config)  # pyright: ignore[reportCallIssue, reportArgumentType]
     decorate = consumer.handle(_order_placed, config=_config)
-    decorate(returns_value)  # pyright: ignore[reportArgumentType]
+    decorate(decorated_returns_value)  # pyright: ignore[reportArgumentType]
 
     # Assert
     assert len(consumer._registrations) == 4  # pyright: ignore[reportPrivateUsage]
