@@ -9,11 +9,12 @@ reads {py:func}`Envelope.current <stratae.events.envelope.Envelope.current>`, su
 filter. Lifespan events pass through untouched.
 
 A request that sends a valid UUID in the correlation id header joins that chain. The header
-is `x-correlation-id` by default, the same one Stratae's broker adapters send. A missing,
-malformed or non-UUID value starts a new chain, and never fails the request. Only the
-correlation id is taken from the caller: each request gets a new message id, since consumers
-deduplicate on it. Pass `trust_header=False` to ignore the header and start every request's
-chain afresh, as a public edge service might.
+is `x-correlation-id` by default: the correlation-id name of the default
+{py:class}`EnvelopeHeaders <stratae.events.envelope.EnvelopeHeaders>`, the same one Stratae's
+broker adapters send. A missing, malformed or non-UUID value starts a new chain, and never
+fails the request. Only the correlation id is taken from the caller: each request gets a new
+message id, since consumers deduplicate on it. Pass `trust_header=False` to ignore the header
+and start every request's chain afresh, as a public edge service might.
 
 The response carries the correlation id in the same header, so a caller can quote it when
 reporting a problem. Pass `echo_header=False` to leave it off. On a WebSocket, it's sent when
@@ -107,7 +108,7 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 from uuid import UUID
 
-from stratae.events.envelope import CORRELATION_ID_HEADER, Envelope, EnvelopeConfig
+from stratae.events.envelope import Envelope, EnvelopeConfig, EnvelopeHeaders
 
 type ASGIScope = MutableMapping[str, Any]
 type Message = MutableMapping[str, Any]
@@ -137,7 +138,7 @@ class EnvelopeMiddleware:
         self,
         app: ASGIApp,
         *,
-        header: str = CORRELATION_ID_HEADER,
+        header: str = EnvelopeHeaders().correlation_id,
         trust_header: bool = True,
         echo_header: bool = True,
         envelope: EnvelopeConfig = EnvelopeConfig(),
@@ -146,7 +147,9 @@ class EnvelopeMiddleware:
         Wrap `app`, opening an envelope around each of its requests and connections.
 
         :param app: The ASGI application to wrap.
-        :param header: The header carrying the correlation id, in requests and responses.
+        :param header: The header carrying the correlation id, in requests and responses. The
+            default {py:class}`EnvelopeHeaders <stratae.events.envelope.EnvelopeHeaders>`'
+            correlation-id name by default.
         :param trust_header: Whether a request's correlation id header is adopted. If false,
             every request starts a new chain.
         :param echo_header: Whether the response carries the request's correlation id.

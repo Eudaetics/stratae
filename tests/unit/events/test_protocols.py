@@ -60,7 +60,10 @@ from stratae.events import (
     operation_of,
     reserved_for,
 )
-from stratae.events.envelope import ENVELOPE_HEADERS
+from stratae.events.envelope import EnvelopeHeaders
+
+_HEADERS = EnvelopeHeaders()
+"""The default names an envelope travels under."""
 
 
 class _SyncProducer:
@@ -293,6 +296,6 @@ def test_reserved_for_adds_a_configs_own_names() -> None:
     When: Each one's reserved names are worked out
     Then: The first two give the envelope's names; the third adds its own, in lower case
     """
-    assert reserved_for(None) == ENVELOPE_HEADERS
-    assert reserved_for("orders") == ENVELOPE_HEADERS
-    assert reserved_for(_Reserving()) == ENVELOPE_HEADERS | {"x-attempts", "x-failure"}
+    assert reserved_for(None) == _HEADERS.names
+    assert reserved_for("orders") == _HEADERS.names
+    assert reserved_for(_Reserving()) == _HEADERS.names | {"x-attempts", "x-failure"}

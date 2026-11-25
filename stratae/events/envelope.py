@@ -3,8 +3,8 @@ Event envelope carrying correlation and causation identifiers across the call ch
 
 {py:class}`Envelope` carries a message id, a correlation id shared across its chain, and
 a causation id pointing at its parent. {py:func}`Envelope.scope` sets the active envelope
-for a block, creating a child of the current one by default. {py:func}`Envelope.to_headers`
-and {py:func}`Envelope.from_headers` carry it across a transport.
+for a block, creating a child of the current one by default. {py:class}`EnvelopeHeaders`
+names the headers it travels in across a transport, and writes it to them and reads it back.
 
 New ids are random version 4 UUIDs by default. With the `uuid` extra installed
 (`pip install stratae[uuid]`), they come from `uuid_utils.compat`, about two and a half times
@@ -61,17 +61,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Self
 from uuid import UUID
-
-MESSAGE_ID_HEADER = "x-message-id"
-CORRELATION_ID_HEADER = "x-correlation-id"
-CAUSATION_ID_HEADER = "x-causation-id"
-TIMESTAMP_HEADER = "x-timestamp"
-
-ENVELOPE_HEADERS = frozenset(
-    (MESSAGE_ID_HEADER, CORRELATION_ID_HEADER, CAUSATION_ID_HEADER, TIMESTAMP_HEADER)
-)
-"""The headers an envelope is carried in, which middleware can't set."""
-
 
 type _NewId = Callable[[], UUID]
 """Makes a new id for an envelope."""
@@ -167,38 +156,6 @@ class Envelope:
         # Positional, in field order: cheaper than keywords on this per-emit path.
         return type(self)(new_id(), self.correlation_id, self.message_id)
 
-    def to_headers(self) -> dict[str, str]:
-        """
-        Serialize the envelope as `x-` message headers.
-
-        :returns: A `dict` of string header values.
-        """
-        headers = {
-            MESSAGE_ID_HEADER: str(self.message_id),
-            CORRELATION_ID_HEADER: str(self.correlation_id),
-            TIMESTAMP_HEADER: self.timestamp.isoformat(),
-        }
-        if self.causation_id is not None:
-            headers[CAUSATION_ID_HEADER] = str(self.causation_id)
-        return headers
-
-    @classmethod
-    def from_headers(cls, headers: Mapping[str, object], new_id: _NewId = _new_uuid4) -> Self:
-        """
-        Rebuild an envelope from message headers, generating any missing fields.
-
-        :param headers: The message headers.
-        :param new_id: Makes a missing message or correlation id.
-        :returns: The rebuilt {py:class}`Envelope`.
-        :raises ValueError: If a header is present but unparseable.
-        """
-        return cls(
-            message_id=_uuid(headers.get(MESSAGE_ID_HEADER)) or new_id(),
-            correlation_id=_uuid(headers.get(CORRELATION_ID_HEADER)) or new_id(),
-            causation_id=_uuid(headers.get(CAUSATION_ID_HEADER)),
-            timestamp=_when(headers.get(TIMESTAMP_HEADER)),
-        )
-
     @staticmethod
     def current() -> Envelope | None:
         """Return the active envelope, or `None` outside any {py:func}`Envelope.scope` block."""
@@ -217,6 +174,68 @@ class Envelope:
         :returns: A context manager yielding the active {py:class}`Envelope`.
         """
         return _Scope(cls, envelope, new_id)
+
+
+@dataclass(frozen=True, slots=True)
+class EnvelopeHeaders:
+    """
+    The names of the headers an envelope travels in, and how it's written to and read from them.
+
+    An immutable value: values with the same names are equal. The default names are
+    `x-message-id`, `x-correlation-id`, `x-causation-id` and `x-timestamp`. A transport writes an
+    envelope to headers with `write`, and a receiver rebuilds it with `read`. Each value is text:
+    the ids as UUID strings, and the timestamp in ISO 8601.
+    """
+
+    message_id: str = "x-message-id"
+    """The header carrying the message id."""
+    correlation_id: str = "x-correlation-id"
+    """The header carrying the correlation id, shared across a chain."""
+    causation_id: str = "x-causation-id"
+    """The header carrying the causation id, left out of a root envelope's headers."""
+    timestamp: str = "x-timestamp"
+    """The header carrying when the envelope was made."""
+    names: frozenset[str] = field(init=False, repr=False, compare=False)
+    """The four header names, worked out once."""
+
+    def __post_init__(self) -> None:
+        """Work out the names once, since the value can't change."""
+        names = frozenset((self.message_id, self.correlation_id, self.causation_id, self.timestamp))
+        object.__setattr__(self, "names", names)
+
+    def write(self, envelope: Envelope) -> dict[str, str]:
+        """
+        Return an envelope's headers, leaving out the causation id of a root envelope.
+
+        :param envelope: The envelope to write.
+        :returns: A `dict` of header names to text values.
+        """
+        headers = {
+            self.message_id: str(envelope.message_id),
+            self.correlation_id: str(envelope.correlation_id),
+            self.timestamp: envelope.timestamp.isoformat(),
+        }
+        if envelope.causation_id is not None:
+            headers[self.causation_id] = str(envelope.causation_id)
+        return headers
+
+    def read(self, headers: Mapping[str, object], new_id: _NewId = _new_uuid4) -> Envelope:
+        """
+        Rebuild an envelope from headers, making any id that's missing.
+
+        A header that's absent, or `None`, is missing. A missing timestamp is the current time.
+
+        :param headers: The headers to read.
+        :param new_id: Makes a missing message or correlation id.
+        :returns: The rebuilt {py:class}`Envelope`.
+        :raises ValueError: If a header is present but unparseable.
+        """
+        return Envelope(
+            _uuid(headers.get(self.message_id)) or new_id(),
+            _uuid(headers.get(self.correlation_id)) or new_id(),
+            _uuid(headers.get(self.causation_id)),
+            _when(headers.get(self.timestamp)),
+        )
 
 
 _set_message_id = Envelope.__dict__["message_id"].__set__

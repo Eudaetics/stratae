@@ -14,8 +14,7 @@ from uuid import UUID
 from pamqp.commands import Basic
 from pamqp.common import FieldTable
 
-from stratae.events import CORRELATION_ID_HEADER, MESSAGE_ID_HEADER, TIMESTAMP_HEADER, Envelope
-from stratae.events.envelope import ENVELOPE_HEADERS
+from stratae.events import Envelope, EnvelopeHeaders
 from stratae.events.failure import failure_reason
 from stratae.events.middleware import NO_HEADERS
 from stratae.integrations.rabbitmq.config import ATTEMPTS_HEADER, FAILURE_HEADER
@@ -26,6 +25,9 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+_HEADERS = EnvelopeHeaders()
+"""The names the adapter writes an envelope under, and reads it from."""
+
 
 def stamp(
     properties: Basic.Properties | None, envelope: Envelope, headers: Mapping[str, object]
@@ -35,7 +37,7 @@ def stamp(
     merged = dict(stamped.headers or {})
     if headers:
         merged |= _field_table(headers)
-    stamped.headers = merged | envelope.to_headers()
+    stamped.headers = merged | _HEADERS.write(envelope)
     stamped.message_id = str(envelope.message_id)
     stamped.correlation_id = str(envelope.correlation_id)
     stamped.timestamp = envelope.timestamp
@@ -69,15 +71,16 @@ def envelope_from(message: DeliveredMessage, new_id: Callable[[], UUID]) -> Enve
     """Rebuild the Envelope carried by a delivered message, making any missing id with `new_id`."""
     properties = message.header.properties
     native = {
-        MESSAGE_ID_HEADER: properties.message_id,
-        CORRELATION_ID_HEADER: properties.correlation_id,
-        TIMESTAMP_HEADER: properties.timestamp and properties.timestamp.isoformat(),
+        _HEADERS.message_id: properties.message_id,
+        _HEADERS.correlation_id: properties.correlation_id,
+        _HEADERS.timestamp: properties.timestamp and properties.timestamp.isoformat(),
     }
     headers = native | dict(properties.headers or {})
-    if (headers.get(MESSAGE_ID_HEADER) is None) != (headers.get(CORRELATION_ID_HEADER) is None):
+    message_id, correlation_id = _HEADERS.message_id, _HEADERS.correlation_id
+    if (headers.get(message_id) is None) != (headers.get(correlation_id) is None):
         _log.info("partial envelope headers; minting the missing id: %r", headers)
     try:
-        return Envelope.from_headers(headers, new_id)
+        return _HEADERS.read(headers, new_id)
     except ValueError:
         _log.warning("unparseable envelope headers; scoping a fresh envelope: %r", headers)
         return None
@@ -94,7 +97,7 @@ def headers_from(message: DeliveredMessage) -> Mapping[str, object]:
     if not delivered:
         return NO_HEADERS
     headers = dict(delivered)
-    for name in ENVELOPE_HEADERS:
+    for name in _HEADERS.names:
         headers.pop(name, None)
     return MappingProxyType(headers)
 

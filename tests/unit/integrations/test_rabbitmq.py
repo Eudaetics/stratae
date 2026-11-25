@@ -105,9 +105,6 @@ from pytest_mock import MockerFixture
 
 from stratae.backoff import Delays, Exponential, Limited
 from stratae.events import (
-    CAUSATION_ID_HEADER,
-    CORRELATION_ID_HEADER,
-    MESSAGE_ID_HEADER,
     Addressed,
     AsyncPubSubProducer,
     Encoded,
@@ -122,6 +119,7 @@ from stratae.events import (
     PubSubProducer,
     Request,
 )
+from stratae.events.envelope import EnvelopeHeaders
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
 from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer, OutboxRelay
 from stratae.integrations.rabbitmq import (
@@ -133,6 +131,9 @@ from stratae.integrations.rabbitmq import (
     RabbitMQPublisher,
 )
 from stratae.middleware import MiddlewareKindError
+
+_HEADERS = EnvelopeHeaders()
+"""The default names an envelope travels under."""
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -755,7 +756,7 @@ async def test_emit_publishes_with_properties(publisher: RabbitMQPublisher, chan
     sent = channel.basic_publish.await_args.kwargs["properties"]
     assert sent.delivery_mode == 2
     assert sent.headers["custom"] == "v"
-    assert MESSAGE_ID_HEADER in sent.headers
+    assert _HEADERS.message_id in sent.headers
     assert properties.headers == {"custom": "v"}
 
 
@@ -776,10 +777,10 @@ async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: Async
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]
-    assert sent.headers[CORRELATION_ID_HEADER] == str(envelope.correlation_id)
-    assert sent.headers[CAUSATION_ID_HEADER] == str(envelope.message_id)
-    assert sent.headers[MESSAGE_ID_HEADER] != str(envelope.message_id)
-    assert sent.message_id == sent.headers[MESSAGE_ID_HEADER]
+    assert sent.headers[_HEADERS.correlation_id] == str(envelope.correlation_id)
+    assert sent.headers[_HEADERS.causation_id] == str(envelope.message_id)
+    assert sent.headers[_HEADERS.message_id] != str(envelope.message_id)
+    assert sent.message_id == sent.headers[_HEADERS.message_id]
     assert sent.correlation_id == str(envelope.correlation_id)
     assert sent.timestamp is not None
 
@@ -1087,9 +1088,9 @@ async def test_emit_sends_given_envelope(publisher: RabbitMQPublisher, channel: 
 
     # Assert
     sent = channel.basic_publish.await_args.kwargs["properties"]
-    assert sent.headers[MESSAGE_ID_HEADER] == str(held.message_id)
-    assert sent.headers[CORRELATION_ID_HEADER] == str(held.correlation_id)
-    assert sent.headers[CAUSATION_ID_HEADER] == str(held.causation_id)
+    assert sent.headers[_HEADERS.message_id] == str(held.message_id)
+    assert sent.headers[_HEADERS.correlation_id] == str(held.correlation_id)
+    assert sent.headers[_HEADERS.causation_id] == str(held.causation_id)
     assert sent.message_id == str(held.message_id)
     assert sent.correlation_id == str(held.correlation_id)
     assert sent.timestamp == held.timestamp
@@ -1186,9 +1187,9 @@ async def test_middleware_headers_sent(connect_mock: AsyncMock, channel: AsyncMo
 
     # Assert
     tagged, untagged = (c.kwargs["properties"] for c in channel.basic_publish.await_args_list)
-    envelope = Envelope.from_headers(tagged.headers)
-    assert tagged.headers == {"custom": "v", "x-tenant": "acme"} | envelope.to_headers()
-    assert untagged.headers == Envelope.from_headers(untagged.headers).to_headers()
+    envelope = _HEADERS.read(tagged.headers)
+    assert tagged.headers == {"custom": "v", "x-tenant": "acme"} | _HEADERS.write(envelope)
+    assert untagged.headers == _HEADERS.write(_HEADERS.read(untagged.headers))
 
 
 async def test_emit_given_headers(connect_mock: AsyncMock, channel: AsyncMock):
@@ -1263,7 +1264,7 @@ async def test_header_value_amqp_cannot_carry_refused(connect_mock: AsyncMock, c
     channel.basic_publish.assert_not_awaited()
 
 
-@pytest.mark.parametrize("name", [MESSAGE_ID_HEADER, "x-attempts", "X-Failure"])
+@pytest.mark.parametrize("name", [_HEADERS.message_id, "x-attempts", "X-Failure"])
 async def test_reserved_header_refused(connect_mock: AsyncMock, channel: AsyncMock, name: str):
     """
     A reserved header should raise ValueError, from middleware or given to emit.

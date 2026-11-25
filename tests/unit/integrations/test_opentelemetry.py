@@ -60,6 +60,7 @@ from stratae.events import (
     Operation,
     PubSub,
 )
+from stratae.events.envelope import EnvelopeHeaders
 from stratae.events.middleware import HandleCall, Middleware, PublishCall
 from stratae.events.outbox import InMemoryOutboxStore, OutboxConfig, OutboxProducer
 from stratae.integrations.opentelemetry import tracing
@@ -70,6 +71,9 @@ from stratae.integrations.rabbitmq import (
     RabbitMQPublisher,
 )
 from stratae.middleware import chain
+
+_HEADERS = EnvelopeHeaders()
+"""The default names an envelope travels under."""
 
 _URL = "amqp://guest:guest@localhost/"
 
@@ -348,7 +352,7 @@ async def test_publish_span(
     # Assert
     span = _spans(exporter)["publish events:order.placed"]
     headers = channel.basic_publish.await_args.kwargs["properties"].headers
-    envelope = Envelope.from_headers(headers)
+    envelope = _HEADERS.read(headers)
     assert span.kind is SpanKind.PRODUCER
     assert dict(span.attributes or {}) == {
         "stratae.event": "_OrderPlaced",
@@ -479,7 +483,7 @@ async def test_process_span(
     )
     consumer.handle(_order_placed, lambda order: None, config=config)
     envelope = Envelope()
-    headers: dict[str, Any] = envelope.to_headers()
+    headers: dict[str, Any] = _HEADERS.write(envelope)
     with provider.get_tracer("test").start_as_current_span("publish") as publish:
         propagate.inject(headers)
 
@@ -600,7 +604,7 @@ async def test_no_sdk_changes_nothing(connect_mock: AsyncMock, channel: AsyncMoc
 
     # Assert
     headers = channel.basic_publish.await_args.kwargs["properties"].headers
-    assert headers == Envelope.from_headers(headers).to_headers()
+    assert headers == _HEADERS.write(_HEADERS.read(headers))
     assert ran == [2]
 
 

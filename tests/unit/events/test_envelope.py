@@ -10,12 +10,10 @@ from uuid import UUID, uuid4
 import pytest
 
 import stratae.events.envelope as envelope_module
-from stratae.events import (
-    CAUSATION_ID_HEADER,
-    CORRELATION_ID_HEADER,
-    MESSAGE_ID_HEADER,
-    Envelope,
-)
+from stratae.events import Envelope, EnvelopeHeaders
+
+_HEADERS = EnvelopeHeaders()
+"""The default names an envelope travels under."""
 
 
 def test_envelope_default_fields():
@@ -130,10 +128,10 @@ class _TracedEnvelope(Envelope):
 
 def test_envelope_constructors_keep_the_subclass():
     """
-    root, child and from_headers build the class they're called on.
+    Envelope.root and child should build the class they're called on.
 
     Given: A subclass of Envelope.
-    When: An envelope is made from it with root, child, and from_headers.
+    When: An envelope is made from it with root, then child.
     Then: Each is an instance of the subclass, and the child stays in the chain.
     """
     # Arrange
@@ -141,12 +139,10 @@ def test_envelope_constructors_keep_the_subclass():
 
     # Act
     child = root.child()
-    rebuilt = _TracedEnvelope.from_headers(child.to_headers())
 
     # Assert
     assert type(root) is _TracedEnvelope
     assert type(child) is _TracedEnvelope
-    assert type(rebuilt) is _TracedEnvelope
     assert child.causation_id == root.message_id
 
 
@@ -234,17 +230,17 @@ def test_scope_keeps_the_subclass():
 
 def test_headers_round_trip():
     """
-    from_headers reconstructs the envelope to_headers serialized.
+    EnvelopeHeaders.read should rebuild the envelope write wrote.
 
     Given: An envelope with a causation id.
-    When: It is serialized to headers and rebuilt.
+    When: It is written to headers and read back.
     Then: All fields survive the round trip.
     """
     # Arrange
     envelope = Envelope(causation_id=uuid4())
 
     # Act
-    rebuilt = Envelope.from_headers(envelope.to_headers())
+    rebuilt = _HEADERS.read(_HEADERS.write(envelope))
 
     # Assert
     assert rebuilt is not None
@@ -254,34 +250,34 @@ def test_headers_round_trip():
     assert rebuilt.timestamp == envelope.timestamp
 
 
-def test_to_headers_omits_absent_causation():
+def test_write_omits_absent_causation():
     """
-    A root envelope serializes without a causation header.
+    A root envelope is written without a causation header.
 
     Given: An envelope with no causation id.
-    When: It is serialized to headers.
+    When: It is written to headers.
     Then: The causation header is absent.
     """
     # Act
-    headers = Envelope().to_headers()
+    headers = _HEADERS.write(Envelope())
 
     # Assert
-    assert CAUSATION_ID_HEADER not in headers
+    assert _HEADERS.causation_id not in headers
 
 
-def test_from_headers_defaults_absent_fields():
+def test_read_defaults_absent_fields():
     """
     Fields absent from the headers are minted rather than rejected.
 
     Given: Headers carrying only a message id.
-    When: from_headers is called.
+    When: They're read.
     Then: The message id is preserved and the rest are defaulted.
     """
     # Arrange
     message_id = uuid4()
 
     # Act
-    rebuilt = Envelope.from_headers({MESSAGE_ID_HEADER: str(message_id)})
+    rebuilt = _HEADERS.read({_HEADERS.message_id: str(message_id)})
 
     # Assert
     assert rebuilt.message_id == message_id
@@ -290,19 +286,19 @@ def test_from_headers_defaults_absent_fields():
     assert rebuilt.timestamp.tzinfo == UTC
 
 
-def test_from_headers_treats_none_values_as_absent():
+def test_read_treats_none_values_as_absent():
     """
     Ids present as None values read as absent, not as corruption.
 
     Given: Headers whose identifying keys exist but hold None.
-    When: from_headers is called.
+    When: They're read.
     Then: A fresh envelope is minted without raising.
     """
     # Arrange
-    headers = {MESSAGE_ID_HEADER: None, CORRELATION_ID_HEADER: None}
+    headers = {_HEADERS.message_id: None, _HEADERS.correlation_id: None}
 
     # Act
-    envelope = Envelope.from_headers(headers)
+    envelope = _HEADERS.read(headers)
 
     # Assert
     assert envelope.message_id is not None
@@ -310,20 +306,45 @@ def test_from_headers_treats_none_values_as_absent():
     assert envelope.causation_id is None
 
 
-def test_from_headers_with_invalid_ids_raises():
+def test_read_with_invalid_ids_raises():
     """
     Unparseable ids raise rather than silently dropping the trace.
 
     Given: Headers whose message id is not a UUID.
-    When: from_headers is called.
+    When: They're read.
     Then: ValueError is raised.
     """
     # Arrange
-    headers = {MESSAGE_ID_HEADER: "not-a-uuid", CORRELATION_ID_HEADER: str(uuid4())}
+    headers = {_HEADERS.message_id: "not-a-uuid", _HEADERS.correlation_id: str(uuid4())}
 
     # Act & Assert
     with pytest.raises(ValueError, match="badly formed"):
-        Envelope.from_headers(headers)
+        _HEADERS.read(headers)
+
+
+def test_custom_names_write_and_read_under_them():
+    """
+    A value with other names should write and read an envelope under those names alone.
+
+    Given: Header names prefixed for one service, and an envelope with a causation id
+    When: The envelope is written with them, and the headers read back with them and with the
+        default names
+    Then: Only the custom names are written, they're the value's names, the custom read
+        rebuilds the envelope, and the default read finds none of its ids
+    """
+    # Arrange
+    custom = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
+    envelope = Envelope(causation_id=uuid4())
+
+    # Act
+    headers = custom.write(envelope)
+
+    # Assert
+    assert set(headers) == custom.names == {"acme-msg", "acme-corr", "acme-cause", "acme-at"}
+    assert custom.read(headers) == envelope
+    assert _HEADERS.read(headers).message_id != envelope.message_id
+    assert custom == EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
+    assert custom != _HEADERS
 
 
 def test_current_returns_none_outside_context():
@@ -580,9 +601,9 @@ def test_child_takes_message_id_from_source():
     assert child.causation_id == parent.message_id
 
 
-def test_from_headers_takes_only_missing_ids_from_source():
+def test_read_takes_only_missing_ids_from_source():
     """
-    Envelope.from_headers should draw from the source only for ids the headers lack.
+    EnvelopeHeaders.read should draw from the source only for ids the headers lack.
 
     Given: Headers carrying a correlation id but no message id, and a counting id source
     When: An envelope is rebuilt from them with the source
@@ -594,7 +615,7 @@ def test_from_headers_takes_only_missing_ids_from_source():
     correlation = uuid4()
 
     # Act
-    envelope = Envelope.from_headers({CORRELATION_ID_HEADER: str(correlation)}, ids)
+    envelope = _HEADERS.read({_HEADERS.correlation_id: str(correlation)}, ids)
 
     # Assert
     assert envelope.message_id == UUID(int=1)
