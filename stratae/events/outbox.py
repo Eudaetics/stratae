@@ -215,9 +215,6 @@ class OutboxMessage:
     added, whatever their values. Its envelope isn't among them.
     """
 
-    created_at: datetime
-    """When it was emitted."""
-
     address: str | None = None
     """
     Where its route addressed it, such as a routing key, if the route addresses each message
@@ -235,6 +232,11 @@ class OutboxMessage:
     def id(self) -> UUID:
         """The message id: its envelope's. Unique per message."""
         return self.envelope.message_id
+
+    @property
+    def created_at(self) -> datetime:
+        """When it was emitted: its envelope's timestamp."""
+        return self.envelope.timestamp
 
 
 @dataclass(frozen=True, slots=True)
@@ -652,7 +654,6 @@ class OutboxProducer[Target]:
             route=route,
             body=body,
             headers=message.headers,
-            created_at=_now(),
             key=config.key(payload) if config.key is not None else None,
             address=address(payload) if address is not None else None,
         )
