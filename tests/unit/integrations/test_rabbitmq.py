@@ -628,10 +628,10 @@ async def test_outbox_relays_to_each_records_address(
 
     # Assert
     published = channel.basic_publish.await_args
-    assert record.address == "order.4"
+    assert record.message.address == "order.4"
     assert published.kwargs["routing_key"] == "order.4"
-    assert published.args[0] == record.body
-    assert published.kwargs["properties"].message_id == str(record.id)
+    assert published.args[0] == record.message.body
+    assert published.kwargs["properties"].message_id == str(record.message.id)
 
 
 async def test_outbox_encodes_with_the_configs_serializer(

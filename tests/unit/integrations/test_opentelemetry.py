@@ -564,10 +564,10 @@ async def test_outbox_write_is_create_span(
     # Assert
     span = _spans(exporter)["create events:order.placed"]
     (record,) = store.pending()
-    stored = trace.get_current_span(propagate.extract(record.headers)).get_span_context()
+    stored = trace.get_current_span(propagate.extract(record.message.headers)).get_span_context()
     assert span.kind is SpanKind.PRODUCER
     assert (span.attributes or {})["messaging.operation.type"] == "create"
-    assert (span.attributes or {})["messaging.message.id"] == str(record.id)
+    assert (span.attributes or {})["messaging.message.id"] == str(record.message.id)
     assert stored.span_id == _id_of(span)
 
 

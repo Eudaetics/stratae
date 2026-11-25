@@ -125,6 +125,8 @@ from stratae.events.failure import Retry
 from stratae.events.outbox import (
     InMemoryOutboxStore,
     OutboxConfig,
+    OutboxDelivery,
+    OutboxMessage,
     OutboxProducer,
     OutboxRecord,
     OutboxRelay,
@@ -209,21 +211,31 @@ class _Publisher:
         self.addresses.append(payload.address)
 
 
-def _record(store: InMemoryOutboxStore, order_id: int = 1, **changes: Any) -> OutboxRecord:
-    """Add a record straight to the store, as the producer would, and return it."""
+def _record(
+    store: InMemoryOutboxStore,
+    order_id: int = 1,
+    available_at: datetime | None = None,
+    **changes: Any,
+) -> OutboxRecord:
+    """
+    Add a message straight to the store, as the producer would, and return its record.
+
+    Given `available_at`, it's rescheduled to be due then, as a failed attempt would leave it.
+    """
     envelope = Envelope()
-    now = datetime.now(UTC)
-    record = OutboxRecord(
+    message = OutboxMessage(
         id=envelope.message_id,
         route="_Order",
         body=str(order_id).encode(),
         headers=envelope.to_headers(),
-        created_at=now,
-        available_at=now,
+        created_at=datetime.now(UTC),
     )
-    record = replace(record, **changes)
-    store.add(record)
-    return record
+    message = replace(message, **changes)
+    store.add(message)
+    delivery = OutboxDelivery(message.created_at if available_at is None else available_at)
+    if available_at is not None:
+        store.reschedule(message.id, delivery)
+    return OutboxRecord(message, delivery)
 
 
 class _AsyncStore:
@@ -244,25 +256,25 @@ class _AsyncStore:
         if failure is not None:
             raise failure
 
-    async def add(self, record: OutboxRecord) -> None:
+    async def add(self, message: OutboxMessage) -> None:
         await self._query("add")
-        self.inner.add(record)
+        self.inner.add(message)
 
     async def claim(self, limit: int) -> Sequence[OutboxRecord]:
         await self._query("claim")
         return self.inner.claim(limit)
 
-    async def mark_sent(self, records: Sequence[OutboxRecord]) -> None:
+    async def mark_sent(self, message_ids: Sequence[UUID]) -> None:
         await self._query("mark_sent")
-        self.inner.mark_sent(records)
+        self.inner.mark_sent(message_ids)
 
-    async def reschedule(self, record: OutboxRecord) -> None:
+    async def reschedule(self, message_id: UUID, delivery: OutboxDelivery) -> None:
         await self._query("reschedule")
-        self.inner.reschedule(record)
+        self.inner.reschedule(message_id, delivery)
 
-    async def mark_failed(self, record: OutboxRecord) -> None:
+    async def mark_failed(self, message_id: UUID, delivery: OutboxDelivery) -> None:
         await self._query("mark_failed")
-        self.inner.mark_failed(record)
+        self.inner.mark_failed(message_id, delivery)
 
 
 class _WatchedStore(InMemoryOutboxStore):
@@ -273,8 +285,8 @@ class _WatchedStore(InMemoryOutboxStore):
         self._marked = asyncio.Event()
 
     @override
-    def mark_sent(self, records: Sequence[OutboxRecord]) -> None:
-        super().mark_sent(records)
+    def mark_sent(self, message_ids: Sequence[UUID]) -> None:
+        super().mark_sent(message_ids)
         self._marked.set()
         self._marked = asyncio.Event()
 
@@ -326,7 +338,7 @@ async def test_emit_writes_record(outbox: OutboxProducer[object], store: InMemor
     Given: An event bound with an ordering key
     When: It's emitted inside an envelope scope
     Then: One record holds the envelope's message id and headers, the serialized body and the
-          key, created and available at the same moment, and emit returns None
+          key, due at its creation time with no attempts, and emit returns None
     """
     # Arrange
     place = outbox.bind(
@@ -340,13 +352,12 @@ async def test_emit_writes_record(outbox: OutboxProducer[object], store: InMemor
         result = await place(order_id=7)
 
     # Assert
-    (record,) = store.pending()
+    ((message, delivery),) = [(record.message, record.delivery) for record in store.pending()]
     assert result is None
-    assert record.envelope.causation_id == parent.message_id
-    assert record.id == record.envelope.message_id
-    assert (record.route, record.body, record.key) == ("_Order", b"7", "order-7")
-    assert record.created_at == record.available_at
-    assert record.attempts == 0
+    assert message.envelope.causation_id == parent.message_id
+    assert message.id == message.envelope.message_id
+    assert (message.route, message.body, message.key) == ("_Order", b"7", "order-7")
+    assert delivery == OutboxDelivery(message.created_at)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -382,7 +393,7 @@ async def test_route_config_serializer_and_signal_body(
     await ping()
 
     # Assert
-    assert [record.body for record in store.pending()] == [b"custom", b"2", b""]
+    assert [record.message.body for record in store.pending()] == [b"custom", b"2", b""]
 
 
 async def test_hooks_run_inside_record_envelope(
@@ -409,7 +420,7 @@ async def test_hooks_run_inside_record_envelope(
 
     # Assert
     (record,) = store.pending()
-    assert seen == [record.envelope]
+    assert seen == [record.message.envelope]
 
 
 async def _tag_tenant(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
@@ -434,7 +445,9 @@ async def test_middleware_headers_stored(store: InMemoryOutboxStore):
 
     # Assert
     (record,) = store.pending()
-    assert record.headers == {"x-tenant": "acme True"} | record.envelope.to_headers()
+    assert (
+        record.message.headers == {"x-tenant": "acme True"} | record.message.envelope.to_headers()
+    )
 
 
 async def test_middleware_reserved_header_writes_nothing(store: InMemoryOutboxStore):
@@ -845,7 +858,7 @@ async def test_transaction_keeps_or_drops(
         await act()
 
     # Assert
-    assert [record.body for record in store.pending()] == [b"1", b"2"]
+    assert [record.message.body for record in store.pending()] == [b"1", b"2"]
 
 
 async def test_nested_transactions(outbox: OutboxProducer[object], store: InMemoryOutboxStore):
@@ -880,7 +893,7 @@ async def test_nested_transactions(outbox: OutboxProducer[object], store: InMemo
             await fail_inner()
 
     # Assert
-    assert [record.body for record in store.pending()] == [b"2"]
+    assert [record.message.body for record in store.pending()] == [b"2"]
 
 
 def test_claim_due_unclaimed_oldest_first(store: InMemoryOutboxStore):
@@ -895,7 +908,7 @@ def test_claim_due_unclaimed_oldest_first(store: InMemoryOutboxStore):
     first, second, third = [_record(store, n) for n in (1, 2, 3)]
     later = datetime.now(UTC) + timedelta(hours=1)
     _record(store, 4, available_at=later)
-    store.mark_sent([_record(store, 5)])
+    store.mark_sent([_record(store, 5).message.id])
 
     # Act
     claimed = [store.claim(2), store.claim(10)]
@@ -920,7 +933,7 @@ def test_claimed_record_leased_until_released(store: InMemoryOutboxStore):
     # Act
     first = store.claim(10)
     again = store.claim(10)
-    store.reschedule(record)
+    store.reschedule(record.message.id, record.delivery)
     released = store.claim(10)
     expiring.claim(10)
     expired = expiring.claim(10)
@@ -940,12 +953,12 @@ def test_marking_moves_records(store: InMemoryOutboxStore):
     """
     # Arrange
     sent, retried, failed = [_record(store, n) for n in (1, 2, 3)]
-    retried = replace(retried, attempts=1, error="boom")
+    retried = OutboxRecord(retried.message, replace(retried.delivery, attempts=1, error="boom"))
 
     # Act
-    store.mark_sent([sent])
-    store.reschedule(retried)
-    store.mark_failed(failed)
+    store.mark_sent([sent.message.id])
+    store.reschedule(retried.message.id, retried.delivery)
+    store.mark_failed(failed.message.id, failed.delivery)
 
     # Assert
     assert (store.sent(), store.pending(), store.failed()) == ([sent], [retried], [failed])
@@ -978,8 +991,8 @@ async def test_run_once_publishes_and_marks_sent(
     # Assert
     assert sent == 2
     assert publisher.published == [
-        (_order_placed, "orders", b"1", records[0].envelope),
-        (_order_placed, "orders", b"2", records[1].envelope),
+        (_order_placed, "orders", b"1", records[0].message.envelope),
+        (_order_placed, "orders", b"2", records[1].message.envelope),
     ]
     assert store.sent() == records
 
@@ -1012,7 +1025,7 @@ async def test_relay_publishes_at_each_records_address(
     await OutboxRelay(store, publisher, outbox).run_once()
 
     # Assert
-    assert [record.address for record in store.sent()] == ["order.7", None]
+    assert [record.message.address for record in store.sent()] == ["order.7", None]
     assert publisher.addresses == ["order.7", None]
 
 
@@ -1035,36 +1048,34 @@ async def test_relay_publishes_added_headers(store: InMemoryOutboxStore):
     await OutboxRelay(store, publisher, outbox).run_once()
 
     # Assert
-    assert publisher.published == [(_order_placed, "orders", b"1", record.envelope)]
+    assert publisher.published == [(_order_placed, "orders", b"1", record.message.envelope)]
     assert publisher.headers == [{"x-tenant": "acme True"}]
 
 
-def _stored(**changes: Any) -> OutboxRecord:
-    """Return a record as a store would hold it, created at the start of 2026."""
+def _stored(attempts: int = 0, **changes: Any) -> OutboxRecord:
+    """Return a record as a store would hold it, created and due at the start of 2026."""
     created = datetime(2026, 1, 1, tzinfo=UTC)
-    record = OutboxRecord(Envelope().message_id, "_Order", b"1", {}, created, created)
-    return replace(record, **changes)
+    message = replace(OutboxMessage(Envelope().message_id, "_Order", b"1", {}, created), **changes)
+    return OutboxRecord(message, OutboxDelivery(created, attempts))
 
 
 def test_failed_attempt_retries_while_backoff_lasts():
     """
     A failed publish should be retried the backoff's delay after the failure.
 
-    Given: A record with one attempt, and a backoff of 10 then 20 seconds
+    Given: A delivery state with one attempt, and a backoff of 10 then 20 seconds
     When: Its second attempt fails
     Then: It's retried in 20 seconds, with two attempts and the error
     """
     # Arrange
-    record = _stored(attempts=1)
-    now = record.created_at + timedelta(minutes=5)
+    delivery = OutboxDelivery(datetime(2026, 1, 1, tzinfo=UTC), attempts=1)
+    now = delivery.available_at + timedelta(minutes=5)
 
     # Act
-    outcome = _failed_attempt(record, RuntimeError("refused"), Delays(10, 20), now)
+    outcome = _failed_attempt(delivery, RuntimeError("refused"), Delays(10, 20), now)
 
     # Assert
-    retried = replace(
-        record, attempts=2, error="RuntimeError: refused", available_at=now + timedelta(seconds=20)
-    )
+    retried = OutboxDelivery(now + timedelta(seconds=20), 2, "RuntimeError: refused")
     assert outcome == _Failed(retried, Retry(20))
 
 
@@ -1072,20 +1083,21 @@ def test_failed_attempt_parks_once_backoff_runs_out():
     """
     A failed publish should park its record once the backoff runs out.
 
-    Given: A record with one attempt, and a backoff of one delay
+    Given: A delivery state with one attempt, and a backoff of one delay
     When: Its second attempt fails
     Then: It's parked with two attempts and the error, still available when it was
     """
     # Arrange
-    record = _stored(attempts=1)
+    delivery = OutboxDelivery(datetime(2026, 1, 1, tzinfo=UTC), attempts=1)
 
     # Act
     outcome = _failed_attempt(
-        record, LookupError("gone"), Delays(10), record.created_at + timedelta(minutes=5)
+        delivery, LookupError("gone"), Delays(10), delivery.available_at + timedelta(minutes=5)
     )
 
     # Assert
-    assert outcome == _Failed(replace(record, attempts=2, error="LookupError: gone"), _Park())
+    parked = replace(delivery, attempts=2, error="LookupError: gone")
+    assert outcome == _Failed(parked, _Park())
 
 
 @pytest.mark.parametrize("exc", [ConnectionError("refused"), NotConnectedError("closed")])
@@ -1093,18 +1105,18 @@ def test_failed_attempt_outage_counts_no_attempt(exc: Exception):
     """
     A publish that can't reach the broker should be an outage, not an attempt.
 
-    Given: A record, and a connection error or a closed publisher
+    Given: A delivery state, and a connection error or a closed publisher
     When: Its publish fails with it
-    Then: The outcome is an outage, carrying the record unchanged
+    Then: The outcome is an outage, with no new delivery state
     """
     # Arrange
-    record = _stored()
+    delivery = OutboxDelivery(datetime(2026, 1, 1, tzinfo=UTC))
 
     # Act
-    outcome = _failed_attempt(record, exc, Delays(10), record.created_at)
+    outcome = _failed_attempt(delivery, exc, Delays(10), delivery.available_at)
 
     # Assert
-    assert outcome == _Outage(record)
+    assert outcome == _Outage()
 
 
 def test_settlement_writes_each_outcome():
@@ -1114,27 +1126,32 @@ def test_settlement_writes_each_outcome():
     Given: Six claimed records: one sent, one retrying, one parked, one hit by an outage, and
            two with no outcome
     When: The batch is settled
-    Then: The sent one is marked sent, the parked one parked in its new state, and the
-          retrying one goes back in its new state, with the others unchanged
+    Then: The sent one is marked sent by id, the parked one parked in its new delivery state,
+          and the retrying one goes back in its new state, with the others as claimed
     """
     # Arrange
     sent, retrying, parked, cut_off, held, unstarted = (
         _stored(body=str(n).encode()) for n in range(6)
     )
-    retried = replace(retrying, attempts=1, error="RuntimeError: refused")
-    failed = replace(parked, attempts=1, error="RuntimeError: refused")
+    retried = replace(retrying.delivery, attempts=1, error="RuntimeError: refused")
+    failed = replace(parked.delivery, attempts=1, error="RuntimeError: refused")
     outcomes = {
-        sent.id: _Sent(sent),
-        retrying.id: _Failed(retried, Retry(30)),
-        parked.id: _Failed(failed, _Park()),
-        cut_off.id: _Outage(cut_off),
+        sent.message.id: _Sent(),
+        retrying.message.id: _Failed(retried, Retry(30)),
+        parked.message.id: _Failed(failed, _Park()),
+        cut_off.message.id: _Outage(),
     }
 
     # Act
     settlement = _settlement([sent, retrying, parked, cut_off, held, unstarted], outcomes)
 
     # Assert
-    assert settlement == _Settlement((sent,), (failed,), (retried, cut_off, held, unstarted))
+    as_claimed = [(r.message.id, r.delivery) for r in (cut_off, held, unstarted)]
+    assert settlement == _Settlement(
+        (sent.message.id,),
+        ((parked.message.id, failed),),
+        ((retrying.message.id, retried), *as_claimed),
+    )
 
 
 def test_outcomes_hold_back_by_kind():
@@ -1145,12 +1162,12 @@ def test_outcomes_hold_back_by_kind():
     When: What each holds back is read
     Then: A retry holds back its key, an outage the batch, and the rest nothing
     """
-    record = _stored()
+    delivery = _stored().delivery
 
-    assert _Sent(record).holds is _Hold.NOTHING
-    assert _Failed(record, Retry(30)).holds is _Hold.KEY
-    assert _Failed(record, _Park()).holds is _Hold.NOTHING
-    assert _Outage(record).holds is _Hold.BATCH
+    assert _Sent().holds is _Hold.NOTHING
+    assert _Failed(delivery, Retry(30)).holds is _Hold.KEY
+    assert _Failed(delivery, _Park()).holds is _Hold.NOTHING
+    assert _Outage().holds is _Hold.BATCH
 
 
 def test_lanes_follow_what_outcomes_hold_back():
@@ -1168,11 +1185,11 @@ def test_lanes_follow_what_outcomes_hold_back():
     (_, a), (_, b), (_, c), (_, d) = taken
 
     # Act
-    lanes.follow(_Sent(records[0]), a)
-    lanes.follow(_Failed(records[2], Retry(30)), b)
-    lanes.follow(_Failed(records[4], _Park()), c)
+    lanes.follow(_Sent(), a)
+    lanes.follow(_Failed(records[2].delivery, Retry(30)), b)
+    lanes.follow(_Failed(records[4].delivery, _Park()), c)
     following = [lanes.take()[0] for _ in range(2)]
-    lanes.follow(_Outage(records[6]), d)
+    lanes.follow(_Outage(), d)
 
     # Assert
     assert [record for record, _ in taken] == records[::2]
@@ -1202,17 +1219,19 @@ async def test_failed_publish_retried_after_growing_delay(
     await relay.run_once()
     (first,) = store.pending()
     early = await relay.run_once()
-    store.reschedule(replace(first, available_at=first.created_at))
+    created = first.message.created_at
+    store.reschedule(first.message.id, replace(first.delivery, available_at=created))
     await relay.run_once()
     (second,) = store.pending()
 
     # Assert
+    first_try, second_try = first.delivery, second.delivery
     assert early == 0
-    assert (first.attempts, first.error) == (1, "RuntimeError: refused")
-    assert (second.attempts, second.error) == (2, "RuntimeError: refused again")
+    assert (first_try.attempts, first_try.error) == (1, "RuntimeError: refused")
+    assert (second_try.attempts, second_try.error) == (2, "RuntimeError: refused again")
     now = datetime.now(UTC)
-    assert timedelta(seconds=14) < second.available_at - now <= timedelta(seconds=15)
-    assert timedelta(seconds=9) < first.available_at - first.created_at <= timedelta(seconds=11)
+    assert timedelta(seconds=14) < second_try.available_at - now <= timedelta(seconds=15)
+    assert timedelta(seconds=9) < first_try.available_at - created <= timedelta(seconds=11)
     assert publisher.published == []
 
 
@@ -1249,8 +1268,8 @@ async def test_out_of_attempts_parked_as_failed(
 
     # Assert
     (failed,) = store.failed()
-    assert (failed.attempts, failed.error) == (1, "RuntimeError: refused")
-    assert [r.attempts for r in unlimited_store.pending()] == [1]
+    assert (failed.delivery.attempts, failed.delivery.error) == (1, "RuntimeError: refused")
+    assert [r.delivery.attempts for r in unlimited_store.pending()] == [1]
     assert unlimited_store.failed() == []
 
 
@@ -1274,13 +1293,16 @@ async def test_failed_publish_logged_by_its_action(
     with caplog.at_level(logging.WARNING):
         await relay.run_once()
         (retried,) = store.pending()
-        store.reschedule(replace(retried, available_at=retried.created_at))
+        message_id = retried.message.id
+        store.reschedule(
+            message_id, replace(retried.delivery, available_at=retried.message.created_at)
+        )
         await relay.run_once()
 
     # Assert
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
-        (logging.WARNING, f"outbox record {retried.id} failed after 1 attempt(s); retrying in 5 s"),
-        (logging.ERROR, f"outbox record {retried.id} failed after 2 attempt(s); parked as failed"),
+        (logging.WARNING, f"outbox record {message_id} failed after 1 attempt(s); retrying in 5 s"),
+        (logging.ERROR, f"outbox record {message_id} failed after 2 attempt(s); parked as failed"),
     ]
 
 
@@ -1309,16 +1331,17 @@ async def test_failure_holds_back_rest_of_its_key(
     # Act
     await relay.run_once()
     first_round = [payload for _, _, payload, _ in publisher.published]
-    held = {record.id: record.attempts for record in store.pending()}
+    held = {record.message.id: record.delivery.attempts for record in store.pending()}
     await relay.run_once()
     early = len(publisher.published)
-    failed = next(record for record in store.pending() if record.id == records[0].id)
-    store.reschedule(replace(failed, available_at=failed.created_at))
+    ids = [record.message.id for record in records]
+    failed = next(record for record in store.pending() if record.message.id == ids[0])
+    store.reschedule(ids[0], replace(failed.delivery, available_at=failed.message.created_at))
     await relay.run_once()
 
     # Assert
     assert first_round == [b"2"]
-    assert held == {records[0].id: 1, records[1].id: 0, records[3].id: 0}
+    assert held == {ids[0]: 1, ids[1]: 0, ids[3]: 0}
     assert early == 1
     assert [payload for _, _, payload, _ in publisher.published] == [b"2", b"0", b"1", b"3"]
 
@@ -1346,7 +1369,7 @@ async def test_parked_failure_holds_nothing_back(
     await relay.run_once()
 
     # Assert
-    assert [record.id for record in store.failed()] == [first.id]
+    assert [record.message.id for record in store.failed()] == [first.message.id]
     assert [payload for _, _, payload, _ in publisher.published] == [b"2"]
 
 
@@ -1416,7 +1439,7 @@ async def test_unknown_route_fails_attempt(
     # Assert
     (record,) = store.pending()
     assert (
-        record.error
+        record.delivery.error
         == "LookupError: no outbox binding for route 'nowhere'; bind it before the relay starts"
     )
 
@@ -1600,8 +1623,8 @@ async def test_record_ids_come_from_producer_source(store: InMemoryOutboxStore):
 
     # Assert
     (record,) = store.pending()
-    assert record.id == UUID(int=1)
-    assert record.envelope.correlation_id == UUID(int=2)
+    assert record.message.id == UUID(int=1)
+    assert record.message.envelope.correlation_id == UUID(int=2)
 
 
 class _OverlapPublisher:
@@ -1741,10 +1764,10 @@ async def test_concurrent_outage_puts_back_what_hasnt_finished(
     # Assert
     assert sent == 1
     assert publisher.published == [b"b:1"]
-    assert {(r.id, r.attempts) for r in store.pending()} == {
-        (records[0].id, 0),
-        (records[2].id, 0),
-        (records[3].id, 0),
+    assert {(r.message.id, r.delivery.attempts) for r in store.pending()} == {
+        (records[0].message.id, 0),
+        (records[2].message.id, 0),
+        (records[3].message.id, 0),
     }
 
 
@@ -1769,9 +1792,9 @@ async def test_concurrent_retry_holds_back_its_key(
 
     # Assert
     assert publisher.published == [b"b:2"]
-    assert {(r.id, r.attempts) for r in store.pending()} == {
-        (records[0].id, 1),
-        (records[1].id, 0),
+    assert {(r.message.id, r.delivery.attempts) for r in store.pending()} == {
+        (records[0].message.id, 1),
+        (records[1].message.id, 0),
     }
 
 
@@ -1801,8 +1824,8 @@ async def test_cancelled_batch_cancels_publishes_in_flight(
 
     # Assert
     assert publisher.cancelled == [b"a:0"]
-    assert [r.id for r in store.sent()] == [records[1].id]
-    assert [r.id for r in store.pending()] == [records[0].id]
+    assert [r.message.id for r in store.sent()] == [records[1].message.id]
+    assert [r.message.id for r in store.pending()] == [records[0].message.id]
 
 
 async def test_cancelled_lane_marks_sent_what_it_sent(
@@ -1833,8 +1856,8 @@ async def test_cancelled_lane_marks_sent_what_it_sent(
 
     # Assert
     assert publisher.cancelled == [b"a:1"]
-    assert [r.id for r in store.sent()] == [records[0].id]
-    assert [r.id for r in store.pending()] == [records[1].id]
+    assert [r.message.id for r in store.sent()] == [records[0].message.id]
+    assert [r.message.id for r in store.pending()] == [records[1].message.id]
 
 
 async def test_cancelled_batch_puts_back_what_it_didnt_publish(
@@ -1865,7 +1888,9 @@ async def test_cancelled_batch_puts_back_what_it_didnt_publish(
 
     # Assert
     assert publisher.cancelled == [b"a:0"]
-    assert [(r.id, r.attempts) for r in claimed] == [(r.id, 0) for r in records]
+    assert [(r.message.id, r.delivery.attempts) for r in claimed] == [
+        (r.message.id, 0) for r in records
+    ]
 
 
 def test_max_in_flight_below_one_refused(
