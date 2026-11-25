@@ -6,7 +6,7 @@ a causation id pointing at its parent. An {py:class}`EnvelopeFactory` makes enve
 chain, the next envelope in one, and one carried in headers. Its `scope` sets the active
 envelope for a block, creating a child of the current one by default.
 {py:class}`EnvelopeHeaders` names the headers an envelope travels in across a transport, and
-writes it to them and reads it back.
+writes it to them.
 
 New ids are random version 4 UUIDs by default. With the `uuid` extra installed
 (`pip install stratae[uuid]`), they come from `uuid_utils.compat`, about two and a half times
@@ -96,11 +96,6 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _when(value: object | None) -> datetime:
-    """Parse an optional header timestamp, defaulting to the current time."""
-    return _now() if value is None else datetime.fromisoformat(str(value))
-
-
 _NO_SUBCLASSES = (
     "Envelope can't be subclassed; carry more with a message in its headers, set by middleware"
 )
@@ -112,38 +107,39 @@ class Envelope:
     """
     Immutable correlation and causation ids for one message in a causal chain.
 
+    A value of the ids and time it's given: an {py:class}`EnvelopeFactory` makes new ones.
     `causation_id` is `None` on a root envelope. Its four fields are fixed, and it can't be
     subclassed. Anything else a message carries, such as a tenant or a trace, travels in its
     headers, which publish middleware can add to and handle middleware reads.
     """
 
-    message_id: UUID = field(default_factory=_new_uuid4)
-    correlation_id: UUID = field(default_factory=_new_uuid4)
+    message_id: UUID
+    correlation_id: UUID
+    timestamp: datetime
     causation_id: UUID | None = None
-    timestamp: datetime = field(default_factory=_now)
 
     def __init__(
         self,
-        message_id: UUID | None = None,
-        correlation_id: UUID | None = None,
+        message_id: UUID,
+        correlation_id: UUID,
+        timestamp: datetime,
         causation_id: UUID | None = None,
-        timestamp: datetime | None = None,
     ) -> None:
         """
-        Make an envelope, making any id or timestamp not given.
+        Make an envelope from its ids and time.
 
         Sets each field through its slot directly. A frozen dataclass's own constructor goes
         through `object.__setattr__` for each, which costs more on this per-emit path.
 
-        :param message_id: This message's id. A new random one if `None`.
-        :param correlation_id: The chain's id. A new random one if `None`.
-        :param causation_id: The id of the message that caused this one, if any.
-        :param timestamp: When the message was made. The current time if `None`.
+        :param message_id: This message's id.
+        :param correlation_id: The chain's id.
+        :param timestamp: When the message was made.
+        :param causation_id: The id of the message that caused this one, or `None` for a root.
         """
-        _set_message_id(self, _new_uuid4() if message_id is None else message_id)
-        _set_correlation_id(self, _new_uuid4() if correlation_id is None else correlation_id)
+        _set_message_id(self, message_id)
+        _set_correlation_id(self, correlation_id)
+        _set_timestamp(self, timestamp)
         _set_causation_id(self, causation_id)
-        _set_timestamp(self, _now() if timestamp is None else timestamp)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """
@@ -154,55 +150,26 @@ class Envelope:
         raise TypeError(_NO_SUBCLASSES)
 
     @staticmethod
-    def root(new_id: _NewId = _new_uuid4) -> Envelope:
-        """
-        Start a new chain.
-
-        :param new_id: Makes the message and correlation ids.
-        :returns: An {py:class}`Envelope` with new ids and no `causation_id`.
-        """
-        # Positional, in field order: cheaper than keywords on this per-emit path.
-        return Envelope(new_id(), new_id())
-
-    def child(self, new_id: _NewId = _new_uuid4) -> Envelope:
-        """
-        Derive the next envelope in this chain.
-
-        :param new_id: Makes the child's message id.
-        :returns: An {py:class}`Envelope` with this `correlation_id`, caused by this message.
-        """
-        # Positional, in field order: cheaper than keywords on this per-emit path.
-        return Envelope(new_id(), self.correlation_id, self.message_id)
-
-    @staticmethod
     def current() -> Envelope | None:
-        """Return the active envelope, or `None` outside any {py:func}`Envelope.scope` block."""
+        """
+        Return the active envelope.
+
+        :returns: The envelope of the innermost {py:meth}`EnvelopeFactory.scope` block, or
+            `None` outside any.
+        """
         return _current.get(None)
-
-    @staticmethod
-    def scope(
-        envelope: Envelope | None = None, *, new_id: _NewId = _new_uuid4
-    ) -> AbstractContextManager[Envelope]:
-        """
-        Set the active envelope for a block, restoring the previous one on exit.
-
-        :param envelope: The envelope to activate. Defaults to a child of the envelope current
-            when the block is entered, or a new root.
-        :param new_id: Makes the new envelope's ids when `envelope` isn't given.
-        :returns: A context manager yielding the active {py:class}`Envelope`.
-        """
-        return _Scope(envelope, new_id)
 
 
 @dataclass(frozen=True, slots=True)
 class EnvelopeHeaders:
     """
-    The names of the headers an envelope travels in, and how it's written to and read from them.
+    The names of the headers an envelope travels in, and how it's written to them.
 
     An immutable value: values with the same names are equal. The default names are
     `x-message-id`, `x-correlation-id`, `x-causation-id` and `x-timestamp`. A transport writes an
-    envelope to headers with `write`, and a receiver rebuilds it with `read`. Each value is text:
-    the ids as UUID strings, and the timestamp in ISO 8601.
+    envelope to headers with `write`, and a receiver rebuilds it with
+    {py:meth}`EnvelopeFactory.read`. Each value is text: the ids as UUID strings, and the
+    timestamp in ISO 8601.
     """
 
     message_id: str = "x-message-id"
@@ -237,24 +204,6 @@ class EnvelopeHeaders:
             headers[self.causation_id] = str(envelope.causation_id)
         return headers
 
-    def read(self, headers: Mapping[str, object], new_id: _NewId = _new_uuid4) -> Envelope:
-        """
-        Rebuild an envelope from headers, making any id that's missing.
-
-        A header that's absent, or `None`, is missing. A missing timestamp is the current time.
-
-        :param headers: The headers to read.
-        :param new_id: Makes a missing message or correlation id.
-        :returns: The rebuilt {py:class}`Envelope`.
-        :raises ValueError: If a header is present but unparseable.
-        """
-        return Envelope(
-            _uuid(headers.get(self.message_id)) or new_id(),
-            _uuid(headers.get(self.correlation_id)) or new_id(),
-            _uuid(headers.get(self.causation_id)),
-            _when(headers.get(self.timestamp)),
-        )
-
 
 _set_message_id = Envelope.__dict__["message_id"].__set__
 _set_correlation_id = Envelope.__dict__["correlation_id"].__set__
@@ -278,6 +227,10 @@ class EnvelopeFactory:
     ids as `new_id` for another kind, such as time-ordered ids, which sort in the order they
     were made and so suit anything stored or sorted by message id, such as outbox records.
     `uuid_utils.compat.uuid7` makes them, as does `uuid.uuid7` on Python 3.14 and later.
+
+    Pass a function returning a timezone-aware time as `now` to stamp envelopes from another
+    clock, such as a fixed one in a test. Each envelope's timestamp comes from it, and its
+    default is the current time in UTC.
 
     Pass {py:class}`EnvelopeHeaders` with other names as `headers` when a tool the service
     works with already uses one of the defaults. Every component of a service, and every
@@ -319,6 +272,8 @@ class EnvelopeFactory:
     """Makes the ids of each new envelope. Random by default."""
     headers: EnvelopeHeaders = EnvelopeHeaders()
     """The names of the headers the envelope travels in. The default names by default."""
+    now: Callable[[], datetime] = _now
+    """Returns the timestamp of each new envelope. The current time in UTC by default."""
 
     def root(self, correlation_id: UUID | None = None) -> Envelope:
         """
@@ -329,7 +284,9 @@ class EnvelopeFactory:
         :returns: An {py:class}`Envelope` with a new message id and no `causation_id`.
         """
         new_id = self.new_id
-        return Envelope(new_id(), new_id() if correlation_id is None else correlation_id)
+        return Envelope(
+            new_id(), new_id() if correlation_id is None else correlation_id, self.now()
+        )
 
     def child(self, parent: Envelope) -> Envelope:
         """
@@ -339,7 +296,7 @@ class EnvelopeFactory:
         :returns: An {py:class}`Envelope` with a new message id and the parent's
             `correlation_id`, caused by the parent.
         """
-        return Envelope(self.new_id(), parent.correlation_id, parent.message_id)
+        return Envelope(self.new_id(), parent.correlation_id, self.now(), parent.message_id)
 
     def scope(self, envelope: Envelope | None = None) -> AbstractContextManager[Envelope]:
         """
@@ -349,42 +306,55 @@ class EnvelopeFactory:
             when the block is entered, or a new root.
         :returns: A context manager yielding the active {py:class}`Envelope`.
         """
-        return _Scope(envelope, self.new_id)
+        return _Scope(envelope, self)
 
     def read(self, headers: Mapping[str, object]) -> Envelope:
         """
-        Rebuild an envelope from headers named as `headers` names them.
+        Rebuild an envelope from headers named as `headers` names them, making what's missing.
 
-        A missing id is made with `new_id`. See {py:meth}`EnvelopeHeaders.read`.
+        A header that's absent, or `None`, is missing. A missing message or correlation id is
+        made with `new_id`, and a missing timestamp with `now`.
 
         :param headers: The headers to read.
         :returns: The rebuilt {py:class}`Envelope`.
         :raises ValueError: If a header is present but unparseable.
         """
-        return self.headers.read(headers, self.new_id)
+        names, new_id = self.headers, self.new_id
+        timestamp = headers.get(names.timestamp)
+        return Envelope(
+            _uuid(headers.get(names.message_id)) or new_id(),
+            _uuid(headers.get(names.correlation_id)) or new_id(),
+            self.now() if timestamp is None else datetime.fromisoformat(str(timestamp)),
+            _uuid(headers.get(names.causation_id)),
+        )
 
 
 class _Scope:
     """
-    The context manager {py:meth}`EnvelopeFactory.scope` and {py:func}`Envelope.scope` return.
+    The context manager {py:meth}`EnvelopeFactory.scope` returns.
 
     A class rather than a `contextlib.contextmanager` generator: each emit, outbox write and
     request opens one, and a generator costs about twice as much to enter and exit.
     """
 
-    __slots__ = ("_envelope", "_new_id", "_token")
+    __slots__ = ("_envelope", "_factory", "_token")
 
-    def __init__(self, envelope: Envelope | None, new_id: _NewId) -> None:
+    def __init__(self, envelope: Envelope | None, factory: EnvelopeFactory) -> None:
         self._envelope = envelope
-        self._new_id = new_id
+        self._factory = factory
         self._token: Token[Envelope]
 
     def __enter__(self) -> Envelope:
         envelope = self._envelope
         if envelope is None:
-            new_id, parent = self._new_id, _current.get(None)
-            # A root built here, positionally, saves a call to `root` on this per-emit path.
-            envelope = parent.child(new_id) if parent else Envelope(new_id(), new_id())
+            factory, parent = self._factory, _current.get(None)
+            new_id = factory.new_id
+            # Built here, positionally, to save a call to `child` or `root` on this per-emit path.
+            envelope = (
+                Envelope(new_id(), parent.correlation_id, factory.now(), parent.message_id)
+                if parent
+                else Envelope(new_id(), new_id(), factory.now())
+            )
         self._token = _current.set(envelope)
         return envelope
 

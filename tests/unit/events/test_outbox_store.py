@@ -36,14 +36,14 @@ from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
 from pathlib import Path
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.exc import StatementError
 from sybil import Sybil
 from sybil.parsers.myst import PythonCodeBlockParser
 
-from stratae.events import Envelope
+from stratae.events import Envelope, EnvelopeFactory
 from stratae.events.outbox import (
     InMemoryOutboxStore,
     OutboxDelivery,
@@ -54,6 +54,7 @@ from stratae.events.outbox import (
 from stratae.events.outbox import _claimable as claimable  # pyright: ignore[reportPrivateUsage]
 
 _RECIPE = Path(__file__).parents[3] / "docs" / "tutorials" / "outbox.md"
+_ENVELOPES = EnvelopeFactory()
 
 
 class _RolledBack(ValueError):
@@ -126,7 +127,9 @@ async def _call(result: Any) -> Any:
 def _message(order: int, **changes: Any) -> OutboxMessage:
     """Return a message whose envelope opened `order` seconds after a fixed past moment."""
     message = OutboxMessage(
-        envelope=Envelope(timestamp=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order)),
+        envelope=Envelope(
+            uuid4(), uuid4(), datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order)
+        ),
         route="orders",
         body=f"order {order}".encode(),
         headers={},
@@ -171,7 +174,7 @@ async def test_committed_record_claimable_as_written(harness: _Harness):
     """
     # Arrange
     store = harness.store()
-    envelope = Envelope.root().child()
+    envelope = _ENVELOPES.child(_ENVELOPES.root())
     message = _message(1, envelope=envelope, headers={"x-tenant": "acme"}, address="orders.7")
 
     # Act
@@ -517,7 +520,7 @@ class _History:
         return _message(
             self.added,
             key=self.rng.choice(["a", "b", None]),
-            envelope=Envelope(timestamp=_PAST + timedelta(seconds=self.added)),
+            envelope=Envelope(uuid4(), uuid4(), _PAST + timedelta(seconds=self.added)),
         )
 
     def expected(self, limit: int) -> list[OutboxRecord]:

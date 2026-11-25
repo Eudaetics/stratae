@@ -4,7 +4,7 @@ import asyncio
 import dataclasses
 import sys
 import uuid
-from datetime import UTC
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -14,110 +14,30 @@ from stratae.events import Envelope, EnvelopeFactory, EnvelopeHeaders
 
 _HEADERS = EnvelopeHeaders()
 """The default names an envelope travels under."""
+_ENVELOPES = EnvelopeFactory()
+"""Makes envelopes with random ids, the current time and the default names."""
 
 
-def test_envelope_default_fields():
+def test_envelope_is_made_from_given_ids_and_time():
     """
-    Default fields are populated with unique identifiers and a UTC timestamp.
+    An envelope should be made only from the ids and time it's given.
 
-    Given: No arguments.
-    When: An Envelope is created.
-    Then: message_id and correlation_id are set, causation_id is None, timestamp is UTC.
-    """
-    # Act
-    envelope = Envelope()
-
-    # Assert
-    assert envelope.message_id is not None
-    assert envelope.correlation_id is not None
-    assert envelope.causation_id is None
-    assert envelope.timestamp.tzinfo == UTC
-
-
-def test_envelope_unique_message_ids():
-    """
-    Each envelope receives a distinct message_id.
-
-    Given: No arguments.
-    When: Two Envelopes are created.
-    Then: Their message_ids differ.
-    """
-    # Act
-    a = Envelope()
-    b = Envelope()
-
-    # Assert
-    assert a.message_id != b.message_id
-
-
-def test_envelope_unique_correlation_ids():
-    """
-    Independent envelopes each start their own correlation chain.
-
-    Given: No arguments.
-    When: Two Envelopes are created independently.
-    Then: Their correlation_ids differ.
-    """
-    # Act
-    a = Envelope()
-    b = Envelope()
-
-    # Assert
-    assert a.correlation_id != b.correlation_id
-
-
-def test_child_inherits_correlation_id():
-    """
-    A child envelope stays in the same correlation chain as its parent.
-
-    Given: An Envelope.
-    When: A child envelope is created from it.
-    Then: The child's correlation_id matches the parent's.
+    Given: A message id, a correlation id and a time
+    When: An envelope is made from them, and another with nothing
+    Then: The first holds them, with no causation id, and the second raises TypeError
     """
     # Arrange
-    parent = Envelope()
+    message_id, correlation_id = uuid4(), uuid4()
+    timestamp = datetime(2026, 1, 1, tzinfo=UTC)
 
     # Act
-    child = parent.child()
+    envelope = Envelope(message_id, correlation_id, timestamp)
 
     # Assert
-    assert child.correlation_id == parent.correlation_id
-
-
-def test_child_causation_id_is_parent_message_id():
-    """
-    A child envelope records its parent as the cause.
-
-    Given: An Envelope.
-    When: A child envelope is created from it.
-    Then: The child's causation_id equals the parent's message_id.
-    """
-    # Arrange
-    parent = Envelope()
-
-    # Act
-    child = parent.child()
-
-    # Assert
-    assert child.causation_id == parent.message_id
-
-
-def test_child_has_distinct_message_id():
-    """
-    A child envelope is its own message, not a copy of its parent.
-
-    Given: An Envelope.
-    When: A child envelope is created from it.
-    Then: The child's message_id differs from the parent's.
-    """
-    # Arrange
-    parent = Envelope()
-
-    # Act
-    child = parent.child()
-
-    # Assert
-    assert child.message_id != parent.message_id
+    assert (envelope.message_id, envelope.correlation_id) == (message_id, correlation_id)
+    assert (envelope.timestamp, envelope.causation_id) == (timestamp, None)
+    with pytest.raises(TypeError):
+        Envelope()  # pyright: ignore[reportCallIssue]
 
 
 def test_envelope_refuses_a_subclass():
@@ -144,9 +64,9 @@ def test_envelope_is_slotted_immutable_and_compared_by_value():
     Then: Neither has a __dict__, they're equal, and the assignment raises.
     """
     # Arrange
-    envelope = Envelope()
+    envelope = _ENVELOPES.child(_ENVELOPES.root())
     same = Envelope(
-        envelope.message_id, envelope.correlation_id, envelope.causation_id, envelope.timestamp
+        envelope.message_id, envelope.correlation_id, envelope.timestamp, envelope.causation_id
     )
 
     # Act / Assert
@@ -159,15 +79,15 @@ def test_envelope_is_slotted_immutable_and_compared_by_value():
 
 def test_envelope_keeps_its_dataclass_interface():
     """
-    An envelope is still a dataclass, with the same fields, defaults, repr and replace.
+    An envelope is still a dataclass, with its fields, default, repr and replace.
 
     Given: An envelope with a causation id.
     When: Its fields are listed, it's replaced, deleted from and shown.
-    Then: The fields and defaults are as declared, replace changes only what's given, deleting
+    Then: The fields and default are as declared, replace changes only what's given, deleting
         raises, and the repr names each field.
     """
     # Arrange
-    envelope = Envelope(causation_id=uuid4())
+    envelope = _ENVELOPES.child(_ENVELOPES.root())
     fields = dataclasses.fields(envelope)
 
     # Act
@@ -177,16 +97,11 @@ def test_envelope_keeps_its_dataclass_interface():
     assert [f.name for f in fields] == [
         "message_id",
         "correlation_id",
-        "causation_id",
         "timestamp",
+        "causation_id",
     ]
-    assert [f.default_factory is not dataclasses.MISSING for f in fields] == [
-        True,
-        True,
-        False,
-        True,
-    ]
-    assert fields[2].default is None
+    assert [f.default for f in fields] == [*[dataclasses.MISSING] * 3, None]
+    assert all(f.default_factory is dataclasses.MISSING for f in fields)
     assert replaced.causation_id is None
     assert replaced.message_id == envelope.message_id
     assert replaced.timestamp == envelope.timestamp
@@ -195,23 +110,23 @@ def test_envelope_keeps_its_dataclass_interface():
     assert repr(envelope) == (
         f"Envelope(message_id={envelope.message_id!r}, "
         f"correlation_id={envelope.correlation_id!r}, "
-        f"causation_id={envelope.causation_id!r}, timestamp={envelope.timestamp!r})"
+        f"timestamp={envelope.timestamp!r}, causation_id={envelope.causation_id!r})"
     )
 
 
 def test_headers_round_trip():
     """
-    EnvelopeHeaders.read should rebuild the envelope write wrote.
+    EnvelopeFactory.read should rebuild the envelope EnvelopeHeaders.write wrote.
 
     Given: An envelope with a causation id.
     When: It is written to headers and read back.
     Then: All fields survive the round trip.
     """
     # Arrange
-    envelope = Envelope(causation_id=uuid4())
+    envelope = _ENVELOPES.child(_ENVELOPES.root())
 
     # Act
-    rebuilt = _HEADERS.read(_HEADERS.write(envelope))
+    rebuilt = _ENVELOPES.read(_HEADERS.write(envelope))
 
     # Assert
     assert rebuilt is not None
@@ -230,7 +145,7 @@ def test_write_omits_absent_causation():
     Then: The causation header is absent.
     """
     # Act
-    headers = _HEADERS.write(Envelope())
+    headers = _HEADERS.write(_ENVELOPES.root())
 
     # Assert
     assert _HEADERS.causation_id not in headers
@@ -248,7 +163,7 @@ def test_read_defaults_absent_fields():
     message_id = uuid4()
 
     # Act
-    rebuilt = _HEADERS.read({_HEADERS.message_id: str(message_id)})
+    rebuilt = _ENVELOPES.read({_HEADERS.message_id: str(message_id)})
 
     # Assert
     assert rebuilt.message_id == message_id
@@ -269,7 +184,7 @@ def test_read_treats_none_values_as_absent():
     headers = {_HEADERS.message_id: None, _HEADERS.correlation_id: None}
 
     # Act
-    envelope = _HEADERS.read(headers)
+    envelope = _ENVELOPES.read(headers)
 
     # Assert
     assert envelope.message_id is not None
@@ -290,7 +205,7 @@ def test_read_with_invalid_ids_raises():
 
     # Act & Assert
     with pytest.raises(ValueError, match="badly formed"):
-        _HEADERS.read(headers)
+        _ENVELOPES.read(headers)
 
 
 def test_custom_names_write_and_read_under_them():
@@ -305,15 +220,15 @@ def test_custom_names_write_and_read_under_them():
     """
     # Arrange
     custom = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
-    envelope = Envelope(causation_id=uuid4())
+    envelope = _ENVELOPES.child(_ENVELOPES.root())
 
     # Act
     headers = custom.write(envelope)
 
     # Assert
     assert set(headers) == custom.names == {"acme-msg", "acme-corr", "acme-cause", "acme-at"}
-    assert custom.read(headers) == envelope
-    assert _HEADERS.read(headers).message_id != envelope.message_id
+    assert EnvelopeFactory(headers=custom).read(headers) == envelope
+    assert _ENVELOPES.read(headers).message_id != envelope.message_id
     assert custom == EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
     assert custom != _HEADERS
 
@@ -334,12 +249,12 @@ def test_scope_sets_current():
     """
     The active envelope is accessible via current() inside the context block.
 
-    Given: An Envelope.scope() context.
+    Given: An _ENVELOPES.scope() context.
     When: Envelope.current() is called inside it.
     Then: The returned envelope matches the one yielded by the context manager.
     """
     # Act & Assert
-    with Envelope.scope() as envelope:
+    with _ENVELOPES.scope() as envelope:
         assert Envelope.current() is envelope
 
 
@@ -348,11 +263,11 @@ def test_scope_root_has_no_causation():
     A root context has no prior cause.
 
     Given: No existing context.
-    When: Envelope.scope() is entered without arguments.
+    When: _ENVELOPES.scope() is entered without arguments.
     Then: The yielded envelope has causation_id of None.
     """
     # Act & Assert
-    with Envelope.scope() as envelope:
+    with _ENVELOPES.scope() as envelope:
         assert envelope.causation_id is None
 
 
@@ -360,12 +275,12 @@ def test_scope_nested_creates_child():
     """
     Nesting a scope automatically creates a child of the current context.
 
-    Given: An active Envelope.scope() context.
+    Given: An active _ENVELOPES.scope() context.
     When: A second scope is entered without arguments.
     Then: The inner envelope's causation_id equals the outer envelope's message_id.
     """
     # Act & Assert
-    with Envelope.scope() as outer, Envelope.scope() as inner:
+    with _ENVELOPES.scope() as outer, _ENVELOPES.scope() as inner:
         assert inner.correlation_id == outer.correlation_id
         assert inner.causation_id == outer.message_id
 
@@ -374,13 +289,13 @@ def test_scope_restores_context_on_exit():
     """
     Exiting a nested context restores the enclosing envelope as current.
 
-    Given: An active Envelope.scope() context.
+    Given: An active _ENVELOPES.scope() context.
     When: A nested scope is entered and exited.
     Then: The outer envelope is current again after the inner block exits.
     """
     # Act & Assert
-    with Envelope.scope() as outer:
-        with Envelope.scope() as inner:
+    with _ENVELOPES.scope() as outer:
+        with _ENVELOPES.scope() as inner:
             assert inner is not outer
         assert Envelope.current() is outer
 
@@ -389,12 +304,12 @@ def test_scope_clears_context_on_exit():
     """
     Exiting the outermost context leaves no current envelope behind.
 
-    Given: An Envelope.scope() context that has exited.
+    Given: An _ENVELOPES.scope() context that has exited.
     When: Envelope.current() is called.
     Then: None is returned.
     """
     # Arrange
-    with Envelope.scope() as envelope:
+    with _ENVELOPES.scope() as envelope:
         assert Envelope.current() is envelope
 
     # Act & Assert
@@ -406,14 +321,14 @@ def test_scope_explicit_envelope():
     An explicitly provided envelope is used as-is rather than generating a new one.
 
     Given: A pre-constructed Envelope.
-    When: It is passed to Envelope.scope().
+    When: It is passed to _ENVELOPES.scope().
     Then: current() returns that exact envelope inside the block.
     """
     # Arrange
-    envelope = Envelope()
+    envelope = _ENVELOPES.root()
 
     # Act & Assert
-    with Envelope.scope(envelope) as ctx:
+    with _ENVELOPES.scope(envelope) as ctx:
         assert ctx is envelope
         assert Envelope.current() is envelope
 
@@ -422,17 +337,17 @@ def test_scope_explicit_with_existing_context():
     """
     An explicit envelope is installed as-is even when a context already exists.
 
-    Given: An active Envelope.scope() context.
+    Given: An active _ENVELOPES.scope() context.
     When: A second scope is entered with an explicit envelope.
     Then: The explicit envelope is current (not a child of the outer one),
           and the outer envelope is restored on exit.
     """
     # Arrange
-    explicit = Envelope()
+    explicit = _ENVELOPES.root()
 
     # Act & Assert
-    with Envelope.scope() as outer:
-        with Envelope.scope(explicit) as ctx:
+    with _ENVELOPES.scope() as outer:
+        with _ENVELOPES.scope(explicit) as ctx:
             assert ctx is explicit
             assert ctx.causation_id is None
             assert ctx.correlation_id != outer.correlation_id
@@ -443,13 +358,13 @@ def test_scope_restores_context_on_exception():
     """
     The outer envelope is restored even when an exception escapes the inner block.
 
-    Given: An active Envelope.scope() context.
+    Given: An active _ENVELOPES.scope() context.
     When: A nested scope block raises an exception.
     Then: The outer envelope is still current after the exception is caught.
     """
     # Act & Assert
-    with Envelope.scope() as outer:
-        with pytest.raises(RuntimeError), Envelope.scope():
+    with _ENVELOPES.scope() as outer:
+        with pytest.raises(RuntimeError), _ENVELOPES.scope():
             raise RuntimeError("boom")
         assert Envelope.current() is outer
 
@@ -458,15 +373,15 @@ def test_scope_takes_parent_when_entered():
     """
     A default scope should take its parent when it's entered, not when it's made.
 
-    Given: A default Envelope.scope() made outside any scope
+    Given: A default _ENVELOPES.scope() made outside any scope
     When: It's entered inside another scope
     Then: Its envelope is a child of that scope's envelope
     """
     # Arrange
-    scope = Envelope.scope()
+    scope = _ENVELOPES.scope()
 
     # Act
-    with Envelope.scope() as outer, scope as inner:
+    with _ENVELOPES.scope() as outer, scope as inner:
         # Assert
         assert inner.causation_id == outer.message_id
         assert inner.correlation_id == outer.correlation_id
@@ -476,7 +391,7 @@ async def test_async_context_isolation():
     """
     Concurrent tasks each maintain their own envelope without bleeding into each other.
 
-    Given: Two tasks that each enter their own Envelope.scope().
+    Given: Two tasks that each enter their own _ENVELOPES.scope().
     When: Both run concurrently and yield between reads.
     Then: Each task observes only its own envelope via current().
     """
@@ -484,7 +399,7 @@ async def test_async_context_isolation():
     results: dict[str, Envelope] = {}
 
     async def run(name: str) -> None:
-        with Envelope.scope():
+        with _ENVELOPES.scope():
             await asyncio.sleep(0)
             envelope = Envelope.current()
             assert envelope is not None
@@ -502,7 +417,7 @@ async def test_async_spawned_task_inherits_parent_envelope():
     """
     A task spawned inside a scope sees the parent's envelope at creation time.
 
-    Given: An active Envelope.scope() context.
+    Given: An active _ENVELOPES.scope() context.
     When: A child task is created inside that context.
     Then: The child task's initial current() is the parent's envelope.
     """
@@ -516,7 +431,7 @@ async def test_async_spawned_task_inherits_parent_envelope():
         seen.append(envelope)
 
     # Act
-    with Envelope.scope() as parent:
+    with _ENVELOPES.scope() as parent:
         task = asyncio.create_task(child())
         await task
 
@@ -534,85 +449,6 @@ class _Ids:
         made = UUID(int=len(self.made) + 1)
         self.made.append(made)
         return made
-
-
-def test_root_takes_both_ids_from_source():
-    """
-    Envelope.root should take its message and correlation ids from the given source.
-
-    Given: A counting id source
-    When: A root envelope is made with it
-    Then: Its message and correlation ids are the source's first two, with no causation id
-    """
-    # Act
-    envelope = Envelope.root(_Ids())
-
-    # Assert
-    assert (envelope.message_id, envelope.correlation_id) == (UUID(int=1), UUID(int=2))
-    assert envelope.causation_id is None
-
-
-def test_child_takes_message_id_from_source():
-    """
-    Envelope.child should take only its message id from the given source.
-
-    Given: A parent envelope and a counting id source
-    When: A child is made with the source
-    Then: Its message id is the source's first, and it keeps the parent's chain
-    """
-    # Arrange
-    parent = Envelope()
-
-    # Act
-    child = parent.child(_Ids())
-
-    # Assert
-    assert child.message_id == UUID(int=1)
-    assert child.correlation_id == parent.correlation_id
-    assert child.causation_id == parent.message_id
-
-
-def test_read_takes_only_missing_ids_from_source():
-    """
-    EnvelopeHeaders.read should draw from the source only for ids the headers lack.
-
-    Given: Headers carrying a correlation id but no message id, and a counting id source
-    When: An envelope is rebuilt from them with the source
-    Then: The message id is the source's first, the correlation id the header's, and the
-        source was asked once
-    """
-    # Arrange
-    ids = _Ids()
-    correlation = uuid4()
-
-    # Act
-    envelope = _HEADERS.read({_HEADERS.correlation_id: str(correlation)}, ids)
-
-    # Assert
-    assert envelope.message_id == UUID(int=1)
-    assert envelope.correlation_id == correlation
-    assert ids.made == [UUID(int=1)]
-
-
-def test_scope_takes_ids_from_source_for_root_and_child():
-    """
-    Envelope.scope should draw the ids of the envelope it makes from the given source.
-
-    Given: A counting id source
-    When: A default scope is entered with it, and another inside it
-    Then: The root's ids are the source's first two, and the child's message id its third
-    """
-    # Arrange
-    ids = _Ids()
-
-    # Act
-    with Envelope.scope(new_id=ids) as root, Envelope.scope(new_id=ids) as child:
-        pass
-
-    # Assert
-    assert (root.message_id, root.correlation_id) == (UUID(int=1), UUID(int=2))
-    assert child.message_id == UUID(int=3)
-    assert child.causation_id == root.message_id
 
 
 def test_factory_root_takes_both_ids_from_new_id():
@@ -681,17 +517,20 @@ def test_factory_read_uses_its_names_and_new_id():
     Given: A factory with custom header names and a counting id source, and headers under
         those names carrying a correlation id only
     When: The headers are read
-    Then: The correlation id is the header's, and the message id is the source's first
+    Then: The correlation id is the header's, the message id is the source's first, and the
+        source was asked once
     """
     # Arrange
+    ids = _Ids()
     names = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
     correlation = uuid4()
 
     # Act
-    envelope = EnvelopeFactory(new_id=_Ids(), headers=names).read({"acme-corr": str(correlation)})
+    envelope = EnvelopeFactory(new_id=ids, headers=names).read({"acme-corr": str(correlation)})
 
     # Assert
     assert (envelope.message_id, envelope.correlation_id) == (UUID(int=1), correlation)
+    assert ids.made == [UUID(int=1)]
 
 
 def test_factory_scope_activates_root_child_or_given_envelope():
@@ -723,24 +562,55 @@ def test_factory_scope_activates_root_child_or_given_envelope():
     assert (after_given, after_child, outside) == (child, root, None)
 
 
-def test_default_ids_are_random():
+def test_factory_stamps_each_envelope_with_now():
     """
-    Envelopes made without a source should keep random, version 4, ids.
+    EnvelopeFactory should take the timestamp of every envelope it makes from its now.
 
-    Given: No id source
-    When: A root and a child are made, directly and through a scope
-    Then: Every id is version 4
+    Given: A factory whose now returns a fixed time
+    When: It makes a root and a child, a root and a child through scopes, and reads headers
+        with and without a timestamp
+    Then: Each envelope it made, and the one read without a timestamp, has the fixed time,
+        and the one read with a timestamp keeps the header's
     """
+    # Arrange
+    fixed = datetime(2026, 1, 1, tzinfo=UTC)
+    factory = EnvelopeFactory(now=lambda: fixed)
+    sent = _ENVELOPES.root()
+
     # Act
-    with Envelope.scope() as root:
-        child = root.child()
-    made = Envelope()
+    root = factory.root()
+    child = factory.child(root)
+    with factory.scope() as scoped_root, factory.scope() as scoped_child:
+        pass
+    missing = factory.read({})
+    carried = factory.read(_HEADERS.write(sent))
 
     # Assert
-    assert {envelope.message_id.version for envelope in (root, child, made)} | {
-        root.correlation_id.version,
-        made.correlation_id.version,
-    } == {4}
+    made = (root, child, scoped_root, scoped_child, missing)
+    assert {envelope.timestamp for envelope in made} == {fixed}
+    assert carried.timestamp == sent.timestamp
+
+
+def test_default_factory_makes_random_ids_and_utc_times():
+    """
+    A default factory should make random, version 4, ids and timestamps in UTC.
+
+    Given: EnvelopeFactory()
+    When: A root and a child are made, directly and through a scope
+    Then: Every id is version 4, and every timestamp is in UTC
+    """
+    # Act
+    with _ENVELOPES.scope() as scoped_root, _ENVELOPES.scope() as scoped_child:
+        pass
+    root = _ENVELOPES.root()
+    child = _ENVELOPES.child(root)
+
+    # Assert
+    made = (scoped_root, scoped_child, root, child)
+    ids = {e.message_id for e in made} | {scoped_root.correlation_id, root.correlation_id}
+    assert {made_id.version for made_id in ids} == {4}
+    assert len(ids) == 6
+    assert {envelope.timestamp.tzinfo for envelope in made} == {UTC}
 
 
 def test_default_new_id_uses_uuid_utils_when_installed():

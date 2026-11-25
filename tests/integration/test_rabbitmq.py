@@ -120,6 +120,7 @@ from stratae.lifecycle import AsyncScope
 pytestmark = pytest.mark.rabbitmq
 
 _URL = os.environ.get("RABBITMQ_URL", "amqp://guest:guest@localhost/")
+_ENVELOPES = EnvelopeFactory()
 
 
 class _DropMe(RuntimeError):
@@ -447,7 +448,7 @@ async def test_middleware_header_crosses_the_broker(broker: _Broker):
         async with RabbitMQPublisher(
             _URL, serializer=msgspec.json.encode, middleware=Middleware(publish=(_tag_tenant,))
         ) as publisher:
-            with Envelope.scope() as envelope:
+            with _ENVELOPES.scope() as envelope:
                 publisher.route(message_event, RabbitMQConfig("", queue))
                 await publisher.emit(message_event, Message("hi"), headers={"x-priority": 3})
         await seen.wait_for_length(1)
@@ -488,7 +489,7 @@ async def test_envelope_survives_the_wire(broker: _Broker):
                 factory=Message,
                 config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
             )
-            with Envelope.scope() as envelope:
+            with _ENVELOPES.scope() as envelope:
                 await send(text="traced")
         await seen.wait_for_length(1)
 
@@ -539,7 +540,7 @@ async def test_envelope_survives_the_wire_under_custom_names(broker: _Broker):
                 factory=Message,
                 config=RabbitMQConfig(exchange, "", exchange_type="fanout"),
             )
-            with Envelope.scope() as envelope:
+            with _ENVELOPES.scope() as envelope:
                 await send(text="traced")
         await seen.wait_for_length(1)
 
@@ -772,7 +773,7 @@ async def test_republished_envelope_keeps_message_id(broker: _Broker):
         lambda payload: seen.append(Envelope.current()),
         config=RabbitMQConsumeConfig(queue),
     )
-    held = Envelope()
+    held = _ENVELOPES.root()
 
     # Act
     async with consumer:
@@ -847,7 +848,7 @@ def _failure_queues(broker: _Broker, prefix: str, policy: RabbitMQFailurePolicy)
 
 async def _publish(queue: str, body: bytes = b'{"text": "work"}') -> Envelope:
     """Publish a raw body straight to a queue, returning the envelope it was sent with."""
-    envelope = Envelope()
+    envelope = _ENVELOPES.root()
     async with RabbitMQPublisher(_URL, serializer=lambda payload: body) as publisher:
         publisher.route(message_event, RabbitMQConfig("", queue))
         await publisher.emit(message_event, Message("work"), envelope=envelope)

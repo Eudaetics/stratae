@@ -14,6 +14,7 @@ Order per key:
 """
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from stratae.events import Envelope
 from stratae.events.outbox import OutboxDelivery, OutboxMessage, OutboxRecord
@@ -28,7 +29,7 @@ def _record(
 ) -> OutboxRecord:
     created = _NOW - timedelta(hours=1) + timedelta(seconds=order)
     message = OutboxMessage(
-        envelope=Envelope(timestamp=created),
+        envelope=Envelope(uuid4(), uuid4(), created),
         route="orders",
         body=b"",
         headers={},

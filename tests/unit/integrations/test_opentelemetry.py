@@ -73,6 +73,7 @@ from stratae.integrations.rabbitmq import (
 from stratae.middleware import chain
 
 _HEADERS = EnvelopeHeaders()
+_ENVELOPES = EnvelopeFactory()
 """The default names an envelope travels under."""
 
 _URL = "amqp://guest:guest@localhost/"
@@ -352,7 +353,7 @@ async def test_publish_span(
     # Assert
     span = _spans(exporter)["publish events:order.placed"]
     headers = channel.basic_publish.await_args.kwargs["properties"].headers
-    envelope = _HEADERS.read(headers)
+    envelope = _ENVELOPES.read(headers)
     assert span.kind is SpanKind.PRODUCER
     assert dict(span.attributes or {}) == {
         "stratae.event": "_OrderPlaced",
@@ -482,7 +483,7 @@ async def test_process_span(
         _URL, deserializer=_decode, middleware=tracing(provider, asynchronous=True)
     )
     consumer.handle(_order_placed, lambda order: None, config=config)
-    envelope = Envelope()
+    envelope = _ENVELOPES.root()
     headers: dict[str, Any] = _HEADERS.write(envelope)
     with provider.get_tracer("test").start_as_current_span("publish") as publish:
         propagate.inject(headers)
@@ -604,7 +605,7 @@ async def test_no_sdk_changes_nothing(connect_mock: AsyncMock, channel: AsyncMoc
 
     # Assert
     headers = channel.basic_publish.await_args.kwargs["properties"].headers
-    assert headers == _HEADERS.write(_HEADERS.read(headers))
+    assert headers == _HEADERS.write(_ENVELOPES.read(headers))
     assert ran == [2]
 
 
