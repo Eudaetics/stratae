@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from copy import copy
 from datetime import datetime
 from decimal import Decimal
 from types import MappingProxyType, NoneType
 from typing import TYPE_CHECKING
-from uuid import UUID
 
 from pamqp.commands import Basic
 from pamqp.common import FieldTable
 
-from stratae.events import Envelope, EnvelopeHeaders
+from stratae.events import Envelope, EnvelopeFactory, EnvelopeHeaders
 from stratae.events.failure import failure_reason
 from stratae.events.middleware import NO_HEADERS
 from stratae.integrations.rabbitmq.config import ATTEMPTS_HEADER, FAILURE_HEADER
@@ -71,14 +70,14 @@ def _field_table(headers: Mapping[str, object]) -> FieldTable:
 _UNCARRIED = "AMQP can't carry header {!r} of type {}"
 
 
-def envelope_from(
-    message: DeliveredMessage, new_id: Callable[[], UUID], names: EnvelopeHeaders
-) -> Envelope | None:
+def envelope_from(message: DeliveredMessage, factory: EnvelopeFactory) -> Envelope | None:
     """
-    Rebuild the Envelope carried by a delivered message, making any missing id with `new_id`.
+    Rebuild the Envelope carried by a delivered message with `factory`, making any missing id.
 
-    Its headers are read under `names`, over AMQP's own message id, correlation id and timestamp.
+    Its headers are read under the factory's names, over AMQP's own message id, correlation id
+    and timestamp.
     """
+    names = factory.headers
     properties = message.header.properties
     native = {
         names.message_id: properties.message_id,
@@ -89,7 +88,7 @@ def envelope_from(
     if (headers.get(names.message_id) is None) != (headers.get(names.correlation_id) is None):
         _log.info("partial envelope headers; minting the missing id: %r", headers)
     try:
-        return names.read(headers, new_id)
+        return factory.read(headers)
     except ValueError:
         _log.warning("unparseable envelope headers; scoping a fresh envelope: %r", headers)
         return None

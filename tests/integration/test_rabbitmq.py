@@ -93,7 +93,7 @@ from starlette.routing import Route
 from stratae.backoff import Delays, Exponential
 from stratae.events import (
     Envelope,
-    EnvelopeConfig,
+    EnvelopeFactory,
     EnvelopeHeaders,
     HandleCall,
     Hooks,
@@ -503,7 +503,7 @@ async def test_envelope_survives_the_wire_under_custom_names(broker: _Broker):
     """
     An envelope sent under custom header names should reach a consumer given the same names.
 
-    Given: A publisher and a consumer whose EnvelopeConfig names the envelope's headers acme-*,
+    Given: A publisher and a consumer whose EnvelopeFactory names the envelope's headers acme-*,
         and handle middleware recording the headers it sees
     When: A message is published inside an envelope scope and consumed through the broker
     Then: The handler's envelope continues the publisher's chain, and handle middleware sees
@@ -512,7 +512,7 @@ async def test_envelope_survives_the_wire_under_custom_names(broker: _Broker):
     # Arrange
     exchange = _unique("stratae-it")
     broker.exchanges.append(exchange)
-    config = EnvelopeConfig(
+    config = EnvelopeFactory(
         headers=EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
     )
     seen = _Log[Envelope | None]()
@@ -521,7 +521,7 @@ async def test_envelope_survives_the_wire_under_custom_names(broker: _Broker):
         _URL,
         deserializer=msgspec.json.decode,
         middleware=Middleware(handle=(_recording_headers(headers),)),
-        envelope=config,
+        envelope_factory=config,
     )
     consumer.handle(
         message_event,
@@ -532,7 +532,7 @@ async def test_envelope_survives_the_wire_under_custom_names(broker: _Broker):
     # Act
     async with consumer:
         async with RabbitMQPublisher(
-            _URL, serializer=msgspec.json.encode, envelope=config
+            _URL, serializer=msgspec.json.encode, envelope_factory=config
         ) as publisher:
             send = publisher.bind(
                 message_event,

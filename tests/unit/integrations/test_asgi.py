@@ -10,7 +10,7 @@ This test suite verifies the following behaviors:
 - Only the first correlation id header is used.
 - With header trust off, the header is ignored.
 - A custom header name is matched without regard to case, and is the one echoed.
-- By default the header is the correlation-id name of the middleware's EnvelopeConfig.
+- By default the header is the correlation-id name of the middleware's EnvelopeFactory.
 - The response start carries the correlation id after the app's own headers.
 - With echoing off, the response is sent unchanged.
 - A WebSocket connection runs inside an envelope, and its accept carries the correlation id.
@@ -25,7 +25,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from stratae.events import DirectBus, PubSub
-from stratae.events.envelope import Envelope, EnvelopeConfig, EnvelopeHeaders
+from stratae.events.envelope import Envelope, EnvelopeFactory, EnvelopeHeaders
 from stratae.integrations.asgi import ASGIScope, EnvelopeMiddleware, Message, Receive, Send
 
 _CALLER = UUID("0b9d7a52-6f1e-4c3a-9d2b-5e8f1a7c4d60")
@@ -113,7 +113,7 @@ async def test_emitted_events_share_correlation_id():
     """
     # Arrange
     event = PubSub(str)
-    bus = DirectBus(envelope=EnvelopeConfig())
+    bus = DirectBus(envelope_factory=EnvelopeFactory())
     emit = bus.bind(event)
     handled: list[Envelope] = []
     bus.handle(event)(lambda payload: handled.append(_current()))
@@ -237,16 +237,16 @@ async def test_custom_header_matched_and_echoed():
 
 async def test_header_follows_envelope_config():
     """
-    The header should default to the correlation-id name of the middleware's EnvelopeConfig.
+    The header should default to the correlation-id name of the middleware's EnvelopeFactory.
 
-    Given: The middleware with an EnvelopeConfig naming the correlation id acme-corr
+    Given: The middleware with an EnvelopeFactory naming the correlation id acme-corr
     When: A request carrying acme-corr is handled
     Then: Its value is adopted, and the response carries it under acme-corr
     """
     # Arrange
     app = _App()
     headers = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
-    middleware = EnvelopeMiddleware(app, envelope=EnvelopeConfig(headers=headers))
+    middleware = EnvelopeMiddleware(app, envelope_factory=EnvelopeFactory(headers=headers))
 
     # Act
     sent = await _call(middleware, _http((b"acme-corr", str(_CALLER).encode())))
@@ -407,7 +407,9 @@ async def test_request_ids_come_from_middleware_source(caller: bool):
     headers = ((b"x-correlation-id", str(_CALLER).encode()),) if caller else ()
 
     # Act
-    await _call(EnvelopeMiddleware(app, envelope=EnvelopeConfig(new_id=ids)), _http(*headers))
+    await _call(
+        EnvelopeMiddleware(app, envelope_factory=EnvelopeFactory(new_id=ids)), _http(*headers)
+    )
 
     # Assert
     envelope = _envelope(app)

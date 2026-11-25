@@ -2,20 +2,22 @@
 Event envelope carrying correlation and causation identifiers across the call chain.
 
 {py:class}`Envelope` carries a message id, a correlation id shared across its chain, and
-a causation id pointing at its parent. {py:func}`Envelope.scope` sets the active envelope
-for a block, creating a child of the current one by default. {py:class}`EnvelopeHeaders`
-names the headers it travels in across a transport, and writes it to them and reads it back.
+a causation id pointing at its parent. An {py:class}`EnvelopeFactory` makes envelopes: a new
+chain, the next envelope in one, and one carried in headers. Its `scope` sets the active
+envelope for a block, creating a child of the current one by default.
+{py:class}`EnvelopeHeaders` names the headers an envelope travels in across a transport, and
+writes it to them and reads it back.
 
 New ids are random version 4 UUIDs by default. With the `uuid` extra installed
 (`pip install stratae[uuid]`), they come from `uuid_utils.compat`, about two and a half times
 faster, and are still standard `uuid.UUID`s. A component that opens envelopes takes an
-{py:class}`EnvelopeConfig`, whose `new_id` can be any function returning a `UUID`, such as a
-time-ordered `uuid7`.
+{py:class}`EnvelopeFactory` as `envelope_factory`, whose `new_id` can be any function
+returning a `UUID`, such as a time-ordered `uuid7`.
 
 ````{example} Tracing a chained event through envelopes
 ```{code-block} python
 from stratae.events import DirectBus, PubSub
-from stratae.events.envelope import Envelope, EnvelopeConfig
+from stratae.events.envelope import Envelope, EnvelopeFactory
 
 class OrderPlaced:
     def __init__(self, order_id: int) -> None:
@@ -28,7 +30,7 @@ class ShipmentScheduled:
 order_placed_event = PubSub(OrderPlaced)
 shipment_scheduled_event = PubSub(ShipmentScheduled)
 
-bus = DirectBus(envelope=EnvelopeConfig())
+bus = DirectBus(envelope_factory=EnvelopeFactory())
 place_order = bus.bind(order_placed_event, factory=OrderPlaced)
 schedule_shipment = bus.bind(shipment_scheduled_event, factory=ShipmentScheduled)
 
@@ -263,12 +265,16 @@ _current: ContextVar[Envelope] = ContextVar("_current_envelope")
 
 
 @dataclass(frozen=True, slots=True)
-class EnvelopeConfig:
+class EnvelopeFactory:
     """
-    How a component makes the envelopes it opens, and the headers they travel in.
+    Makes envelopes, and names the headers they travel in.
 
-    A bus, the outbox, an adapter or the ASGI middleware takes one, as all its envelope setup.
-    Pass `EnvelopeConfig()` for random ids and the default header names. Pass a function making
+    A bus, the outbox, an adapter or the ASGI middleware takes one as `envelope_factory`, as all
+    its envelope setup, and makes every envelope it opens or reads through it: a new chain with
+    `root`, the next envelope in one with `child`, the active one for a block with `scope`, and
+    one carried in headers with `read`.
+
+    Pass `EnvelopeFactory()` for random ids and the default header names. Pass a function making
     ids as `new_id` for another kind, such as time-ordered ids, which sort in the order they
     were made and so suit anything stored or sorted by message id, such as outbox records.
     `uuid_utils.compat.uuid7` makes them, as does `uuid.uuid7` on Python 3.14 and later.
@@ -281,15 +287,15 @@ class EnvelopeConfig:
     ````{example} Time-ordered ids for one bus, random ids for another
     ```{code-block} python
     from uuid_utils.compat import uuid7
-    from stratae.events import DirectBus, Envelope, EnvelopeConfig, PubSub
+    from stratae.events import DirectBus, Envelope, EnvelopeFactory, PubSub
 
     class OrderPlaced:
         def __init__(self, order_id: int) -> None:
             self.order_id = order_id
 
     order_placed = PubSub(OrderPlaced)
-    orders = DirectBus(envelope=EnvelopeConfig(new_id=uuid7))
-    audit = DirectBus(envelope=EnvelopeConfig())
+    orders = DirectBus(envelope_factory=EnvelopeFactory(new_id=uuid7))
+    audit = DirectBus(envelope_factory=EnvelopeFactory())
 
     @orders.handle(order_placed)
     def on_order(order: OrderPlaced) -> None:
@@ -314,10 +320,53 @@ class EnvelopeConfig:
     headers: EnvelopeHeaders = EnvelopeHeaders()
     """The names of the headers the envelope travels in. The default names by default."""
 
+    def root(self, correlation_id: UUID | None = None) -> Envelope:
+        """
+        Start a new chain, or a new root in the chain whose correlation id is given.
+
+        :param correlation_id: The chain to join, such as one a request brought, or `None` for
+            a new chain.
+        :returns: An {py:class}`Envelope` with a new message id and no `causation_id`.
+        """
+        new_id = self.new_id
+        return Envelope(new_id(), new_id() if correlation_id is None else correlation_id)
+
+    def child(self, parent: Envelope) -> Envelope:
+        """
+        Make the next envelope in a parent's chain.
+
+        :param parent: The envelope of the message that caused this one.
+        :returns: An {py:class}`Envelope` with a new message id and the parent's
+            `correlation_id`, caused by the parent.
+        """
+        return Envelope(self.new_id(), parent.correlation_id, parent.message_id)
+
+    def scope(self, envelope: Envelope | None = None) -> AbstractContextManager[Envelope]:
+        """
+        Set the active envelope for a block, restoring the previous one on exit.
+
+        :param envelope: The envelope to activate. Defaults to a child of the envelope current
+            when the block is entered, or a new root.
+        :returns: A context manager yielding the active {py:class}`Envelope`.
+        """
+        return _Scope(envelope, self.new_id)
+
+    def read(self, headers: Mapping[str, object]) -> Envelope:
+        """
+        Rebuild an envelope from headers named as `headers` names them.
+
+        A missing id is made with `new_id`. See {py:meth}`EnvelopeHeaders.read`.
+
+        :param headers: The headers to read.
+        :returns: The rebuilt {py:class}`Envelope`.
+        :raises ValueError: If a header is present but unparseable.
+        """
+        return self.headers.read(headers, self.new_id)
+
 
 class _Scope:
     """
-    The context manager {py:func}`Envelope.scope` returns.
+    The context manager {py:meth}`EnvelopeFactory.scope` and {py:func}`Envelope.scope` return.
 
     A class rather than a `contextlib.contextmanager` generator: each emit, outbox write and
     request opens one, and a generator costs about twice as much to enter and exit.

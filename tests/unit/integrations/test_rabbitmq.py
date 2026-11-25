@@ -109,7 +109,7 @@ from stratae.events import (
     AsyncPubSubProducer,
     Encoded,
     Envelope,
-    EnvelopeConfig,
+    EnvelopeFactory,
     Hooks,
     Middleware,
     NoPayload,
@@ -789,14 +789,16 @@ async def test_emit_stamps_envelope_under_custom_names(connect_mock: AsyncMock, 
     """
     A publisher given custom envelope header names should send the envelope under them alone.
 
-    Given: A publisher whose EnvelopeConfig names the envelope's headers acme-*
+    Given: A publisher whose EnvelopeFactory names the envelope's headers acme-*
     When: An event is emitted inside an envelope scope
     Then: The message carries the envelope under the acme-* names and none of the defaults,
         with AMQP's own message id and correlation id as before
     """
     # Arrange
     names = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
-    publisher = RabbitMQPublisher(_URL, serializer=_encode, envelope=EnvelopeConfig(headers=names))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, envelope_factory=EnvelopeFactory(headers=names)
+    )
 
     # Act
     publisher.route(_order_placed, _config)
@@ -1863,7 +1865,9 @@ async def test_emit_draws_envelope_ids_from_publisher_source(
     Then: The message carries the source's first two ids as its message and correlation ids
     """
     # Arrange
-    publisher = RabbitMQPublisher(_URL, serializer=_encode, envelope=EnvelopeConfig(new_id=_Ids()))
+    publisher = RabbitMQPublisher(
+        _URL, serializer=_encode, envelope_factory=EnvelopeFactory(new_id=_Ids())
+    )
 
     # Act
     publisher.route(_order_placed, _config)

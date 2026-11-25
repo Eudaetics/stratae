@@ -281,7 +281,7 @@ import asyncio
 from typing import Annotated
 from sqlalchemy import func
 from stratae.depends import Depends, inject
-from stratae.events import Encoded, Envelope, EnvelopeConfig, PubSub
+from stratae.events import Encoded, Envelope, EnvelopeFactory, PubSub
 from stratae.events.outbox import OutboxConfig, OutboxProducer, OutboxRelay
 
 class OrderPlaced:
@@ -290,7 +290,7 @@ class OrderPlaced:
         self.item = item
 
 class PrintingPublisher:
-    envelope = EnvelopeConfig()
+    envelope_factory = EnvelopeFactory()
 
     def __init__(self) -> None:
         self.routes: dict[Any, Any] = {}

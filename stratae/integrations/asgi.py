@@ -10,12 +10,12 @@ filter. Lifespan events pass through untouched.
 
 A request that sends a valid UUID in the correlation id header joins that chain. The header
 is the correlation-id name of the middleware's
-{py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` `headers`, the same one
+{py:class}`EnvelopeFactory <stratae.events.envelope.EnvelopeFactory>` `headers`, the same one
 Stratae's broker adapters send with that config: `x-correlation-id` by default. So a service
-that gives its buses and its middleware one `EnvelopeConfig` uses one name over HTTP and
-messages. A missing, malformed or non-UUID value starts a new chain, and never
-fails the request. Only the correlation id is taken from the caller: each request gets a new
-message id, since consumers deduplicate on it. Pass `trust_header=False` to ignore the header
+that gives its buses and its middleware one `EnvelopeFactory` uses one name over HTTP and
+messages. A missing, malformed or non-UUID value starts a new chain, and never fails the
+request. Only the correlation id is taken from the caller: each request gets a new message id,
+since consumers deduplicate on it. Pass `trust_header=False` to ignore the header
 and start every request's chain afresh, as a public edge service might.
 
 The response carries the correlation id in the same header, so a caller can quote it when
@@ -35,7 +35,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
-from stratae.events import DirectBus, EnvelopeConfig, PubSub
+from stratae.events import DirectBus, EnvelopeFactory, PubSub
 from stratae.events.envelope import Envelope
 from stratae.integrations.asgi import EnvelopeMiddleware
 
@@ -44,7 +44,7 @@ class OrderPlaced:
         self.item = item
 
 order_placed = PubSub(OrderPlaced)
-bus = DirectBus(envelope=EnvelopeConfig())
+bus = DirectBus(envelope_factory=EnvelopeFactory())
 announce = bus.bind(order_placed, factory=OrderPlaced)
 chains: dict[str, str] = {}
 
@@ -80,7 +80,7 @@ print(anvil.status_code, chains["anvil"] == anvil.headers["x-correlation-id"])
 import logging
 import sys
 from uuid import UUID
-from stratae.events.envelope import Envelope
+from stratae.events.envelope import Envelope, EnvelopeFactory
 
 class CorrelationFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -96,7 +96,8 @@ log.addHandler(handler)
 log.setLevel(logging.INFO)
 
 log.info("outside a request")
-with Envelope.scope(Envelope(correlation_id=UUID("0b9d7a52-6f1e-4c3a-9d2b-5e8f1a7c4d60"))):
+factory = EnvelopeFactory()
+with factory.scope(factory.root(UUID("0b9d7a52-6f1e-4c3a-9d2b-5e8f1a7c4d60"))):
     log.info("inside a request")
 ```
 ```{output}
@@ -110,7 +111,7 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 from uuid import UUID
 
-from stratae.events.envelope import Envelope, EnvelopeConfig
+from stratae.events.envelope import Envelope, EnvelopeFactory
 
 type ASGIScope = MutableMapping[str, Any]
 type Message = MutableMapping[str, Any]
@@ -143,45 +144,46 @@ class EnvelopeMiddleware:
         header: str | None = None,
         trust_header: bool = True,
         echo_header: bool = True,
-        envelope: EnvelopeConfig = EnvelopeConfig(),
+        envelope_factory: EnvelopeFactory = EnvelopeFactory(),
     ) -> None:
         """
         Wrap `app`, opening an envelope around each of its requests and connections.
 
         :param app: The ASGI application to wrap.
         :param header: The header carrying the correlation id, in requests and responses, or
-            `None` for the correlation-id name of `envelope`'s `headers`.
+            `None` for the correlation-id name of `envelope_factory`'s `headers`.
         :param trust_header: Whether a request's correlation id header is adopted. If false,
             every request starts a new chain.
         :param echo_header: Whether the response carries the request's correlation id.
-        :param envelope: How each request's envelope is made. Its `new_id` makes the message
-            id, and the correlation id when the request doesn't bring one. Random by default.
-            Its `headers` name the correlation-id header when `header` is `None`.
+        :param envelope_factory: Makes each request's envelope: a root joining the request's
+            chain, or a new chain when it doesn't bring one. Its `new_id` makes the ids, random by
+            default. Its `headers` name the correlation-id header when `header` is `None`.
         """
         self.app = app
-        name = envelope.headers.correlation_id if header is None else header
+        name = envelope_factory.headers.correlation_id if header is None else header
         self._header = name.lower().encode("latin-1")
         self._trust_header = trust_header
         self._echo_header = echo_header
-        self._new_id = envelope.new_id
+        self._envelope_factory = envelope_factory
 
     async def __call__(self, scope: ASGIScope, receive: Receive, send: Send) -> None:
         """Handle one ASGI connection, inside a new envelope if it's a request."""
         if scope["type"] not in _CONNECTIONS:
             await self.app(scope, receive, send)
             return
-        envelope = Envelope(message_id=self._new_id(), correlation_id=self._correlation_id(scope))
-        with Envelope.scope(envelope):
+        factory = self._envelope_factory
+        envelope = factory.root(self._correlation_id(scope))
+        with factory.scope(envelope):
             await self.app(scope, receive, self._echoing(envelope, send))
 
-    def _correlation_id(self, scope: ASGIScope) -> UUID:
-        """Return the request's correlation id if it's trusted and valid, else a new one."""
+    def _correlation_id(self, scope: ASGIScope) -> UUID | None:
+        """Return the request's correlation id if it's trusted and valid, else `None`."""
         if self._trust_header:
             # ASGI servers send header names lowercased; the first match is the one used.
             for name, value in scope["headers"]:
                 if name == self._header:
-                    return _uuid(value) or self._new_id()
-        return self._new_id()
+                    return _uuid(value)
+        return None
 
     def _echoing(self, envelope: Envelope, send: Send) -> Send:
         """Return `send`, adding the correlation id header to the response if echoing."""

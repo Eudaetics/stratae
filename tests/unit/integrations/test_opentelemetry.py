@@ -56,7 +56,7 @@ from stratae.events import (
     Destination,
     DirectBus,
     Envelope,
-    EnvelopeConfig,
+    EnvelopeFactory,
     Operation,
     PubSub,
 )
@@ -162,7 +162,7 @@ def test_direct_bus_spans(provider: TracerProvider, exporter: InMemorySpanExport
     """
     # Arrange
     seen: list[Envelope | None] = []
-    bus = DirectBus(envelope=EnvelopeConfig(), middleware=tracing(provider))
+    bus = DirectBus(envelope_factory=EnvelopeFactory(), middleware=tracing(provider))
     bus.handle(_order_placed, lambda order: seen.append(Envelope.current()))
 
     # Act
@@ -195,7 +195,7 @@ def test_direct_bus_spans_nest(provider: TracerProvider, exporter: InMemorySpanE
     """
     # Arrange
     shipped = PubSub(name="shipped")
-    bus = DirectBus(envelope=EnvelopeConfig(), middleware=tracing(provider))
+    bus = DirectBus(envelope_factory=EnvelopeFactory(), middleware=tracing(provider))
     ship = bus.bind(shipped)
     bus.handle(shipped, lambda: None)
     bus.handle(_order_placed, lambda order: ship())

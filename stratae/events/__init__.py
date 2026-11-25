@@ -23,7 +23,7 @@ handling failed.
 
 ````{example} Create event triggering a logging event
 ```{code-block} python
-from stratae.events import DirectBus, Envelope, EnvelopeConfig, PubSub, Request
+from stratae.events import DirectBus, Envelope, EnvelopeFactory, PubSub, Request
 
 class LogMessage:
     def __init__(self, text: str) -> None:
@@ -40,7 +40,7 @@ class User:
 log_message_event = PubSub(LogMessage)
 create_user_event = Request(CreateUserSchema, reply=User)
 
-bus = DirectBus(envelope=EnvelopeConfig())
+bus = DirectBus(envelope_factory=EnvelopeFactory())
 log = bus.bind(log_message_event, factory=LogMessage)
 create = bus.bind(create_user_event, factory=CreateUserSchema)
 
@@ -80,7 +80,7 @@ from .dispatch import (
     fan_out_concurrent,
     only_responder,
 )
-from .envelope import Envelope, EnvelopeConfig, EnvelopeHeaders
+from .envelope import Envelope, EnvelopeFactory, EnvelopeHeaders
 from .handler import AsyncHandler, Handler, Handlers, SyncHandler
 from .hooks import Hooks
 from .middleware import HandleCall, HandleMiddleware, Middleware, PublishCall, PublishMiddleware
@@ -125,7 +125,7 @@ __all__ = [
     "EmitCallable",
     "Encoded",
     "Envelope",
-    "EnvelopeConfig",
+    "EnvelopeFactory",
     "EnvelopeHeaders",
     "EventType",
     "HandleCall",
