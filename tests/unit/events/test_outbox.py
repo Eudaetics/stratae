@@ -222,12 +222,11 @@ def _record(
 
     Given `available_at`, it's rescheduled to be due then, as a failed attempt would leave it.
     """
-    envelope = Envelope()
     message = OutboxMessage(
-        id=envelope.message_id,
+        envelope=Envelope(),
         route="_Order",
         body=str(order_id).encode(),
-        headers=envelope.to_headers(),
+        headers={},
         created_at=datetime.now(UTC),
     )
     message = replace(message, **changes)
@@ -430,11 +429,11 @@ async def _tag_tenant(call: PublishCall, next: Callable[[PublishCall], Awaitable
 
 async def test_middleware_headers_stored(store: InMemoryOutboxStore):
     """
-    Headers publish middleware adds should be stored with the record's envelope headers.
+    Headers publish middleware adds should be stored with the message, apart from its envelope.
 
     Given: A producer whose publish middleware adds a tenant header
     When: An event is emitted
-    Then: The record holds the tenant header, added inside its envelope, and the envelope's
+    Then: The message's headers hold the tenant header alone, added inside its envelope
     """
     # Arrange
     outbox = OutboxProducer[object](store, _encode, middleware=Middleware(publish=(_tag_tenant,)))
@@ -445,9 +444,7 @@ async def test_middleware_headers_stored(store: InMemoryOutboxStore):
 
     # Assert
     (record,) = store.pending()
-    assert (
-        record.message.headers == {"x-tenant": "acme True"} | record.message.envelope.to_headers()
-    )
+    assert record.message.headers == {"x-tenant": "acme True"}
 
 
 async def test_middleware_reserved_header_writes_nothing(store: InMemoryOutboxStore):
@@ -1055,7 +1052,7 @@ async def test_relay_publishes_added_headers(store: InMemoryOutboxStore):
 def _stored(attempts: int = 0, **changes: Any) -> OutboxRecord:
     """Return a record as a store would hold it, created and due at the start of 2026."""
     created = datetime(2026, 1, 1, tzinfo=UTC)
-    message = replace(OutboxMessage(Envelope().message_id, "_Order", b"1", {}, created), **changes)
+    message = replace(OutboxMessage(Envelope(), "_Order", b"1", {}, created), **changes)
     return OutboxRecord(message, OutboxDelivery(created, attempts))
 
 

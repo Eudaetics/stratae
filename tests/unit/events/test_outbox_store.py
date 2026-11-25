@@ -125,12 +125,11 @@ async def _call(result: Any) -> Any:
 
 def _message(order: int, **changes: Any) -> OutboxMessage:
     """Return a message created `order` seconds after a fixed past moment."""
-    envelope = Envelope()
     message = OutboxMessage(
-        id=envelope.message_id,
+        envelope=Envelope(),
         route="orders",
         body=f"order {order}".encode(),
-        headers=envelope.to_headers(),
+        headers={},
         created_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order),
         key=f"key-{order}",
     )
@@ -166,13 +165,15 @@ async def test_committed_record_claimable_as_written(harness: _Harness):
     """
     A record added in a unit of work that commits should be claimable, as written.
 
-    Given: A message with every field set
+    Given: A message with every field set, its envelope caused by another message
     When: It's added in a unit of work that commits, then claimed
-    Then: The claimed record holds the message added, due at its creation time with no attempts
+    Then: The claimed record holds the message added, its envelope included, due at its
+        creation time with no attempts
     """
     # Arrange
     store = harness.store()
-    message = _message(1, address="orders.7")
+    envelope = Envelope.root().child()
+    message = _message(1, envelope=envelope, headers={"x-tenant": "acme"}, address="orders.7")
 
     # Act
     async with _added(harness, store, message):
@@ -202,8 +203,7 @@ async def test_headers_come_back_as_added(harness: _Harness):
         "x-route": ["eu", "west"],
         "x-meta": {"source": "checkout", "version": 2, "at": datetime(2026, 11, 15, tzinfo=UTC)},
     }
-    message = _message(1)
-    message = replace(message, headers={**message.headers, **headers})
+    message = _message(1, headers=headers)
 
     # Act
     async with _added(harness, store, message):
@@ -228,8 +228,7 @@ async def test_header_store_cannot_hold_refused(harness: _Harness):
     """
     # Arrange
     store = harness.store()
-    message = _message(1)
-    message = replace(message, headers={**message.headers, "x-digest": b"\x00\x01"})
+    message = _message(1, headers={"x-digest": b"\x00\x01"})
 
     # Act / Assert
     with pytest.raises(StatementError, match="bytes is not JSON serializable"):
