@@ -8,7 +8,7 @@ The outbox only works if a record and its data commit together. So the store mus
 
 ## The table and the unit of work
 
-The application's own table, `orders`, sits beside the outbox table. One outbox row per record. A row holds a message, which never changes once it's added, and its delivery state: `available_at`, `attempts` and `error`. The relay writes only the delivery columns, by message id. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. `headers` is a column of type `Headers`: `jsonb` on Postgres, and JSON on other databases. The store must give back what it was given, and JSON has no type for a timestamp. So `Headers` stores a timestamp as `{"$datetime": ...}`, at any depth, and turns it back into one. Text that looks like a timestamp stays text. The database's driver does the JSON encoding itself, so `Headers` hands it plain values and tags only what JSON can't hold. A value JSON can't hold that isn't tagged, such as bytes, fails the add inside the unit of work, and nothing commits. If your middleware sends such values, tag them in `tagged` and `untagged` too. The session recipe is the same as in [A database session per scope](database.md).
+The application's own table, `orders`, sits beside the outbox table. One outbox row per record. A row holds a message, which never changes once it's added, and its delivery state: `available_at`, `attempts` and `error`. The relay writes only the delivery columns, by message id. The message's envelope takes four columns: `id` holds its message id, beside `correlation_id`, `causation_id` and `envelope_timestamp`. So a chain of messages can be found by its correlation id. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. `headers` holds the application's headers, without the envelope's. It's a column of type `Headers`: `jsonb` on Postgres, and JSON on other databases. The store must give back what it was given, and JSON has no type for a timestamp. So `Headers` stores a timestamp as `{"$datetime": ...}`, at any depth, and turns it back into one. Text that looks like a timestamp stays text. The database's driver does the JSON encoding itself, so `Headers` hands it plain values and tags only what JSON can't hold. A value JSON can't hold that isn't tagged, such as bytes, fails the add inside the unit of work, and nothing commits. If your middleware sends such values, tag them in `tagged` and `untagged` too. The session recipe is the same as in [A database session per scope](database.md).
 
 ````{example} The outbox table, the engine, and a session per unit of work
 ```{code-block} python
@@ -42,6 +42,7 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeEngine
 
+from stratae.events import Envelope
 from stratae.events.outbox import OutboxDelivery, OutboxMessage, OutboxRecord
 from stratae.lifecycle import AsyncScope
 
@@ -95,6 +96,9 @@ class Headers(TypeDecorator[dict[str, Any]]):
 class OutboxRow(Base):
     __tablename__ = "outbox"
     id: Mapped[UUID] = mapped_column(primary_key=True)
+    correlation_id: Mapped[UUID]
+    causation_id: Mapped[UUID | None]
+    envelope_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     route: Mapped[str] = mapped_column(String(200))
     body: Mapped[bytes] = mapped_column(LargeBinary)
     headers: Mapped[dict[str, Any]] = mapped_column(Headers)
@@ -109,8 +113,12 @@ class OutboxRow(Base):
 
     @classmethod
     def from_message(cls, message: OutboxMessage) -> "OutboxRow":
+        envelope = message.envelope
         return cls(
-            id=message.id,
+            id=envelope.message_id,
+            correlation_id=envelope.correlation_id,
+            causation_id=envelope.causation_id,
+            envelope_timestamp=envelope.timestamp,
             route=message.route,
             body=message.body,
             headers=dict(message.headers),
@@ -121,8 +129,11 @@ class OutboxRow(Base):
         )
 
     def to_record(self) -> OutboxRecord:
+        envelope = Envelope(
+            self.id, self.correlation_id, self.causation_id, utc(self.envelope_timestamp)
+        )
         message = OutboxMessage(
-            id=self.id,
+            envelope=envelope,
             route=self.route,
             body=self.body,
             headers=self.headers,

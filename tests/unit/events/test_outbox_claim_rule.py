@@ -26,13 +26,12 @@ _LATER = _NOW + timedelta(hours=1)
 def _record(
     order: int, key: str | None = None, available_at: datetime | None = None
 ) -> OutboxRecord:
-    envelope = Envelope()
     created = _NOW - timedelta(hours=1) + timedelta(seconds=order)
     message = OutboxMessage(
-        id=envelope.message_id,
+        envelope=Envelope(),
         route="orders",
         body=b"",
-        headers=envelope.to_headers(),
+        headers={},
         created_at=created,
         key=key,
     )

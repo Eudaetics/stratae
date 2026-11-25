@@ -127,7 +127,7 @@ from uuid import UUID
 
 from stratae.backoff import Backoff, Endless, Exponential, Limited
 from stratae.events.binding import abind
-from stratae.events.envelope import ENVELOPE_HEADERS, Envelope, EnvelopeConfig
+from stratae.events.envelope import Envelope, EnvelopeConfig
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.failure import Retry, failure_action, failure_reason
 from stratae.events.hooks import Hooks
@@ -183,11 +183,6 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _added(headers: Mapping[str, object]) -> dict[str, object]:
-    """Return the headers publish middleware added to a record, without its envelope's."""
-    return {name: value for name, value in headers.items() if name not in ENVELOPE_HEADERS}
-
-
 def _require_pubsub(event: AnyEvent) -> None:
     """Refuse an event that isn't fire-and-forget: a request needs its reply now."""
     if not isinstance(event, PubSub):
@@ -205,8 +200,8 @@ async def _settle[T](result: T | Awaitable[T]) -> T:
 class OutboxMessage:
     """One event written to the outbox, as plain data. It never changes once it's added."""
 
-    id: UUID
-    """The message id, from the envelope it was emitted with. Unique per message."""
+    envelope: Envelope
+    """The envelope it was emitted with, to publish it under."""
 
     route: str
     """The name its binding registered its event and routing config under."""
@@ -216,8 +211,8 @@ class OutboxMessage:
 
     headers: Mapping[str, object]
     """
-    The headers it's published with, as they were emitted: the envelope it was emitted with,
-    whose values are text, and any its publish middleware added, whatever their values.
+    The headers it's published with: those it was emitted with, and any its publish middleware
+    added, whatever their values. Its envelope isn't among them.
     """
 
     created_at: datetime
@@ -237,9 +232,9 @@ class OutboxMessage:
     """
 
     @property
-    def envelope(self) -> Envelope:
-        """The envelope it was emitted with, to publish it under."""
-        return Envelope.from_headers(self.headers)
+    def id(self) -> UUID:
+        """The message id: its envelope's. Unique per message."""
+        return self.envelope.message_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,12 +271,12 @@ class OutboxStore(Protocol):
 
     A store keeps each message beside its delivery state. Once a message is added, the relay
     changes only its delivery state, by the message's id. A store gives back each message as it
-    was added, its headers included, so the relay publishes what was emitted. How it keeps
-    them is its own choice. An in-memory store keeps
-    the values themselves, and a database store picks a column that holds the values its
-    application sends, such as JSON for text, numbers, booleans, lists and tables. A value a
-    store can't keep, it refuses when the record is added, inside the unit of work. It never
-    gives back a different value.
+    was added, its envelope and headers included, so the relay publishes what was emitted. How
+    it keeps them is its own choice. An in-memory store keeps the values themselves, and a
+    database store picks columns for the envelope's ids and timestamp, and a column for the
+    headers that holds the values its application sends, such as JSON for text, numbers,
+    booleans, lists and tables. A value a store can't keep, it refuses when the record is
+    added, inside the unit of work. It never gives back a different value.
 
     Each method may be sync or async: a store backed by an async database awaits, and one
     that doesn't need to, doesn't. The outbox awaits whichever returns an awaitable.
@@ -649,15 +644,14 @@ class OutboxProducer[Target]:
         address: Callable[[Any], str | None] | None,
         message: Outgoing[OutboxConfig[Target], Envelope],
     ) -> None:
-        """Serialize a message's payload and add it to the store, with its headers."""
+        """Serialize a message's payload and add it to the store, with its envelope and headers."""
         event, config, payload = message.event, message.config, message.payload
-        envelope = message.envelope
         body = b"" if event.is_signal else serializer(payload)
         written = OutboxMessage(
-            id=envelope.message_id,
+            envelope=message.envelope,
             route=route,
             body=body,
-            headers={**message.headers, **envelope.to_headers()},
+            headers=message.headers,
             created_at=_now(),
             key=config.key(payload) if config.key is not None else None,
             address=address(payload) if address is not None else None,
@@ -1066,7 +1060,7 @@ class OutboxRelay[Target]:
             event,
             Encoded(message.body, message.address),
             envelope=message.envelope,
-            headers=_added(message.headers),
+            headers=message.headers,
         )
 
 
