@@ -17,6 +17,7 @@ from pamqp.common import FieldTable
 from stratae.events import CORRELATION_ID_HEADER, MESSAGE_ID_HEADER, TIMESTAMP_HEADER, Envelope
 from stratae.events.envelope import ENVELOPE_HEADERS
 from stratae.events.failure import failure_reason
+from stratae.events.middleware import NO_HEADERS
 from stratae.integrations.rabbitmq.config import ATTEMPTS_HEADER, FAILURE_HEADER
 
 if TYPE_CHECKING:
@@ -85,8 +86,19 @@ def envelope_from(message: DeliveredMessage, new_id: Callable[[], UUID]) -> Enve
 
 
 def headers_from(message: DeliveredMessage) -> Mapping[str, object]:
-    """Return a delivered message's headers as they arrived, read-only, for handle middleware."""
-    return MappingProxyType(message.header.properties.headers or {})
+    """
+    Return a delivered message's headers without its envelope's, read-only, for handle middleware.
+
+    The envelope is rebuilt from its headers by {py:func}`envelope_from`, so handle middleware
+    reads it as a value, as it does on a direct bus.
+    """
+    delivered = message.header.properties.headers
+    if not delivered:
+        return NO_HEADERS
+    headers = dict(delivered)
+    for name in ENVELOPE_HEADERS:
+        headers.pop(name, None)
+    return MappingProxyType(headers)
 
 
 def failed_attempts(message: DeliveredMessage) -> int:

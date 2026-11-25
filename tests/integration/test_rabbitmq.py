@@ -395,11 +395,15 @@ async def _tag_tenant(call: PublishCall, next: Callable[[PublishCall], Awaitable
     return await next(call.with_headers({"x-tenant": "acme"}))
 
 
-def _recording_headers(seen: list[dict[str, object]]) -> Any:
-    """Return handle middleware recording the headers it reads."""
+def _recording_headers(
+    seen: list[dict[str, object]], envelopes: list[Envelope | None] | None = None
+) -> Any:
+    """Return handle middleware recording the headers it reads, and the envelope it's in."""
 
     async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         seen.append(dict(call.headers))
+        if envelopes is not None:
+            envelopes.append(Envelope.current())
         return await next(call)
 
     return record
@@ -412,17 +416,18 @@ async def test_middleware_header_crosses_the_broker(broker: _Broker):
     Given: A publisher whose middleware adds a tenant header, and a consumer whose handle
         middleware records the headers
     When: A payload is published with a number as a header, and consumed through the broker
-    Then: The handle middleware read the tenant header, the envelope's correlation id, and
-        the number as a number
+    Then: The handle middleware read the tenant header and the number as a number, and none
+        of the envelope's headers; it ran inside the envelope's correlation id
     """
     # Arrange
     queue = _unique("stratae-it-headers")
     broker.queues.append(queue)
     seen = _Log[dict[str, object]]()
+    envelopes: list[Envelope | None] = []
     consumer = RabbitMQConsumer(
         _URL,
         deserializer=msgspec.json.decode,
-        middleware=Middleware(handle=(_recording_headers(seen),)),
+        middleware=Middleware(handle=(_recording_headers(seen, envelopes),)),
     )
     consumer.handle(message_event, lambda message: None, config=RabbitMQConsumeConfig(queue))
 
@@ -438,9 +443,10 @@ async def test_middleware_header_crosses_the_broker(broker: _Broker):
 
     # Assert
     (headers,) = seen
-    assert headers["x-tenant"] == "acme"
-    assert headers["x-correlation-id"] == str(envelope.correlation_id)
-    assert headers["x-priority"] == 3
+    (handled,) = envelopes
+    assert headers == {"x-tenant": "acme", "x-priority": 3}
+    assert handled is not None
+    assert handled.correlation_id == envelope.correlation_id
 
 
 async def test_envelope_survives_the_wire(broker: _Broker):
@@ -1395,7 +1401,8 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
         them too
     When: An event is written, and the relay runs
     Then: The record holds both headers; the relay's middleware and the consumer's both read
-        them, the number still a number, under the record's message id
+        them alone, the number still a number, and the consumer's ran under the record's
+        message id
     """
     # Arrange
     queue = _unique("stratae-it-outbox-headers")
@@ -1420,10 +1427,11 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
         return await next(call)
 
     seen = _Log[dict[str, object]]()
+    envelopes: list[Envelope | None] = []
     consumer = RabbitMQConsumer(
         _URL,
         deserializer=msgspec.json.decode,
-        middleware=Middleware(handle=(_recording_headers(seen),)),
+        middleware=Middleware(handle=(_recording_headers(seen, envelopes),)),
     )
     consumer.handle(message_event, lambda message: None, config=RabbitMQConsumeConfig(queue))
     await send(text="tagged")
@@ -1446,8 +1454,10 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
     )
     assert relayed == [{"x-tenant": "acme", "x-priority": 3}]
     (headers,) = seen
-    assert (headers["x-tenant"], headers["x-priority"]) == ("acme", 3)
-    assert headers["x-message-id"] == str(written.message.id)
+    (handled,) = envelopes
+    assert headers == {"x-tenant": "acme", "x-priority": 3}
+    assert handled is not None
+    assert handled.message_id == written.message.id
 
 
 class _Ended(SpanProcessor):

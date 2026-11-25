@@ -176,12 +176,14 @@ class HandleCall(NamedTuple):
     """
     A message being handled: what a dispatcher gives each handler, and handle middleware sees.
 
-    An adapter builds one for each message it handles. Its `headers` are the message's. On a
-    direct bus, they're the ones its publish middleware added. Over a broker, they're the
-    headers the message arrived with, as the transport delivered them, its envelope's included.
-    The handler is called with the payload of the call passed to `next`. The event, config and
-    headers describe the message being handled, so passing on a call with others raises
-    `ValueError`.
+    An adapter builds one for each message it handles. Its `headers` are the message's,
+    without its envelope's, on every bus. On a direct bus, they're the ones given to `emit` and
+    the ones publish middleware added. Over a broker, they're the headers the message arrived
+    with, as the transport delivered them, beside any the adapter sets itself, such as an
+    attempt count. The envelope is read as a value, from
+    {py:meth}`Envelope.current <stratae.events.envelope.Envelope.current>`. The handler is
+    called with the payload of the call passed to `next`. The event, config and headers
+    describe the message being handled, so passing on a call with others raises `ValueError`.
     """
 
     event: "AnyEvent"

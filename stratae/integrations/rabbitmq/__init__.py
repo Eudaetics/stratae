@@ -31,8 +31,10 @@ message id, so consumers can deduplicate on it. Redelivery keeps it too.
 Headers that publish middleware adds are sent with the message, as AMQP field values: text,
 numbers, booleans, timestamps, bytes, and lists and tables of them. A value AMQP can't carry
 is refused with `TypeError` when the message is sent. Handle middleware reads a delivered
-message's headers as they arrived. `emit` can be given headers as well, so a message can be
-re-published with the ones it was first sent with.
+message's headers as they arrived, without its envelope's. It reads the envelope as a value,
+from {py:meth}`Envelope.current <stratae.events.envelope.Envelope.current>`, as on a direct bus.
+`emit` can be given headers as well, so a message can be re-published with the ones it was
+first sent with.
 {py:class}`Hooks <stratae.events.hooks.Hooks>` passed to `bind` or `emit` run around each
 publish, and those passed to `handle` around each delivery's handler, before its ack or nack.
 
