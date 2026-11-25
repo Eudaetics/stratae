@@ -39,7 +39,7 @@ import pytest
 from stratae.events import (
     AsyncDirectBus,
     DirectBus,
-    EnvelopeConfig,
+    EnvelopeFactory,
     HandleCall,
     Hooks,
     Middleware,
@@ -351,7 +351,8 @@ def test_reserved_header_from_middleware_refuses_the_emit(forge: Any, name: str)
         return next(call)
 
     bus = DirectBus(
-        envelope=EnvelopeConfig(), middleware=Middleware(publish=(forge(name),), handle=(record,))
+        envelope_factory=EnvelopeFactory(),
+        middleware=Middleware(publish=(forge(name),), handle=(record,)),
     )
     bus.handle(_placed, lambda order: None)
 

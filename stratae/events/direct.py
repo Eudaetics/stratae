@@ -16,7 +16,7 @@ subclass of a supported pattern is delivered as that pattern. Add or replace a p
 is checked against its pattern: pairing it with the wrong pattern, or returning something other
 than what the pattern emits, is a type error. Registering or binding an event
 of an unsupported pattern raises `TypeError`. With
-`envelope=EnvelopeConfig()`, each emission opens an
+`envelope_factory=EnvelopeFactory()`, each emission opens an
 {py:class}`Envelope <stratae.events.envelope.Envelope>`.
 
 Both buses run an event's handlers one at a time. So handlers can share a resource that
@@ -114,7 +114,7 @@ from stratae.events.dispatch import (
     fan_out,
     fan_out_async,
 )
-from stratae.events.envelope import Envelope, EnvelopeConfig
+from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.handler import AsyncHandler, Handler, Handlers, SyncHandler
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import (
@@ -292,18 +292,18 @@ type _Publish = Callable[
 
 
 def _publisher(
-    middleware: tuple[PublishMiddleware, ...], envelope: EnvelopeConfig | None, asynchronous: bool
+    middleware: tuple[PublishMiddleware, ...], factory: EnvelopeFactory | None, asynchronous: bool
 ) -> _Publish:
     """Return the pipeline's entry point for a bus, with its middleware and envelopes bound."""
-    if envelope is None:
+    if factory is None:
         bare: Publishing[None, None] = Publishing(middleware, asynchronous=asynchronous)
         if asynchronous:
             return partial(publish_async, bare)
         return partial(publish, bare)
     enveloped: Publishing[None, Envelope] = Publishing(middleware, asynchronous=asynchronous)
     if asynchronous:
-        return partial(publish_enveloped_async, enveloped, envelope.new_id)
-    return partial(publish_enveloped, enveloped, envelope.new_id)
+        return partial(publish_enveloped_async, enveloped, factory)
+    return partial(publish_enveloped, enveloped, factory)
 
 
 def _sender(route: _Route) -> Send[None, Envelope | None]:
@@ -348,7 +348,7 @@ class _Core:
         self,
         name: str,
         asynchronous: bool,
-        envelope: EnvelopeConfig | None,
+        factory: EnvelopeFactory | None,
         dispatchers: Collection[Dispatch],
         middleware: Middleware,
     ) -> None:
@@ -367,11 +367,9 @@ class _Core:
         pairs = (*(_ASYNC_DEFAULTS if asynchronous else _SYNC_DEFAULTS), *dispatchers)
         self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
         self._middleware = middleware
-        self._publish = _publisher(middleware.publish, envelope, asynchronous)
-        self._plain = not (middleware.publish or middleware.handle) and envelope is None
-        self._reserved = (
-            _NONE_RESERVED if envelope is None else reserved_for(None, envelope.headers)
-        )
+        self._publish = _publisher(middleware.publish, factory, asynchronous)
+        self._plain = not (middleware.publish or middleware.handle) and factory is None
+        self._reserved = _NONE_RESERVED if factory is None else reserved_for(None, factory.headers)
 
     def emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
         """
@@ -502,9 +500,9 @@ class DirectBus:
     <stratae.events.patterns.Request>` events return their one responder's reply. Async
     handlers are rejected with `TypeError`.
 
-    :param envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
-        each emission, made as the
-        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` says. The bus
+    :param envelope_factory: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
+        each emission, made by this
+        {py:class}`EnvelopeFactory <stratae.events.envelope.EnvelopeFactory>`. The bus
         refuses its `headers`' names as headers. `None`, the default, opens none, and reserves
         no envelope header names.
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
@@ -517,12 +515,12 @@ class DirectBus:
     def __init__(
         self,
         *,
-        envelope: EnvelopeConfig | None = None,
+        envelope_factory: EnvelopeFactory | None = None,
         dispatchers: Collection[Dispatch] = (),
         middleware: Middleware = Middleware(),
     ) -> None:
         """Create a bus, optionally with envelope tracking, more patterns and middleware."""
-        self._core = _Core("DirectBus", False, envelope, dispatchers, middleware)
+        self._core = _Core("DirectBus", False, envelope_factory, dispatchers, middleware)
 
     def emit[Payload, Result](
         self,
@@ -686,9 +684,9 @@ class AsyncDirectBus:
     {py:class}`Request <stratae.events.patterns.Request>` events resolve to their one
     responder's reply.
 
-    :param envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
-        each emission, made as the
-        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` says. The bus
+    :param envelope_factory: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
+        each emission, made by this
+        {py:class}`EnvelopeFactory <stratae.events.envelope.EnvelopeFactory>`. The bus
         refuses its `headers`' names as headers. `None`, the default, opens none, and reserves
         no envelope header names.
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
@@ -701,12 +699,12 @@ class AsyncDirectBus:
     def __init__(
         self,
         *,
-        envelope: EnvelopeConfig | None = None,
+        envelope_factory: EnvelopeFactory | None = None,
         dispatchers: Collection[Dispatch] = (),
         middleware: Middleware = Middleware(),
     ) -> None:
         """Create a bus, optionally with envelope tracking, more patterns and middleware."""
-        self._core = _Core("AsyncDirectBus", True, envelope, dispatchers, middleware)
+        self._core = _Core("AsyncDirectBus", True, envelope_factory, dispatchers, middleware)
 
     @markcoroutinefunction
     def emit[Payload, Result](

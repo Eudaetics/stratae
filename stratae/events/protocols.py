@@ -300,7 +300,7 @@ def reserved_for(config: object, envelope_headers: EnvelopeHeaders) -> frozenset
 
     :param config: The route's config, or `None` on a bus that doesn't route.
     :param envelope_headers: The names the bus's envelope travels in, from its
-        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>`.
+        {py:class}`EnvelopeFactory <stratae.events.envelope.EnvelopeFactory>`.
     :returns: The names, in lower case.
     """
     names = {name.lower() for name in envelope_headers.names}

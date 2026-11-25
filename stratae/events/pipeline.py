@@ -7,7 +7,8 @@ broker, uses them the same way.
 
 Its `emit` calls one of four functions with its `send`. An adapter that opens an
 {py:class}`Envelope <stratae.events.envelope.Envelope>` for each emit calls
-{py:func}`publish_enveloped`, or {py:func}`publish_enveloped_async`, which opens it first. One
+{py:func}`publish_enveloped`, or {py:func}`publish_enveloped_async`, which opens it first, with
+the adapter's {py:class}`EnvelopeFactory <stratae.events.envelope.EnvelopeFactory>`. One
 that opens none calls {py:func}`publish` or {py:func}`publish_async`. Each builds the headers
 publish middleware can add to, runs the middleware and hooks, then calls `send` with the
 {py:class}`Outgoing` message. The adapter writes only `send`: it delivers the message, with
@@ -31,10 +32,9 @@ handler with {py:func}`invoke <stratae.events.handler.invoke>`.
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from types import MappingProxyType
 from typing import Any, NamedTuple
-from uuid import UUID
 
 from stratae.callables import is_async_callable
-from stratae.events.envelope import Envelope
+from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.handler import AsyncHandler, Handler, SyncHandler
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
 from stratae.events.middleware import (
@@ -301,7 +301,7 @@ async def publish_async[Config](
 
 def publish_enveloped[Config](
     publishing: Publishing[Config, Envelope],
-    new_id: Callable[[], UUID],
+    factory: EnvelopeFactory,
     send: Send[Config, Envelope],
     reserved: frozenset[str],
     event: AnyEvent,
@@ -317,7 +317,7 @@ def publish_enveloped[Config](
     The envelope is the one given, or a child of the active one, or a new root.
 
     :param publishing: How the adapter emits.
-    :param new_id: Makes the ids of a new envelope.
+    :param factory: Makes the envelope, as its `scope` does.
     :param send: Sends the message.
     :param reserved: The header names the route reserves, from
         {py:func}`reserved_for <stratae.events.protocols.reserved_for>`.
@@ -332,7 +332,7 @@ def publish_enveloped[Config](
         refused after publish middleware runs, before the emit's hooks and `send`.
     """
     stamped = _stamped(headers)
-    with Envelope.scope(envelope, new_id=new_id) as opened:
+    with factory.scope(envelope) as opened:
         message: Outgoing[Config, Envelope] = from_fields(
             Outgoing, (event, config, payload, opened, stamped)
         )
@@ -341,7 +341,7 @@ def publish_enveloped[Config](
 
 async def publish_enveloped_async[Config](
     publishing: Publishing[Config, Envelope],
-    new_id: Callable[[], UUID],
+    factory: EnvelopeFactory,
     send: Callable[[Outgoing[Config, Envelope]], Awaitable[Any]],
     reserved: frozenset[str],
     event: AnyEvent,
@@ -353,7 +353,7 @@ async def publish_enveloped_async[Config](
 ) -> Any:
     """Emit through an async adapter inside an envelope, as {py:func}`publish_enveloped` does."""
     stamped = _stamped(headers)
-    with Envelope.scope(envelope, new_id=new_id) as opened:
+    with factory.scope(envelope) as opened:
         message: Outgoing[Config, Envelope] = from_fields(
             Outgoing, (event, config, payload, opened, stamped)
         )

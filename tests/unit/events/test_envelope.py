@@ -1,4 +1,4 @@
-"""Unit test suite for Envelope."""
+"""Unit test suite for Envelope, EnvelopeHeaders and EnvelopeFactory."""
 
 import asyncio
 import dataclasses
@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 
 import stratae.events.envelope as envelope_module
-from stratae.events import Envelope, EnvelopeHeaders
+from stratae.events import Envelope, EnvelopeFactory, EnvelopeHeaders
 
 _HEADERS = EnvelopeHeaders()
 """The default names an envelope travels under."""
@@ -613,6 +613,114 @@ def test_scope_takes_ids_from_source_for_root_and_child():
     assert (root.message_id, root.correlation_id) == (UUID(int=1), UUID(int=2))
     assert child.message_id == UUID(int=3)
     assert child.causation_id == root.message_id
+
+
+def test_factory_root_takes_both_ids_from_new_id():
+    """
+    EnvelopeFactory.root should start a chain with ids from the factory's new_id.
+
+    Given: A factory with a counting id source
+    When: A root is made
+    Then: Its message and correlation ids are the source's first two, with no causation id
+    """
+    # Act
+    envelope = EnvelopeFactory(new_id=_Ids()).root()
+
+    # Assert
+    assert (envelope.message_id, envelope.correlation_id) == (UUID(int=1), UUID(int=2))
+    assert envelope.causation_id is None
+
+
+def test_factory_root_joins_a_given_chain():
+    """
+    EnvelopeFactory.root given a correlation id should start a root in that chain.
+
+    Given: A factory with a counting id source, and a correlation id from a caller
+    When: A root is made with the correlation id
+    Then: It has the caller's correlation id, a message id from the source, no causation id,
+        and the source was asked once
+    """
+    # Arrange
+    ids = _Ids()
+    correlation = uuid4()
+
+    # Act
+    envelope = EnvelopeFactory(new_id=ids).root(correlation)
+
+    # Assert
+    assert (envelope.message_id, envelope.correlation_id) == (UUID(int=1), correlation)
+    assert envelope.causation_id is None
+    assert ids.made == [UUID(int=1)]
+
+
+def test_factory_child_continues_the_parent_chain():
+    """
+    EnvelopeFactory.child should make the next envelope in the parent's chain.
+
+    Given: A factory with a counting id source, and a parent envelope
+    When: A child of the parent is made
+    Then: Its message id is the source's first, with the parent's correlation id, caused by
+        the parent
+    """
+    # Arrange
+    parent = EnvelopeFactory().root()
+
+    # Act
+    child = EnvelopeFactory(new_id=_Ids()).child(parent)
+
+    # Assert
+    assert child.message_id == UUID(int=1)
+    assert child.correlation_id == parent.correlation_id
+    assert child.causation_id == parent.message_id
+
+
+def test_factory_read_uses_its_names_and_new_id():
+    """
+    EnvelopeFactory.read should read under its header names, filling missing ids from new_id.
+
+    Given: A factory with custom header names and a counting id source, and headers under
+        those names carrying a correlation id only
+    When: The headers are read
+    Then: The correlation id is the header's, and the message id is the source's first
+    """
+    # Arrange
+    names = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
+    correlation = uuid4()
+
+    # Act
+    envelope = EnvelopeFactory(new_id=_Ids(), headers=names).read({"acme-corr": str(correlation)})
+
+    # Assert
+    assert (envelope.message_id, envelope.correlation_id) == (UUID(int=1), correlation)
+
+
+def test_factory_scope_activates_root_child_or_given_envelope():
+    """
+    EnvelopeFactory.scope should activate a root, a child, or the envelope it's given.
+
+    Given: A factory with a counting id source, and an envelope made elsewhere
+    When: A scope is entered, another inside it, and one given the envelope inside that
+    Then: The first is a root from the source, the second its child, the third the given
+        envelope, and each previous envelope is active again after its block
+    """
+    # Arrange
+    factory = EnvelopeFactory(new_id=_Ids())
+    given = EnvelopeFactory().root()
+
+    # Act
+    with factory.scope() as root:
+        with factory.scope() as child:
+            with factory.scope(given) as activated:
+                inner = Envelope.current()
+            after_given = Envelope.current()
+        after_child = Envelope.current()
+    outside = Envelope.current()
+
+    # Assert
+    assert (root.message_id, root.correlation_id) == (UUID(int=1), UUID(int=2))
+    assert (child.message_id, child.causation_id) == (UUID(int=3), root.message_id)
+    assert activated is given is inner
+    assert (after_given, after_child, outside) == (child, root, None)
 
 
 def test_default_ids_are_random():

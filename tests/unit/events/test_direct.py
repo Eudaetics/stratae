@@ -105,7 +105,7 @@ from stratae.events import (
     Dispatch,
     EmitCallable,
     Envelope,
-    EnvelopeConfig,
+    EnvelopeFactory,
     EnvelopeHeaders,
     HandleCall,
     Handler,
@@ -215,7 +215,7 @@ def bus() -> DirectBus:
 @pytest.fixture
 def bus_with_envelope() -> DirectBus:
     """Return a fresh DirectBus instance with envelope tracking enabled."""
-    return DirectBus(envelope=EnvelopeConfig())
+    return DirectBus(envelope_factory=EnvelopeFactory())
 
 
 def test_bus_satisfies_producer_protocol(bus: DirectBus):
@@ -1587,7 +1587,7 @@ def test_publish_middleware_inside_envelope():
         seen.append(Envelope.current())
         return next(call)
 
-    bus = DirectBus(envelope=EnvelopeConfig(), middleware=Middleware(publish=(record,)))
+    bus = DirectBus(envelope_factory=EnvelopeFactory(), middleware=Middleware(publish=(record,)))
     bus.handle(_task_created, lambda task: seen.append(Envelope.current()))
 
     # Act
@@ -1815,7 +1815,7 @@ def test_reserved_header_refuses_emit(name: str):
     def forge(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
         return next(call.with_headers({name: "forged"}))
 
-    bus = DirectBus(envelope=EnvelopeConfig(), middleware=Middleware(publish=(forge,)))
+    bus = DirectBus(envelope_factory=EnvelopeFactory(), middleware=Middleware(publish=(forge,)))
     bus.handle(_task_created, lambda task: ran.append("handler"))
 
     # Act / Assert
@@ -1871,7 +1871,9 @@ def test_custom_envelope_names_are_the_ones_reserved(name: str, refused: bool):
         return next(call.with_headers({name: "forged"}))
 
     headers = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
-    bus = DirectBus(envelope=EnvelopeConfig(headers=headers), middleware=Middleware(publish=(add,)))
+    bus = DirectBus(
+        envelope_factory=EnvelopeFactory(headers=headers), middleware=Middleware(publish=(add,))
+    )
     bus.handle(_task_created, lambda task: ran.append("handler"))
 
     # Act / Assert
@@ -1935,7 +1937,7 @@ def test_envelope_ids_come_from_bus_source():
     Then: The root takes the source's first two ids, and the nested emit's child its third
     """
     # Arrange
-    bus = DirectBus(envelope=EnvelopeConfig(new_id=_Ids()))
+    bus = DirectBus(envelope_factory=EnvelopeFactory(new_id=_Ids()))
     seen: list[Envelope] = []
     inner = PubSub(name="inner")
 

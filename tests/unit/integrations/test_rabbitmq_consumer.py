@@ -142,7 +142,7 @@ from stratae.backoff import Delays, Exponential, Limited
 from stratae.events import (
     AsyncHandler,
     Envelope,
-    EnvelopeConfig,
+    EnvelopeFactory,
     HandleCall,
     Hooks,
     Middleware,
@@ -1109,7 +1109,7 @@ async def test_consumer_reads_and_strips_custom_envelope_names(
     """
     A consumer given custom envelope header names should read the envelope from them.
 
-    Given: A consumer whose EnvelopeConfig names the envelope's headers acme-*, with handle
+    Given: A consumer whose EnvelopeFactory names the envelope's headers acme-*, with handle
         middleware recording the headers and envelope it sees
     When: A message arrives carrying an envelope under the acme-* names and a tenant header
     Then: The envelope is rebuilt from them, and handle middleware sees only the tenant
@@ -1126,7 +1126,7 @@ async def test_consumer_reads_and_strips_custom_envelope_names(
         _URL,
         deserializer=_decode,
         middleware=Middleware(handle=(record,)),
-        envelope=EnvelopeConfig(headers=names),
+        envelope_factory=EnvelopeFactory(headers=names),
     )
     consumer.handle(_order_placed, lambda order: None, config=_config)
     sent = Envelope.root().child()
@@ -2769,7 +2769,9 @@ async def test_missing_envelope_ids_come_from_consumer_source(
         correlation id the message carried
     """
     # Arrange
-    consumer = RabbitMQConsumer(_URL, deserializer=_decode, envelope=EnvelopeConfig(new_id=_Ids()))
+    consumer = RabbitMQConsumer(
+        _URL, deserializer=_decode, envelope_factory=EnvelopeFactory(new_id=_Ids())
+    )
     seen: list[Envelope | None] = []
     consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
     correlation = uuid4()

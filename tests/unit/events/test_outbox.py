@@ -110,7 +110,7 @@ from stratae.events import (
     Destination,
     Encoded,
     Envelope,
-    EnvelopeConfig,
+    EnvelopeFactory,
     EnvelopeHeaders,
     Hooks,
     Middleware,
@@ -185,7 +185,7 @@ _ROUTED_ELSEWHERE = "{} is routed elsewhere"
 class _Publisher:
     """Records each publish. Queued outcomes come first: None publishes, an error raises."""
 
-    envelope = EnvelopeConfig()
+    envelope_factory = EnvelopeFactory()
 
     def __init__(self, *outcomes: Exception | None) -> None:
         self.published: list[tuple[Any, Any, bytes, Envelope | None]] = []
@@ -1413,7 +1413,7 @@ async def test_custom_envelope_name_writes_nothing(store: InMemoryOutboxStore):
     """
     An outbox given custom envelope header names should refuse a record with one of them.
 
-    Given: An outbox whose EnvelopeConfig names the envelope's headers acme-*, and publish
+    Given: An outbox whose EnvelopeFactory names the envelope's headers acme-*, and publish
         middleware adding acme-corr
     When: An event is emitted in a transaction
     Then: ValueError names the header, and nothing is kept
@@ -1427,7 +1427,7 @@ async def test_custom_envelope_name_writes_nothing(store: InMemoryOutboxStore):
         store,
         _encode,
         middleware=Middleware(publish=(forge,)),
-        envelope=EnvelopeConfig(headers=_ACME),
+        envelope_factory=EnvelopeFactory(headers=_ACME),
     )
     outbox.route(_order_placed, OutboxConfig("orders"))
 
@@ -1441,7 +1441,7 @@ async def test_custom_envelope_name_writes_nothing(store: InMemoryOutboxStore):
 class _AcmePublisher(_Publisher):
     """A publisher sending envelopes under the acme-* names."""
 
-    envelope = EnvelopeConfig(headers=_ACME)
+    envelope_factory = EnvelopeFactory(headers=_ACME)
 
 
 def test_relay_refuses_outbox_and_publisher_with_different_names(store: InMemoryOutboxStore):
@@ -1454,13 +1454,13 @@ def test_relay_refuses_outbox_and_publisher_with_different_names(store: InMemory
     """
     # Arrange
     default = OutboxProducer[object](store, _encode)
-    acme = OutboxProducer[object](store, _encode, envelope=EnvelopeConfig(headers=_ACME))
+    acme = OutboxProducer[object](store, _encode, envelope_factory=EnvelopeFactory(headers=_ACME))
 
     # Act / Assert
     with pytest.raises(ValueError, match=r"x-message-id.*acme-msg"):
         OutboxRelay(store, _AcmePublisher(), default)
     OutboxRelay(store, _AcmePublisher(), acme)
-    assert acme.envelope.headers == _AcmePublisher.envelope.headers
+    assert acme.envelope_factory.headers == _AcmePublisher.envelope_factory.headers
 
 
 def test_relay_routes_the_outbox_when_built(
@@ -1704,7 +1704,7 @@ async def test_record_ids_come_from_producer_source(store: InMemoryOutboxStore):
     """
     # Arrange
     outbox = OutboxProducer[object](
-        store, serializer=_encode, envelope=EnvelopeConfig(new_id=_Ids())
+        store, serializer=_encode, envelope_factory=EnvelopeFactory(new_id=_Ids())
     )
     place = outbox.bind(_order_placed, factory=_Order, config=OutboxConfig("orders"))
 
@@ -1725,7 +1725,7 @@ class _OverlapPublisher:
     publish until it's set.
     """
 
-    envelope = EnvelopeConfig()
+    envelope_factory = EnvelopeFactory()
 
     def __init__(self, outcomes: dict[bytes, BaseException | asyncio.Event] | None = None) -> None:
         self.outcomes = outcomes or {}

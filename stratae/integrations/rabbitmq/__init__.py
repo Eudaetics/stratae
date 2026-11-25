@@ -29,7 +29,7 @@ new envelope, a child of the active one, unless `emit` is given one: re-publishi
 with the envelope it was first sent with, as an outbox relay or a job retry would, keeps its
 message id, so consumers can deduplicate on it. Redelivery keeps it too. The envelope's
 headers are named by the `headers` of the publisher's and the consumer's
-{py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>`, so a publisher and its
+{py:class}`EnvelopeFactory <stratae.events.envelope.EnvelopeFactory>`, so a publisher and its
 consumers need the same names.
 Headers that publish middleware adds are sent with the message, as AMQP field values: text,
 numbers, booleans, timestamps, bytes, and lists and tables of them. A value AMQP can't carry

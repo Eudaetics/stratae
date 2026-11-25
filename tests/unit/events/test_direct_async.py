@@ -95,7 +95,7 @@ from stratae.events import (
     Dispatch,
     EmitCallable,
     Envelope,
-    EnvelopeConfig,
+    EnvelopeFactory,
     HandleCall,
     Handler,
     Handlers,
@@ -184,7 +184,7 @@ def bus() -> AsyncDirectBus:
 @pytest.fixture
 def bus_with_envelope() -> AsyncDirectBus:
     """Return a fresh AsyncDirectBus instance with envelope tracking enabled."""
-    return AsyncDirectBus(envelope=EnvelopeConfig())
+    return AsyncDirectBus(envelope_factory=EnvelopeFactory())
 
 
 def test_bus_satisfies_producer_protocol(bus: AsyncDirectBus):
@@ -1468,7 +1468,7 @@ async def test_middleware_wraps_hooks_inside_envelope():
     # Arrange
     log: list[str] = []
     bus = AsyncDirectBus(
-        envelope=EnvelopeConfig(),
+        envelope_factory=EnvelopeFactory(),
         middleware=Middleware(
             publish=(_alabelled(log, "publish mw"),), handle=(_alabelled(log, "handle mw"),)
         ),
@@ -1599,7 +1599,9 @@ async def test_reserved_header_refuses_emit():
         ran.append("responder")
         return _BookResult(query.query)
 
-    bus = AsyncDirectBus(envelope=EnvelopeConfig(), middleware=Middleware(publish=(forge,)))
+    bus = AsyncDirectBus(
+        envelope_factory=EnvelopeFactory(), middleware=Middleware(publish=(forge,))
+    )
     bus.handle(_find_book, respond)
 
     # Act / Assert
@@ -1667,7 +1669,7 @@ async def test_envelope_ids_come_from_bus_source():
     Then: The handler's envelope takes the source's first two ids
     """
     # Arrange
-    bus = AsyncDirectBus(envelope=EnvelopeConfig(new_id=_Ids()))
+    bus = AsyncDirectBus(envelope_factory=EnvelopeFactory(new_id=_Ids()))
     seen: list[Envelope | None] = []
 
     async def record(_: _TaskCreated) -> None:
