@@ -10,6 +10,7 @@ This test suite verifies the following behaviors:
 - Only the first correlation id header is used.
 - With header trust off, the header is ignored.
 - A custom header name is matched without regard to case, and is the one echoed.
+- By default the header is the correlation-id name of the middleware's EnvelopeConfig.
 - The response start carries the correlation id after the app's own headers.
 - With echoing off, the response is sent unchanged.
 - A WebSocket connection runs inside an envelope, and its accept carries the correlation id.
@@ -24,7 +25,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from stratae.events import DirectBus, PubSub
-from stratae.events.envelope import Envelope, EnvelopeConfig
+from stratae.events.envelope import Envelope, EnvelopeConfig, EnvelopeHeaders
 from stratae.integrations.asgi import ASGIScope, EnvelopeMiddleware, Message, Receive, Send
 
 _CALLER = UUID("0b9d7a52-6f1e-4c3a-9d2b-5e8f1a7c4d60")
@@ -232,6 +233,27 @@ async def test_custom_header_matched_and_echoed():
     # Assert
     assert _envelope(app).correlation_id == _CALLER
     assert sent[0]["headers"] == [(b"x-request-id", str(_CALLER).encode())]
+
+
+async def test_header_follows_envelope_config():
+    """
+    The header should default to the correlation-id name of the middleware's EnvelopeConfig.
+
+    Given: The middleware with an EnvelopeConfig naming the correlation id acme-corr
+    When: A request carrying acme-corr is handled
+    Then: Its value is adopted, and the response carries it under acme-corr
+    """
+    # Arrange
+    app = _App()
+    headers = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
+    middleware = EnvelopeMiddleware(app, envelope=EnvelopeConfig(headers=headers))
+
+    # Act
+    sent = await _call(middleware, _http((b"acme-corr", str(_CALLER).encode())))
+
+    # Assert
+    assert _envelope(app).correlation_id == _CALLER
+    assert sent[0]["headers"] == [(b"acme-corr", str(_CALLER).encode())]
 
 
 async def test_response_start_carries_correlation_id():

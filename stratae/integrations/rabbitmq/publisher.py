@@ -142,8 +142,10 @@ class RabbitMQPublisher:
             or async. Its `publish` half runs around every publish, inside the message's
             envelope; its `handle` half is a consumer's, so one `Middleware` can be shared with
             a consumer.
-        :param envelope: How the envelope of a message published without a given one is made.
-            Its `new_id` makes random ids by default.
+        :param envelope: How the envelope of a message published without a given one is made,
+            and the headers every message's envelope is sent in. Its `new_id` makes random ids
+            by default. A message is refused if it's given, or middleware adds, one of its
+            `headers`' names. Its consumers need the same `headers`.
         :raises MiddlewareKindError: If any `publish` middleware isn't an `async def`.
         :raises ValueError: If a `topology` config has no named `queue`.
         """
@@ -155,11 +157,17 @@ class RabbitMQPublisher:
         self._publishing: Publishing[RabbitMQPublish, Envelope] = Publishing(
             middleware.publish, asynchronous=True
         )
+        self._envelope = envelope
         self._new_id = envelope.new_id
         self._serializer = serializer
         self._routes: dict[AnyEvent, tuple[_Route, frozenset[str]]] = {}
         self._declared: set[str] = set()
         self._link = Link("publisher", url, reconnect, self._declare_topology, self._declared.clear)
+
+    @property
+    def envelope(self) -> EnvelopeConfig:
+        """How the publisher makes envelopes, and the headers it sends them in."""
+        return self._envelope
 
     @property
     def state(self) -> ConnectionState:
@@ -219,7 +227,8 @@ class RabbitMQPublisher:
         :raises ValueError: If the event is already routed to a different config.
         """
         _require_pubsub(event)
-        routed = self._routes.setdefault(event, (_route(config), reserved_for(config)))
+        reserved = reserved_for(config, self._envelope.headers)
+        routed = self._routes.setdefault(event, (_route(config), reserved))
         if routed[0].route != config:
             raise ValueError(_ROUTE_TAKEN.format(event.name))
 
@@ -301,7 +310,7 @@ class RabbitMQPublisher:
                 body,
                 exchange=route.exchange,
                 routing_key=publish.routing_key,
-                properties=stamp(route.properties, envelope, headers),
+                properties=stamp(route.properties, envelope, headers, self._envelope.headers),
                 mandatory=route.mandatory,
             )
         except PublishError as exc:

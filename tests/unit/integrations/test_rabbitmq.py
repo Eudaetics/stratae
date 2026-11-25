@@ -785,6 +785,34 @@ async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: Async
     assert sent.timestamp is not None
 
 
+async def test_emit_stamps_envelope_under_custom_names(connect_mock: AsyncMock, channel: AsyncMock):
+    """
+    A publisher given custom envelope header names should send the envelope under them alone.
+
+    Given: A publisher whose EnvelopeConfig names the envelope's headers acme-*
+    When: An event is emitted inside an envelope scope
+    Then: The message carries the envelope under the acme-* names and none of the defaults,
+        with AMQP's own message id and correlation id as before
+    """
+    # Arrange
+    names = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
+    publisher = RabbitMQPublisher(_URL, serializer=_encode, envelope=EnvelopeConfig(headers=names))
+
+    # Act
+    publisher.route(_order_placed, _config)
+    with Envelope.scope() as envelope:
+        async with publisher:
+            await publisher.emit(_order_placed, _OrderPlaced(7))
+
+    # Assert
+    sent = channel.basic_publish.await_args.kwargs["properties"]
+    assert set(sent.headers) == names.names
+    assert sent.headers["acme-corr"] == str(envelope.correlation_id)
+    assert sent.headers["acme-cause"] == str(envelope.message_id)
+    assert sent.message_id == sent.headers["acme-msg"]
+    assert sent.correlation_id == str(envelope.correlation_id)
+
+
 async def test_bound_event_publishes(publisher: RabbitMQPublisher, channel: AsyncMock):
     """
     Awaiting a factory-bound callable produced by bind should construct the payload and publish it.

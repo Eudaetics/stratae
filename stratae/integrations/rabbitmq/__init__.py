@@ -27,7 +27,10 @@ Each message carries its {py:class}`Envelope <stratae.events.envelope.Envelope>`
 headers, so correlation ids propagate across publishes and handlers. Each publish gets a
 new envelope, a child of the active one, unless `emit` is given one: re-publishing a message
 with the envelope it was first sent with, as an outbox relay or a job retry would, keeps its
-message id, so consumers can deduplicate on it. Redelivery keeps it too.
+message id, so consumers can deduplicate on it. Redelivery keeps it too. The envelope's
+headers are named by the `headers` of the publisher's and the consumer's
+{py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>`, so a publisher and its
+consumers need the same names.
 Headers that publish middleware adds are sent with the message, as AMQP field values: text,
 numbers, booleans, timestamps, bytes, and lists and tables of them. A value AMQP can't carry
 is refused with `TypeError` when the message is sent. Handle middleware reads a delivered

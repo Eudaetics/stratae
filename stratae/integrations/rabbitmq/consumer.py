@@ -133,13 +133,15 @@ class RabbitMQConsumer:
             or async. Its `handle` half runs around every handler call, inside the message's
             envelope; a message that fails to decode never reaches it. Its `publish` half is a
             publisher's, so one `Middleware` can be shared with a publisher.
-        :param envelope: How a delivered message's envelope is completed: its `new_id` makes
-            any id the message is missing, or all of them if its envelope can't be read. Random
-            by default.
+        :param envelope: How a delivered message's envelope is read and completed. Its
+            `headers` are the names it's read from, and stripped from the headers handle
+            middleware sees. Its `new_id` makes any id the message is missing, or all of them
+            if its envelope can't be read. Random by default.
         :raises MiddlewareKindError: If any `handle` middleware isn't an `async def`.
         """
         middleware.require(type(self).__name__, asynchronous=True, publish=False)
         self._new_id = envelope.new_id
+        self._names = envelope.headers
         self._handle_middleware = middleware.handle
         self._deserializer = deserializer
         self._prefetch_count = prefetch_count
@@ -393,10 +395,13 @@ class RabbitMQConsumer:
             await self._fail(registration, message, exc, retryable=False)
             return
         try:
-            with Envelope.scope(envelope_from(message, self._new_id), new_id=self._new_id):
+            names = self._names
+            delivered = envelope_from(message, self._new_id, names)
+            with Envelope.scope(delivered, new_id=self._new_id):
                 handler = registration.handler
+                headers = headers_from(message, names)
                 received = from_fields(
-                    HandleCall, (registration.event, handler.config, payload, headers_from(message))
+                    HandleCall, (registration.event, handler.config, payload, headers)
                 )
                 await invoke(handler, received)
         except Exception as exc:

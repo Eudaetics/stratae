@@ -31,8 +31,8 @@ destination_of and operation_of:
   destination and sends each message.
 
 reserved_for:
-- Gives the envelope's names for a config that reserves none, and adds a Reserving config's
-  names, in lower case.
+- Gives the envelope names it's given for a config that reserves none, and adds a Reserving
+  config's names, all in lower case.
 """
 
 from collections.abc import Awaitable, Callable
@@ -290,12 +290,16 @@ class _Reserving:
 
 def test_reserved_for_adds_a_configs_own_names() -> None:
     """
-    reserved_for should give the envelope's names, plus a Reserving config's, in lower case.
+    reserved_for should give the envelope names given, plus a Reserving config's, in lower case.
 
-    Given: No config, a config that reserves nothing, and one that reserves two names
+    Given: No config, a config that reserves nothing, and one that reserves two names, with
+        the default envelope names, and a config that reserves nothing with mixed-case names
     When: Each one's reserved names are worked out
-    Then: The first two give the envelope's names; the third adds its own, in lower case
+    Then: The first two give the envelope names; the third adds its own; all in lower case
     """
-    assert reserved_for(None) == _HEADERS.names
-    assert reserved_for("orders") == _HEADERS.names
-    assert reserved_for(_Reserving()) == _HEADERS.names | {"x-attempts", "x-failure"}
+    custom = EnvelopeHeaders("Acme-Msg", "acme-corr", "acme-cause", "acme-at")
+
+    assert reserved_for(None, _HEADERS) == _HEADERS.names
+    assert reserved_for("orders", _HEADERS) == _HEADERS.names
+    assert reserved_for(_Reserving(), _HEADERS) == _HEADERS.names | {"x-attempts", "x-failure"}
+    assert reserved_for(None, custom) == {"acme-msg", "acme-corr", "acme-cause", "acme-at"}

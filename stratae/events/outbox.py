@@ -43,7 +43,7 @@ The guarantees:
 ```{code-block} python
 import asyncio
 from typing import Any
-from stratae.events import Encoded, Envelope, PubSub
+from stratae.events import Encoded, Envelope, EnvelopeConfig, PubSub
 from stratae.events.outbox import (
     InMemoryOutboxStore,
     OutboxConfig,
@@ -56,6 +56,8 @@ class OrderPlaced:
         self.order_id = order_id
 
 class PrintingPublisher:
+    envelope = EnvelopeConfig()
+
     def __init__(self) -> None:
         self.routes: dict[Any, Any] = {}
 
@@ -169,6 +171,11 @@ _NO_ROUTE = "no outbox route for {!r}; route or bind it to an OutboxConfig befor
 _EVENT_ROUTED = "{!r} is already routed to another OutboxConfig; give it one route per outbox"
 
 _IN_FLIGHT = "max_in_flight must be at least 1, got {}"
+
+_HEADERS_DIFFER = (
+    "the outbox writes envelopes under {} but its relay's publisher sends them under {}; "
+    "give both the same EnvelopeConfig headers"
+)
 
 _POLL = Exponential(0.5, cap=5.0)
 """How long a relay waits after each poll in a row that doesn't fill a batch, by default."""
@@ -496,20 +503,28 @@ class OutboxProducer[Target]:
         :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>`, sync
             or async. Its `publish` half runs around every write, inside the record's envelope;
             its `handle` half is a consumer's.
-        :param envelope: How each record's envelope is made. Its ids are random by default.
-            Records are claimed oldest first, so time-ordered
-            ids, such as `uuid7`'s, suit a store indexed by id.
+        :param envelope: How each record's envelope is made, and the headers it travels in.
+            Its ids are random by default. Records are claimed oldest first, so time-ordered
+            ids, such as `uuid7`'s, suit a store indexed by id. A record is refused if it's
+            given, or its middleware adds, one of its `headers`' names. The relay's publisher
+            needs the same `headers`.
         :raises MiddlewareKindError: If any `publish` middleware isn't an `async def`.
         """
         middleware.require(type(self).__name__, asynchronous=True, handle=False)
         self._publishing: Publishing[OutboxConfig[Target], Envelope] = Publishing(
             middleware.publish, asynchronous=True
         )
+        self._envelope = envelope
         self._new_id = envelope.new_id
         self._store = store
         self._serializer = serializer
         self._routes = _Routes[Target](MappingProxyType({}), MappingProxyType({}))
         self._routing = threading.Lock()
+
+    @property
+    def envelope(self) -> EnvelopeConfig:
+        """How each record's envelope is made, and the headers it travels in."""
+        return self._envelope
 
     @property
     def routes(self) -> Mapping[str, tuple[PubSub[Any, Any], Target]]:
@@ -542,7 +557,8 @@ class OutboxProducer[Target]:
             return routed
         name = config.route or event.name
         target = config.config
-        route = _Route(name, event, config, self._writer(name, target), reserved_for(target))
+        reserved = reserved_for(target, self._envelope.headers)
+        route = _Route(name, event, config, self._writer(name, target), reserved)
         with self._routing:
             routes = self._routes
             routed = routes.routed(event, config)
@@ -688,6 +704,15 @@ class OutboxPublisher[Target](Protocol):
     {py:class}`RabbitMQPublisher <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher>` is
     one.
     """
+
+    @property
+    def envelope(self) -> EnvelopeConfig:
+        """
+        How the publisher makes envelopes, and the headers it sends them in.
+
+        The relay refuses a publisher whose `headers` differ from its outbox's.
+        """
+        ...
 
     def route(self, event: PubSub[Any, Any], config: Target, /) -> None:
         """Route an event's messages; routing it again to an equal config does nothing."""
@@ -899,6 +924,11 @@ class OutboxRelay[Target]:
     each publish, so routes added later are relayed too. A publisher the app also emits on
     shares those routes. If the app routes an event there to a different config, building the
     relay raises `ValueError`, or a later route's records fail.
+
+    The outbox and the publisher need the same envelope header names, the `headers` of their
+    {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>`. Building the relay
+    raises `ValueError` if they differ, before anything is relayed. It can only compare the
+    outbox it's given: a producer in another process given other names isn't seen.
     """
 
     def __init__(
@@ -926,11 +956,15 @@ class OutboxRelay[Target]:
             the record is parked as failed. By default 30 s, doubling up to an hour, with the
             record parked on its 10th failure.
         :param max_in_flight: Publishes waiting on the broker at once. At most one per key.
-        :raises ValueError: If `max_in_flight` is less than one, or the publisher already
-            routes one of the outbox's events to a different config.
+        :raises ValueError: If `max_in_flight` is less than one, the outbox and the publisher
+            send envelopes under different headers, or the publisher already routes one of the
+            outbox's events to a different config.
         """
         if max_in_flight < 1:
             raise ValueError(_IN_FLIGHT.format(max_in_flight))
+        written, sent = outbox.envelope.headers, publisher.envelope.headers
+        if written != sent:
+            raise ValueError(_HEADERS_DIFFER.format(written, sent))
         for event, config in outbox.routes.values():
             publisher.route(event, config)
         self._store = store
