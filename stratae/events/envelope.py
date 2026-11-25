@@ -249,12 +249,18 @@ _current: ContextVar[Envelope] = ContextVar("_current_envelope")
 @dataclass(frozen=True, slots=True)
 class EnvelopeConfig:
     """
-    How a component makes the envelopes it opens: a bus, the outbox, or an adapter.
+    How a component makes the envelopes it opens, and the headers they travel in.
 
-    Pass `EnvelopeConfig()` for random ids. Pass a function making ids as `new_id` for another
-    kind, such as time-ordered ids, which sort in the order they were made and so suit
-    anything stored or sorted by message id, such as outbox records. `uuid_utils.compat.uuid7`
-    makes them, as does `uuid.uuid7` on Python 3.14 and later.
+    A bus, the outbox, an adapter or the ASGI middleware takes one, as all its envelope setup.
+    Pass `EnvelopeConfig()` for random ids and the default header names. Pass a function making
+    ids as `new_id` for another kind, such as time-ordered ids, which sort in the order they
+    were made and so suit anything stored or sorted by message id, such as outbox records.
+    `uuid_utils.compat.uuid7` makes them, as does `uuid.uuid7` on Python 3.14 and later.
+
+    Pass {py:class}`EnvelopeHeaders` with other names as `headers` when a tool the service
+    works with already uses one of the defaults. Every component of a service, and every
+    service a message passes between, needs the same names: a bus refuses its own names as
+    headers, writes the envelope under them, and reads it back from them.
 
     ````{example} Time-ordered ids for one bus, random ids for another
     ```{code-block} python
@@ -289,6 +295,8 @@ class EnvelopeConfig:
 
     new_id: _NewId = _new_uuid4
     """Makes the ids of each new envelope. Random by default."""
+    headers: EnvelopeHeaders = EnvelopeHeaders()
+    """The names of the headers the envelope travels in. The default names by default."""
 
 
 class _Scope:

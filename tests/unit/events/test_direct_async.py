@@ -1584,7 +1584,8 @@ async def test_reserved_header_refuses_emit():
     """
     Publish middleware adding an envelope header should refuse the emit.
 
-    Given: A bus whose publish middleware adds the correlation id header, and a responder
+    Given: A bus with an envelope whose publish middleware adds the correlation id header, and
+        a responder
     When: A request is emitted
     Then: ValueError names the header, and the responder doesn't run
     """
@@ -1598,7 +1599,7 @@ async def test_reserved_header_refuses_emit():
         ran.append("responder")
         return _BookResult(query.query)
 
-    bus = AsyncDirectBus(middleware=Middleware(publish=(forge,)))
+    bus = AsyncDirectBus(envelope=EnvelopeConfig(), middleware=Middleware(publish=(forge,)))
     bus.handle(_find_book, respond)
 
     # Act / Assert

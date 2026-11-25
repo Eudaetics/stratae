@@ -25,19 +25,23 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-_HEADERS = EnvelopeHeaders()
-"""The names the adapter writes an envelope under, and reads it from."""
-
 
 def stamp(
-    properties: Basic.Properties | None, envelope: Envelope, headers: Mapping[str, object]
+    properties: Basic.Properties | None,
+    envelope: Envelope,
+    headers: Mapping[str, object],
+    names: EnvelopeHeaders,
 ) -> Basic.Properties:
-    """Copy properties, stamped with the message's headers, envelope ids, and timestamp."""
+    """
+    Copy properties, stamped with the message's headers, envelope ids, and timestamp.
+
+    The envelope's headers are written under `names`.
+    """
     stamped = copy(properties) if properties is not None else Basic.Properties()
     merged = dict(stamped.headers or {})
     if headers:
         merged |= _field_table(headers)
-    stamped.headers = merged | _HEADERS.write(envelope)
+    stamped.headers = merged | names.write(envelope)
     stamped.message_id = str(envelope.message_id)
     stamped.correlation_id = str(envelope.correlation_id)
     stamped.timestamp = envelope.timestamp
@@ -67,37 +71,42 @@ def _field_table(headers: Mapping[str, object]) -> FieldTable:
 _UNCARRIED = "AMQP can't carry header {!r} of type {}"
 
 
-def envelope_from(message: DeliveredMessage, new_id: Callable[[], UUID]) -> Envelope | None:
-    """Rebuild the Envelope carried by a delivered message, making any missing id with `new_id`."""
+def envelope_from(
+    message: DeliveredMessage, new_id: Callable[[], UUID], names: EnvelopeHeaders
+) -> Envelope | None:
+    """
+    Rebuild the Envelope carried by a delivered message, making any missing id with `new_id`.
+
+    Its headers are read under `names`, over AMQP's own message id, correlation id and timestamp.
+    """
     properties = message.header.properties
     native = {
-        _HEADERS.message_id: properties.message_id,
-        _HEADERS.correlation_id: properties.correlation_id,
-        _HEADERS.timestamp: properties.timestamp and properties.timestamp.isoformat(),
+        names.message_id: properties.message_id,
+        names.correlation_id: properties.correlation_id,
+        names.timestamp: properties.timestamp and properties.timestamp.isoformat(),
     }
     headers = native | dict(properties.headers or {})
-    message_id, correlation_id = _HEADERS.message_id, _HEADERS.correlation_id
-    if (headers.get(message_id) is None) != (headers.get(correlation_id) is None):
+    if (headers.get(names.message_id) is None) != (headers.get(names.correlation_id) is None):
         _log.info("partial envelope headers; minting the missing id: %r", headers)
     try:
-        return _HEADERS.read(headers, new_id)
+        return names.read(headers, new_id)
     except ValueError:
         _log.warning("unparseable envelope headers; scoping a fresh envelope: %r", headers)
         return None
 
 
-def headers_from(message: DeliveredMessage) -> Mapping[str, object]:
+def headers_from(message: DeliveredMessage, names: EnvelopeHeaders) -> Mapping[str, object]:
     """
     Return a delivered message's headers without its envelope's, read-only, for handle middleware.
 
-    The envelope is rebuilt from its headers by {py:func}`envelope_from`, so handle middleware
-    reads it as a value, as it does on a direct bus.
+    The envelope's are the headers under `names`. The envelope is rebuilt from them by
+    {py:func}`envelope_from`, so handle middleware reads it as a value, as on a direct bus.
     """
     delivered = message.header.properties.headers
     if not delivered:
         return NO_HEADERS
     headers = dict(delivered)
-    for name in _HEADERS.names:
+    for name in names.names:
         headers.pop(name, None)
     return MappingProxyType(headers)
 

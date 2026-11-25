@@ -1103,6 +1103,43 @@ async def test_handler_runs_in_delivered_envelope_scope(
     assert seen[0].correlation_id == envelope.correlation_id
 
 
+async def test_consumer_reads_and_strips_custom_envelope_names(
+    connect_mock: AsyncMock, channel: AsyncMock
+):
+    """
+    A consumer given custom envelope header names should read the envelope from them.
+
+    Given: A consumer whose EnvelopeConfig names the envelope's headers acme-*, with handle
+        middleware recording the headers and envelope it sees
+    When: A message arrives carrying an envelope under the acme-* names and a tenant header
+    Then: The envelope is rebuilt from them, and handle middleware sees only the tenant
+    """
+    # Arrange
+    names = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
+    seen: list[tuple[dict[str, object], Envelope | None]] = []
+
+    async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
+        seen.append((dict(call.headers), Envelope.current()))
+        return await next(call)
+
+    consumer = RabbitMQConsumer(
+        _URL,
+        deserializer=_decode,
+        middleware=Middleware(handle=(record,)),
+        envelope=EnvelopeConfig(headers=names),
+    )
+    consumer.handle(_order_placed, lambda order: None, config=_config)
+    sent = Envelope.root().child()
+
+    # Act
+    async with consumer:
+        message = _message(b'{"order_id": 7}', {"x-tenant": "acme"} | names.write(sent))
+        await _delivery_callback(channel)(message)
+
+    # Assert
+    assert seen == [({"x-tenant": "acme"}, sent)]
+
+
 async def test_handler_scopes_fresh_envelope_without_headers(
     consumer: RabbitMQConsumer, channel: AsyncMock
 ):

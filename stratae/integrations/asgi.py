@@ -9,9 +9,11 @@ reads {py:func}`Envelope.current <stratae.events.envelope.Envelope.current>`, su
 filter. Lifespan events pass through untouched.
 
 A request that sends a valid UUID in the correlation id header joins that chain. The header
-is `x-correlation-id` by default: the correlation-id name of the default
-{py:class}`EnvelopeHeaders <stratae.events.envelope.EnvelopeHeaders>`, the same one Stratae's
-broker adapters send. A missing, malformed or non-UUID value starts a new chain, and never
+is the correlation-id name of the middleware's
+{py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` `headers`, the same one
+Stratae's broker adapters send with that config: `x-correlation-id` by default. So a service
+that gives its buses and its middleware one `EnvelopeConfig` uses one name over HTTP and
+messages. A missing, malformed or non-UUID value starts a new chain, and never
 fails the request. Only the correlation id is taken from the caller: each request gets a new
 message id, since consumers deduplicate on it. Pass `trust_header=False` to ignore the header
 and start every request's chain afresh, as a public edge service might.
@@ -108,7 +110,7 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from typing import Any
 from uuid import UUID
 
-from stratae.events.envelope import Envelope, EnvelopeConfig, EnvelopeHeaders
+from stratae.events.envelope import Envelope, EnvelopeConfig
 
 type ASGIScope = MutableMapping[str, Any]
 type Message = MutableMapping[str, Any]
@@ -138,7 +140,7 @@ class EnvelopeMiddleware:
         self,
         app: ASGIApp,
         *,
-        header: str = EnvelopeHeaders().correlation_id,
+        header: str | None = None,
         trust_header: bool = True,
         echo_header: bool = True,
         envelope: EnvelopeConfig = EnvelopeConfig(),
@@ -147,17 +149,18 @@ class EnvelopeMiddleware:
         Wrap `app`, opening an envelope around each of its requests and connections.
 
         :param app: The ASGI application to wrap.
-        :param header: The header carrying the correlation id, in requests and responses. The
-            default {py:class}`EnvelopeHeaders <stratae.events.envelope.EnvelopeHeaders>`'
-            correlation-id name by default.
+        :param header: The header carrying the correlation id, in requests and responses, or
+            `None` for the correlation-id name of `envelope`'s `headers`.
         :param trust_header: Whether a request's correlation id header is adopted. If false,
             every request starts a new chain.
         :param echo_header: Whether the response carries the request's correlation id.
         :param envelope: How each request's envelope is made. Its `new_id` makes the message
             id, and the correlation id when the request doesn't bring one. Random by default.
+            Its `headers` name the correlation-id header when `header` is `None`.
         """
         self.app = app
-        self._header = header.lower().encode("latin-1")
+        name = envelope.headers.correlation_id if header is None else header
+        self._header = name.lower().encode("latin-1")
         self._trust_header = trust_header
         self._echo_header = echo_header
         self._new_id = envelope.new_id

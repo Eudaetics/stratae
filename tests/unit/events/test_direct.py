@@ -73,7 +73,9 @@ DirectBus (middleware):
 - Handle middleware reads the headers publish middleware added, read-only.
 - A header's value reaches handle middleware as publish middleware set it, whatever its type.
 - A handler's own emit has its own headers, and the outer handler's are restored after it.
-- Publish middleware adding a reserved header refuses the emit; no handler runs.
+- Publish middleware adding an envelope header refuses the emit on a bus with an envelope; no
+  handler runs. A bus without an envelope reserves no envelope header names.
+- A bus given custom envelope header names refuses those, and accepts the default names.
 - Handle middleware on a bus without publish middleware sees no headers, even inside another
   message's delivery.
 
@@ -104,6 +106,7 @@ from stratae.events import (
     EmitCallable,
     Envelope,
     EnvelopeConfig,
+    EnvelopeHeaders,
     HandleCall,
     Handler,
     Handlers,
@@ -1799,9 +1802,10 @@ def test_nested_emit_has_own_headers():
 @pytest.mark.parametrize("name", ["x-correlation-id", "X-Message-Id"])
 def test_reserved_header_refuses_emit(name: str):
     """
-    Publish middleware adding an envelope header should refuse the emit.
+    Publish middleware adding an envelope header should refuse the emit on a bus with one.
 
-    Given: A bus whose publish middleware adds an envelope header, in any case, and a handler
+    Given: A bus with an envelope whose publish middleware adds an envelope header, in any
+        case, and a handler
     When: An event is emitted
     Then: ValueError names the header, and the handler doesn't run
     """
@@ -1811,13 +1815,73 @@ def test_reserved_header_refuses_emit(name: str):
     def forge(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
         return next(call.with_headers({name: "forged"}))
 
-    bus = DirectBus(middleware=Middleware(publish=(forge,)))
+    bus = DirectBus(envelope=EnvelopeConfig(), middleware=Middleware(publish=(forge,)))
     bus.handle(_task_created, lambda task: ran.append("handler"))
 
     # Act / Assert
     with pytest.raises(ValueError, match=f"'{name}' is a header the bus sets itself"):
         bus.emit(_task_created, _TaskCreated(1))
     assert ran == []
+
+
+def test_bus_without_envelope_reserves_no_envelope_names():
+    """
+    A bus that opens no envelope should accept a header named like the envelope's.
+
+    Given: A bus without an envelope whose publish middleware adds x-message-id, and handle
+        middleware recording the headers
+    When: An event is emitted
+    Then: The handler runs, and handle middleware sees the header
+    """
+    # Arrange
+    seen: list[dict[str, object]] = []
+
+    def add(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return next(call.with_headers({"x-message-id": "mine"}))
+
+    def record(call: HandleCall, next: Callable[[HandleCall], Any]) -> Any:
+        seen.append(dict(call.headers))
+        return next(call)
+
+    bus = DirectBus(middleware=Middleware(publish=(add,), handle=(record,)))
+    bus.handle(_task_created, lambda task: None)
+
+    # Act
+    bus.emit(_task_created, _TaskCreated(1))
+
+    # Assert
+    assert seen == [{"x-message-id": "mine"}]
+
+
+@pytest.mark.parametrize(
+    ("name", "refused"), [("acme-msg", True), ("x-message-id", False)], ids=["custom", "default"]
+)
+def test_custom_envelope_names_are_the_ones_reserved(name: str, refused: bool):
+    """
+    A bus given custom envelope header names should refuse those, not the defaults.
+
+    Given: A bus with envelope headers named acme-*, whose publish middleware adds a header
+    When: It adds acme-msg, or the default x-message-id, and an event is emitted
+    Then: acme-msg is refused with ValueError; x-message-id reaches the handler
+    """
+    # Arrange
+    ran: list[str] = []
+
+    def add(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        return next(call.with_headers({name: "forged"}))
+
+    headers = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
+    bus = DirectBus(envelope=EnvelopeConfig(headers=headers), middleware=Middleware(publish=(add,)))
+    bus.handle(_task_created, lambda task: ran.append("handler"))
+
+    # Act / Assert
+    if refused:
+        with pytest.raises(ValueError, match=f"'{name}' is a header the bus sets itself"):
+            bus.emit(_task_created, _TaskCreated(1))
+        assert ran == []
+    else:
+        bus.emit(_task_created, _TaskCreated(1))
+        assert ran == ["handler"]
 
 
 def test_handle_middleware_without_publish_middleware_sees_no_headers():

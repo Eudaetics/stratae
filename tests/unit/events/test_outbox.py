@@ -111,6 +111,7 @@ from stratae.events import (
     Encoded,
     Envelope,
     EnvelopeConfig,
+    EnvelopeHeaders,
     Hooks,
     Middleware,
     Operation,
@@ -183,6 +184,8 @@ _ROUTED_ELSEWHERE = "{} is routed elsewhere"
 
 class _Publisher:
     """Records each publish. Queued outcomes come first: None publishes, an error raises."""
+
+    envelope = EnvelopeConfig()
 
     def __init__(self, *outcomes: Exception | None) -> None:
         self.published: list[tuple[Any, Any, bytes, Envelope | None]] = []
@@ -1403,6 +1406,63 @@ async def test_parked_failure_holds_nothing_back(
     assert [payload for _, _, payload, _ in publisher.published] == [b"2"]
 
 
+_ACME = EnvelopeHeaders("acme-msg", "acme-corr", "acme-cause", "acme-at")
+
+
+async def test_custom_envelope_name_writes_nothing(store: InMemoryOutboxStore):
+    """
+    An outbox given custom envelope header names should refuse a record with one of them.
+
+    Given: An outbox whose EnvelopeConfig names the envelope's headers acme-*, and publish
+        middleware adding acme-corr
+    When: An event is emitted in a transaction
+    Then: ValueError names the header, and nothing is kept
+    """
+
+    # Arrange
+    async def forge(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+        return await next(call.with_headers({"acme-corr": "forged"}))
+
+    outbox = OutboxProducer[object](
+        store,
+        _encode,
+        middleware=Middleware(publish=(forge,)),
+        envelope=EnvelopeConfig(headers=_ACME),
+    )
+    outbox.route(_order_placed, OutboxConfig("orders"))
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="'acme-corr' is a header the bus sets itself"):
+        async with store.transaction():
+            await outbox.emit(_order_placed, _Order(1))
+    assert store.pending() == []
+
+
+class _AcmePublisher(_Publisher):
+    """A publisher sending envelopes under the acme-* names."""
+
+    envelope = EnvelopeConfig(headers=_ACME)
+
+
+def test_relay_refuses_outbox_and_publisher_with_different_names(store: InMemoryOutboxStore):
+    """
+    A relay should refuse to be built when its outbox and publisher name envelopes apart.
+
+    Given: An outbox with the default envelope header names, and one with the acme-* names
+    When: A relay is built for each with a publisher using the acme-* names
+    Then: The first raises ValueError naming both sets of names; the second is built
+    """
+    # Arrange
+    default = OutboxProducer[object](store, _encode)
+    acme = OutboxProducer[object](store, _encode, envelope=EnvelopeConfig(headers=_ACME))
+
+    # Act / Assert
+    with pytest.raises(ValueError, match=r"x-message-id.*acme-msg"):
+        OutboxRelay(store, _AcmePublisher(), default)
+    OutboxRelay(store, _AcmePublisher(), acme)
+    assert acme.envelope.headers == _AcmePublisher.envelope.headers
+
+
 def test_relay_routes_the_outbox_when_built(
     outbox: OutboxProducer[object], store: InMemoryOutboxStore
 ):
@@ -1664,6 +1724,8 @@ class _OverlapPublisher:
     Queued outcomes, by payload, raise instead of publishing; one that's an Event blocks the
     publish until it's set.
     """
+
+    envelope = EnvelopeConfig()
 
     def __init__(self, outcomes: dict[bytes, BaseException | asyncio.Event] | None = None) -> None:
         self.outcomes = outcomes or {}

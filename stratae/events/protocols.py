@@ -290,24 +290,23 @@ class Reserving(Protocol):
         ...
 
 
-_ENVELOPE_NAMES = frozenset(name.lower() for name in EnvelopeHeaders().names)
-"""The default envelope header names, in lower case, as every route reserves them."""
-
-
-def reserved_for(config: object) -> frozenset[str]:
+def reserved_for(config: object, envelope_headers: EnvelopeHeaders) -> frozenset[str]:
     """
     Return the header names an emit on a route with `config` can't be given or have added.
 
-    They're the envelope's, and any the config's adapter sets itself, if it's
-    {py:class}`Reserving`. An adapter works them out once
-    for each route, and passes them to every emit on it.
+    They're the names of the envelope's headers, and any the config's adapter sets itself, if
+    it's {py:class}`Reserving`. An adapter works them out once for each route, and passes them
+    to every emit on it.
 
     :param config: The route's config, or `None` on a bus that doesn't route.
+    :param envelope_headers: The names the bus's envelope travels in, from its
+        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>`.
     :returns: The names, in lower case.
     """
+    names = {name.lower() for name in envelope_headers.names}
     if isinstance(config, Reserving):
-        return _ENVELOPE_NAMES | {name.lower() for name in config.reserved_headers}
-    return _ENVELOPE_NAMES
+        names |= {name.lower() for name in config.reserved_headers}
+    return frozenset(names)
 
 
 class Deserializer(Protocol):

@@ -39,6 +39,7 @@ import pytest
 from stratae.events import (
     AsyncDirectBus,
     DirectBus,
+    EnvelopeConfig,
     HandleCall,
     Hooks,
     Middleware,
@@ -337,7 +338,8 @@ def test_reserved_header_from_middleware_refuses_the_emit(forge: Any, name: str)
     """
     A header the bus sets itself should refuse the emit, however publish middleware adds it.
 
-    Given: Publish middleware adding an envelope header, in lower or mixed case, with
+    Given: A bus with an envelope, publish middleware adding an envelope header, in lower or
+        mixed case, with
         with_headers or by replacing the call's headers, and handle middleware recording calls
     When: An event is emitted
     Then: ValueError names the header, and no handle middleware or handler runs
@@ -348,7 +350,9 @@ def test_reserved_header_from_middleware_refuses_the_emit(forge: Any, name: str)
         handled.append(call)
         return next(call)
 
-    bus = DirectBus(middleware=Middleware(publish=(forge(name),), handle=(record,)))
+    bus = DirectBus(
+        envelope=EnvelopeConfig(), middleware=Middleware(publish=(forge(name),), handle=(record,))
+    )
     bus.handle(_placed, lambda order: None)
 
     with pytest.raises(ValueError, match=name):

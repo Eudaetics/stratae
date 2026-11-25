@@ -137,8 +137,8 @@ from stratae.events.pipeline import (
 )
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent, reserved_for
 
-_RESERVED = reserved_for(None)
-"""The header names a direct bus reserves on every route: the envelope's."""
+_NONE_RESERVED: frozenset[str] = frozenset()
+"""What a bus that opens no envelope reserves: no header names."""
 
 _NO_HANDLERS: Handlers[AnyEvent, Any] = Handlers()
 """The handlers of an event nothing handles."""
@@ -340,6 +340,7 @@ class _Core:
         "_plain",
         "_publish",
         "_registering",
+        "_reserved",
         "_routes",
     )
 
@@ -368,6 +369,9 @@ class _Core:
         self._middleware = middleware
         self._publish = _publisher(middleware.publish, envelope, asynchronous)
         self._plain = not (middleware.publish or middleware.handle) and envelope is None
+        self._reserved = (
+            _NONE_RESERVED if envelope is None else reserved_for(None, envelope.headers)
+        )
 
     def emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
         """
@@ -381,7 +385,7 @@ class _Core:
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
         route, plain = self._route(event), self._plain
-        publish_ = self._publish
+        publish_, reserved = self._publish, self._reserved
 
         def emit_routed(
             event: AnyEvent, payload: Any, *, hooks: Hooks[Any, Any] | None = None
@@ -389,7 +393,7 @@ class _Core:
             if hooks is None and plain:
                 message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
                 return route.dispatcher(event, route.handlers, message)
-            return publish_(route.send, _RESERVED, event, payload, None, hooks)
+            return publish_(route.send, reserved, event, payload, None, hooks)
 
         return emit_routed
 
@@ -471,7 +475,7 @@ class _Core:
         elif self._plain:
             message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
             return route.dispatcher(event, route.handlers, message)
-        return self._publish(route.send, _RESERVED, event, payload, None, hooks)
+        return self._publish(route.send, self._reserved, event, payload, None, hooks)
 
     def remove(self, handler: Handler[AnyEvent, Any]) -> None:
         """Remove a registered handler, ignoring one the bus doesn't have."""
@@ -500,8 +504,9 @@ class DirectBus:
 
     :param envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
         each emission, made as the
-        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` says. `None`,
-        the default, opens none.
+        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` says. The bus
+        refuses its `headers`' names as headers. `None`, the default, opens none, and reserves
+        no envelope header names.
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
         defaults for `Request` and `PubSub`.
     :param middleware: Sync {py:class}`Middleware <stratae.events.middleware.Middleware>` run
@@ -683,8 +688,9 @@ class AsyncDirectBus:
 
     :param envelope: Open an {py:class}`Envelope <stratae.events.envelope.Envelope>` for
         each emission, made as the
-        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` says. `None`,
-        the default, opens none.
+        {py:class}`EnvelopeConfig <stratae.events.envelope.EnvelopeConfig>` says. The bus
+        refuses its `headers`' names as headers. `None`, the default, opens none, and reserves
+        no envelope header names.
     :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
         defaults for `Request` and `PubSub`. Their dispatchers return awaitables.
     :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>` run
