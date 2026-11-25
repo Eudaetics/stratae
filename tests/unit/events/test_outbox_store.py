@@ -124,13 +124,12 @@ async def _call(result: Any) -> Any:
 
 
 def _message(order: int, **changes: Any) -> OutboxMessage:
-    """Return a message created `order` seconds after a fixed past moment."""
+    """Return a message whose envelope opened `order` seconds after a fixed past moment."""
     message = OutboxMessage(
-        envelope=Envelope(),
+        envelope=Envelope(timestamp=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order)),
         route="orders",
         body=f"order {order}".encode(),
         headers={},
-        created_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order),
         key=f"key-{order}",
     )
     return replace(message, **changes)
@@ -518,7 +517,7 @@ class _History:
         return _message(
             self.added,
             key=self.rng.choice(["a", "b", None]),
-            created_at=_PAST + timedelta(seconds=self.added),
+            envelope=Envelope(timestamp=_PAST + timedelta(seconds=self.added)),
         )
 
     def expected(self, limit: int) -> list[OutboxRecord]:

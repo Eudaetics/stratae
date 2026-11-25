@@ -8,7 +8,7 @@ The outbox only works if a record and its data commit together. So the store mus
 
 ## The table and the unit of work
 
-The application's own table, `orders`, sits beside the outbox table. One outbox row per record. A row holds a message, which never changes once it's added, and its delivery state: `available_at`, `attempts` and `error`. The relay writes only the delivery columns, by message id. The message's envelope takes four columns: `id` holds its message id, beside `correlation_id`, `causation_id` and `envelope_timestamp`. So a chain of messages can be found by its correlation id. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. `headers` holds the application's headers, without the envelope's. It's a column of type `Headers`: `jsonb` on Postgres, and JSON on other databases. The store must give back what it was given, and JSON has no type for a timestamp. So `Headers` stores a timestamp as `{"$datetime": ...}`, at any depth, and turns it back into one. Text that looks like a timestamp stays text. The database's driver does the JSON encoding itself, so `Headers` hands it plain values and tags only what JSON can't hold. A value JSON can't hold that isn't tagged, such as bytes, fails the add inside the unit of work, and nothing commits. If your middleware sends such values, tag them in `tagged` and `untagged` too. The session recipe is the same as in [A database session per scope](database.md).
+The application's own table, `orders`, sits beside the outbox table. One outbox row per record. A row holds a message, which never changes once it's added, and its delivery state: `available_at`, `attempts` and `error`. The relay writes only the delivery columns, by message id. The message's envelope takes four columns: `id` holds its message id and `created_at` its timestamp, beside `correlation_id` and `causation_id`. So a chain of messages can be found by its correlation id. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. `headers` holds the application's headers, without the envelope's. It's a column of type `Headers`: `jsonb` on Postgres, and JSON on other databases. The store must give back what it was given, and JSON has no type for a timestamp. So `Headers` stores a timestamp as `{"$datetime": ...}`, at any depth, and turns it back into one. Text that looks like a timestamp stays text. The database's driver does the JSON encoding itself, so `Headers` hands it plain values and tags only what JSON can't hold. A value JSON can't hold that isn't tagged, such as bytes, fails the add inside the unit of work, and nothing commits. If your middleware sends such values, tag them in `tagged` and `untagged` too. The session recipe is the same as in [A database session per scope](database.md).
 
 ````{example} The outbox table, the engine, and a session per unit of work
 ```{code-block} python
@@ -98,13 +98,12 @@ class OutboxRow(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True)
     correlation_id: Mapped[UUID]
     causation_id: Mapped[UUID | None]
-    envelope_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     route: Mapped[str] = mapped_column(String(200))
     body: Mapped[bytes] = mapped_column(LargeBinary)
     headers: Mapped[dict[str, Any]] = mapped_column(Headers)
     key: Mapped[str | None] = mapped_column(String(200), index=True)
     address: Mapped[str | None] = mapped_column(String(200))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(default=0)
@@ -118,26 +117,22 @@ class OutboxRow(Base):
             id=envelope.message_id,
             correlation_id=envelope.correlation_id,
             causation_id=envelope.causation_id,
-            envelope_timestamp=envelope.timestamp,
+            created_at=envelope.timestamp,
             route=message.route,
             body=message.body,
             headers=dict(message.headers),
             key=message.key,
             address=message.address,
-            created_at=message.created_at,
-            available_at=message.created_at,
+            available_at=envelope.timestamp,
         )
 
     def to_record(self) -> OutboxRecord:
-        envelope = Envelope(
-            self.id, self.correlation_id, self.causation_id, utc(self.envelope_timestamp)
-        )
+        envelope = Envelope(self.id, self.correlation_id, self.causation_id, utc(self.created_at))
         message = OutboxMessage(
             envelope=envelope,
             route=self.route,
             body=self.body,
             headers=self.headers,
-            created_at=utc(self.created_at),
             key=self.key,
             address=self.address,
         )

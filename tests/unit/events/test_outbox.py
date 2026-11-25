@@ -215,19 +215,20 @@ def _record(
     store: InMemoryOutboxStore,
     order_id: int = 1,
     available_at: datetime | None = None,
+    created_at: datetime | None = None,
     **changes: Any,
 ) -> OutboxRecord:
     """
     Add a message straight to the store, as the producer would, and return its record.
 
-    Given `available_at`, it's rescheduled to be due then, as a failed attempt would leave it.
+    Its envelope opens at `created_at`, or now. Given `available_at`, it's rescheduled to be
+    due then, as a failed attempt would leave it.
     """
     message = OutboxMessage(
-        envelope=Envelope(),
+        envelope=Envelope(timestamp=created_at),
         route="_Order",
         body=str(order_id).encode(),
         headers={},
-        created_at=datetime.now(UTC),
     )
     message = replace(message, **changes)
     store.add(message)
@@ -337,7 +338,7 @@ async def test_emit_writes_record(outbox: OutboxProducer[object], store: InMemor
     Given: An event bound with an ordering key
     When: It's emitted inside an envelope scope
     Then: One record holds the envelope's message id and headers, the serialized body and the
-          key, due at its creation time with no attempts, and emit returns None
+          key, due at its envelope's timestamp with no attempts, and emit returns None
     """
     # Arrange
     place = outbox.bind(
@@ -356,7 +357,7 @@ async def test_emit_writes_record(outbox: OutboxProducer[object], store: InMemor
     assert message.envelope.causation_id == parent.message_id
     assert message.id == message.envelope.message_id
     assert (message.route, message.body, message.key) == ("_Order", b"7", "order-7")
-    assert delivery == OutboxDelivery(message.created_at)
+    assert delivery == OutboxDelivery(message.envelope.timestamp)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1052,7 +1053,7 @@ async def test_relay_publishes_added_headers(store: InMemoryOutboxStore):
 def _stored(attempts: int = 0, **changes: Any) -> OutboxRecord:
     """Return a record as a store would hold it, created and due at the start of 2026."""
     created = datetime(2026, 1, 1, tzinfo=UTC)
-    message = replace(OutboxMessage(Envelope(), "_Order", b"1", {}, created), **changes)
+    message = replace(OutboxMessage(Envelope(timestamp=created), "_Order", b"1", {}), **changes)
     return OutboxRecord(message, OutboxDelivery(created, attempts))
 
 

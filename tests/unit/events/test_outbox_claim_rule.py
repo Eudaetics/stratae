@@ -28,11 +28,10 @@ def _record(
 ) -> OutboxRecord:
     created = _NOW - timedelta(hours=1) + timedelta(seconds=order)
     message = OutboxMessage(
-        envelope=Envelope(),
+        envelope=Envelope(timestamp=created),
         route="orders",
         body=b"",
         headers={},
-        created_at=created,
         key=key,
     )
     return OutboxRecord(message, OutboxDelivery(available_at or created))
