@@ -1659,36 +1659,41 @@ async def test_handle_middleware_reads_headers_as_delivered(
     connect_mock: AsyncMock, channel: AsyncMock
 ):
     """
-    Handle middleware should read the message's headers as they arrived, read-only.
+    Handle middleware should read the message's headers as they arrived, without its envelope's.
 
-    Given: A consumer with handle middleware recording the headers it reads
-    When: A message arrives carrying a tenant, an attempts count and a correlation id, then one
-        without headers
-    Then: The middleware read all three as delivered, the count still a number, then no
-        headers, and couldn't change them
+    Given: A consumer with handle middleware recording the headers and envelope it reads
+    When: A message arrives carrying a tenant, an attempts count and every envelope header,
+        then one without headers
+    Then: The middleware read the tenant and the count as delivered, the count still a number,
+        and none of the envelope's headers, then no headers, and couldn't change them; the
+        envelope it read is the one the headers carried
     """
     # Arrange
     seen: list[dict[str, object]] = []
     writable: list[bool] = []
+    envelopes: list[Envelope | None] = []
 
     async def record(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
         seen.append(dict(call.headers))
         writable.append(isinstance(call.headers, MutableMapping))
+        envelopes.append(Envelope.current())
         return await next(call)
 
     consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(record,)))
     consumer.handle(_order_placed, lambda order: None, config=_config)
-    correlation_id = str(uuid4())
-    headers = {"x-tenant": "acme", ATTEMPTS_HEADER: 2, CORRELATION_ID_HEADER: correlation_id}
+    sent = Envelope.root().child()
+    application = {"x-tenant": "acme", ATTEMPTS_HEADER: 2}
 
     # Act
     async with consumer:
-        await _delivery_callback(channel)(_message(b'{"order_id": 7}', headers))
+        delivered = _message(b'{"order_id": 7}', application | sent.to_headers())
+        await _delivery_callback(channel)(delivered)
         await _delivery_callback(channel)(_message(b'{"order_id": 8}'))
 
     # Assert
-    assert seen == [headers, {}]
+    assert seen == [application, {}]
     assert writable == [False, False]
+    assert envelopes[0] == sent
 
 
 async def _trace(call: HandleCall, next: Callable[[HandleCall], Awaitable[Any]]) -> Any:
