@@ -1382,7 +1382,7 @@ async def test_outbox_relays_committed_events(broker: _Broker):
 
     # Assert
     assert sent == 1
-    assert received == [(Message("committed"), written.id)]
+    assert received == [(Message("committed"), written.message.id)]
     assert store.sent() == [written]
 
 
@@ -1440,11 +1440,14 @@ async def test_outbox_relays_middleware_headers(broker: _Broker):
         await seen.wait_for_length(1)
 
     # Assert
-    assert (written.headers["x-tenant"], written.headers["x-priority"]) == ("acme", 3)
+    assert (written.message.headers["x-tenant"], written.message.headers["x-priority"]) == (
+        "acme",
+        3,
+    )
     assert relayed == [{"x-tenant": "acme", "x-priority": 3}]
     (headers,) = seen
     assert (headers["x-tenant"], headers["x-priority"]) == ("acme", 3)
-    assert headers["x-message-id"] == str(written.id)
+    assert headers["x-message-id"] == str(written.message.id)
 
 
 class _Ended(SpanProcessor):
@@ -1616,7 +1619,7 @@ async def test_outbox_waits_out_an_outage(broker: _Broker, proxy: _Proxy):
 
     # Assert
     assert (during, after) == (0, 1)
-    assert [r.attempts for r in waiting] == [0]
-    assert [r.attempts for r in store.sent()] == [0]
+    assert [r.delivery.attempts for r in waiting] == [0]
+    assert [r.delivery.attempts for r in store.sent()] == [0]
     parked = await broker.channel.basic_get(queue, no_ack=True)
     assert msgspec.json.decode(parked.body, type=Message) == Message("during the outage")

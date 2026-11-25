@@ -13,30 +13,30 @@ Order per key:
 - A keyed record is taken with the earlier ones of its key when they're all claimable.
 """
 
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from stratae.events import Envelope
-from stratae.events.outbox import OutboxRecord
+from stratae.events.outbox import OutboxDelivery, OutboxMessage, OutboxRecord
 from stratae.events.outbox import _claimable as claimable  # pyright: ignore[reportPrivateUsage]
 
 _NOW = datetime(2026, 1, 1, 12, tzinfo=UTC)
 _LATER = _NOW + timedelta(hours=1)
 
 
-def _record(order: int, key: str | None = None, **changes: object) -> OutboxRecord:
+def _record(
+    order: int, key: str | None = None, available_at: datetime | None = None
+) -> OutboxRecord:
     envelope = Envelope()
     created = _NOW - timedelta(hours=1) + timedelta(seconds=order)
-    record = OutboxRecord(
+    message = OutboxMessage(
         id=envelope.message_id,
         route="orders",
         body=b"",
         headers=envelope.to_headers(),
         created_at=created,
-        available_at=created,
         key=key,
     )
-    return replace(record, **changes)
+    return OutboxRecord(message, OutboxDelivery(available_at or created))
 
 
 def test_due_unleased_records_oldest_first_up_to_the_limit():
@@ -62,7 +62,7 @@ def test_not_due_or_leased_records_left_out():
     """
     waiting = _record(1, available_at=_LATER)
     leased, expired = _record(2), _record(3)
-    leases = {leased.id: _LATER, expired.id: _NOW}
+    leases = {leased.message.id: _LATER, expired.message.id: _NOW}
 
     assert claimable([waiting, leased, expired], leases, _NOW, 10) == [expired]
 
@@ -106,7 +106,7 @@ def test_leased_keyed_record_holds_back_its_key():
     """
     leased, later = _record(1, "a"), _record(2, "a")
 
-    assert claimable([leased, later], {leased.id: _LATER}, _NOW, 10) == []
+    assert claimable([leased, later], {leased.message.id: _LATER}, _NOW, 10) == []
 
 
 def test_keyed_records_taken_together_in_order():

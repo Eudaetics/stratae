@@ -44,7 +44,13 @@ from sybil import Sybil
 from sybil.parsers.myst import PythonCodeBlockParser
 
 from stratae.events import Envelope
-from stratae.events.outbox import InMemoryOutboxStore, OutboxRecord, OutboxStore
+from stratae.events.outbox import (
+    InMemoryOutboxStore,
+    OutboxDelivery,
+    OutboxMessage,
+    OutboxRecord,
+    OutboxStore,
+)
 from stratae.events.outbox import _claimable as claimable  # pyright: ignore[reportPrivateUsage]
 
 _RECIPE = Path(__file__).parents[3] / "docs" / "tutorials" / "outbox.md"
@@ -117,31 +123,39 @@ async def _call(result: Any) -> Any:
     return await result if isawaitable(result) else result
 
 
-def _record(order: int, **changes: Any) -> OutboxRecord:
-    """Return a record created `order` seconds after a fixed past moment."""
+def _message(order: int, **changes: Any) -> OutboxMessage:
+    """Return a message created `order` seconds after a fixed past moment."""
     envelope = Envelope()
-    created = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order)
-    record = OutboxRecord(
+    message = OutboxMessage(
         id=envelope.message_id,
         route="orders",
         body=f"order {order}".encode(),
         headers=envelope.to_headers(),
-        created_at=created,
-        available_at=created,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order),
         key=f"key-{order}",
     )
-    return replace(record, **changes)
+    return replace(message, **changes)
+
+
+def _record(message: OutboxMessage, **delivery: Any) -> OutboxRecord:
+    """Return a message as a store gives it back: due at its creation time, unless changed."""
+    return OutboxRecord(message, replace(OutboxDelivery(message.created_at), **delivery))
 
 
 @asynccontextmanager
 async def _added(
-    harness: _Harness, store: OutboxStore, *records: OutboxRecord
+    harness: _Harness, store: OutboxStore, *messages: OutboxMessage
 ) -> AsyncGenerator[None, None]:
-    """Add records in one unit of work, committed when the block exits cleanly."""
+    """Add messages in one unit of work, committed when the block exits cleanly."""
     async with harness.unit(store):
-        for record in records:
-            await _call(store.add(record))
+        for message in messages:
+            await _call(store.add(message))
         yield
+
+
+async def _wait_until(store: OutboxStore, message: OutboxMessage, when: datetime) -> None:
+    """Reschedule an added message to be due at `when`, as a failed attempt would."""
+    await _call(store.reschedule(message.id, OutboxDelivery(when)))
 
 
 async def _claim(store: OutboxStore, limit: int = 10) -> Sequence[OutboxRecord]:
@@ -152,20 +166,20 @@ async def test_committed_record_claimable_as_written(harness: _Harness):
     """
     A record added in a unit of work that commits should be claimable, as written.
 
-    Given: A record with every field set
+    Given: A message with every field set
     When: It's added in a unit of work that commits, then claimed
-    Then: The claimed record equals the one added
+    Then: The claimed record holds the message added, due at its creation time with no attempts
     """
     # Arrange
     store = harness.store()
-    record = _record(1)
+    message = _message(1, address="orders.7")
 
     # Act
-    async with _added(harness, store, record):
+    async with _added(harness, store, message):
         pass
 
     # Assert
-    assert await _claim(store) == [record]
+    assert await _claim(store) == [_record(message)]
 
 
 async def test_headers_come_back_as_added(harness: _Harness):
@@ -188,17 +202,17 @@ async def test_headers_come_back_as_added(harness: _Harness):
         "x-route": ["eu", "west"],
         "x-meta": {"source": "checkout", "version": 2, "at": datetime(2026, 11, 15, tzinfo=UTC)},
     }
-    record = _record(1)
-    record = replace(record, headers={**record.headers, **headers})
+    message = _message(1)
+    message = replace(message, headers={**message.headers, **headers})
 
     # Act
-    async with _added(harness, store, record):
+    async with _added(harness, store, message):
         pass
 
     # Assert
     (claimed,) = await _claim(store)
-    assert claimed.headers == record.headers
-    assert {name: type(claimed.headers[name]) for name in headers} == {
+    assert claimed.message.headers == message.headers
+    assert {name: type(claimed.message.headers[name]) for name in headers} == {
         name: type(value) for name, value in headers.items()
     }
 
@@ -214,12 +228,12 @@ async def test_header_store_cannot_hold_refused(harness: _Harness):
     """
     # Arrange
     store = harness.store()
-    record = _record(1)
-    record = replace(record, headers={**record.headers, "x-digest": b"\x00\x01"})
+    message = _message(1)
+    message = replace(message, headers={**message.headers, "x-digest": b"\x00\x01"})
 
     # Act / Assert
     with pytest.raises(StatementError, match="bytes is not JSON serializable"):
-        async with _added(harness, store, record):
+        async with _added(harness, store, message):
             pass
     assert await _claim(store) == []
 
@@ -237,7 +251,7 @@ async def test_rolled_back_record_never_kept(harness: _Harness):
 
     # Act
     with pytest.raises(_RolledBack):
-        async with _added(harness, store, _record(1)):
+        async with _added(harness, store, _message(1)):
             raise _RolledBack()
 
     # Assert
@@ -254,16 +268,16 @@ async def test_claim_oldest_first_and_due_only(harness: _Harness):
     """
     # Arrange
     store = harness.store()
-    first, second, third = _record(1), _record(2), _record(3)
-    later = _record(0, available_at=datetime.now(UTC) + timedelta(hours=1))
+    first, second, third, later = _message(1), _message(2), _message(3), _message(0)
     async with _added(harness, store, third, later, first, second):
         pass
+    await _wait_until(store, later, datetime.now(UTC) + timedelta(hours=1))
 
     # Act
     claims = [await _claim(store, 2), await _claim(store, 10)]
 
     # Assert
-    assert claims == [[first, second], [third]]
+    assert claims == [[_record(first), _record(second)], [_record(third)]]
 
 
 async def test_claimed_record_held_until_rescheduled(harness: _Harness):
@@ -276,14 +290,15 @@ async def test_claimed_record_held_until_rescheduled(harness: _Harness):
     """
     # Arrange
     store = harness.store()
-    record = _record(1)
-    async with _added(harness, store, record):
+    message = _message(1)
+    record = _record(message)
+    async with _added(harness, store, message):
         pass
 
     # Act
     claimed = await _claim(store)
     again = await _claim(store)
-    await _call(store.reschedule(record))
+    await _call(store.reschedule(message.id, record.delivery))
     released = await _claim(store)
 
     # Assert
@@ -300,8 +315,8 @@ async def test_claim_released_when_lease_runs_out(harness: _Harness):
     """
     # Arrange
     store = harness.store(lease=0)
-    record = _record(1)
-    async with _added(harness, store, record):
+    message = _message(1)
+    async with _added(harness, store, message):
         pass
 
     # Act
@@ -309,7 +324,7 @@ async def test_claim_released_when_lease_runs_out(harness: _Harness):
     second = await _claim(store)
 
     # Assert
-    assert first == second == [record]
+    assert first == second == [_record(message)]
 
 
 async def test_sent_record_never_claimed_again(harness: _Harness):
@@ -322,13 +337,13 @@ async def test_sent_record_never_claimed_again(harness: _Harness):
     """
     # Arrange
     store = harness.store(lease=0)
-    record = _record(1)
-    async with _added(harness, store, record):
+    message = _message(1)
+    async with _added(harness, store, message):
         pass
     await _claim(store)
 
     # Act
-    await _call(store.mark_sent([record]))
+    await _call(store.mark_sent([message.id]))
 
     # Assert
     assert await _claim(store) == []
@@ -344,17 +359,17 @@ async def test_rescheduled_record_keeps_attempt(harness: _Harness):
     """
     # Arrange
     store = harness.store()
-    record = _record(1)
-    async with _added(harness, store, record):
+    message = _message(1)
+    async with _added(harness, store, message):
         pass
     await _claim(store)
-    failed = replace(record, attempts=1, error="RuntimeError: refused")
+    failed = _record(message, attempts=1, error="RuntimeError: refused")
 
     # Act
     in_an_hour = datetime.now(UTC) + timedelta(hours=1)
-    await _call(store.reschedule(replace(failed, available_at=in_an_hour)))
+    await _call(store.reschedule(message.id, replace(failed.delivery, available_at=in_an_hour)))
     waiting = await _claim(store)
-    await _call(store.reschedule(failed))
+    await _call(store.reschedule(message.id, failed.delivery))
     due = await _claim(store)
 
     # Assert
@@ -372,13 +387,14 @@ async def test_failed_record_never_claimed_again(harness: _Harness):
     """
     # Arrange
     store = harness.store(lease=0)
-    record = _record(1)
-    async with _added(harness, store, record):
+    message = _message(1)
+    async with _added(harness, store, message):
         pass
-    await _claim(store)
+    (claimed,) = await _claim(store)
 
     # Act
-    await _call(store.mark_failed(replace(record, attempts=10, error="gave up")))
+    gave_up = replace(claimed.delivery, attempts=10, error="gave up")
+    await _call(store.mark_failed(message.id, gave_up))
 
     # Assert
     assert await _claim(store) == []
@@ -396,19 +412,21 @@ async def test_keyed_record_waits_for_earlier_retry(harness: _Harness):
     # Arrange
     store = harness.store()
     later = datetime.now(UTC) + timedelta(hours=1)
-    retrying = _record(1, key="order-7", available_at=later)
-    waiting = _record(2, key="order-7")
-    other = _record(3, key="order-8")
-    unkeyed_later = _record(4, key=None, available_at=later)
-    unkeyed = _record(5, key=None)
+    retrying = _message(1, key="order-7")
+    waiting = _message(2, key="order-7")
+    other = _message(3, key="order-8")
+    unkeyed_later = _message(4, key=None)
+    unkeyed = _message(5, key=None)
     async with _added(harness, store, retrying, waiting, other, unkeyed_later, unkeyed):
         pass
+    await _wait_until(store, retrying, later)
+    await _wait_until(store, unkeyed_later, later)
 
     # Act
     claimed = await _claim(store)
 
     # Assert
-    assert claimed == [other, unkeyed]
+    assert claimed == [_record(other), _record(unkeyed)]
 
 
 async def test_keyed_record_waits_for_earlier_claim(harness: _Harness):
@@ -421,8 +439,8 @@ async def test_keyed_record_waits_for_earlier_claim(harness: _Harness):
     """
     # Arrange
     store = harness.store()
-    first, second = _record(1, key="order-7"), _record(2, key="order-7")
-    other = _record(3, key="order-8")
+    first, second = _message(1, key="order-7"), _message(2, key="order-7")
+    other = _message(3, key="order-8")
     async with _added(harness, store, first, second, other):
         pass
 
@@ -430,7 +448,7 @@ async def test_keyed_record_waits_for_earlier_claim(harness: _Harness):
     claims = [await _claim(store, 1), await _claim(store)]
 
     # Assert
-    assert claims == [[first], [other]]
+    assert claims == [[_record(first)], [_record(other)]]
 
 
 async def test_same_key_claimed_in_creation_order(harness: _Harness):
@@ -443,7 +461,7 @@ async def test_same_key_claimed_in_creation_order(harness: _Harness):
     """
     # Arrange
     store = harness.store()
-    first, second, third = (_record(order, key="order-7") for order in (1, 2, 3))
+    first, second, third = (_message(order, key="order-7") for order in (1, 2, 3))
     async with _added(harness, store, third, first, second):
         pass
 
@@ -451,7 +469,7 @@ async def test_same_key_claimed_in_creation_order(harness: _Harness):
     claimed = await _claim(store)
 
     # Assert
-    assert claimed == [first, second, third]
+    assert claimed == [_record(first), _record(second), _record(third)]
 
 
 @pytest.mark.parametrize("outcome", ["sent", "parked"])
@@ -465,19 +483,20 @@ async def test_settled_record_frees_its_key(harness: _Harness, outcome: str):
     """
     # Arrange
     store = harness.store()
-    first, second = _record(1, key="order-7"), _record(2, key="order-7")
+    first, second = _message(1, key="order-7"), _message(2, key="order-7")
     async with _added(harness, store, first, second):
         pass
     (claimed,) = await _claim(store, 1)
 
     # Act
     if outcome == "sent":
-        await _call(store.mark_sent([claimed]))
+        await _call(store.mark_sent([first.id]))
     else:
-        await _call(store.mark_failed(replace(claimed, attempts=10, error="gone")))
+        gone = replace(claimed.delivery, attempts=10, error="gone")
+        await _call(store.mark_failed(first.id, gone))
 
     # Assert
-    assert await _claim(store) == [second]
+    assert await _claim(store) == [_record(second)]
 
 
 _PAST = datetime(2026, 1, 1, tzinfo=UTC)
@@ -494,30 +513,29 @@ class _History:
     leases: dict[UUID, datetime] = field(default_factory=dict[UUID, datetime])
     claimed: list[OutboxRecord] = field(default_factory=list[OutboxRecord])
 
-    def new_record(self) -> OutboxRecord:
-        """Return a record created after every earlier one, maybe keyed, maybe not yet due."""
+    def new_message(self) -> OutboxMessage:
+        """Return a message created after every earlier one, maybe keyed."""
         self.added += 1
-        created = _PAST + timedelta(seconds=self.added)
-        return _record(
+        return _message(
             self.added,
             key=self.rng.choice(["a", "b", None]),
-            created_at=created,
-            available_at=self.rng.choice([created, _FUTURE]),
+            created_at=_PAST + timedelta(seconds=self.added),
         )
 
     def expected(self, limit: int) -> list[OutboxRecord]:
         """Return what the claim rule takes from the pending records now."""
-        pending = sorted(self.pending.values(), key=lambda record: record.created_at)
+        pending = sorted(self.pending.values(), key=lambda record: record.message.created_at)
         return claimable(pending, self.leases, datetime.now(UTC), limit)
 
-    def settle(self, record: OutboxRecord, kept: OutboxRecord | None) -> None:
-        """Release a claimed record, keeping it pending as `kept`, or dropping it."""
+    def settle(self, record: OutboxRecord, kept: OutboxDelivery | None) -> None:
+        """Release a claimed record, keeping it pending in delivery state `kept`, or dropping it."""
+        message = record.message
         self.claimed.remove(record)
-        del self.leases[record.id]
+        del self.leases[message.id]
         if kept is None:
-            del self.pending[record.id]
+            del self.pending[message.id]
         else:
-            self.pending[record.id] = kept
+            self.pending[message.id] = OutboxRecord(message, kept)
 
 
 async def _step(harness: _Harness, store: OutboxStore, history: _History) -> None:
@@ -525,33 +543,38 @@ async def _step(harness: _Harness, store: OutboxStore, history: _History) -> Non
     rng = history.rng
     action = rng.choice(["add", "claim", "claim", "send", "reschedule", "park"])
     if action == "add":
-        record = history.new_record()
-        async with _added(harness, store, record):
+        message = history.new_message()
+        async with _added(harness, store, message):
             pass
-        history.pending[record.id] = record
+        record = _record(message)
+        if rng.random() < 0.5:
+            await _wait_until(store, message, _FUTURE)
+            record = _record(message, available_at=_FUTURE)
+        history.pending[message.id] = record
     elif action == "claim":
         limit = rng.randint(1, 4)
         expected = history.expected(limit)
         claimed = list(await _claim(store, limit))
         assert claimed == expected, f"claim of {limit} after {history.added} adds"
         history.claimed.extend(claimed)
-        history.leases.update((record.id, _FUTURE) for record in claimed)
+        history.leases.update((record.message.id, _FUTURE) for record in claimed)
     elif history.claimed:
         record = rng.choice(history.claimed)
+        message_id, delivery = record.message.id, record.delivery
         if action == "send":
-            await _call(store.mark_sent([record]))
+            await _call(store.mark_sent([message_id]))
             history.settle(record, None)
         elif action == "reschedule":
             retried = replace(
-                record,
-                attempts=record.attempts + 1,
+                delivery,
+                attempts=delivery.attempts + 1,
                 error="failed",
                 available_at=rng.choice([_PAST, _FUTURE]),
             )
-            await _call(store.reschedule(retried))
+            await _call(store.reschedule(message_id, retried))
             history.settle(record, retried)
         else:
-            await _call(store.mark_failed(replace(record, error="gone")))
+            await _call(store.mark_failed(message_id, replace(delivery, error="gone")))
             history.settle(record, None)
 
 

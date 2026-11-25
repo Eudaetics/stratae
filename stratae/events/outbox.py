@@ -8,8 +8,10 @@ transaction instead, so it commits or rolls back with the data. A relay publishe
 records afterwards.
 
 {py:class}`OutboxProducer` is bound like any bus. Emitting through it serializes the payload
-and adds an {py:class}`OutboxRecord` to an {py:class}`OutboxStore`. Nothing is published
-then. {py:class}`OutboxRelay` claims records, publishes each with the envelope it was
+and adds an {py:class}`OutboxMessage` to an {py:class}`OutboxStore`. Nothing is published
+then. The store keeps each message beside its {py:class}`OutboxDelivery`: when it's next due,
+and its failed attempts. Together they're an {py:class}`OutboxRecord`.
+{py:class}`OutboxRelay` claims records, publishes each message with the envelope it was
 emitted with, and marks it sent once the publisher returns. With publisher confirms, that's
 once the broker has it. Headers the producer's publish middleware adds, such as a trace, are
 stored with the record and published with it. So they survive the wait in the outbox.
@@ -200,11 +202,11 @@ async def _settle[T](result: T | Awaitable[T]) -> T:
 
 
 @dataclass(frozen=True, slots=True)
-class OutboxRecord:
-    """One event waiting in the outbox, as plain data a store keeps."""
+class OutboxMessage:
+    """One event written to the outbox, as plain data. It never changes once it's added."""
 
     id: UUID
-    """The message id, from the envelope it was emitted with. Unique per record."""
+    """The message id, from the envelope it was emitted with. Unique per message."""
 
     route: str
     """The name its binding registered its event and routing config under."""
@@ -221,9 +223,6 @@ class OutboxRecord:
     created_at: datetime
     """When it was emitted."""
 
-    available_at: datetime
-    """When it can next be claimed. Later than `created_at` after a failed attempt."""
-
     address: str | None = None
     """
     Where its route addressed it, such as a routing key, if the route addresses each message
@@ -237,16 +236,35 @@ class OutboxRecord:
     written; see {py:meth}`OutboxStore.claim`.
     """
 
+    @property
+    def envelope(self) -> Envelope:
+        """The envelope it was emitted with, to publish it under."""
+        return Envelope.from_headers(self.headers)
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxDelivery:
+    """Where a message's delivery stands: when it's next due, and its failed attempts."""
+
+    available_at: datetime
+    """When it can next be claimed. Its message's creation time until an attempt fails."""
+
     attempts: int = 0
     """How many times publishing it has failed."""
 
     error: str | None = None
     """Why its last attempt failed."""
 
-    @property
-    def envelope(self) -> Envelope:
-        """The envelope it was emitted with, to publish it under."""
-        return Envelope.from_headers(self.headers)
+
+@dataclass(frozen=True, slots=True)
+class OutboxRecord:
+    """A message in the outbox, with its delivery state: what a store gives back."""
+
+    message: OutboxMessage
+    """The message, as it was added."""
+
+    delivery: OutboxDelivery
+    """Where its delivery stands."""
 
 
 class OutboxStore(Protocol):
@@ -256,8 +274,10 @@ class OutboxStore(Protocol):
     `add` must write in the same transaction as the data the event describes. That's what
     makes the outbox transactional. The rest are called by the relay.
 
-    A store gives back each record as it was added, its headers included, so the relay
-    publishes what was emitted. How it keeps them is its own choice. An in-memory store keeps
+    A store keeps each message beside its delivery state. Once a message is added, the relay
+    changes only its delivery state, by the message's id. A store gives back each message as it
+    was added, its headers included, so the relay publishes what was emitted. How it keeps
+    them is its own choice. An in-memory store keeps
     the values themselves, and a database store picks a column that holds the values its
     application sends, such as JSON for text, numbers, booleans, lists and tables. A value a
     store can't keep, it refuses when the record is added, inside the unit of work. It never
@@ -267,8 +287,12 @@ class OutboxStore(Protocol):
     that doesn't need to, doesn't. The outbox awaits whichever returns an awaitable.
     """
 
-    def add(self, record: OutboxRecord) -> Awaitable[None] | None:
-        """Add a record, in the current unit of work's transaction."""
+    def add(self, message: OutboxMessage) -> Awaitable[None] | None:
+        """
+        Add a message, in the current unit of work's transaction.
+
+        Its delivery starts due at its creation time, with no attempts.
+        """
         ...
 
     def claim(self, limit: int) -> Sequence[OutboxRecord] | Awaitable[Sequence[OutboxRecord]]:
@@ -278,10 +302,10 @@ class OutboxStore(Protocol):
         A claimed record isn't claimed again until it's marked or rescheduled, or until a
         lease the store chooses runs out, so a relay that dies doesn't strand it.
 
-        A record with a `key` is claimed only if every earlier record with its key that's
-        still pending, neither sent nor parked as failed, is in the same claim. So a record
-        waiting for a retry, or claimed by another relay, holds back the later ones with its
-        key. Earlier means created first. A store breaks ties in creation time some fixed
+        A record whose message has a `key` is claimed only if every earlier record with its
+        key that's still pending, neither sent nor parked as failed, is in the same claim. So a
+        record waiting for a retry, or claimed by another relay, holds back the later ones with
+        its key. Earlier means created first. A store breaks ties in creation time some fixed
         way, such as by id, which time-ordered ids make the order they were written in.
 
         A claim leaves nothing out that it could take, while it's under its limit. While
@@ -290,16 +314,16 @@ class OutboxStore(Protocol):
         """
         ...
 
-    def mark_sent(self, records: Sequence[OutboxRecord]) -> Awaitable[None] | None:
-        """Mark records published. The store may keep or delete them."""
+    def mark_sent(self, message_ids: Sequence[UUID]) -> Awaitable[None] | None:
+        """Mark the records of these message ids published. The store may keep or delete them."""
         ...
 
-    def reschedule(self, record: OutboxRecord) -> Awaitable[None] | None:
-        """Store a record's new attempts, error and `available_at`, and release it."""
+    def reschedule(self, message_id: UUID, delivery: OutboxDelivery) -> Awaitable[None] | None:
+        """Store a record's new delivery state, and release it."""
         ...
 
-    def mark_failed(self, record: OutboxRecord) -> Awaitable[None] | None:
-        """Park a record that won't be retried, keeping it and its `error`."""
+    def mark_failed(self, message_id: UUID, delivery: OutboxDelivery) -> Awaitable[None] | None:
+        """Park a record that won't be retried, keeping it with its last delivery state."""
         ...
 
 
@@ -321,8 +345,8 @@ def _claimable(
 
     :param pending: Every pending record, neither sent nor parked as failed, oldest first,
         with ties in creation time broken the store's fixed way.
-    :param leases: When each leased record's lease runs out. A record not in it isn't
-        leased, and one whose lease has run out by `now` is free.
+    :param leases: When each leased record's lease runs out, by message id. A record not in
+        it isn't leased, and one whose lease has run out by `now` is free.
     :param now: The time of the claim.
     :param limit: The most records the claim takes.
     :returns: The records claimed, oldest first.
@@ -332,10 +356,11 @@ def _claimable(
     for record in pending:
         if len(claimed) == limit:
             break
-        key = record.key
+        message = record.message
+        key = message.key
         if key is not None and key in held:
             continue
-        if record.available_at <= now and leases.get(record.id, now) <= now:
+        if record.delivery.available_at <= now and leases.get(message.id, now) <= now:
             claimed.append(record)
         elif key is not None:
             held.add(key)
@@ -624,22 +649,20 @@ class OutboxProducer[Target]:
         address: Callable[[Any], str | None] | None,
         message: Outgoing[OutboxConfig[Target], Envelope],
     ) -> None:
-        """Serialize a message's payload and add it to the store as a record, with its headers."""
+        """Serialize a message's payload and add it to the store, with its headers."""
         event, config, payload = message.event, message.config, message.payload
         envelope = message.envelope
         body = b"" if event.is_signal else serializer(payload)
-        now = _now()
-        record = OutboxRecord(
+        written = OutboxMessage(
             id=envelope.message_id,
             route=route,
             body=body,
             headers={**message.headers, **envelope.to_headers()},
-            created_at=now,
-            available_at=now,
+            created_at=_now(),
             key=config.key(payload) if config.key is not None else None,
             address=address(payload) if address is not None else None,
         )
-        await _settle(self._store.add(record))
+        await _settle(self._store.add(written))
 
 
 class OutboxPublisher[Target](Protocol):
@@ -690,7 +713,6 @@ class _Hold(Enum):
 class _Sent:
     """A record its publisher took."""
 
-    record: OutboxRecord
     holds: ClassVar[_Hold] = _Hold.NOTHING
 
 
@@ -707,9 +729,9 @@ class _Park:
 
 @dataclass(frozen=True, slots=True)
 class _Failed:
-    """A record whose publish failed, in its new state, and what to do with it."""
+    """A record whose publish failed: its new delivery state, and what to do with it."""
 
-    record: OutboxRecord
+    delivery: OutboxDelivery
     action: Retry | _Park
 
     @property
@@ -720,9 +742,8 @@ class _Failed:
 
 @dataclass(frozen=True, slots=True)
 class _Outage:
-    """The publisher couldn't reach its broker, so `record` isn't at fault."""
+    """The publisher couldn't reach its broker, so the record isn't at fault."""
 
-    record: OutboxRecord
     holds: ClassVar[_Hold] = _Hold.BATCH
 
 
@@ -731,20 +752,20 @@ type _Outcome = _Sent | _Failed | _Outage
 
 
 def _failed_attempt(
-    record: OutboxRecord, exc: Exception, retry: Backoff, now: datetime
+    delivery: OutboxDelivery, exc: Exception, retry: Backoff, now: datetime
 ) -> _Failed | _Outage:
     """
-    Return what a publish that raised `exc` at `now` came to.
+    Return what a publish that raised `exc` at `now` came to, from the record's delivery state.
 
     An outage isn't the record's fault, and counts no attempt. Any other error counts one,
-    and keeps the error on the record. The record is retried the `retry` delay after `now`,
-    or parked once `retry` runs out.
+    and keeps the error in the new delivery state. The record is retried the `retry` delay
+    after `now`, or parked once `retry` runs out.
     """
     if isinstance(exc, _OUTAGES):
-        return _Outage(record)
-    attempts = record.attempts + 1
+        return _Outage()
+    attempts = delivery.attempts + 1
     action = failure_action(retry, _Park(), attempts, retryable=True)
-    failed = replace(record, attempts=attempts, error=failure_reason(exc))
+    failed = replace(delivery, attempts=attempts, error=failure_reason(exc))
     if isinstance(action, Retry):
         failed = replace(failed, available_at=now + timedelta(seconds=action.delay))
     return _Failed(failed, action)
@@ -752,34 +773,36 @@ def _failed_attempt(
 
 @dataclass(frozen=True, slots=True)
 class _Settlement:
-    """The store writes that end a batch."""
+    """The store writes that end a batch, by message id."""
 
-    sent: tuple[OutboxRecord, ...]
-    parked: tuple[OutboxRecord, ...]
-    back: tuple[OutboxRecord, ...]
+    sent: tuple[UUID, ...]
+    parked: tuple[tuple[UUID, OutboxDelivery], ...]
+    back: tuple[tuple[UUID, OutboxDelivery], ...]
 
 
 def _settlement(records: Sequence[OutboxRecord], outcomes: Mapping[UUID, _Outcome]) -> _Settlement:
     """
     Return the store writes that end a batch, from its claimed records and their outcomes.
 
-    A record sent is marked sent. One that failed is parked or rescheduled in its new state.
-    The rest go back unchanged, counting no attempt: one hit by an outage, and one an outage,
-    a retry of its key or a cancellation stopped before it started.
+    A record sent is marked sent. One that failed is parked or rescheduled in its new delivery
+    state. The rest go back in the delivery state they were claimed in, counting no attempt:
+    one hit by an outage, and one an outage, a retry of its key or a cancellation stopped
+    before it started.
     """
-    sent: list[OutboxRecord] = []
-    parked: list[OutboxRecord] = []
-    back: list[OutboxRecord] = []
+    sent: list[UUID] = []
+    parked: list[tuple[UUID, OutboxDelivery]] = []
+    back: list[tuple[UUID, OutboxDelivery]] = []
     for record in records:
-        match outcomes.get(record.id):
+        message_id = record.message.id
+        match outcomes.get(message_id):
             case _Sent():
-                sent.append(record)
+                sent.append(message_id)
             case _Failed(failed, _Park()):
-                parked.append(failed)
+                parked.append((message_id, failed))
             case _Failed(failed):
-                back.append(failed)
+                back.append((message_id, failed))
             case _:
-                back.append(record)
+                back.append((message_id, record.delivery))
     return _Settlement(tuple(sent), tuple(parked), tuple(back))
 
 
@@ -787,7 +810,8 @@ def _lanes(records: Sequence[OutboxRecord]) -> list[list[OutboxRecord]]:
     """Split a batch into lanes: one per key, in claim order, and one per record with no key."""
     lanes: dict[str | UUID, list[OutboxRecord]] = {}
     for record in records:
-        lanes.setdefault(record.id if record.key is None else record.key, []).append(record)
+        message = record.message
+        lanes.setdefault(message.id if message.key is None else message.key, []).append(record)
     return list(lanes.values())
 
 
@@ -822,13 +846,17 @@ class _Lanes:
             self._waiting.append(lane)
 
 
-async def _cancel(running: Iterable[asyncio.Task[_Outcome]]) -> list[_Outcome]:
+type _Attempted = tuple[UUID, _Outcome]
+"""What publishing one record came to, with its message id."""
+
+
+async def _cancel(running: Iterable[asyncio.Task[_Attempted]]) -> list[_Attempted]:
     """Cancel publishes in flight, returning the outcomes of any that finished first."""
     tasks = list(running)
     for task in tasks:
         task.cancel()
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    return [result for result in results if isinstance(result, _Sent | _Failed | _Outage)]
+    return [result for result in results if isinstance(result, tuple)]
 
 
 class OutboxRelay[Target]:
@@ -973,24 +1001,24 @@ class OutboxRelay[Target]:
         """
         records = await _settle(self._store.claim(self._batch_size))
         lanes = _Lanes(records)
-        running: dict[asyncio.Task[_Outcome], deque[OutboxRecord]] = {}
+        running: dict[asyncio.Task[_Attempted], deque[OutboxRecord]] = {}
         outcomes: dict[UUID, _Outcome] = {}
         try:
             while running or lanes.ready:
                 self._start(lanes, running)
                 done, _ = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
-                    outcome = task.result()
-                    outcomes[outcome.record.id] = outcome
+                    message_id, outcome = task.result()
+                    outcomes[message_id] = outcome
                     lanes.follow(outcome, running.pop(task))
         finally:
-            outcomes.update((outcome.record.id, outcome) for outcome in await _cancel(running))
+            outcomes.update(await _cancel(running))
             settlement = _settlement(records, outcomes)
             await self._write(settlement)
         return len(records), len(settlement.sent), lanes.stopped
 
     def _start(
-        self, lanes: _Lanes, running: dict[asyncio.Task[_Outcome], deque[OutboxRecord]]
+        self, lanes: _Lanes, running: dict[asyncio.Task[_Attempted], deque[OutboxRecord]]
     ) -> None:
         """Start the next records of waiting lanes, up to `max_in_flight` publishes at once."""
         while lanes.ready and len(running) < self._max_in_flight:
@@ -1001,44 +1029,44 @@ class OutboxRelay[Target]:
         """Write a batch's settlement to the store, marking what was sent first."""
         if settlement.sent:
             await _settle(self._store.mark_sent(settlement.sent))
-        for record in settlement.parked:
-            await _settle(self._store.mark_failed(record))
-        for record in settlement.back:
-            await _settle(self._store.reschedule(record))
+        for message_id, delivery in settlement.parked:
+            await _settle(self._store.mark_failed(message_id, delivery))
+        for message_id, delivery in settlement.back:
+            await _settle(self._store.reschedule(message_id, delivery))
 
-    async def _attempt(self, record: OutboxRecord) -> _Outcome:
-        """Publish one record, and return what it came to."""
+    async def _attempt(self, record: OutboxRecord) -> _Attempted:
+        """Publish one record, and return what it came to, with its message id."""
+        message = record.message
         try:
-            await self._publish(record)
+            await self._publish(message)
         except Exception as exc:
-            outcome = _failed_attempt(record, exc, self._retry, _now())
+            outcome = _failed_attempt(record.delivery, exc, self._retry, _now())
             if isinstance(outcome, _Outage):
                 _log.warning("outbox relay can't reach the broker; retrying when it can")
             else:
-                failed, action = outcome.record, outcome.action
                 _log.log(
-                    action.level,
+                    outcome.action.level,
                     "outbox record %s failed after %d attempt(s); %s",
-                    failed.id,
-                    failed.attempts,
-                    action.describe(),
+                    message.id,
+                    outcome.delivery.attempts,
+                    outcome.action.describe(),
                     exc_info=exc,
                 )
-            return outcome
-        return _Sent(record)
+            return message.id, outcome
+        return message.id, _Sent()
 
-    async def _publish(self, record: OutboxRecord) -> None:
-        """Publish a record under its envelope and headers, through its route's binding."""
-        route = self._outbox.routes.get(record.route)
+    async def _publish(self, message: OutboxMessage) -> None:
+        """Publish a message under its envelope and headers, through its route's binding."""
+        route = self._outbox.routes.get(message.route)
         if route is None:
-            raise LookupError(_UNKNOWN_ROUTE.format(record.route))
+            raise LookupError(_UNKNOWN_ROUTE.format(message.route))
         event, config = route
         self._publisher.route(event, config)
         await self._publisher.emit(
             event,
-            Encoded(record.body, record.address),
-            envelope=record.envelope,
-            headers=_added(record.headers),
+            Encoded(message.body, message.address),
+            envelope=message.envelope,
+            headers=_added(message.headers),
         )
 
 
@@ -1059,18 +1087,19 @@ class InMemoryOutboxStore:
             another claim can take it.
         """
         self._lease = timedelta(seconds=lease)
-        self._records: dict[UUID, OutboxRecord] = {}
+        self._messages: dict[UUID, OutboxMessage] = {}
+        self._deliveries: dict[UUID, OutboxDelivery] = {}
         self._status: dict[UUID, str] = {}
         self._leased: dict[UUID, datetime] = {}
-        self._staged: ContextVar[list[OutboxRecord] | None] = ContextVar(
+        self._staged: ContextVar[list[OutboxMessage] | None] = ContextVar(
             f"outbox_staged_{id(self)}", default=None
         )
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[None, None]:
-        """Keep the records added inside only if the block exits cleanly."""
+        """Keep the messages added inside only if the block exits cleanly."""
         outer = self._staged.get()
-        staged: list[OutboxRecord] = []
+        staged: list[OutboxMessage] = []
         token = self._staged.set(staged)
         try:
             yield
@@ -1093,13 +1122,13 @@ class InMemoryOutboxStore:
         """Return the records parked as failed, oldest first."""
         return self._with_status("failed")
 
-    def add(self, record: OutboxRecord) -> None:
-        """Add a record, staged if inside a `transaction()`."""
+    def add(self, message: OutboxMessage) -> None:
+        """Add a message, staged if inside a `transaction()`, due at its creation time."""
         staged = self._staged.get()
         if staged is not None:
-            staged.append(record)
+            staged.append(message)
         else:
-            self._keep([record])
+            self._keep([message])
 
     def claim(self, limit: int) -> Sequence[OutboxRecord]:
         """
@@ -1111,34 +1140,40 @@ class InMemoryOutboxStore:
         now = _now()
         claimed = _claimable(self.pending(), self._leased, now, limit)
         for record in claimed:
-            self._leased[record.id] = now + self._lease
+            self._leased[record.message.id] = now + self._lease
         return claimed
 
-    def mark_sent(self, records: Sequence[OutboxRecord]) -> None:
+    def mark_sent(self, message_ids: Sequence[UUID]) -> None:
         """Mark records sent, releasing them."""
-        for record in records:
-            self._settle(record, "sent")
+        for message_id in message_ids:
+            self._status[message_id] = "sent"
+            self._leased.pop(message_id, None)
 
-    def reschedule(self, record: OutboxRecord) -> None:
-        """Store the record's new state and release it, still pending."""
-        self._settle(record, "pending")
+    def reschedule(self, message_id: UUID, delivery: OutboxDelivery) -> None:
+        """Store a record's new delivery state and release it, still pending."""
+        self._settle(message_id, delivery, "pending")
 
-    def mark_failed(self, record: OutboxRecord) -> None:
-        """Park the record as failed, keeping its error."""
-        self._settle(record, "failed")
+    def mark_failed(self, message_id: UUID, delivery: OutboxDelivery) -> None:
+        """Park a record as failed, keeping its last delivery state."""
+        self._settle(message_id, delivery, "failed")
 
-    def _keep(self, records: list[OutboxRecord]) -> None:
-        """Store added records as pending."""
-        for record in records:
-            self._settle(record, "pending")
+    def _keep(self, messages: list[OutboxMessage]) -> None:
+        """Store added messages as pending, each due at its creation time."""
+        for message in messages:
+            self._messages[message.id] = message
+            self._settle(message.id, OutboxDelivery(message.created_at), "pending")
 
-    def _settle(self, record: OutboxRecord, status: str) -> None:
-        """Store a record under a status, releasing any lease."""
-        self._records[record.id] = record
-        self._status[record.id] = status
-        self._leased.pop(record.id, None)
+    def _settle(self, message_id: UUID, delivery: OutboxDelivery, status: str) -> None:
+        """Store a record's delivery state under a status, releasing any lease."""
+        self._deliveries[message_id] = delivery
+        self._status[message_id] = status
+        self._leased.pop(message_id, None)
 
     def _with_status(self, status: str) -> list[OutboxRecord]:
         """Return the records with a status, oldest first."""
-        records = [r for r in self._records.values() if self._status[r.id] == status]
-        return sorted(records, key=lambda r: r.created_at)
+        records = [
+            OutboxRecord(message, self._deliveries[message_id])
+            for message_id, message in self._messages.items()
+            if self._status[message_id] == status
+        ]
+        return sorted(records, key=lambda r: r.message.created_at)

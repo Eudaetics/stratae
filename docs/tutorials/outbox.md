@@ -8,7 +8,7 @@ The outbox only works if a record and its data commit together. So the store mus
 
 ## The table and the unit of work
 
-The application's own table, `orders`, sits beside the outbox table. One outbox row per record. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. `headers` is a column of type `Headers`: `jsonb` on Postgres, and JSON on other databases. The store must give back what it was given, and JSON has no type for a timestamp. So `Headers` stores a timestamp as `{"$datetime": ...}`, at any depth, and turns it back into one. Text that looks like a timestamp stays text. The database's driver does the JSON encoding itself, so `Headers` hands it plain values and tags only what JSON can't hold. A value JSON can't hold that isn't tagged, such as bytes, fails the add inside the unit of work, and nothing commits. If your middleware sends such values, tag them in `tagged` and `untagged` too. The session recipe is the same as in [A database session per scope](database.md).
+The application's own table, `orders`, sits beside the outbox table. One outbox row per record. A row holds a message, which never changes once it's added, and its delivery state: `available_at`, `attempts` and `error`. The relay writes only the delivery columns, by message id. `address` holds where a route that addresses each payload sent it, such as a RabbitMQ routing key built from the payload. `claimed_until` is the lease that keeps a claimed record from being claimed again. `failed` marks a record parked after its last attempt. `headers` is a column of type `Headers`: `jsonb` on Postgres, and JSON on other databases. The store must give back what it was given, and JSON has no type for a timestamp. So `Headers` stores a timestamp as `{"$datetime": ...}`, at any depth, and turns it back into one. Text that looks like a timestamp stays text. The database's driver does the JSON encoding itself, so `Headers` hands it plain values and tags only what JSON can't hold. A value JSON can't hold that isn't tagged, such as bytes, fails the add inside the unit of work, and nothing commits. If your middleware sends such values, tag them in `tagged` and `untagged` too. The session recipe is the same as in [A database session per scope](database.md).
 
 ````{example} The outbox table, the engine, and a session per unit of work
 ```{code-block} python
@@ -42,7 +42,7 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.types import TypeEngine
 
-from stratae.events.outbox import OutboxRecord
+from stratae.events.outbox import OutboxDelivery, OutboxMessage, OutboxRecord
 from stratae.lifecycle import AsyncScope
 
 class Base(DeclarativeBase):
@@ -108,33 +108,30 @@ class OutboxRow(Base):
     failed: Mapped[bool] = mapped_column(default=False, index=True)
 
     @classmethod
-    def from_record(cls, record: OutboxRecord) -> "OutboxRow":
+    def from_message(cls, message: OutboxMessage) -> "OutboxRow":
         return cls(
-            id=record.id,
-            route=record.route,
-            body=record.body,
-            headers=dict(record.headers),
-            key=record.key,
-            address=record.address,
-            created_at=record.created_at,
-            available_at=record.available_at,
-            attempts=record.attempts,
-            error=record.error,
+            id=message.id,
+            route=message.route,
+            body=message.body,
+            headers=dict(message.headers),
+            key=message.key,
+            address=message.address,
+            created_at=message.created_at,
+            available_at=message.created_at,
         )
 
     def to_record(self) -> OutboxRecord:
-        return OutboxRecord(
+        message = OutboxMessage(
             id=self.id,
             route=self.route,
             body=self.body,
             headers=self.headers,
             created_at=utc(self.created_at),
-            available_at=utc(self.available_at),
             key=self.key,
             address=self.address,
-            attempts=self.attempts,
-            error=self.error,
         )
+        delivery = OutboxDelivery(utc(self.available_at), self.attempts, self.error)
+        return OutboxRecord(message, delivery)
 
 application = AsyncScope("application", isolation="shared")
 work = AsyncScope("work", requires=application)
@@ -185,8 +182,8 @@ class SqlAlchemyOutboxStore:
         self._sessionmaker = sessionmaker
         self._lease = timedelta(seconds=lease)
 
-    async def add(self, record: OutboxRecord) -> None:
-        (await self._session()).add(OutboxRow.from_record(record))
+    async def add(self, message: OutboxMessage) -> None:
+        (await self._session()).add(OutboxRow.from_message(message))
 
     async def claim(self, limit: int) -> Sequence[OutboxRecord]:
         now = datetime.now(timezone.utc)
@@ -236,27 +233,28 @@ class SqlAlchemyOutboxStore:
             ),
         )
 
-    async def mark_sent(self, records: Sequence[OutboxRecord]) -> None:
-        ids = [record.id for record in records]
-        await self._write(delete(OutboxRow).where(OutboxRow.id.in_(ids)))
+    async def mark_sent(self, message_ids: Sequence[UUID]) -> None:
+        await self._write(delete(OutboxRow).where(OutboxRow.id.in_(message_ids)))
 
-    async def reschedule(self, record: OutboxRecord) -> None:
+    async def reschedule(self, message_id: UUID, delivery: OutboxDelivery) -> None:
         await self._write(
             update(OutboxRow)
-            .where(OutboxRow.id == record.id)
+            .where(OutboxRow.id == message_id)
             .values(
-                available_at=record.available_at,
-                attempts=record.attempts,
-                error=record.error,
+                available_at=delivery.available_at,
+                attempts=delivery.attempts,
+                error=delivery.error,
                 claimed_until=None,
             )
         )
 
-    async def mark_failed(self, record: OutboxRecord) -> None:
+    async def mark_failed(self, message_id: UUID, delivery: OutboxDelivery) -> None:
         await self._write(
             update(OutboxRow)
-            .where(OutboxRow.id == record.id)
-            .values(failed=True, attempts=record.attempts, error=record.error, claimed_until=None)
+            .where(OutboxRow.id == message_id)
+            .values(
+                failed=True, attempts=delivery.attempts, error=delivery.error, claimed_until=None
+            )
         )
 
     async def _write(self, statement: Any) -> None:
