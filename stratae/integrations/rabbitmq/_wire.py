@@ -25,8 +25,6 @@ if TYPE_CHECKING:
 
 
 _log = logging.getLogger(__name__)
-RESERVED = ENVELOPE_HEADERS | {ATTEMPTS_HEADER, FAILURE_HEADER}
-"""The headers the adapter sets itself, which middleware and `emit` can't."""
 
 
 def stamp(

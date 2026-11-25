@@ -58,6 +58,8 @@ RabbitMQPublisher:
 - emit given headers sends them, and publish middleware sees them and can add to them.
 - A reserved header, added by middleware or given to emit, raises ValueError, and nothing is
   published: the envelope's, the attempts header and the failure header.
+- An outbox route relayed to a RabbitMQ config refuses the attempts and failure headers when
+  it writes, and keeps nothing.
 - Header values AMQP carries, such as numbers, booleans and timestamps, are sent as they are;
   a value it can't carry raises TypeError naming the header, and nothing is published.
 - A topology config without a named queue is refused when the publisher is built.
@@ -1288,6 +1290,34 @@ async def test_reserved_header_refused(connect_mock: AsyncMock, channel: AsyncMo
         with pytest.raises(ValueError, match=message):
             await plain.emit(_order_placed, _OrderPlaced(1), headers={name: "forged"})
     channel.basic_publish.assert_not_awaited()
+
+
+@pytest.mark.parametrize("name", ["x-attempts", "X-Failure"])
+async def test_outbox_refuses_rabbitmq_headers_when_writing(name: str):
+    """
+    An outbox route relayed to RabbitMQ should refuse the headers RabbitMQ sets itself.
+
+    Given: An outbox route to a RabbitMQ config, and publish middleware adding the attempts or
+        failure header
+    When: An event is written in a transaction
+    Then: ValueError names the header, and the store keeps nothing
+    """
+
+    # Arrange
+    async def forge(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+        return await next(call.with_headers({name: "forged"}))
+
+    store = InMemoryOutboxStore()
+    outbox = OutboxProducer[RabbitMQConfig](
+        store, serializer=_encode, middleware=Middleware(publish=(forge,))
+    )
+    outbox.route(_order_placed, OutboxConfig(_config))
+
+    # Act / Assert
+    with pytest.raises(ValueError, match=f"'{name}' is a header the bus sets itself"):
+        async with store.transaction():
+            await outbox.emit(_order_placed, _OrderPlaced(1))
+    assert store.pending() == []
 
 
 def test_topology_needs_named_queue(connect_mock: AsyncMock):

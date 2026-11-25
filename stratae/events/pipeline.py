@@ -14,6 +14,11 @@ publish middleware can add to, runs the middleware and hooks, then calls `send` 
 its headers, however its transport does. The message is typed by the adapter's config and by
 its envelope, so `send` reads both as they are.
 
+With each emit, the adapter passes the header names its route reserves, which
+{py:func}`reserved_for <stratae.events.protocols.reserved_for>` works out once for each route
+from its config. A header with one of those names, given to `emit` or added by publish
+middleware, is refused once, after the middleware runs and before the emit's hooks and `send`.
+
 Its `handle` registers the call {py:func}`wrap_handler` builds as a
 {py:class}`Handler <stratae.events.handler.Handler>`. That call takes the message being
 handled, a {py:class}`HandleCall <stratae.events.middleware.HandleCall>` holding its event,
@@ -23,13 +28,13 @@ payload-less event. An adapter builds the message once for each one it handles, 
 handler with {py:func}`invoke <stratae.events.handler.invoke>`.
 """
 
-from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from types import MappingProxyType
 from typing import Any, NamedTuple
 from uuid import UUID
 
 from stratae.callables import is_async_callable
-from stratae.events.envelope import ENVELOPE_HEADERS, Envelope
+from stratae.events.envelope import Envelope
 from stratae.events.handler import AsyncHandler, Handler, SyncHandler
 from stratae.events.hooks import Hooks, run_hooks, run_hooks_async
 from stratae.events.middleware import (
@@ -81,11 +86,14 @@ type Send[Config, Enveloped: Envelope | None] = Callable[[Outgoing[Config, Envel
 """Sends one message: the only part of an emit an adapter writes."""
 
 
-def _refuse_reserved(headers: Mapping[str, object], reserved: Collection[str]) -> None:
+def _refuse_reserved(headers: Mapping[str, object], reserved: frozenset[str]) -> None:
     """
-    Refuse a header the adapter sets itself.
+    Refuse an emit whose headers hold a name its route reserves.
 
-    :raises ValueError: If a name is in `reserved`, compared ignoring case.
+    The one place an emit's headers are checked: after publish middleware, before the emit's
+    hooks and `send`.
+
+    :raises ValueError: If a header's name is in `reserved`, compared ignoring case.
     """
     for name in headers:
         if name.lower() in reserved:
@@ -96,29 +104,26 @@ type _Sending[Config, Enveloped: Envelope | None] = tuple[
     Hooks[Any, Any] | None,
     Send[Config, Enveloped],
     Outgoing[Config, Enveloped],
-    Collection[str],
+    frozenset[str],
 ]
 """
 What a publish chain finishes an emit with: its hooks, how to send, the message, and the
-header names the adapter sets itself.
+header names its route reserves.
 """
 
 
 def _sent[Config, Enveloped: Envelope | None](
-    call: PublishCall, message: Outgoing[Config, Enveloped], reserved: Collection[str]
+    call: PublishCall, message: Outgoing[Config, Enveloped]
 ) -> Outgoing[Config, Enveloped]:
     """
     Return `message` with the payload and headers publish middleware passed on.
 
-    :raises ValueError: If the middleware changed the event or config, or changed the headers
-        to hold a reserved one.
+    :raises ValueError: If the middleware changed the event or config.
     """
     event, config, payload, headers = call
     if event is not message.event or config is not message.config:
         raise ValueError(_REROUTED)
-    if headers is not message.headers:
-        _refuse_reserved(headers, reserved)
-    elif payload is message.payload:
+    if headers is message.headers and payload is message.payload:
         return message
     sent: Outgoing[Config, Enveloped] = from_fields(
         Outgoing, (event, message.config, payload, message.envelope, headers)
@@ -131,7 +136,7 @@ def _finish_send[Config, Enveloped: Envelope | None](
 ) -> Any:
     """Send what publish middleware passed on, inside the emit's hooks."""
     hooks, send, message, reserved = sending
-    return _hooked_send(hooks, send, _sent(call, message, reserved))
+    return _hooked_send(hooks, send, _sent(call, message), reserved)
 
 
 def _finish_send_async[Config, Enveloped: Envelope | None](
@@ -139,15 +144,18 @@ def _finish_send_async[Config, Enveloped: Envelope | None](
 ) -> Awaitable[Any]:
     """Send what publish middleware passed on, as {py:func}`_finish_send` does, to await."""
     hooks, send, message, reserved = sending
-    return _hooked_send_async(hooks, send, _sent(call, message, reserved))
+    return _hooked_send_async(hooks, send, _sent(call, message), reserved)
 
 
 def _hooked_send[Config, Enveloped: Envelope | None](
     hooks: Hooks[Any, Any] | None,
     send: Send[Config, Enveloped],
     message: Outgoing[Config, Enveloped],
+    reserved: frozenset[str],
 ) -> Any:
-    """Send `message` inside the emit's sync hooks, if it has any."""
+    """Refuse `message` if a header's name is reserved, then send it inside any sync hooks."""
+    if message.headers:
+        _refuse_reserved(message.headers, reserved)
     if hooks is None:
         return send(message)
     return run_hooks(hooks, message.event, message.payload, send, message)
@@ -157,8 +165,11 @@ def _hooked_send_async[Config, Enveloped: Envelope | None](
     hooks: Hooks[Any, Any] | None,
     send: Send[Config, Enveloped],
     message: Outgoing[Config, Enveloped],
+    reserved: frozenset[str],
 ) -> Awaitable[Any]:
-    """Send `message` inside the emit's hooks, sync or async, if it has any."""
+    """Send `message` inside the emit's hooks, sync or async, as {py:func}`_hooked_send` does."""
+    if message.headers:
+        _refuse_reserved(message.headers, reserved)
     if hooks is None:
         return send(message)
     return run_hooks_async(hooks, message.event, message.payload, send, message)
@@ -166,34 +177,27 @@ def _hooked_send_async[Config, Enveloped: Envelope | None](
 
 class Publishing[Config, Enveloped: Envelope | None]:
     """
-    How an adapter emits: its publish middleware and reserved header names.
+    How an adapter emits: its publish middleware.
 
     Typed by the adapter's config, and by the envelope it sends each message under: `Envelope`
     for an adapter that emits with {py:func}`publish_enveloped`, or `None` for one that emits
     with {py:func}`publish`.
     """
 
-    __slots__ = ("chained", "middleware", "reserved")
+    __slots__ = ("chained", "middleware")
 
     middleware: tuple[PublishMiddleware, ...]
     """The adapter's publish middleware, outermost first."""
     chained: Callable[[PublishCall, _Sending[Config, Enveloped]], Any]
     """The middleware composed around sending, built once."""
-    reserved: Collection[str]
-    """Header names the adapter sets itself, in lower case."""
 
     def __init__(
-        self,
-        middleware: tuple[PublishMiddleware, ...],
-        reserved: Collection[str] = ENVELOPE_HEADERS,
-        *,
-        asynchronous: bool = False,
+        self, middleware: tuple[PublishMiddleware, ...], *, asynchronous: bool = False
     ) -> None:
         """
         Describe how an adapter emits.
 
         :param middleware: The adapter's publish middleware, outermost first.
-        :param reserved: Header names the adapter sets itself, in lower case.
         :param asynchronous: Whether the adapter emits asynchronously.
         """
         self.middleware = middleware
@@ -201,18 +205,13 @@ class Publishing[Config, Enveloped: Envelope | None]:
             self.chained = chain(middleware, _finish_send_async)
         else:
             self.chained = chain(middleware, _finish_send)
-        self.reserved = reserved
 
-    def stamped(self, headers: Mapping[str, object] | None) -> Mapping[str, object]:
-        """
-        Return the headers an emit starts with, read-only.
 
-        :raises ValueError: If a given header is one the adapter sets itself.
-        """
-        if not headers:
-            return NO_HEADERS
-        _refuse_reserved(headers, self.reserved)
-        return MappingProxyType(dict(headers))
+def _stamped(headers: Mapping[str, object] | None) -> Mapping[str, object]:
+    """Return the headers an emit starts with, read-only."""
+    if not headers:
+        return NO_HEADERS
+    return MappingProxyType(dict(headers))
 
 
 def _emit[Config, Enveloped: Envelope | None](
@@ -220,12 +219,13 @@ def _emit[Config, Enveloped: Envelope | None](
     hooks: Hooks[Any, Any] | None,
     message: Outgoing[Config, Enveloped],
     send: Send[Config, Enveloped],
+    reserved: frozenset[str],
 ) -> Any:
     """Send `message` inside the emit's sync hooks, then the adapter's sync publish middleware."""
     if publishing.middleware:
         call = from_fields(PublishCall, (*message[:3], message.headers))
-        return publishing.chained(call, (hooks, send, message, publishing.reserved))
-    return _hooked_send(hooks, send, message)
+        return publishing.chained(call, (hooks, send, message, reserved))
+    return _hooked_send(hooks, send, message, reserved)
 
 
 def _emit_async[Config, Enveloped: Envelope | None](
@@ -233,17 +233,19 @@ def _emit_async[Config, Enveloped: Envelope | None](
     hooks: Hooks[Any, Any] | None,
     message: Outgoing[Config, Enveloped],
     send: Send[Config, Enveloped],
+    reserved: frozenset[str],
 ) -> Awaitable[Any]:
     """Return `send(message)` inside the emit's hooks, then async publish middleware, to await."""
     if publishing.middleware:
         call = from_fields(PublishCall, (*message[:3], message.headers))
-        return publishing.chained(call, (hooks, send, message, publishing.reserved))
-    return _hooked_send_async(hooks, send, message)
+        return publishing.chained(call, (hooks, send, message, reserved))
+    return _hooked_send_async(hooks, send, message, reserved)
 
 
 def publish[Config](
     publishing: Publishing[Config, None],
     send: Send[Config, None],
+    reserved: frozenset[str],
     event: AnyEvent,
     payload: Any,
     config: Config,
@@ -255,27 +257,31 @@ def publish[Config](
 
     :param publishing: How the adapter emits.
     :param send: Sends the message.
+    :param reserved: The header names the route reserves, from
+        {py:func}`reserved_for <stratae.events.protocols.reserved_for>`.
     :param event: The event being emitted.
     :param payload: The payload being emitted.
     :param config: The config of the route the message is sent on.
     :param hooks: The emit's hooks, or `None`.
     :param headers: Headers to send with the message, which publish middleware can add to.
     :returns: What `send` returns.
-    :raises ValueError: If a given header is reserved.
+    :raises ValueError: If a header, given or added by publish middleware, is reserved. It's
+        refused after publish middleware runs, before the emit's hooks and `send`.
     """
     if hooks is None and headers is None and not publishing.middleware:
         plain: Outgoing[Config, None] = from_fields(
             Outgoing, (event, config, payload, None, NO_HEADERS)
         )
         return send(plain)
-    stamped = publishing.stamped(headers)
+    stamped = _stamped(headers)
     message: Outgoing[Config, None] = from_fields(Outgoing, (event, config, payload, None, stamped))
-    return _emit(publishing, hooks, message, send)
+    return _emit(publishing, hooks, message, send, reserved)
 
 
 async def publish_async[Config](
     publishing: Publishing[Config, None],
     send: Callable[[Outgoing[Config, None]], Awaitable[Any]],
+    reserved: frozenset[str],
     event: AnyEvent,
     payload: Any,
     config: Config,
@@ -288,15 +294,16 @@ async def publish_async[Config](
             Outgoing, (event, config, payload, None, NO_HEADERS)
         )
         return await send(plain)
-    stamped = publishing.stamped(headers)
+    stamped = _stamped(headers)
     message: Outgoing[Config, None] = from_fields(Outgoing, (event, config, payload, None, stamped))
-    return await _emit_async(publishing, hooks, message, send)
+    return await _emit_async(publishing, hooks, message, send, reserved)
 
 
 def publish_enveloped[Config](
     publishing: Publishing[Config, Envelope],
     new_id: Callable[[], UUID],
     send: Send[Config, Envelope],
+    reserved: frozenset[str],
     event: AnyEvent,
     payload: Any,
     config: Config,
@@ -312,6 +319,8 @@ def publish_enveloped[Config](
     :param publishing: How the adapter emits.
     :param new_id: Makes the ids of a new envelope.
     :param send: Sends the message.
+    :param reserved: The header names the route reserves, from
+        {py:func}`reserved_for <stratae.events.protocols.reserved_for>`.
     :param event: The event being emitted.
     :param payload: The payload being emitted.
     :param config: The config of the route the message is sent on.
@@ -319,20 +328,22 @@ def publish_enveloped[Config](
     :param envelope: Sends under this envelope, unchanged, instead of a new one.
     :param headers: Headers to send with the message, which publish middleware can add to.
     :returns: What `send` returns.
-    :raises ValueError: If a given header is reserved.
+    :raises ValueError: If a header, given or added by publish middleware, is reserved. It's
+        refused after publish middleware runs, before the emit's hooks and `send`.
     """
-    stamped = publishing.stamped(headers)
+    stamped = _stamped(headers)
     with Envelope.scope(envelope, new_id=new_id) as opened:
         message: Outgoing[Config, Envelope] = from_fields(
             Outgoing, (event, config, payload, opened, stamped)
         )
-        return _emit(publishing, hooks, message, send)
+        return _emit(publishing, hooks, message, send, reserved)
 
 
 async def publish_enveloped_async[Config](
     publishing: Publishing[Config, Envelope],
     new_id: Callable[[], UUID],
     send: Callable[[Outgoing[Config, Envelope]], Awaitable[Any]],
+    reserved: frozenset[str],
     event: AnyEvent,
     payload: Any,
     config: Config,
@@ -341,12 +352,12 @@ async def publish_enveloped_async[Config](
     headers: Mapping[str, object] | None = None,
 ) -> Any:
     """Emit through an async adapter inside an envelope, as {py:func}`publish_enveloped` does."""
-    stamped = publishing.stamped(headers)
+    stamped = _stamped(headers)
     with Envelope.scope(envelope, new_id=new_id) as opened:
         message: Outgoing[Config, Envelope] = from_fields(
             Outgoing, (event, config, payload, opened, stamped)
         )
-        return await _emit_async(publishing, hooks, message, send)
+        return await _emit_async(publishing, hooks, message, send, reserved)
 
 
 def _payload_of[Result](fn: Callable[[Any], Result]) -> Callable[[HandleCall], Result]:

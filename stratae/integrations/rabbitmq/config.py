@@ -35,6 +35,9 @@ ATTEMPTS_HEADER = "x-attempts"
 FAILURE_HEADER = "x-failure"
 """Header naming the exception a retried or dead-lettered message last failed with."""
 
+_ADAPTER_HEADERS = frozenset((ATTEMPTS_HEADER, FAILURE_HEADER))
+"""The headers the adapter sets itself on a message it retries or dead-letters."""
+
 _SYSTEM = "rabbitmq"
 """The messaging system RabbitMQ destinations name, as OpenTelemetry's conventions spell it."""
 
@@ -92,6 +95,17 @@ class RabbitMQConfig:
         key = self.routing_key
         destination = _destination(self.exchange, key if isinstance(key, str) else "")
         object.__setattr__(self, "messaging_destination", destination)
+
+    @property
+    def reserved_headers(self) -> frozenset[str]:
+        """
+        The headers the adapter sets itself on a message it retries or dead-letters.
+
+        They're {py:data}`ATTEMPTS_HEADER` and {py:data}`FAILURE_HEADER`. An emit on this
+        route can't be given them or have them added. An outbox route relayed here refuses them
+        when it writes the record; see {py:class}`Reserving <stratae.events.protocols.Reserving>`.
+        """
+        return _ADAPTER_HEADERS
 
     def address(self, payload: Any, /) -> str | None:
         """

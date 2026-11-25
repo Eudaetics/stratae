@@ -9,6 +9,8 @@ publish:
 - With middleware only, runs it around the emit.
 - With both, runs the middleware outside the hooks.
 - Publish middleware adds to the headers the emit was given, and the emit sends them.
+- A reserved header, given or added by middleware, is refused once, after the middleware runs
+  and before the hooks and the send.
 
 wrap_handler:
 - Without hooks or middleware, calls the handler with the message's payload, as a sync call.
@@ -28,6 +30,7 @@ from typing import Any
 import pytest
 
 from stratae.events import HandleCall, Hooks, PublishCall, PubSub, Request
+from stratae.events.envelope import ENVELOPE_HEADERS
 from stratae.events.handler import invoke
 from stratae.events.middleware import NO_HEADERS
 from stratae.events.pipeline import Outgoing, Publishing, publish, wrap_handler
@@ -85,7 +88,9 @@ def test_publish_nests_middleware_outside_hooks(
 
     # Act
     publishing: Publishing[None, None] = Publishing(stack)
-    reply = publish(publishing, call, _order_placed, _Order("lamp"), None, hooks=hooks)
+    reply = publish(
+        publishing, call, ENVELOPE_HEADERS, _order_placed, _Order("lamp"), None, hooks=hooks
+    )
 
     # Assert
     assert reply == "lamp"
@@ -264,11 +269,57 @@ def test_publish_middleware_adds_headers() -> None:
 
     # Act
     publish(
-        publishing, sent.append, _order_placed, _Order("lamp"), None, headers={"x-tenant": "acme"}
+        publishing,
+        sent.append,
+        ENVELOPE_HEADERS,
+        _order_placed,
+        _Order("lamp"),
+        None,
+        headers={"x-tenant": "acme"},
     )
 
     # Assert
     assert dict(sent[0].headers) == {"x-tenant": "acme", "traceparent": "00-trace"}
+
+
+@pytest.mark.parametrize("source", ["given", "middleware"])
+def test_publish_refuses_reserved_header_after_middleware(source: str) -> None:
+    """
+    A reserved header should be refused once, after publish middleware runs.
+
+    Given: A route reserving x-attempts, middleware recording each call, and hooks recording
+        each emit
+    When: An emit is given x-attempts, or middleware adds X-Attempts
+    Then: The emit raises ValueError naming it; the middleware ran, the hooks and the send
+        didn't
+    """
+    # Arrange
+    ran: list[str] = []
+    sent: list[Outgoing[None, None]] = []
+    given = {"x-attempts": 1} if source == "given" else None
+
+    def add(call: PublishCall, next: Callable[[PublishCall], Any]) -> Any:
+        ran.append("middleware")
+        return next(call if given else call.with_headers({"X-Attempts": 1}))
+
+    hooks = Hooks[_Order, None](before=(lambda event, payload: ran.append("hook"),))
+    publishing: Publishing[None, None] = Publishing((add,))
+    reserved = ENVELOPE_HEADERS | {"x-attempts"}
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="is a header the bus sets itself"):
+        publish(
+            publishing,
+            sent.append,
+            reserved,
+            _order_placed,
+            _Order("lamp"),
+            None,
+            hooks=hooks,
+            headers=given,
+        )
+    assert ran == ["middleware"]
+    assert sent == []
 
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])

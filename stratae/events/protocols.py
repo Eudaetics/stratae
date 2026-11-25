@@ -9,7 +9,9 @@ events. {py:class}`AsyncPubSubProducer` describes one whose PubSub emits are awa
 {py:class}`EmitCallable` describes a single emitter, typed by the events it takes.
 {py:class}`Serializer` and {py:class}`Deserializer` describe the codecs an adapter takes for
 payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
-one such pair. {py:class}`Serializing` describes a routing config with its own serializer.
+one such pair. {py:class}`Serializing` describes a routing config with its own serializer, and
+{py:class}`Reserving` one whose adapter sets headers of its own, and {py:func}`reserved_for`
+works out the header names a route's emits can't use.
 {py:class}`Routed` describes a routing config that says where its messages go, as a
 {py:class}`Destination`. {py:class}`Operating` describes a publish config that says what it
 does with them, as an {py:class}`Operation`. {py:func}`destination_of` and
@@ -22,6 +24,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from stratae.events.envelope import ENVELOPE_HEADERS
 from stratae.events.hooks import Hooks
 from stratae.events.patterns import NoPayload, PubSub
 
@@ -269,6 +272,38 @@ class Serializing(Protocol):
     def serializer(self) -> Serializer[Any] | None:
         """Encodes this route's payloads, or `None` to use the adapter's serializer."""
         ...
+
+
+@runtime_checkable
+class Reserving(Protocol):
+    """
+    Structural protocol for a routing config whose adapter sets headers of its own.
+
+    A RabbitMQ config is one: its adapter sets the attempt count and failure of a message it
+    retries. An emit on the route can't be given those headers, or have them added. The outbox
+    refuses them too, for a route relayed to that adapter, when it writes the record.
+    """
+
+    @property
+    def reserved_headers(self) -> frozenset[str]:
+        """The header names this route's adapter sets itself."""
+        ...
+
+
+def reserved_for(config: object) -> frozenset[str]:
+    """
+    Return the header names an emit on a route with `config` can't be given or have added.
+
+    They're the envelope's, and any the config's adapter sets itself, if it's
+    {py:class}`Reserving`. An adapter works them out once
+    for each route, and passes them to every emit on it.
+
+    :param config: The route's config, or `None` on a bus that doesn't route.
+    :returns: The names, in lower case.
+    """
+    if isinstance(config, Reserving):
+        return ENVELOPE_HEADERS | {name.lower() for name in config.reserved_headers}
+    return ENVELOPE_HEADERS
 
 
 class Deserializer(Protocol):

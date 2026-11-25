@@ -107,12 +107,14 @@ from .protocols import (
     PayloadEvent,
     Producer,
     PubSubProducer,
+    Reserving,
     Routed,
     Serializer,
     Serializing,
     SignalEvent,
     destination_of,
     operation_of,
+    reserved_for,
 )
 
 __all__ = [
@@ -153,6 +155,7 @@ __all__ = [
     "PublishCall",
     "PublishMiddleware",
     "Request",
+    "Reserving",
     "Routed",
     "Serializer",
     "Serializing",
@@ -168,4 +171,5 @@ __all__ = [
     "fan_out_concurrent",
     "only_responder",
     "operation_of",
+    "reserved_for",
 ]
