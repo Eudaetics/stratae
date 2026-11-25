@@ -133,6 +133,7 @@ from stratae.integrations.rabbitmq import (
 from stratae.middleware import MiddlewareKindError
 
 _HEADERS = EnvelopeHeaders()
+_ENVELOPES = EnvelopeFactory()
 """The default names an envelope travels under."""
 
 _URL = "amqp://guest:guest@localhost/"
@@ -771,7 +772,7 @@ async def test_emit_stamps_envelope(publisher: RabbitMQPublisher, channel: Async
     """
     # Act
     publisher.route(_order_placed, _config)
-    with Envelope.scope() as envelope:
+    with _ENVELOPES.scope() as envelope:
         async with publisher:
             await publisher.emit(_order_placed, _OrderPlaced(7))
 
@@ -802,7 +803,7 @@ async def test_emit_stamps_envelope_under_custom_names(connect_mock: AsyncMock, 
 
     # Act
     publisher.route(_order_placed, _config)
-    with Envelope.scope() as envelope:
+    with _ENVELOPES.scope() as envelope:
         async with publisher:
             await publisher.emit(_order_placed, _OrderPlaced(7))
 
@@ -942,7 +943,7 @@ async def test_publish_hooks_see_sent_envelope(publisher: RabbitMQPublisher, cha
     # Act
     publisher.route(_order_placed, _config)
     async with publisher:
-        with Envelope.scope() as caller:
+        with _ENVELOPES.scope() as caller:
             await publisher.emit(_order_placed, _OrderPlaced(1), hooks=Hooks(before=(record,)))
 
     # Assert
@@ -1108,11 +1109,11 @@ async def test_emit_sends_given_envelope(publisher: RabbitMQPublisher, channel: 
           fields, not a child of the active envelope
     """
     # Arrange
-    held = Envelope().child()
+    held = _ENVELOPES.child(_ENVELOPES.root())
 
     # Act
     publisher.route(_order_placed, _config)
-    with Envelope.scope():
+    with _ENVELOPES.scope():
         async with publisher:
             await publisher.emit(_order_placed, _OrderPlaced(7), envelope=held)
 
@@ -1135,7 +1136,7 @@ async def test_republishing_keeps_message_id(publisher: RabbitMQPublisher, chann
     Then: Both messages carry the held envelope's message id
     """
     # Arrange
-    held = Envelope()
+    held = _ENVELOPES.root()
 
     # Act
     publisher.route(_order_placed, _config)
@@ -1158,7 +1159,7 @@ async def test_middleware_and_hooks_see_given_envelope(connect_mock: AsyncMock, 
     Then: Both see the held envelope
     """
     # Arrange
-    held = Envelope()
+    held = _ENVELOPES.root()
     seen: list[Envelope | None] = []
 
     async def record(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
@@ -1217,9 +1218,9 @@ async def test_middleware_headers_sent(connect_mock: AsyncMock, channel: AsyncMo
 
     # Assert
     tagged, untagged = (c.kwargs["properties"] for c in channel.basic_publish.await_args_list)
-    envelope = _HEADERS.read(tagged.headers)
+    envelope = _ENVELOPES.read(tagged.headers)
     assert tagged.headers == {"custom": "v", "x-tenant": "acme"} | _HEADERS.write(envelope)
-    assert untagged.headers == _HEADERS.write(_HEADERS.read(untagged.headers))
+    assert untagged.headers == _HEADERS.write(_ENVELOPES.read(untagged.headers))
 
 
 async def test_emit_given_headers(connect_mock: AsyncMock, channel: AsyncMock):

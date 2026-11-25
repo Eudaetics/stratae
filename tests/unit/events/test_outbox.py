@@ -99,7 +99,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any, assert_type, override
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from pytest_mock import MockerFixture
@@ -180,6 +180,7 @@ def _encode(order: object) -> bytes:
 
 
 _ROUTED_ELSEWHERE = "{} is routed elsewhere"
+_ENVELOPES = EnvelopeFactory()
 
 
 class _Publisher:
@@ -227,8 +228,9 @@ def _record(
     Its envelope opens at `created_at`, or now. Given `available_at`, it's rescheduled to be
     due then, as a failed attempt would leave it.
     """
+    envelope = _ENVELOPES.root() if created_at is None else Envelope(uuid4(), uuid4(), created_at)
     message = OutboxMessage(
-        envelope=Envelope(timestamp=created_at),
+        envelope=envelope,
         route="_Order",
         body=str(order_id).encode(),
         headers={},
@@ -351,7 +353,7 @@ async def test_emit_writes_record(outbox: OutboxProducer[object], store: InMemor
     )
 
     # Act
-    with Envelope.scope() as parent:
+    with _ENVELOPES.scope() as parent:
         result = await place(order_id=7)
 
     # Assert
@@ -1088,7 +1090,9 @@ async def test_relay_publishes_added_headers(store: InMemoryOutboxStore):
 def _stored(attempts: int = 0, **changes: Any) -> OutboxRecord:
     """Return a record as a store would hold it, created and due at the start of 2026."""
     created = datetime(2026, 1, 1, tzinfo=UTC)
-    message = replace(OutboxMessage(Envelope(timestamp=created), "_Order", b"1", {}), **changes)
+    message = replace(
+        OutboxMessage(Envelope(uuid4(), uuid4(), created), "_Order", b"1", {}), **changes
+    )
     return OutboxRecord(message, OutboxDelivery(created, attempts))
 
 

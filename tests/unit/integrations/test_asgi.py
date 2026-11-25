@@ -29,6 +29,7 @@ from stratae.events.envelope import Envelope, EnvelopeFactory, EnvelopeHeaders
 from stratae.integrations.asgi import ASGIScope, EnvelopeMiddleware, Message, Receive, Send
 
 _CALLER = UUID("0b9d7a52-6f1e-4c3a-9d2b-5e8f1a7c4d60")
+_ENVELOPES = EnvelopeFactory()
 
 
 def _current() -> Envelope:
@@ -92,7 +93,7 @@ async def test_request_runs_in_new_root_envelope():
     middleware = EnvelopeMiddleware(app)
 
     # Act
-    with Envelope.scope() as outer:
+    with _ENVELOPES.scope() as outer:
         await _call(middleware, _http())
         after = Envelope.current()
 

@@ -127,7 +127,7 @@ class OutboxRow(Base):
         )
 
     def to_record(self) -> OutboxRecord:
-        envelope = Envelope(self.id, self.correlation_id, self.causation_id, utc(self.created_at))
+        envelope = Envelope(self.id, self.correlation_id, utc(self.created_at), self.causation_id)
         message = OutboxMessage(
             envelope=envelope,
             route=self.route,

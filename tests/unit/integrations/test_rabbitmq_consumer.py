@@ -166,6 +166,7 @@ from stratae.lifecycle import AsyncScope
 from stratae.middleware import MiddlewareKindError
 
 _HEADERS = EnvelopeHeaders()
+_ENVELOPES = EnvelopeFactory()
 """The default names an envelope travels under."""
 
 _URL = "amqp://guest:guest@localhost/"
@@ -1090,7 +1091,7 @@ async def test_handler_runs_in_delivered_envelope_scope(
     # Arrange
     seen: list[Envelope | None] = []
     consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
-    envelope = Envelope()
+    envelope = _ENVELOPES.root()
     message = _message(b'{"order_id": 7}', headers=_HEADERS.write(envelope))
 
     # Act
@@ -1129,7 +1130,7 @@ async def test_consumer_reads_and_strips_custom_envelope_names(
         envelope_factory=EnvelopeFactory(headers=names),
     )
     consumer.handle(_order_placed, lambda order: None, config=_config)
-    sent = Envelope.root().child()
+    sent = _ENVELOPES.child(_ENVELOPES.root())
 
     # Act
     async with consumer:
@@ -1176,7 +1177,7 @@ async def test_native_properties_rebuild_envelope(consumer: RabbitMQConsumer, ch
     # Arrange
     seen: list[Envelope | None] = []
     consumer.handle(_order_placed, lambda payload: seen.append(Envelope.current()), config=_config)
-    envelope = Envelope()
+    envelope = _ENVELOPES.root()
     message = _message(b'{"order_id": 7}')
     message.header.properties.message_id = str(envelope.message_id)
     message.header.properties.correlation_id = str(envelope.correlation_id)
@@ -1720,7 +1721,7 @@ async def test_handle_middleware_reads_headers_as_delivered(
 
     consumer = RabbitMQConsumer(_URL, deserializer=_decode, middleware=Middleware(handle=(record,)))
     consumer.handle(_order_placed, lambda order: None, config=_config)
-    sent = Envelope.root().child()
+    sent = _ENVELOPES.child(_ENVELOPES.root())
     application = {"x-tenant": "acme", ATTEMPTS_HEADER: 2}
 
     # Act
