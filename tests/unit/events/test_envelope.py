@@ -120,30 +120,19 @@ def test_child_has_distinct_message_id():
     assert child.message_id != parent.message_id
 
 
-class _TracedEnvelope(Envelope):
-    """A subclass, to check the constructors keep the class they're called on."""
-
-    __slots__ = ()
-
-
-def test_envelope_constructors_keep_the_subclass():
+def test_envelope_refuses_a_subclass():
     """
-    Envelope.root and child should build the class they're called on.
+    Defining a subclass of Envelope should be refused when it's defined.
 
-    Given: A subclass of Envelope.
-    When: An envelope is made from it with root, then child.
-    Then: Each is an instance of the subclass, and the child stays in the chain.
+    Given: Envelope, marked final
+    When: A subclass of it is defined
+    Then: TypeError says it can't be subclassed, and points to headers
     """
-    # Arrange
-    root = _TracedEnvelope.root()
+    # Act / Assert
+    with pytest.raises(TypeError, match=r"Envelope can't be subclassed; carry more .* headers"):
 
-    # Act
-    child = root.child()
-
-    # Assert
-    assert type(root) is _TracedEnvelope
-    assert type(child) is _TracedEnvelope
-    assert child.causation_id == root.message_id
+        class _Traced(Envelope):  # pyright: ignore[reportGeneralTypeIssues, reportUnusedClass]
+            __slots__ = ()
 
 
 def test_envelope_is_slotted_immutable_and_compared_by_value():
@@ -208,24 +197,6 @@ def test_envelope_keeps_its_dataclass_interface():
         f"correlation_id={envelope.correlation_id!r}, "
         f"causation_id={envelope.causation_id!r}, timestamp={envelope.timestamp!r})"
     )
-
-
-def test_scope_keeps_the_subclass():
-    """
-    A scope opened on a subclass makes its root and child envelopes of that subclass.
-
-    Given: A subclass of Envelope.
-    When: Scopes are nested on it.
-    Then: The root and the child are instances of the subclass.
-    """
-    # Act
-    with _TracedEnvelope.scope() as root, _TracedEnvelope.scope() as child:
-        pass
-
-    # Assert
-    assert type(root) is _TracedEnvelope
-    assert type(child) is _TracedEnvelope
-    assert child.causation_id == root.message_id
 
 
 def test_headers_round_trip():
