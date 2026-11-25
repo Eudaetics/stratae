@@ -133,7 +133,12 @@ from stratae.events.failure import Retry, failure_action, failure_reason
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
 from stratae.events.patterns import NoPayload, PubSub
-from stratae.events.pipeline import Outgoing, Publishing, Send, publish_enveloped_async
+from stratae.events.pipeline import (
+    Outgoing,
+    Publishing,
+    Send,
+    publish_enveloped_async,
+)
 from stratae.events.protocols import (
     Addressed,
     AnyEvent,
@@ -144,6 +149,7 @@ from stratae.events.protocols import (
     Serializer,
     Serializing,
     destination_of,
+    reserved_for,
 )
 
 _log = logging.getLogger(__name__)
@@ -400,12 +406,13 @@ class OutboxConfig[Target]:
 
 @dataclass(frozen=True, slots=True)
 class _Route[Target]:
-    """One outbox route: its name, its event and config, and the writer that adds its records."""
+    """One outbox route: its name, event, config, record writer and reserved header names."""
 
     name: str
     event: PubSub[Any, Any]
     config: OutboxConfig[Target]
     send: Send[OutboxConfig[Target], Envelope]
+    reserved: frozenset[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,7 +462,10 @@ class OutboxProducer[Target]:
     Binding registers the route, so a relay knows every route before anything is emitted.
     Emitting writes a record. Hooks given to `bind` or `emit` run around that write, inside
     the record's envelope, and publish middleware around them. Headers the middleware adds
-    are stored with the record, and the relay publishes it with them.
+    are stored with the record, and the relay publishes it with them. A header the transport a
+    route is relayed to sets itself, such as RabbitMQ's attempt count, is refused when the
+    record is written, inside the unit of work, as the envelope's are; see
+    {py:class}`Reserving <stratae.events.protocols.Reserving>`.
 
     An outbox can't wait for a reply, so it takes PubSub events only and matches
     {py:class}`PubSubProducer <stratae.events.protocols.PubSubProducer>`. Binding or emitting a
@@ -531,7 +541,8 @@ class OutboxProducer[Target]:
         if routed is not None:
             return routed
         name = config.route or event.name
-        route = _Route(name, event, config, self._writer(name, config.config))
+        target = config.config
+        route = _Route(name, event, config, self._writer(name, target), reserved_for(target))
         with self._routing:
             routes = self._routes
             routed = routes.routed(event, config)
@@ -636,7 +647,14 @@ class OutboxProducer[Target]:
         `bind` and `emit` take nothing else, and refuse anything else at runtime.
         """
         return publish_enveloped_async(
-            self._publishing, self._new_id, route.send, event, payload, route.config, hooks
+            self._publishing,
+            self._new_id,
+            route.send,
+            route.reserved,
+            event,
+            payload,
+            route.config,
+            hooks,
         )
 
     async def _write(

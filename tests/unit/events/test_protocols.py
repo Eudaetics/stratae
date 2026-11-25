@@ -29,6 +29,10 @@ destination_of and operation_of:
 - A config's Destination and Operation are read from it.
 - A config without them, or whose attributes of those names hold something else, has no
   destination and sends each message.
+
+reserved_for:
+- Gives the envelope's names for a config that reserves none, and adds a Reserving config's
+  names, in lower case.
 """
 
 from collections.abc import Awaitable, Callable
@@ -54,7 +58,9 @@ from stratae.events import (
     abind,
     destination_of,
     operation_of,
+    reserved_for,
 )
+from stratae.events.envelope import ENVELOPE_HEADERS
 
 
 class _SyncProducer:
@@ -269,3 +275,24 @@ def test_undescribed_config_has_no_destination_and_sends(config: object):
     """
     assert destination_of(config) is None
     assert operation_of(config) == Operation("publish", "send")
+
+
+class _Reserving:
+    """A routing config whose adapter sets headers of its own."""
+
+    @property
+    def reserved_headers(self) -> frozenset[str]:
+        return frozenset({"X-Attempts", "x-failure"})
+
+
+def test_reserved_for_adds_a_configs_own_names() -> None:
+    """
+    reserved_for should give the envelope's names, plus a Reserving config's, in lower case.
+
+    Given: No config, a config that reserves nothing, and one that reserves two names
+    When: Each one's reserved names are worked out
+    Then: The first two give the envelope's names; the third adds its own, in lower case
+    """
+    assert reserved_for(None) == ENVELOPE_HEADERS
+    assert reserved_for("orders") == ENVELOPE_HEADERS
+    assert reserved_for(_Reserving()) == ENVELOPE_HEADERS | {"x-attempts", "x-failure"}

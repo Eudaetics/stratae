@@ -35,8 +35,9 @@ the call {py:meth}`PublishCall.with_headers` returns. Handle middleware reads th
 `call.headers`. Over a broker, the headers travel in the message. On a direct bus, they're
 passed to the handlers of the same emit. Names are text. Values are whatever the transport
 carries: a direct bus passes any value on as it is, and a broker adapter refuses one its
-transport can't hold when the message is sent. The envelope's headers are the bus's own, so
-adding one raises `ValueError`, and the message isn't sent.
+transport can't hold when the message is sent. The envelope's headers are the bus's own, and
+so are any the route's adapter sets itself, such as RabbitMQ's attempt count. Adding one
+raises `ValueError` once the middleware returns, and the message isn't sent.
 
 ````{example} Tracing every request a bus handles
 ```{code-block} python

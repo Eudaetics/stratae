@@ -470,6 +470,38 @@ async def test_middleware_reserved_header_writes_nothing(store: InMemoryOutboxSt
     assert store.pending() == []
 
 
+class _RetryingTarget:
+    """A publisher config whose adapter sets an attempt count of its own."""
+
+    @property
+    def reserved_headers(self) -> frozenset[str]:
+        return frozenset({"x-attempts"})
+
+
+async def test_target_reserved_header_writes_nothing(store: InMemoryOutboxStore):
+    """
+    A header the route's transport sets itself should refuse the write, inside the unit of work.
+
+    Given: A route relayed to a config whose adapter sets x-attempts, and publish middleware
+        adding it
+    When: An event is emitted in a transaction
+    Then: ValueError names the header, and nothing is kept once the transaction ends
+    """
+
+    # Arrange
+    async def forge(call: PublishCall, next: Callable[[PublishCall], Awaitable[Any]]) -> Any:
+        return await next(call.with_headers({"x-attempts": 3}))
+
+    outbox = OutboxProducer[object](store, _encode, middleware=Middleware(publish=(forge,)))
+    outbox.route(_order_placed, OutboxConfig(_RetryingTarget(), route="orders"))
+
+    # Act / Assert
+    with pytest.raises(ValueError, match="'x-attempts' is a header the bus sets itself"):
+        async with store.transaction():
+            await outbox.emit(_order_placed, _Order(1))
+    assert store.pending() == []
+
+
 def test_sync_middleware_refused(store: InMemoryOutboxStore):
     """
     The producer should refuse a middleware that isn't an async def.

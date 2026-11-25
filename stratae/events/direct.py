@@ -135,7 +135,10 @@ from stratae.events.pipeline import (
     publish_enveloped_async,
     wrap_handler,
 )
-from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent
+from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent, reserved_for
+
+_RESERVED = reserved_for(None)
+"""The header names a direct bus reserves on every route: the envelope's."""
 
 _NO_HANDLERS: Handlers[AnyEvent, Any] = Handlers()
 """The handlers of an event nothing handles."""
@@ -282,7 +285,8 @@ _ASYNC_DEFAULTS = (Dispatch(Request, dispatch_request_async), Dispatch(PubSub, f
 
 
 type _Publish = Callable[
-    [Send[None, Envelope | None], AnyEvent, Any, None, Hooks[Any, Any] | None], Any
+    [Send[None, Envelope | None], frozenset[str], AnyEvent, Any, None, Hooks[Any, Any] | None],
+    Any,
 ]
 """Emits through the pipeline with a route's `send`: the entry point a bus binds once."""
 
@@ -385,7 +389,7 @@ class _Core:
             if hooks is None and plain:
                 message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
                 return route.dispatcher(event, route.handlers, message)
-            return publish_(route.send, event, payload, None, hooks)
+            return publish_(route.send, _RESERVED, event, payload, None, hooks)
 
         return emit_routed
 
@@ -467,7 +471,7 @@ class _Core:
         elif self._plain:
             message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
             return route.dispatcher(event, route.handlers, message)
-        return self._publish(route.send, event, payload, None, hooks)
+        return self._publish(route.send, _RESERVED, event, payload, None, hooks)
 
     def remove(self, handler: Handler[AnyEvent, Any]) -> None:
         """Remove a registered handler, ignoring one the bus doesn't have."""

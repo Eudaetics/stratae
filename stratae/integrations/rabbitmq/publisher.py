@@ -17,6 +17,7 @@ from stratae.events import (
     NoPayload,
     PubSub,
     Serializer,
+    reserved_for,
 )
 from stratae.events.binding import abind
 from stratae.events.exceptions import NotConnectedError, UnroutableError
@@ -25,7 +26,7 @@ from stratae.events.middleware import Middleware
 from stratae.events.pipeline import Outgoing, Publishing, publish_enveloped_async
 from stratae.integrations.rabbitmq._link import RECONNECT, Link
 from stratae.integrations.rabbitmq._topology import declare
-from stratae.integrations.rabbitmq._wire import RESERVED, stamp
+from stratae.integrations.rabbitmq._wire import stamp
 from stratae.integrations.rabbitmq.config import (
     RabbitMQConfig,
     RabbitMQConsumeConfig,
@@ -152,11 +153,11 @@ class RabbitMQPublisher:
             if config.queue is None:
                 raise ValueError(_TOPOLOGY_NEEDS_QUEUE)
         self._publishing: Publishing[RabbitMQPublish, Envelope] = Publishing(
-            middleware.publish, RESERVED, asynchronous=True
+            middleware.publish, asynchronous=True
         )
         self._new_id = envelope.new_id
         self._serializer = serializer
-        self._routes: dict[AnyEvent, _Route] = {}
+        self._routes: dict[AnyEvent, tuple[_Route, frozenset[str]]] = {}
         self._declared: set[str] = set()
         self._link = Link("publisher", url, reconnect, self._declare_topology, self._declared.clear)
 
@@ -218,7 +219,8 @@ class RabbitMQPublisher:
         :raises ValueError: If the event is already routed to a different config.
         """
         _require_pubsub(event)
-        if self._routes.setdefault(event, _route(config)).route != config:
+        routed = self._routes.setdefault(event, (_route(config), reserved_for(config)))
+        if routed[0].route != config:
             raise ValueError(_ROUTE_TAKEN.format(event.name))
 
     async def emit[Payload](
@@ -255,9 +257,10 @@ class RabbitMQPublisher:
             confirms, e.g. because the exchange doesn't exist.
         """
         _require_pubsub(event)
-        route = self._routes.get(event)
-        if route is None:
+        routed = self._routes.get(event)
+        if routed is None:
             raise LookupError(_NO_ROUTE.format(event.name))
+        route, reserved = routed
         if isinstance(payload, Encoded):
             address = payload.address
             if address is not None:
@@ -274,6 +277,7 @@ class RabbitMQPublisher:
             self._publishing,
             self._new_id,
             self._send,
+            reserved,
             event,
             payload,
             publish,
