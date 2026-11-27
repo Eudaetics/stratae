@@ -7,7 +7,7 @@ built from them with the bus's handle middleware, and records whether that call 
 Handlers are compared and hashed by their function, hooks and config, so two registrations of
 the same function with the same hooks are equal. A bus registers equal handlers once, and
 `remove` takes back the handler `handle` returned, or any equal one.
-{py:class}`Handlers` holds an event's handlers as an immutable tuple, which a bus replaces
+{py:class}`Handlers` holds an event's handlers as an immutable value, which a bus replaces
 when a handler is added or removed. {py:func}`invoke` calls one, sync or async, from async
 code.
 
@@ -40,9 +40,9 @@ log: first
 
 """
 
-from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, Self
+from typing import Any, ClassVar, Literal, Self, cast
 
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import HandleCall
@@ -108,43 +108,55 @@ A bus's `handle` returns one, to pass to `remove`. Its `is_async` says which kin
 """
 
 
-class Handlers[HandlerConfig, Payload, Result](
-    tuple[Handler[HandlerConfig, Payload, ..., Result], ...]
-):
+class Handlers[HandlerConfig, Payload, Result]:
     """
-    An event's registered handlers, as an immutable tuple.
+    An event's registered handlers, as an immutable value.
 
     A bus never changes it. Registering or removing a handler makes a new one, so a dispatcher
-    can run the handlers it was given while others register. The sync and async handlers are
-    also kept apart, once, for dispatchers that run them differently. A sync bus has only sync
-    handlers.
+    can run the handlers it was given while others register. It has a length, iterates over its
+    handlers in the order they were registered, and finds one by its hash with `in`. The sync
+    and async handlers are also kept apart, once, for dispatchers that run them differently. A
+    sync bus has only sync handlers. Two are equal when they hold the same handlers, in order.
     """
+
+    __slots__ = ("_handlers", "_members", "asynchronous", "sync")
 
     sync: tuple[SyncHandler[HandlerConfig, Payload, ..., Result], ...]
     """The sync handlers."""
     asynchronous: tuple[AsyncHandler[HandlerConfig, Payload, ..., Result], ...]
     """The async handlers."""
+    _handlers: tuple[Handler[HandlerConfig, Payload, ..., Result], ...]
     _members: frozenset[Handler[HandlerConfig, Payload, ..., Result]]
 
-    def __new__(cls, handlers: Iterable[Handler[HandlerConfig, Payload, ..., Result]] = ()) -> Self:
+    def __init__(
+        self, handlers: Iterable[Handler[HandlerConfig, Payload, ..., Result]] = ()
+    ) -> None:
         """
         Hold `handlers`, keeping the sync and async ones apart.
 
         :param handlers: The registered handlers.
         :raises TypeError: If a handler's function, hooks or config is unhashable.
         """
-        instance = super().__new__(cls, handlers)
+        held = tuple(handlers)
         sync: list[SyncHandler[HandlerConfig, Payload, ..., Result]] = []
         asynchronous: list[AsyncHandler[HandlerConfig, Payload, ..., Result]] = []
-        for handler in instance:
+        for handler in held:
             if handler.is_async is True:
                 asynchronous.append(handler)
             else:
                 sync.append(handler)
-        instance.sync = tuple(sync)
-        instance.asynchronous = tuple(asynchronous)
-        instance._members = frozenset(instance)
-        return instance
+        self._handlers = held
+        self.sync = tuple(sync)
+        self.asynchronous = tuple(asynchronous)
+        self._members = frozenset(held)
+
+    def __len__(self) -> int:
+        """Return how many handlers are registered."""
+        return len(self._handlers)
+
+    def __iter__(self) -> Iterator[Handler[HandlerConfig, Payload, ..., Result]]:
+        """Iterate over the handlers, in the order they were registered."""
+        return iter(self._handlers)
 
     def __contains__(self, handler: object, /) -> bool:
         """
@@ -154,15 +166,29 @@ class Handlers[HandlerConfig, Payload, Result](
         """
         return handler in self._members
 
+    def __eq__(self, other: object) -> bool:
+        """Whether `other` holds the same handlers, in order."""
+        if not isinstance(other, Handlers):
+            return NotImplemented
+        return self._handlers == cast("Handlers[Any, Any, Any]", other)._handlers
+
+    def __hash__(self) -> int:
+        """Return the hash of the handlers held."""
+        return hash(self._handlers)
+
+    def __repr__(self) -> str:
+        """Show the handlers held."""
+        return f"Handlers({self._handlers!r})"
+
     def adding(self, handler: Handler[HandlerConfig, Payload, ..., Result]) -> Self:
         """Return these handlers with `handler` added."""
-        return type(self)((*self, handler))
+        return type(self)((*self._handlers, handler))
 
     def removing(self, handler: Handler[HandlerConfig, Payload, ..., Result]) -> Self:
         """Return these handlers without `handler`, or these same handlers if it isn't one."""
         if handler not in self:
             return self
-        return type(self)(registered for registered in self if registered != handler)
+        return type(self)(registered for registered in self._handlers if registered != handler)
 
 
 async def invoke[HandlerConfig, Payload, Result](

@@ -252,7 +252,7 @@ class Dispatch:
     {py:class}`HandleCall <stratae.events.middleware.HandleCall>`, and returns what
     emitting the event returns, or an awaitable resolving to it on an
     {py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>`. The handlers are a
-    {py:class}`Handlers <stratae.events.handler.Handlers>` tuple, which doesn't change while
+    {py:class}`Handlers <stratae.events.handler.Handlers>` value, which doesn't change while
     the dispatcher runs, so it can be run as given. It keeps its sync and async handlers apart,
     and a {py:class}`DirectBus <stratae.events.direct.DirectBus>`'s are all sync. A dispatcher
     may take any collection of handlers in its place. Write it generic in the pattern's type
