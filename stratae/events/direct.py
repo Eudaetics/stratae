@@ -102,20 +102,21 @@ scheduled shipment for order 1
 
 import threading
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator
+from dataclasses import dataclass
 from functools import partial
 from inspect import markcoroutinefunction
 from types import CoroutineType
 from typing import Any, NoReturn, Protocol, overload
 
-from stratae.callables import is_async_callable
 from stratae.events.binding import bind
 from stratae.events.by_pattern import ByPattern
-from stratae.events.dispatch import ASYNC_DISPATCHERS, SYNC_DISPATCHERS, Dispatch, Dispatcher
+from stratae.events.dispatch import Dispatch, Dispatcher
 from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.exceptions import DuplicateHandlerError
 from stratae.events.handler import AsyncHandler, Handler, Handlers, SyncHandler
 from stratae.events.handling import wrap_handler
 from stratae.events.hooks import Hooks
+from stratae.events.kind import ASYNC, SYNC, Kind
 from stratae.events.middleware import (
     NO_HEADERS,
     HandleCall,
@@ -151,16 +152,8 @@ _NO_HANDLERS: Handlers[AnyEvent, Any, Any] = Handlers()
 _ADD_A_DISPATCHER = "register one with dispatchers="
 """Why a bus refuses a pattern: it has no dispatcher for it, and can be given one."""
 
-
-_ASYNC_HANDLER_REJECTED = (
-    "DirectBus dispatches synchronously and cannot await async handlers;"
-    " register them on AsyncDirectBus instead"
-)
-
-_ASYNC_HOOKS_REJECTED = (
-    "DirectBus runs hooks synchronously and cannot await async hooks for '{}';"
-    " use AsyncDirectBus instead"
-)
+_REFUSED = "{} runs {} synchronously and cannot await async ones; use its async counterpart"
+"""How a sync bus refuses something async: the bus, and what it refused."""
 
 
 class _AsyncHandlerDecorator[Payload: Any, Result](Protocol):
@@ -231,19 +224,50 @@ type _Publish = Callable[
 """Emits through the pipeline with a route's `send`: the entry point a bus binds once."""
 
 
-def _publisher(
-    middleware: tuple[PublishMiddleware, ...], factory: EnvelopeFactory | None, asynchronous: bool
+def _sync_publisher(
+    middleware: tuple[PublishMiddleware, ...], factory: EnvelopeFactory | None, /
 ) -> _Publish:
-    """Return the pipeline's entry point for a bus, with its middleware and envelopes bound."""
+    """Return a sync bus's pipeline entry point, with its middleware and envelopes bound."""
     if factory is None:
-        bare: Publishing[None, None] = Publishing(middleware, asynchronous=asynchronous)
-        if asynchronous:
-            return partial(publish_async, bare)
+        bare: Publishing[None, None] = Publishing(middleware, asynchronous=False)
         return partial(publish, bare)
-    enveloped: Publishing[None, Envelope] = Publishing(middleware, asynchronous=asynchronous)
-    if asynchronous:
-        return partial(publish_enveloped_async, enveloped, factory)
+    enveloped: Publishing[None, Envelope] = Publishing(middleware, asynchronous=False)
     return partial(publish_enveloped, enveloped, factory)
+
+
+def _async_publisher(
+    middleware: tuple[PublishMiddleware, ...], factory: EnvelopeFactory | None, /
+) -> _Publish:
+    """Return an async bus's pipeline entry point, with its middleware and envelopes bound."""
+    if factory is None:
+        bare: Publishing[None, None] = Publishing(middleware, asynchronous=True)
+        return partial(publish_async, bare)
+    enveloped: Publishing[None, Envelope] = Publishing(middleware, asynchronous=True)
+    return partial(publish_enveloped_async, enveloped, factory)
+
+
+def _unmarked[Fn: Callable[..., Any]](fn: Fn, /) -> Fn:
+    """Leave a sync bus's emitter as it is."""
+    return fn
+
+
+@dataclass(frozen=True, slots=True)
+class _Running:
+    """What differs between a sync and an async direct bus, as a value."""
+
+    kind: Kind
+    """Its kind: default dispatchers, the handlers it accepts, and whether it awaits."""
+    publisher: Callable[[tuple[PublishMiddleware, ...], EnvelopeFactory | None], _Publish]
+    """Builds its pipeline entry from its publish middleware and envelope factory."""
+    mark: Callable[[Callable[..., Any]], Callable[..., Any]]
+    """Marks its emitters, so `bind` makes the callable of its kind."""
+
+
+_SYNC = _Running(SYNC, _sync_publisher, _unmarked)
+"""How a DirectBus runs."""
+
+_ASYNC = _Running(ASYNC, _async_publisher, markcoroutinefunction)
+"""How an AsyncDirectBus runs."""
 
 
 def _sender(route: _Route) -> Send[None, Envelope | None]:
@@ -261,8 +285,10 @@ class _Core:
     """
     Handler registry and pattern dispatch, for a sync or an async direct bus.
 
-    Whether the bus is async decides its shared emit, how it delivers a message, and which
-    handlers and hooks it refuses. All are chosen here, once. Its dispatchers are given whole.
+    How the bus runs, a `_Running` value, gives its kind and its shared emit. The kind gives
+    its default dispatchers, which handlers it refuses, whether it refuses async hooks, the
+    middleware it takes, and how handlers fit that middleware. Patterns the bus is given are
+    added to its kind's, later pairs winning.
 
     An emit called directly goes through `emit`, which looks the event up and refuses one the
     bus can't dispatch. A bound callable emits through `emitter`'s emitter instead, which
@@ -273,20 +299,22 @@ class _Core:
     """
 
     __slots__ = (
-        "_asynchronous",
+        "_awaits",
         "_dispatchers",
         "_middleware",
+        "_name",
         "_plain",
         "_publish",
         "_registering",
         "_reserved",
         "_routes",
+        "_running",
     )
 
     def __init__(
         self,
         name: str,
-        asynchronous: bool,
+        running: _Running,
         factory: EnvelopeFactory | None,
         dispatchers: Collection[Dispatch],
         middleware: Middleware,
@@ -295,20 +323,22 @@ class _Core:
         Create the core of a bus.
 
         :param name: The bus's class name, for error messages.
-        :param asynchronous: Whether the bus runs handlers, hooks and middleware asynchronously.
-        :param dispatchers: The bus's whole table of pattern and dispatcher pairs; later pairs
-            win.
+        :param running: How the bus runs: its kind, pipeline entry and emitter mark.
+        :param dispatchers: Pattern and dispatcher pairs added to the kind's; later pairs win.
         :raises MiddlewareKindError: If any middleware is the wrong kind for the bus.
         """
-        middleware.require(name, asynchronous=asynchronous)
-        self._asynchronous = asynchronous
+        middleware.require(name, running.kind)
+        self._name = name
+        self._running = running
+        self._awaits = running.kind.awaits
         self._routes: dict[AnyEvent, _Route] = {}
         self._registering = threading.Lock()
+        table = (*running.kind.dispatchers, *dispatchers)
         self._dispatchers: Callable[[AnyEvent], Dispatcher[Any]] = ByPattern(
-            name, ((d.pattern, d.dispatcher) for d in dispatchers), reason=_ADD_A_DISPATCHER
+            name, ((d.pattern, d.dispatcher) for d in table), reason=_ADD_A_DISPATCHER
         ).__call__
         self._middleware = middleware
-        self._publish = _publisher(middleware.publish, factory, asynchronous)
+        self._publish = running.publisher(middleware.publish, factory)
         self._plain = not (middleware.publish or middleware.handle) and factory is None
         self._reserved = _NONE_RESERVED if factory is None else reserved_for(None, factory.headers)
 
@@ -325,7 +355,7 @@ class _Core:
         """
         route, plain = self._route(event), self._plain
         publish_, reserved = self._publish, self._reserved
-        asynchronous = self._asynchronous
+        name, awaits = self._name, self._awaits
 
         def emit_routed(
             event: AnyEvent, payload: Any, /, *, hooks: Hooks[Any, Any] | None = None
@@ -334,11 +364,11 @@ class _Core:
                 if plain:
                     message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
                     return route.dispatcher(event, route.handlers, message)
-            elif hooks.has_async and not asynchronous:
-                raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
+            elif hooks.has_async and not awaits:
+                raise TypeError(_REFUSED.format(name, f"hooks for {event.name!r}"))
             return publish_(route.send, reserved, event, payload, None, hooks)
 
-        return markcoroutinefunction(emit_routed) if asynchronous else emit_routed
+        return self._running.mark(emit_routed)
 
     def _route(self, event: AnyEvent) -> _Route:
         """
@@ -358,9 +388,9 @@ class _Core:
         return route
 
     def check_hooks(self, event: AnyEvent, hooks: Hooks[Any, Any]) -> None:
-        """Raise TypeError for async hooks on a sync bus, which can't await them."""
-        if hooks.has_async and not self._asynchronous:
-            raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
+        """Raise TypeError for hooks the bus's kind can't run: async ones, on a sync bus."""
+        if hooks.has_async and not self._awaits:
+            raise TypeError(_REFUSED.format(self._name, f"hooks for {event.name!r}"))
 
     def register(
         self, config: AnyEvent, fn: Callable[..., Any], hooks: Hooks[Any, Any] | None
@@ -370,14 +400,13 @@ class _Core:
 
         :raises DuplicateHandlerError: If the event already has an equal handler.
         """
-        if not self._asynchronous and is_async_callable(fn):
-            raise TypeError(_ASYNC_HANDLER_REJECTED)
+        kind = self._running.kind
+        if not kind.accepts(fn):
+            raise TypeError(_REFUSED.format(self._name, "handlers"))
         route = self._route(config)
         if hooks is not None:
             self.check_hooks(config, hooks)
-        handler = wrap_handler(
-            config, fn, config, hooks, self._middleware.handle, self._asynchronous
-        )
+        handler = wrap_handler(config, fn, config, hooks, self._middleware.handle, kind)
         with self._registering:
             if handler in route.handlers:
                 raise DuplicateHandlerError(config.name, fn)
@@ -463,9 +492,7 @@ class DirectBus:
         middleware: Middleware = Middleware(),
     ) -> None:
         """Create a bus, optionally with envelope tracking, more patterns and middleware."""
-        self._core = _Core(
-            "DirectBus", False, envelope_factory, (*SYNC_DISPATCHERS, *dispatchers), middleware
-        )
+        self._core = _Core("DirectBus", _SYNC, envelope_factory, dispatchers, middleware)
 
     def emit[Payload, Result](
         self,
@@ -676,9 +703,9 @@ class AsyncDirectBus:
         """Create a bus, optionally with envelope tracking, more patterns and middleware."""
         self._core = _Core(
             "AsyncDirectBus",
-            True,
+            _ASYNC,
             envelope_factory,
-            (*ASYNC_DISPATCHERS, *dispatchers),
+            dispatchers,
             middleware,
         )
 

@@ -21,6 +21,7 @@ from stratae.events.failure import DeadLetter, Drop, Reject, Retry, failure_acti
 from stratae.events.handler import invoke
 from stratae.events.handling import wrap_handler
 from stratae.events.hooks import Hooks
+from stratae.events.kind import ASYNC
 from stratae.events.middleware import HandleCall, Middleware, from_fields
 from stratae.integrations.rabbitmq._link import RECONNECT, Link
 from stratae.integrations.rabbitmq._retry import retry_queue_name
@@ -145,7 +146,7 @@ class RabbitMQConsumer:
             if its envelope can't be read. Random by default.
         :raises MiddlewareKindError: If any `handle` middleware isn't an `async def`.
         """
-        middleware.require(type(self).__name__, asynchronous=True, publish=False)
+        middleware.require(type(self).__name__, ASYNC, publish=False)
         self._envelope_factory = envelope_factory
         self._handle_middleware = middleware.handle
         self._deserializer = deserializer
@@ -358,7 +359,7 @@ class RabbitMQConsumer:
         :raises DuplicateHandlerError: If an equal handler is already registered.
         """
         handler: Handler[RabbitMQConsumeConfig, Any, ..., None] = wrap_handler(
-            event, fn, config, hooks, self._handle_middleware, asynchronous=True
+            event, fn, config, hooks, self._handle_middleware, ASYNC
         )
         if handler in self._registrations:
             raise DuplicateHandlerError(event.name, fn)

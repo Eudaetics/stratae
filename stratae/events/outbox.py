@@ -134,6 +134,7 @@ from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.failure import Retry, failure_action, failure_reason
 from stratae.events.hooks import Hooks
+from stratae.events.kind import ASYNC
 from stratae.events.middleware import Middleware
 from stratae.events.patterns import NoPayload, PubSub
 from stratae.events.pipeline import (
@@ -508,7 +509,7 @@ class OutboxProducer[Target]:
             publisher needs the same `headers`.
         :raises MiddlewareKindError: If any `publish` middleware isn't an `async def`.
         """
-        middleware.require(type(self).__name__, asynchronous=True, handle=False)
+        middleware.require(type(self).__name__, ASYNC, handle=False)
         self._publishing: Publishing[OutboxConfig[Target], Envelope] = Publishing(
             middleware.publish, asynchronous=True
         )

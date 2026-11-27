@@ -24,6 +24,7 @@ from stratae.events.binding import bind
 from stratae.events.by_pattern import ByPattern
 from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.events.hooks import Hooks
+from stratae.events.kind import ASYNC
 from stratae.events.middleware import Middleware
 from stratae.events.pipeline import Outgoing, Publishing, publish_enveloped_async
 from stratae.integrations.rabbitmq._link import RECONNECT, Link
@@ -148,7 +149,7 @@ class RabbitMQPublisher:
         :raises MiddlewareKindError: If any `publish` middleware isn't an `async def`.
         :raises ValueError: If a `topology` config has no named `queue`.
         """
-        middleware.require(type(self).__name__, asynchronous=True, handle=False)
+        middleware.require(type(self).__name__, ASYNC, handle=False)
         self._topology = tuple(topology)
         for config in self._topology:
             if config.queue is None:
