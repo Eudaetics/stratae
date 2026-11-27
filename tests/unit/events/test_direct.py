@@ -1389,7 +1389,9 @@ def test_unsupported_pattern_refused_at_handle(bus: DirectBus):
     Then: A TypeError names the bus and the pattern, and nothing is registered
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="DirectBus has no dispatcher for _Gather"):
+    with pytest.raises(
+        TypeError, match="DirectBus doesn't support _Gather events: register one with dispatchers="
+    ):
         bus.handle(_quotes, lambda query: 1)
     assert bus.handlers(_quotes) == ()
 
@@ -1403,7 +1405,9 @@ def test_unsupported_pattern_refused_at_bind(bus: DirectBus):
     Then: A TypeError names the bus and the pattern
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="DirectBus has no dispatcher for _Gather"):
+    with pytest.raises(
+        TypeError, match="DirectBus doesn't support _Gather events: register one with dispatchers="
+    ):
         bus.bind(_quotes, factory=_BookQuery)
 
 
@@ -1416,7 +1420,7 @@ def test_unsupported_pattern_refused_at_emit(bus: DirectBus):
     Then: A TypeError names the pattern
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="no dispatcher for _Gather"):
+    with pytest.raises(TypeError, match="doesn't support _Gather events"):
         bus.emit(_quotes, _BookQuery("dune"))
 
 
@@ -1822,7 +1826,7 @@ def test_unsupported_pattern_fails_before_middleware():
     bus = DirectBus(middleware=Middleware(publish=(_labelled(log, "mw"),)))
 
     # Act / Assert
-    with pytest.raises(TypeError, match="no dispatcher for _Gather"):
+    with pytest.raises(TypeError, match="doesn't support _Gather events"):
         bus.emit(_quotes, _BookQuery("dune"))
     assert log == []
 
