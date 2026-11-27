@@ -24,7 +24,8 @@ RabbitMQConsumer:
 - Entering the context while already connected raises AlreadyConnectedError.
 - A failed close on exit still leaves the consumer disconnected.
 - handle registers directly or as a decorator, returning the Handler.
-- handle raises TypeError for an event that isn't PubSub.
+- handle raises TypeError for an event that isn't PubSub, naming the consumer, the pattern
+  and the reason, and registers nothing.
 - Delivered messages are decoded with the consumer's deserializer and the
   message is acked after the handler returns.
 - Async handlers are awaited.
@@ -553,8 +554,12 @@ def test_handle_refuses_non_pubsub_event(consumer: RabbitMQConsumer):
     request_event = cast(Any, Request(_OrderPlaced, reply=_OrderPlaced))
 
     # Act / Assert
-    with pytest.raises(TypeError, match="PubSub events only"):
+    with pytest.raises(
+        TypeError,
+        match=r"^RabbitMQConsumer doesn't support Request events: it handles PubSub events only$",
+    ):
         consumer.handle(request_event, lambda payload: None, config=_config)
+    assert not consumer._registrations  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_message_decoded_and_acked(consumer: RabbitMQConsumer, channel: AsyncMock):
