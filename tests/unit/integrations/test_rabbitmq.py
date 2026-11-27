@@ -24,6 +24,8 @@ RabbitMQPublisher:
 - emit refuses an event with no route, and publishes nothing.
 - An event keeps one route: routing or binding it again to an equal config is accepted, and to
   a different config raises ValueError.
+- emitter routes the event, and bound with abind publishes as bind does; it refuses a
+  different config with ValueError.
 - A config whose routing key is a function addresses each payload, gives a message's config
   with its key, has its exchange as its destination, and is Addressed.
 - A routing-key function publishes each message with its own key, and publish middleware sees
@@ -118,6 +120,7 @@ from stratae.events import (
     PubSub,
     PubSubProducer,
     Request,
+    abind,
 )
 from stratae.events.envelope import EnvelopeHeaders
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
@@ -431,16 +434,18 @@ def test_bound_pubsub_events_are_typed_as_giving_none(publisher: RabbitMQPublish
     A PubSub event bound to the publisher should be typed as giving `None`.
 
     Given: A PubSub event with a payload, and one without
-    When: Each is bound to the publisher
+    When: Each is bound to the publisher, and the first is also bound through its emitter
     Then: The bound callables are typed as taking the payload, or nothing, and giving `None`
     """
     # Act
     bound = publisher.bind(_order_placed, config=_config)
     signal = publisher.bind(PubSub(name="ping"), config=_config)
+    from_emitter = abind(_order_placed, publisher.emitter(_order_placed, _config))
 
     # Assert
     assert_type(bound, Callable[[_OrderPlaced], Awaitable[None]])
     assert_type(signal, Callable[[], Awaitable[None]])
+    assert_type(from_emitter, Callable[[_OrderPlaced], Awaitable[None]])
 
 
 async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, channel: AsyncMock):
@@ -465,6 +470,32 @@ async def test_emit_publishes_packed_payload(publisher: RabbitMQPublisher, chann
     assert call.args[0] == _encode(payload)
     assert call.kwargs["exchange"] == "events"
     assert call.kwargs["routing_key"] == "order.placed"
+
+
+async def test_emitter_routes_and_publishes(publisher: RabbitMQPublisher, channel: AsyncMock):
+    """
+    ``emitter`` should route the event, and its bound callable publish as ``bind``'s does.
+
+    Given: A connected publisher
+    When: An event's emitter is asked for with a config, bound with abind and awaited, and
+        asked for again with a different config
+    Then: The payload is published to the config's exchange and routing key, and the different
+        config raises ValueError
+    """
+    # Arrange
+    payload = _OrderPlaced(7)
+
+    # Act
+    place = abind(_order_placed, publisher.emitter(_order_placed, _config))
+    async with publisher:
+        await place(payload)
+
+    # Assert
+    call = channel.basic_publish.await_args
+    assert call.args[0] == _encode(payload)
+    assert (call.kwargs["exchange"], call.kwargs["routing_key"]) == ("events", "order.placed")
+    with pytest.raises(ValueError, match="_OrderPlaced"):
+        publisher.emitter(_order_placed, RabbitMQConfig("events", "other"))
 
 
 async def test_emit_publishes_empty_body_for_signal_event(

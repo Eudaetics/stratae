@@ -69,6 +69,11 @@ AsyncDirectBus (middleware):
 - A custom dispatcher's awaitable that isn't a coroutine still makes emit return a coroutine,
   which a task can run.
 
+AsyncDirectBus (emitter):
+- emitter, bound with abind, gives what bind does: a factory-built emit reaching the handler,
+  and its reply.
+- emitter refuses an unsupported pattern.
+
 AsyncDirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
@@ -106,6 +111,7 @@ from stratae.events import (
     PublishCall,
     PubSub,
     Request,
+    abind,
     fan_out_concurrent,
 )
 from stratae.events.exceptions import (
@@ -1834,3 +1840,42 @@ async def test_custom_dispatcher_awaitable_emit_is_coroutine():
     # Assert
     assert inspect.iscoroutine(emitted)
     assert result == 1
+
+
+# region: Emitter
+
+
+async def test_emitter_binds_as_bind_does(bus: AsyncDirectBus):
+    """
+    The bus's emitter, bound with abind, should give what the bus's bind does.
+
+    Given: A request with a responder
+    When: The bus's emitter is bound with a factory, and so is the bus's bind
+    Then: Both reach the responder with the built payload and resolve to its reply
+    """
+    # Arrange
+    bus.handle(_find_book, lambda query: _BookResult(query.query.title()))
+
+    # Act
+    through_emitter = abind(_find_book, bus.emitter(_find_book), factory=_BookQuery)
+    through_bind = bus.bind(_find_book, factory=_BookQuery)
+
+    # Assert
+    assert (await through_emitter(query="dune")).title == "Dune"
+    assert (await through_bind(query="dune")).title == "Dune"
+
+
+def test_emitter_refuses_unsupported_pattern(bus: AsyncDirectBus):
+    """
+    The emitter of an event the bus can't dispatch should be refused.
+
+    Given: An event of a pattern the bus has no dispatcher for
+    When: Its emitter is asked for
+    Then: A TypeError names the bus and the pattern
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="AsyncDirectBus doesn't support _Gather events"):
+        bus.emitter(_quotes)
+
+
+# endregion

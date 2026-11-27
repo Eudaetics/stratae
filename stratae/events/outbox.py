@@ -146,6 +146,7 @@ from stratae.events.protocols import (
     Addressed,
     AnyEvent,
     Destination,
+    EmitCallable,
     Encoded,
     EventType,
     Operation,
@@ -461,8 +462,9 @@ class OutboxProducer[Target]:
     """
     An async bus that writes events to an outbox store instead of publishing them.
 
-    Bind {py:class}`PubSub <stratae.events.patterns.PubSub>` events to it with `bind`.
-    Binding registers the route, so a relay knows every route before anything is emitted.
+    Bind {py:class}`PubSub <stratae.events.patterns.PubSub>` events to it with `bind`, or bind
+    its `emitter` for an event with {py:func}`abind <stratae.events.binding.abind>`.
+    Either registers the route, so a relay knows every route before anything is emitted.
     Emitting writes a record. Hooks given to `bind` or `emit` run around that write, inside
     the record's envelope, and publish middleware around them. Headers the middleware adds
     are stored with the record, and the relay publishes it with them. A header the transport a
@@ -567,6 +569,23 @@ class OutboxProducer[Target]:
         address = target.address if isinstance(target, Addressed) else None
         return partial(self._write, name, serializer or self._serializer, address)
 
+    def emitter[Payload](
+        self, event: PubSub[Payload, Any], config: OutboxConfig[Target], /
+    ) -> EmitCallable[PubSub[Payload, Any], Payload, Hooks[Payload, None], Awaitable[None]]:
+        """
+        Route a PubSub event to `config`, and return an emitter of it that holds its route.
+
+        Binding it with {py:func}`abind <stratae.events.binding.abind>` gives the same callable
+        as `bind`.
+
+        :param event: The {py:class}`PubSub <stratae.events.patterns.PubSub>` event.
+        :param config: The route's {py:class}`OutboxConfig`.
+        :returns: An emitter taking the event, a payload and `hooks=`, returning an awaitable.
+        :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
+        :raises ValueError: If the event, or the route's name, is already routed elsewhere.
+        """
+        return partial(self._emit_on, self._route(event, config))
+
     @overload
     def bind[**P, Payload](
         self,
@@ -616,8 +635,7 @@ class OutboxProducer[Target]:
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises ValueError: If the event, or the route's name, is already routed elsewhere.
         """
-        route = self._route(event, config)
-        return abind(event, partial(self._emit_on, route), factory=factory, hooks=hooks)
+        return abind(event, self.emitter(event, config), factory=factory, hooks=hooks)
 
     async def emit[Payload](
         self,

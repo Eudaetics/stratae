@@ -25,6 +25,7 @@ Binding:
   events, typed by their payload, and refuses a request or hooks for another payload.
 - bind and abind take an emitter without hooks when bound without hooks, typed by the factory,
   payload and reply, and refuse it with hooks.
+- A direct bus's emitter binds with bind or abind, typed by the event's payload and reply.
 
 Hooks:
 - Hooks passed to handle, bind and emit are typed by the event's payload and reply.
@@ -334,6 +335,36 @@ async def test_binding_typed_by_the_emitter() -> None:
     assert_type(placed(_OrderPlaced("lamp")), None)
     assert_type(beat(), None)
     assert_type(await place(item="lamp"), None)
+
+
+async def test_direct_bus_emitters_bind() -> None:
+    """
+    A direct bus's emitter should bind with bind or abind, typed by the event.
+
+    Given: A DirectBus and an AsyncDirectBus, each with a responder
+    When: Each bus's emitter is bound, with and without a factory, payload-less included
+    Then: The bindings are typed by the factory, payload and reply
+    """
+    # Arrange
+    bus = DirectBus()
+    async_bus = AsyncDirectBus()
+    for each in (bus, async_bus):
+        each.handle(_place_order, _make_order)
+        each.handle(_ping, _pong)
+
+    # Act
+    place = bind(_place_order, bus.emitter(_place_order), factory=_PlaceOrder)
+    place_built = bind(_place_order, bus.emitter(_place_order))
+    ping = bind(_ping, bus.emitter(_ping))
+    aplace = abind(_place_order, async_bus.emitter(_place_order), factory=_PlaceOrder)
+    aping = abind(_ping, async_bus.emitter(_ping))
+
+    # Assert
+    assert_type(place(item="desk"), _Order)
+    assert_type(place_built(_PlaceOrder("desk")), _Order)
+    assert_type(ping(), str)
+    assert_type(await aplace(item="lamp"), _Order)
+    assert_type(await aping(), str)
 
 
 def _send(event: Request[_PlaceOrder, _Order, Any], payload: _PlaceOrder, /) -> _Order:
