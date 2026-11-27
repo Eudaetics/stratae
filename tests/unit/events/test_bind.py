@@ -247,12 +247,10 @@ def test_emitter_without_hooks_parameter() -> None:
     def emitter(event: object, payload: object) -> None:
         received.append(payload)
 
-    # An untyped adapter: typed ones accept hooks, as EmitCallable declares.
-    untyped_emitter = cast(_AnyEmitter, emitter)
     ev = PubSub(_OrderCreated)
     payload = _OrderCreated(1, "pending")
-    plain = bind(ev, untyped_emitter)
-    hooked = bind(ev, untyped_emitter, hooks=Hooks())
+    plain = bind(ev, emitter)
+    hooked = bind(ev, cast(_AnyEmitter, emitter), hooks=Hooks())
 
     # Act / Assert
     plain(payload)
