@@ -15,7 +15,8 @@ OutboxProducer[object]:
   record's envelope headers; middleware adding an envelope header writes nothing.
 - A middleware that isn't an async def is refused when the producer is built.
 - Emitting returns None, and publishes nothing.
-- Binding or emitting a request event raises TypeError.
+- Binding, routing or emitting a request event raises TypeError naming the outbox, the
+  pattern and the reason.
 - Emitting an event with no route raises LookupError and writes nothing; route registers one,
   and refuses a route name bound to another event, or a second config for the same event.
 - A route bound to another event or config raises ValueError; the same config object, or an
@@ -525,6 +526,9 @@ def test_sync_middleware_refused(store: InMemoryOutboxStore):
         OutboxProducer[object](store, _encode, middleware=Middleware(publish=(sync,)))
 
 
+_REQUEST_REFUSED = r"^OutboxProducer doesn't support Request events: it holds PubSub events only$"
+
+
 async def test_request_events_refused(outbox: OutboxProducer[object]):
     """
     The outbox should refuse a request event, which needs its reply straight away.
@@ -534,7 +538,8 @@ async def test_request_events_refused(outbox: OutboxProducer[object]):
 
     Given: A request event, and a command (a request without a reply)
     When: Each is bound, routed, and emitted directly
-    Then: Each call is a type error, and raises TypeError at runtime
+    Then: Each call is a type error, and raises TypeError at runtime naming the outbox, the
+        pattern and the reason
     """
     # Arrange
     request = Request(_Order, reply=str)
@@ -542,14 +547,14 @@ async def test_request_events_refused(outbox: OutboxProducer[object]):
 
     # Act / Assert
     for event in (request, command):
-        with pytest.raises(TypeError, match="fire-and-forget"):
+        with pytest.raises(TypeError, match=_REQUEST_REFUSED):
             outbox.bind(  # pyright: ignore[reportCallIssue]
                 event,  # pyright: ignore[reportArgumentType]
                 config=OutboxConfig("orders"),
             )
-        with pytest.raises(TypeError, match="fire-and-forget"):
+        with pytest.raises(TypeError, match=_REQUEST_REFUSED):
             outbox.route(event, OutboxConfig("orders"))  # pyright: ignore[reportArgumentType]
-        with pytest.raises(TypeError, match="fire-and-forget"):
+        with pytest.raises(TypeError, match=_REQUEST_REFUSED):
             await outbox.emit(event, _Order(1))  # pyright: ignore[reportArgumentType]
 
 
