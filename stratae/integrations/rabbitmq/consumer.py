@@ -19,9 +19,9 @@ from stratae.events.by_pattern import ByPattern
 from stratae.events.exceptions import AlreadyConnectedError, DuplicateHandlerError
 from stratae.events.failure import DeadLetter, Drop, Reject, Retry, failure_action
 from stratae.events.handler import invoke
+from stratae.events.handling import wrap_handler
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import HandleCall, Middleware, from_fields
-from stratae.events.pipeline import wrap_handler
 from stratae.integrations.rabbitmq._link import RECONNECT, Link
 from stratae.integrations.rabbitmq._retry import retry_queue_name
 from stratae.integrations.rabbitmq._topology import declare
