@@ -83,8 +83,8 @@ DirectBus (emitter):
 - emitter, bound with bind, gives what bind does: a factory-built emit reaching the handler,
   and its reply.
 - emitter refuses an unsupported pattern.
-- A sync bus's emitter refuses async hooks, bound with it or passed in a call, before any
-  handler runs.
+- A sync bus's emitter refuses async hooks when it's bound with them, and when they're passed
+  in a call, before any handler runs.
 
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
@@ -100,7 +100,6 @@ import threading
 import weakref
 from collections.abc import Callable, Collection
 from contextvars import ContextVar
-from functools import partial
 from typing import Any, Literal, cast
 from unittest.mock import Mock
 from uuid import UUID
@@ -1605,7 +1604,7 @@ def test_async_publish_hooks_refused_at_bind(bus: DirectBus):
     Then: A TypeError names the event
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
+    with pytest.raises(TypeError, match="'_TaskCreated' is bound to a sync emitter"):
         bus.bind(_task_created, factory=_TaskCreated, hooks=Hooks(before=(_async_before,)))
 
 
@@ -2230,13 +2229,28 @@ def test_emitter_refuses_unsupported_pattern(bus: DirectBus):
         bus.emitter(_quotes)
 
 
-@pytest.mark.parametrize("through", ["bound", "called"])
-def test_emitter_refuses_async_hooks(bus: DirectBus, through: str):
+def test_emitter_bound_with_async_hooks_is_refused(bus: DirectBus):
     """
-    A sync bus's emitter should refuse async hooks, however they reach it.
+    A sync bus's emitter bound with async hooks should be refused when it's bound.
+
+    Given: Hooks including an async hook
+    When: The bus's emitter is bound with them
+    Then: A TypeError names the event
+    """
+    # Arrange
+    hooks: Hooks[Any, Any] = Hooks(before=(_async_before,))
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="'_TaskCreated' is bound to a sync emitter"):
+        bind(_task_created, bus.emitter(_task_created), hooks=hooks)
+
+
+def test_emitter_called_with_async_hooks_is_refused(bus: DirectBus):
+    """
+    A sync bus's emitter called with async hooks should refuse them.
 
     Given: A handler, and hooks including an async hook
-    When: The emitter is bound with them and called, or called with them
+    When: The emitter is called with them
     Then: A TypeError names the event, and the handler doesn't run
     """
     # Arrange
@@ -2244,14 +2258,10 @@ def test_emitter_refuses_async_hooks(bus: DirectBus, through: str):
     bus.handle(_task_created, ran.append)
     hooks: Hooks[Any, Any] = Hooks(before=(_async_before,))
     emitter = bus.emitter(_task_created)
-    if through == "bound":
-        emit = partial(bind(_task_created, emitter, hooks=hooks), _TaskCreated(1))
-    else:
-        emit = partial(emitter, _task_created, _TaskCreated(1), hooks=hooks)
 
     # Act / Assert
     with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
-        emit()
+        emitter(_task_created, _TaskCreated(1), hooks=hooks)
     assert ran == []
 
 

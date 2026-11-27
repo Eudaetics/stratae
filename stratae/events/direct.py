@@ -7,8 +7,8 @@ In-process event buses that dispatch straight to registered handlers, with no br
 one handler's context variables never reach another, nor the emitter.
 
 Register handlers with `handle`, keyed by event, and create emitters with `bind`. `bind` binds
-the bus's `emitter` for the event, which {py:func}`bind <stratae.events.binding.bind>` or
-{py:func}`abind <stratae.events.binding.abind>` can bind too. A
+the bus's `emitter` for the event, which {py:func}`bind <stratae.events.binding.bind>` can
+bind too. A
 {py:class}`Request <stratae.events.patterns.Request>` event needs exactly one responder, which
 `handlers` can confirm before anything emits it.
 
@@ -108,7 +108,7 @@ from types import CoroutineType
 from typing import Any, NoReturn, Protocol, overload
 
 from stratae.callables import is_async_callable
-from stratae.events.binding import abind, bind
+from stratae.events.binding import bind
 from stratae.events.by_pattern import ByPattern
 from stratae.events.dispatch import ASYNC_DISPATCHERS, SYNC_DISPATCHERS, Dispatch, Dispatcher
 from stratae.events.envelope import Envelope, EnvelopeFactory
@@ -338,7 +338,7 @@ class _Core:
                 raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
             return publish_(route.send, reserved, event, payload, None, hooks)
 
-        return emit_routed
+        return markcoroutinefunction(emit_routed) if asynchronous else emit_routed
 
     def _route(self, event: AnyEvent) -> _Route:
         """
@@ -501,8 +501,9 @@ class DirectBus:
         """
         Return an emitter of the event that holds its route.
 
-        Binding it with {py:func}`bind <stratae.events.binding.bind>` gives the same callable as
-        `bind`. Each call reads the event's handlers current then, without looking the event up.
+        Binding it with {py:func}`bind <stratae.events.binding.bind>` gives what the bus's `bind`
+        method does. Each call reads the event's handlers current then, without looking the
+        event up.
 
         :param event: The event.
         :returns: An emitter taking the event, a payload and `hooks=`.
@@ -553,8 +554,6 @@ class DirectBus:
         :raises TypeError: If the bus has no dispatcher for the event's pattern, the factory is
             async, or `hooks` includes an async hook.
         """
-        if hooks is not None:
-            self._core.check_hooks(event, hooks)
         return bind(event, self.emitter(event), factory=factory, hooks=hooks)
 
     @overload
@@ -723,8 +722,9 @@ class AsyncDirectBus:
         """
         Return an emitter of the event that holds its route.
 
-        Binding it with {py:func}`abind <stratae.events.binding.abind>` gives the same callable as
-        `bind`. Each call reads the event's handlers current then, without looking the event up.
+        Binding it with {py:func}`bind <stratae.events.binding.bind>` gives what the bus's `bind`
+        method does. Each call reads the event's handlers current then, without looking the
+        event up.
 
         :param event: The event.
         :returns: An emitter taking the event, a payload and `hooks=`, returning an awaitable.
@@ -765,7 +765,7 @@ class AsyncDirectBus:
         hooks: Hooks[Any, Any] | None = None,
     ) -> Callable[..., Awaitable[Any]]:
         """
-        Bind an event to this bus. See {py:func}`abind <stratae.events.binding.abind>`.
+        Bind an event to this bus. See {py:func}`bind <stratae.events.binding.bind>`.
 
         :param event: The event to bind.
         :param factory: A sync or async callable building the payload from the call's arguments.
@@ -773,7 +773,7 @@ class AsyncDirectBus:
         :returns: An async callable that emits the event on this bus.
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
-        return abind(event, self.emitter(event), factory=factory, hooks=hooks)
+        return bind(event, self.emitter(event), factory=factory, hooks=hooks)
 
     @overload
     def handle[Result](

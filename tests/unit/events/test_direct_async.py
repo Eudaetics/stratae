@@ -70,8 +70,8 @@ AsyncDirectBus (middleware):
   which a task can run.
 
 AsyncDirectBus (emitter):
-- emitter, bound with abind, gives what bind does: a factory-built emit reaching the handler,
-  and its reply.
+- emitter, bound with bind, gives an async callable doing what the bus's bind does: a
+  factory-built emit reaching the handler, and its reply.
 - emitter refuses an unsupported pattern.
 
 AsyncDirectBus (with envelope):
@@ -111,7 +111,7 @@ from stratae.events import (
     PublishCall,
     PubSub,
     Request,
-    abind,
+    bind,
     fan_out_concurrent,
 )
 from stratae.events.exceptions import (
@@ -1847,7 +1847,7 @@ async def test_custom_dispatcher_awaitable_emit_is_coroutine():
 
 async def test_emitter_binds_as_bind_does(bus: AsyncDirectBus):
     """
-    The bus's emitter, bound with abind, should give what the bus's bind does.
+    The bus's emitter, bound with bind, should give what the bus's bind does.
 
     Given: A request with a responder
     When: The bus's emitter is bound with a factory, and so is the bus's bind
@@ -1857,10 +1857,11 @@ async def test_emitter_binds_as_bind_does(bus: AsyncDirectBus):
     bus.handle(_find_book, lambda query: _BookResult(query.query.title()))
 
     # Act
-    through_emitter = abind(_find_book, bus.emitter(_find_book), factory=_BookQuery)
+    through_emitter = bind(_find_book, bus.emitter(_find_book), factory=_BookQuery)
     through_bind = bus.bind(_find_book, factory=_BookQuery)
 
     # Assert
+    assert inspect.iscoroutinefunction(through_emitter)
     assert (await through_emitter(query="dune")).title == "Dune"
     assert (await through_bind(query="dune")).title == "Dune"
 

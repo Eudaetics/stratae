@@ -20,7 +20,7 @@ from stratae.events import (
     Serializer,
     reserved_for,
 )
-from stratae.events.binding import abind
+from stratae.events.binding import bind
 from stratae.events.by_pattern import ByPattern
 from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.events.hooks import Hooks
@@ -322,8 +322,8 @@ class RabbitMQPublisher:
         """
         Route a PubSub event to `config`, and return an emitter of it.
 
-        Binding it with {py:func}`abind <stratae.events.binding.abind>` gives the same callable
-        as `bind`.
+        Binding it with {py:func}`bind <stratae.events.binding.bind>` gives what its `bind` method
+        does.
 
         :param event: The PubSub event.
         :param config: Where its messages go.
@@ -374,7 +374,7 @@ class RabbitMQPublisher:
         """
         Route a PubSub event to `config`, and bind it to this publisher.
 
-        See {py:func}`abind <stratae.events.binding.abind>`.
+        See {py:func}`bind <stratae.events.binding.bind>`.
 
         :param event: The PubSub event to bind.
         :param factory: Builds the payload from the call's arguments, sync or async.
@@ -385,7 +385,7 @@ class RabbitMQPublisher:
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises ValueError: If the event is already routed to a different config.
         """
-        return abind(event, self.emitter(event, config), factory=factory, hooks=hooks)
+        return bind(event, self.emitter(event, config), factory=factory, hooks=hooks)
 
     async def _declare_exchange(self, channel: AbstractChannel, config: RabbitMQConfig) -> None:
         """Declare config's exchange once, if it carries a type."""

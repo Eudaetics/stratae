@@ -8,7 +8,7 @@ OutboxProducer[object]:
   a given route.
 - Emitting writes a record carrying the envelope's message id and headers, the serialized
   body, an ordering key from the payload, and its creation time.
-- emitter registers the event's route, and bound with abind writes a record as bind does.
+- emitter registers the event's route, and bound with bind writes a record as bind does.
 - A publisher config's serializer overrides the producer's; a payload-less event writes an
   empty body.
 - Hooks run around the write, inside the record's envelope.
@@ -122,7 +122,7 @@ from stratae.events import (
     PubSub,
     PubSubProducer,
     Request,
-    abind,
+    bind,
 )
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.failure import Retry
@@ -375,11 +375,11 @@ async def test_emitter_routes_and_writes(
     ``emitter`` should route the event, and its bound callable write as ``bind``'s does.
 
     Given: An outbox producer
-    When: An event's emitter is asked for with a config, then bound with abind and awaited
+    When: An event's emitter is asked for with a config, then bound with bind and awaited
     Then: The route is registered before the emit, and one record holds the serialized payload
     """
     # Act
-    place = abind(
+    place = bind(
         _order_placed, outbox.emitter(_order_placed, OutboxConfig("orders")), factory=_Order
     )
     routes = dict(outbox.routes)
@@ -388,6 +388,7 @@ async def test_emitter_routes_and_writes(
 
     # Assert
     assert_type(written, Awaitable[None])
+    assert inspect.iscoroutinefunction(place)
     assert routes == {"_Order": (_order_placed, "orders")}
     ((message, _),) = [(record.message, record.delivery) for record in store.pending()]
     assert (message.route, message.body) == ("_Order", b"7")
