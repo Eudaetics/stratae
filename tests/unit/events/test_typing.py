@@ -23,6 +23,8 @@ AsyncDirectBus:
 Binding:
 - bind and abind take an emitter for the events it takes: a PubSub-only emitter binds PubSub
   events, typed by their payload, and refuses a request or hooks for another payload.
+- bind and abind take an emitter without hooks when bound without hooks, typed by the factory,
+  payload and reply, and refuse it with hooks.
 
 Hooks:
 - Hooks passed to handle, bind and emit are typed by the event's payload and reply.
@@ -181,7 +183,7 @@ def test_direct_bus_types() -> None:
     assert_type(ping, Callable[[], str])
     assert_type(beat, Callable[[], None])
     assert order.item == "lamp"
-    assert place(item="desk").item == "desk"
+    assert place_built(_PlaceOrder("desk")).item == "desk"
     assert ping() == "pong"
 
 
@@ -332,6 +334,56 @@ async def test_binding_typed_by_the_emitter() -> None:
     assert_type(placed(_OrderPlaced("lamp")), None)
     assert_type(beat(), None)
     assert_type(await place(item="lamp"), None)
+
+
+def _send(event: Request[_PlaceOrder, _Order, Any], payload: _PlaceOrder, /) -> _Order:
+    return _Order(payload.item)
+
+
+def _ring(event: Request[NoPayload, str, Any], payload: NoPayload, /) -> str:
+    return "pong"
+
+
+async def _send_async(event: Request[_PlaceOrder, _Order, Any], payload: _PlaceOrder, /) -> _Order:
+    await asyncio.sleep(0)
+    return _Order(payload.item)
+
+
+async def _ring_async(event: Request[NoPayload, str, Any], payload: NoPayload, /) -> str:
+    await asyncio.sleep(0)
+    return "pong"
+
+
+async def test_binding_an_emitter_without_hooks() -> None:
+    """
+    Bind and abind should take an emitter without hooks when bound without hooks.
+
+    Given: Sync and async emitters taking only an event and a payload
+    When: They're bound with and without a factory, payload-less included, then with hooks
+    Then: The bindings are typed by the factory, payload and reply; with hooks, a type error
+    """
+    # Arrange
+    order_hooks: Hooks[_PlaceOrder, _Order] = Hooks(success=(_audit_order,))
+
+    # Act
+    place = bind(_place_order, _send, factory=_PlaceOrder)
+    place_built = bind(_place_order, _send)
+    ping = bind(_ping, _ring)
+    aplace = abind(_place_order, _send_async, factory=_PlaceOrder)
+    aplace_built = abind(_place_order, _send_async)
+    aping = abind(_ping, _ring_async)
+    bind(_place_order, _send, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    abind(_place_order, _send_async, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
+
+    # Assert
+    assert_type(place(item="desk"), _Order)
+    assert_type(place_built(_PlaceOrder("desk")), _Order)
+    assert_type(ping(), str)
+    assert_type(await aplace(item="lamp"), _Order)
+    assert_type(await aplace_built(_PlaceOrder("lamp")), _Order)
+    assert_type(await aping(), str)
+    assert place_built(_PlaceOrder("desk")).item == "desk"
+    assert ping() == "pong"
 
 
 def test_pubsub_handlers_return_none() -> None:

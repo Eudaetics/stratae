@@ -6,7 +6,8 @@ Structural protocols for the event system.
 {py:class}`Producer` and {py:class}`Consumer` describe the emit and handle sides of a bus
 adapter. {py:class}`PubSubProducer` describes the emit side of one that emits only PubSub
 events. {py:class}`AsyncPubSubProducer` describes one whose PubSub emits are awaited.
-{py:class}`EmitCallable` describes a single emitter, typed by the events it takes.
+{py:class}`Emitter` describes a single emitter taking an event and its payload, and
+{py:class}`EmitCallable` one that also takes hooks, each typed by the events it takes.
 {py:class}`Serializer` and {py:class}`Deserializer` describe the codecs an adapter takes for
 payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
 one such pair. {py:class}`Serializing` describes a routing config with its own serializer, and
@@ -76,6 +77,26 @@ type SignalEvent[EmitResult, HandleResult] = EventType[
 """An event carrying no payload."""
 
 
+class Emitter[Event, Payload, Result](Protocol):
+    """
+    Structural protocol for one emitter that takes no hooks: an event and its payload.
+
+    It's typed by the event it takes, its payload and what it returns. Binding an event to one
+    without hooks checks it takes that event, as {py:class}`EmitCallable` does. Its parameters
+    are positional, so they can have any names.
+    """
+
+    def __call__(self, event: Event, payload: Payload, /) -> Result:
+        """
+        Emit a payload for the event.
+
+        :param event: The event being emitted.
+        :param payload: The payload to emit.
+        :returns: What emitting returns, or a coroutine resolving to it.
+        """
+        ...
+
+
 @runtime_checkable
 class EmitCallable[Event, Payload, HookType, Result](Protocol):
     """
@@ -86,9 +107,12 @@ class EmitCallable[Event, Payload, HookType, Result](Protocol):
     PubSub events only, such as a RabbitMQ publisher's
     {py:meth}`emit <stratae.integrations.rabbitmq.publisher.RabbitMQPublisher.emit>`, binds
     PubSub events and refuses a request.
+    Its event and payload are positional, so they can have any names.
     """
 
-    def __call__(self, event: Event, payload: Payload, *, hooks: HookType | None = None) -> Result:
+    def __call__(
+        self, event: Event, payload: Payload, /, *, hooks: HookType | None = None
+    ) -> Result:
         """
         Emit a payload on the event's route.
 
