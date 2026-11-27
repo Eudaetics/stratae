@@ -46,9 +46,12 @@ from collections.abc import Awaitable, Callable, Collection
 from typing import Any, Literal, assert_type
 
 from stratae.events import (
+    ASYNC,
+    SYNC,
     AsyncDirectBus,
     AsyncHandler,
     DirectBus,
+    Emitter,
     HandleCall,
     Handler,
     Handlers,
@@ -326,12 +329,12 @@ async def test_binding_typed_by_the_emitter() -> None:
     order_hooks: Hooks[_PlaceOrder, _Order] = Hooks(success=(_audit_order,))
 
     # Act
-    placed = bind(_order_placed, _publish)
-    beat = bind(_heartbeat, _publish)
+    placed = bind(_order_placed, Emitter(SYNC, _publish))
+    beat = bind(_heartbeat, Emitter(SYNC, _publish))
     place = abind(_order_placed, _publish_async, factory=_OrderPlaced)
-    bind(_place_order, _publish)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    bind(_place_order, Emitter(SYNC, _publish))  # pyright: ignore[reportCallIssue, reportArgumentType]
     abind(_place_order, _publish_async)  # pyright: ignore[reportCallIssue, reportArgumentType]
-    bind(_order_placed, _publish, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    bind(_order_placed, Emitter(SYNC, _publish), hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     # Assert
     assert_type(placed(_OrderPlaced("lamp")), None)
@@ -399,13 +402,13 @@ async def test_binding_an_emitter_without_hooks() -> None:
     order_hooks: Hooks[_PlaceOrder, _Order] = Hooks(success=(_audit_order,))
 
     # Act
-    place = bind(_place_order, _send, factory=_PlaceOrder)
-    place_built = bind(_place_order, _send)
-    ping = bind(_ping, _ring)
+    place = bind(_place_order, Emitter(SYNC, _send), factory=_PlaceOrder)
+    place_built = bind(_place_order, Emitter(SYNC, _send))
+    ping = bind(_ping, Emitter(SYNC, _ring))
     aplace = abind(_place_order, _send_async, factory=_PlaceOrder)
     aplace_built = abind(_place_order, _send_async)
     aping = abind(_ping, _ring_async)
-    bind(_place_order, _send, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    bind(_place_order, Emitter(SYNC, _send), hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
     abind(_place_order, _send_async, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     # Assert
@@ -438,9 +441,9 @@ async def test_bind_takes_async_emitters() -> None:
     bus.handle(_place_order, _make_order)
 
     # Act
-    built = bind(_place_order, _send_async)
-    sync_factory = bind(_place_order, _send_async, factory=_PlaceOrder)
-    async_factory = bind(_place_order, _send_async, factory=_place_async)
+    built = bind(_place_order, Emitter(ASYNC, _send_async))
+    sync_factory = bind(_place_order, Emitter(ASYNC, _send_async), factory=_PlaceOrder)
+    async_factory = bind(_place_order, Emitter(ASYNC, _send_async), factory=_place_async)
     hooked = bind(_place_order, bus.emitter(_place_order), factory=_place_async, hooks=order_hooks)
 
     # Assert

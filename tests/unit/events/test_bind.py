@@ -16,11 +16,11 @@ bind with hooks:
 - The hooks are forwarded to the emitter.
 - An emitter without a hooks parameter works without hooks, and refuses them loudly.
 
-bind picks sync or async from the emitter:
+bind binds by the emitter's kind:
 - An async emitter gives an async callable, with a sync or an async factory, or none.
-- A plain function marked with inspect.markcoroutinefunction is an async emitter.
-- A plain function returning a coroutine, unmarked, is bound as a sync emitter, and its
-  callable returns the coroutine.
+- The emitter's kind decides: a plain function returning a coroutine, paired with ASYNC,
+  gives an async callable.
+- A function not paired with a kind is refused.
 - A sync emitter refuses async hooks when bound, naming the event, and an async factory.
 
 bound callable signatures:
@@ -42,7 +42,18 @@ from unittest.mock import create_autospec
 import pytest
 from pytest_mock import MockerFixture
 
-from stratae.events import DirectBus, EmitCallable, Hooks, NoPayload, PubSub, Request, bind
+from stratae.events import (
+    ASYNC,
+    SYNC,
+    DirectBus,
+    EmitCallable,
+    Emitter,
+    Hooks,
+    NoPayload,
+    PubSub,
+    Request,
+    bind,
+)
 
 type _AnyEmitter = EmitCallable[Any, Any, Any, Any]
 """How a mock emitter is passed: for any event, payload and hooks."""
@@ -77,7 +88,7 @@ def test_bind_with_factory_calling_constructs_schema_and_invokes_emitter(
     emitter = create_autospec(EmitCallable)
     spy = mocker.spy(_OrderCreated, "__init__")
     ev = PubSub(_OrderCreated)
-    bound = bind(ev, emitter, factory=_OrderCreated)
+    bound = bind(ev, Emitter(SYNC, emitter), factory=_OrderCreated)
 
     # Act
     bound(1, "pending")
@@ -108,7 +119,7 @@ def test_bind_with_factory_returns_emitter_result() -> None:
     emitter.side_effect = _return
 
     ev = PubSub(_OrderCreated)
-    bound = bind(ev, emitter, factory=_OrderCreated)
+    bound = bind(ev, Emitter(SYNC, emitter), factory=_OrderCreated)
 
     # Act
     result = bound(1, "pending")
@@ -134,8 +145,8 @@ def test_bind_with_factory_raises_for_async_factory() -> None:
         return _OrderCreated(order_id, status)
 
     # Act / Assert
-    with pytest.raises(TypeError):
-        bind(ev, emitter, factory=_async_factory)
+    with pytest.raises(TypeError, match="a sync emitter needs a sync factory"):
+        bind(ev, Emitter(SYNC, emitter), factory=_async_factory)
 
 
 # endregion
@@ -154,7 +165,7 @@ def test_bind_without_factory_calling_forwards_payload_to_emitter() -> None:
     # Arrange
     emitter = create_autospec(EmitCallable)
     ev = PubSub(_OrderCreated)
-    bound = bind(ev, cast(_AnyEmitter, emitter))
+    bound = bind(ev, Emitter(SYNC, cast(_AnyEmitter, emitter)))
     payload = _OrderCreated(1, "pending")
 
     # Act
@@ -185,7 +196,7 @@ def test_bind_without_factory_returns_emitter_result() -> None:
     emitter.side_effect = _return
 
     ev = PubSub(_OrderCreated)
-    bound = bind(ev, cast(_AnyEmitter, emitter))
+    bound = bind(ev, Emitter(SYNC, cast(_AnyEmitter, emitter)))
     payload = _OrderCreated(1, "pending")
 
     # Act
@@ -215,8 +226,8 @@ def test_bind_with_factory_raises_for_async_callable_factory() -> None:
             return _OrderCreated(order_id, status)
 
     # Act / Assert
-    with pytest.raises(TypeError):
-        bind(ev, emitter, factory=Factory())
+    with pytest.raises(TypeError, match="a sync emitter needs a sync factory"):
+        bind(ev, Emitter(SYNC, emitter), factory=Factory())
 
 
 def test_bind_forwards_hooks_to_emitter() -> None:
@@ -231,7 +242,7 @@ def test_bind_forwards_hooks_to_emitter() -> None:
     emitter = create_autospec(EmitCallable)
     hooks: Hooks[Any, Any] = Hooks()
     ev = PubSub(_OrderCreated)
-    bound = bind(ev, cast(_AnyEmitter, emitter), hooks=hooks)
+    bound = bind(ev, Emitter(SYNC, cast(_AnyEmitter, emitter)), hooks=hooks)
     payload = _OrderCreated(1, "pending")
 
     # Act
@@ -257,8 +268,8 @@ def test_emitter_without_hooks_parameter() -> None:
 
     ev = PubSub(_OrderCreated)
     payload = _OrderCreated(1, "pending")
-    plain = bind(ev, emitter)
-    hooked = bind(ev, cast(_AnyEmitter, emitter), hooks=Hooks())
+    plain = bind(ev, Emitter(SYNC, emitter))
+    hooked = bind(ev, Emitter(SYNC, cast(_AnyEmitter, emitter)), hooks=Hooks())
 
     # Act / Assert
     plain(payload)
@@ -267,7 +278,7 @@ def test_emitter_without_hooks_parameter() -> None:
         hooked(payload)
 
 
-# region: Sync Or Async From The Emitter
+# region: Bound By The Emitter's Kind
 
 
 async def _async_emitter(event: object, payload: _OrderCreated, /) -> str:
@@ -300,9 +311,9 @@ async def test_async_emitter_gives_async_callable():
     event = PubSub(_OrderCreated)
 
     # Act
-    built = bind(event, _async_emitter)
-    sync_factory = bind(event, _async_emitter, factory=_OrderCreated)
-    async_factory = bind(event, _async_emitter, factory=_build_async)
+    built = bind(event, Emitter(ASYNC, _async_emitter))
+    sync_factory = bind(event, Emitter(ASYNC, _async_emitter), factory=_OrderCreated)
+    async_factory = bind(event, Emitter(ASYNC, _async_emitter), factory=_build_async)
 
     # Assert
     assert all(inspect.iscoroutinefunction(b) for b in (built, sync_factory, async_factory))
@@ -311,13 +322,13 @@ async def test_async_emitter_gives_async_callable():
     assert await async_factory(1, "async") == "async"
 
 
-async def test_marked_emitter_is_async():
+async def test_kind_decides_not_the_call():
     """
-    A plain function marked as a coroutine function should be bound as an async emitter.
+    The emitter's kind should decide how it's bound, not what its call looks like.
 
-    Given: A plain function returning a coroutine, marked with markcoroutinefunction
+    Given: A plain function returning a coroutine, paired with ASYNC
     When: It's bound with an async factory
-    Then: The callable is a coroutine function, and awaiting it gives the emitter's result
+    Then: The callable is a coroutine function, and awaiting it gives the call's result
     """
 
     # Arrange
@@ -325,35 +336,24 @@ async def test_marked_emitter_is_async():
         return _async_emitter(event, payload)
 
     # Act
-    bound = bind(
-        PubSub(_OrderCreated), inspect.markcoroutinefunction(emitter), factory=_build_async
-    )
+    bound = bind(PubSub(_OrderCreated), Emitter(ASYNC, emitter), factory=_build_async)
 
     # Assert
     assert inspect.iscoroutinefunction(bound)
-    assert await bound(1, "marked") == "marked"
+    assert await bound(1, "stated") == "stated"
 
 
-async def test_unmarked_coroutine_emitter_is_sync():
+def test_bare_function_refused():
     """
-    A plain function returning a coroutine, unmarked, should be bound as a sync emitter.
+    A function given to bind without its kind should be refused.
 
-    Given: A plain function returning a coroutine, not marked
-    When: It's bound, and its callable is called
-    Then: The callable isn't a coroutine function, and returns the emitter's coroutine
+    Given: A sync function, not paired with a kind
+    When: It's bound
+    Then: TypeError says bind takes an Emitter
     """
-
-    # Arrange
-    def emitter(event: object, payload: _OrderCreated, /) -> Coroutine[Any, Any, str]:
-        return _async_emitter(event, payload)
-
-    # Act
-    bound = bind(PubSub(_OrderCreated), emitter)
-    returned = bound(_OrderCreated(1, "unmarked"))
-
-    # Assert
-    assert not inspect.iscoroutinefunction(bound)
-    assert await returned == "unmarked"
+    # Act / Assert
+    with pytest.raises(TypeError, match="bind takes an Emitter"):
+        bind(PubSub(_OrderCreated), _sync_emitter)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 def test_sync_emitter_refuses_async_hooks_and_factory():
@@ -370,9 +370,9 @@ def test_sync_emitter_refuses_async_hooks_and_factory():
 
     # Act / Assert
     with pytest.raises(TypeError, match="'_OrderCreated' is bound to a sync emitter"):
-        bind(event, cast(_AnyEmitter, _sync_emitter), hooks=hooks)
+        bind(event, Emitter(SYNC, cast(_AnyEmitter, _sync_emitter)), hooks=hooks)
     with pytest.raises(TypeError, match="a sync emitter needs a sync factory"):
-        bind(event, _sync_emitter, factory=_build_async)  # pyright: ignore[reportCallIssue, reportArgumentType]
+        bind(event, Emitter(SYNC, _sync_emitter), factory=_build_async)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 # endregion
@@ -402,7 +402,7 @@ def test_bound_signature_without_factory_is_schema_to_reply() -> None:
     Then: Its signature is (payload: schema) -> reply, and get_type_hints reads the same
     """
     # Act
-    bound = bind(_place_order, cast(_AnyEmitter, create_autospec(EmitCallable)))
+    bound = bind(_place_order, Emitter(SYNC, cast(_AnyEmitter, create_autospec(EmitCallable))))
 
     # Assert
     assert inspect.signature(bound) == inspect.Signature(
@@ -421,7 +421,7 @@ def test_bound_pubsub_returns_none() -> None:
     Then: Its return annotation is None, not NoneType
     """
     # Act
-    bound = bind(PubSub(_Order), cast(_AnyEmitter, create_autospec(EmitCallable)))
+    bound = bind(PubSub(_Order), Emitter(SYNC, cast(_AnyEmitter, create_autospec(EmitCallable))))
 
     # Assert
     assert inspect.signature(bound).return_annotation is None
@@ -438,7 +438,7 @@ def test_bound_signal_takes_no_parameters() -> None:
     # Arrange
     emitter = create_autospec(EmitCallable)
     event = Request(name="ping", reply=_Receipt)
-    bound = bind(event, cast(_AnyEmitter, emitter))
+    bound = bind(event, Emitter(SYNC, cast(_AnyEmitter, emitter)))
 
     # Act
     bound()
@@ -462,7 +462,7 @@ def test_bound_signature_with_factory_has_factory_parameters() -> None:
         return _Order(sku * quantity)
 
     # Act
-    bound = bind(_place_order, create_autospec(EmitCallable), factory=order)
+    bound = bind(_place_order, Emitter(SYNC, create_autospec(EmitCallable)), factory=order)
 
     # Assert
     assert inspect.signature(bound) == inspect.signature(order).replace(return_annotation=_Receipt)
@@ -488,8 +488,8 @@ def test_bound_factory_string_annotations_resolved() -> None:
     unknown.__annotations__ = {"sku": "Missing", "return": _Order}
 
     # Act
-    resolved = bind(_place_order, create_autospec(EmitCallable), factory=known)
-    kept = bind(_place_order, create_autospec(EmitCallable), factory=unknown)
+    resolved = bind(_place_order, Emitter(SYNC, create_autospec(EmitCallable)), factory=known)
+    kept = bind(_place_order, Emitter(SYNC, create_autospec(EmitCallable)), factory=unknown)
 
     # Assert
     assert inspect.signature(resolved).parameters["sku"].annotation is str

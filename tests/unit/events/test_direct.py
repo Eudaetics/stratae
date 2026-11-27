@@ -2261,7 +2261,7 @@ def test_emitter_called_with_async_hooks_is_refused(bus: DirectBus):
 
     # Act / Assert
     with pytest.raises(TypeError, match="DirectBus runs hooks for '_TaskCreated' synchronously"):
-        emitter(_task_created, _TaskCreated(1), hooks=hooks)
+        emitter.call(_task_created, _TaskCreated(1), hooks=hooks)
     assert ran == []
 
 

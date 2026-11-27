@@ -108,7 +108,7 @@ from inspect import markcoroutinefunction
 from types import CoroutineType
 from typing import Any, NoReturn, Protocol, overload
 
-from stratae.events.binding import bind
+from stratae.events.binding import Emitter, bind
 from stratae.events.by_pattern import ByPattern
 from stratae.events.dispatch import Dispatch, Dispatcher
 from stratae.events.envelope import Envelope, EnvelopeFactory
@@ -246,11 +246,6 @@ def _async_publisher(
     return partial(publish_enveloped_async, enveloped, factory)
 
 
-def _unmarked[Fn: Callable[..., Any]](fn: Fn, /) -> Fn:
-    """Leave a sync bus's emitter as it is."""
-    return fn
-
-
 @dataclass(frozen=True, slots=True)
 class _Running:
     """What differs between a sync and an async direct bus, as a value."""
@@ -259,14 +254,12 @@ class _Running:
     """Its kind: default dispatchers, the handlers it accepts, and whether it awaits."""
     publisher: Callable[[tuple[PublishMiddleware, ...], EnvelopeFactory | None], _Publish]
     """Builds its pipeline entry from its publish middleware and envelope factory."""
-    mark: Callable[[Callable[..., Any]], Callable[..., Any]]
-    """Marks its emitters, so `bind` makes the callable of its kind."""
 
 
-_SYNC = _Running(SYNC, _sync_publisher, _unmarked)
+_SYNC = _Running(SYNC, _sync_publisher)
 """How a DirectBus runs."""
 
-_ASYNC = _Running(ASYNC, _async_publisher, markcoroutinefunction)
+_ASYNC = _Running(ASYNC, _async_publisher)
 """How an AsyncDirectBus runs."""
 
 
@@ -323,7 +316,7 @@ class _Core:
         Create the core of a bus.
 
         :param name: The bus's class name, for error messages.
-        :param running: How the bus runs: its kind, pipeline entry and emitter mark.
+        :param running: How the bus runs: its kind and its pipeline entry.
         :param dispatchers: Pattern and dispatcher pairs added to the kind's; later pairs win.
         :raises MiddlewareKindError: If any middleware is the wrong kind for the bus.
         """
@@ -342,9 +335,9 @@ class _Core:
         self._plain = not (middleware.publish or middleware.handle) and factory is None
         self._reserved = _NONE_RESERVED if factory is None else reserved_for(None, factory.headers)
 
-    def emitter(self, event: AnyEvent, /) -> Callable[..., Any]:
+    def emitter(self, event: AnyEvent, /) -> Emitter[Callable[..., Any]]:
         """
-        Return an emitter of the event that holds its route.
+        Return an emitter of the event, of the bus's kind, whose call holds its route.
 
         The route is found by value once, here, and recorded. So each call reads the event's
         current handlers without looking it up, and an equal event handled or bound elsewhere
@@ -368,7 +361,7 @@ class _Core:
                 raise TypeError(_REFUSED.format(name, f"hooks for {event.name!r}"))
             return publish_(route.send, reserved, event, payload, None, hooks)
 
-        return self._running.mark(emit_routed)
+        return Emitter(self._running.kind, emit_routed)
 
     def _route(self, event: AnyEvent) -> _Route:
         """
@@ -522,8 +515,8 @@ class DirectBus:
 
     def emitter[Payload, Result](
         self, event: EventType[Payload, Result, Any, Any], /
-    ) -> EmitCallable[
-        EventType[Payload, Result, Any, Any], Payload, Hooks[Payload, Result], Result
+    ) -> Emitter[
+        EmitCallable[EventType[Payload, Result, Any, Any], Payload, Hooks[Payload, Result], Result]
     ]:
         """
         Return an emitter of the event that holds its route.
@@ -533,7 +526,8 @@ class DirectBus:
         event up.
 
         :param event: The event.
-        :returns: An emitter taking the event, a payload and `hooks=`.
+        :returns: A sync {py:class}`Emitter <stratae.events.binding.Emitter>`, whose call takes
+            the event, a payload and `hooks=`.
         :raises TypeError: If the bus has no dispatcher for the event's pattern, or, when it's
             called, if `hooks` includes an async hook.
         """
@@ -743,8 +737,10 @@ class AsyncDirectBus:
 
     def emitter[Payload, Result](
         self, event: EventType[Payload, Result, Any, Any], /
-    ) -> EmitCallable[
-        EventType[Payload, Result, Any, Any], Payload, Hooks[Payload, Result], Awaitable[Result]
+    ) -> Emitter[
+        EmitCallable[
+            EventType[Payload, Result, Any, Any], Payload, Hooks[Payload, Result], Awaitable[Result]
+        ]
     ]:
         """
         Return an emitter of the event that holds its route.
@@ -754,7 +750,8 @@ class AsyncDirectBus:
         event up.
 
         :param event: The event.
-        :returns: An emitter taking the event, a payload and `hooks=`, returning an awaitable.
+        :returns: An async {py:class}`Emitter <stratae.events.binding.Emitter>`, whose call
+            takes the event, a payload and `hooks=`.
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
         return self._core.emitter(event)

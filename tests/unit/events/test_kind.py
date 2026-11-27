@@ -6,11 +6,11 @@ This test suite verifies the following behaviors:
 SYNC:
 - Starts from the sync dispatchers.
 - Accepts sync handlers, and refuses async functions and objects with an async __call__.
-- Doesn't await.
+- Doesn't await, and binds with bind_sync.
 
 ASYNC:
 - Starts from the async dispatchers.
-- Accepts sync and async handlers, and awaits.
+- Accepts sync and async handlers, awaits, and binds with bind_async.
 
 Kind:
 - fitted leaves a call as it is on SYNC; ASYNC leaves an async call, and defers a sync one.
@@ -22,7 +22,7 @@ import dataclasses
 
 import pytest
 
-from stratae.events import ASYNC, SYNC, Kind
+from stratae.events import ASYNC, SYNC, Kind, bind_async, bind_sync
 from stratae.events.dispatch import ASYNC_DISPATCHERS, SYNC_DISPATCHERS
 
 
@@ -53,6 +53,7 @@ def test_sync_kind():
     assert not SYNC.accepts(_async_handler)
     assert not SYNC.accepts(_AsyncCallable())
     assert SYNC.awaits is False
+    assert SYNC.bind is bind_sync
 
 
 def test_async_kind():
@@ -68,6 +69,7 @@ def test_async_kind():
     assert ASYNC.accepts(_sync_handler)
     assert ASYNC.accepts(_async_handler)
     assert ASYNC.awaits is True
+    assert ASYNC.bind is bind_async
 
 
 async def test_fitted_makes_a_call_fit_middleware():

@@ -20,7 +20,7 @@ from stratae.events import (
     Serializer,
     reserved_for,
 )
-from stratae.events.binding import bind
+from stratae.events.binding import Emitter, bind
 from stratae.events.by_pattern import ByPattern
 from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.events.hooks import Hooks
@@ -319,7 +319,9 @@ class RabbitMQPublisher:
 
     def emitter[Payload](
         self, event: PubSub[Payload, Any], config: RabbitMQConfig, /
-    ) -> EmitCallable[PubSub[Payload, Any], Payload, Hooks[Payload, None], Awaitable[None]]:
+    ) -> Emitter[
+        EmitCallable[PubSub[Payload, Any], Payload, Hooks[Payload, None], Awaitable[None]]
+    ]:
         """
         Route a PubSub event to `config`, and return an emitter of it.
 
@@ -328,13 +330,14 @@ class RabbitMQPublisher:
 
         :param event: The PubSub event.
         :param config: Where its messages go.
-        :returns: An emitter taking the event, a payload and `hooks=`, returning an awaitable.
+        :returns: An async {py:class}`Emitter <stratae.events.binding.Emitter>`, whose call
+            takes the event, a payload and `hooks=`.
         :raises TypeError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises ValueError: If the event is already routed to a different config.
         """
         self.route(event, config)
-        return self.emit
+        return Emitter(ASYNC, self.emit)
 
     @overload
     def bind[**P, Payload](

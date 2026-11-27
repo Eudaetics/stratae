@@ -6,7 +6,7 @@ Structural protocols for the event system.
 {py:class}`Producer` and {py:class}`Consumer` describe the emit and handle sides of a bus
 adapter. {py:class}`PubSubProducer` describes the emit side of one that emits only PubSub
 events. {py:class}`AsyncPubSubProducer` describes one whose PubSub emits are awaited.
-{py:class}`Emitter` describes a single emitter taking an event and its payload, and
+{py:class}`Emit` describes the call of an emitter taking an event and its payload, and
 {py:class}`EmitCallable` one that also takes hooks, each typed by the events it takes.
 {py:class}`Serializer` and {py:class}`Deserializer` describe the codecs an adapter takes for
 payloads that cross a process boundary. `msgspec.json.encode` and `msgspec.json.decode` are
@@ -77,9 +77,9 @@ type SignalEvent[EmitResult, HandleResult] = EventType[
 """An event carrying no payload."""
 
 
-class Emitter[Event, Payload, Result](Protocol):
+class Emit[Event, Payload, Result](Protocol):
     """
-    Structural protocol for one emitter that takes no hooks: an event and its payload.
+    Structural protocol for an emitter's call that takes no hooks: an event and its payload.
 
     It's typed by the event it takes, its payload and what it returns. Binding an event to one
     without hooks checks it takes that event, as {py:class}`EmitCallable` does. Its parameters

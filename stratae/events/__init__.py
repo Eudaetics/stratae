@@ -72,7 +72,7 @@ created user: ada
 ````
 """
 
-from .binding import abind, bind
+from .binding import Emitter, abind, bind, bind_async, bind_sync
 from .direct import AsyncDirectBus, DirectBus
 from .dispatch import (
     Dispatch,
@@ -97,8 +97,8 @@ from .protocols import (
     Consumer,
     Deserializer,
     Destination,
+    Emit,
     EmitCallable,
-    Emitter,
     Encoded,
     EventType,
     Operating,
@@ -130,6 +130,7 @@ __all__ = [
     "DirectBus",
     "Dispatch",
     "Dispatcher",
+    "Emit",
     "EmitCallable",
     "Emitter",
     "Encoded",
@@ -163,6 +164,8 @@ __all__ = [
     "SyncHandler",
     "abind",
     "bind",
+    "bind_async",
+    "bind_sync",
     "destination_of",
     "dispatch_request",
     "dispatch_request_async",

@@ -115,7 +115,7 @@ from dataclasses import KW_ONLY, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum, auto
 from functools import partial
-from inspect import isawaitable, markcoroutinefunction
+from inspect import isawaitable
 from types import MappingProxyType
 from typing import (
     Any,
@@ -128,7 +128,7 @@ from typing import (
 from uuid import UUID
 
 from stratae.backoff import Backoff, Endless, Exponential, Limited
-from stratae.events.binding import bind
+from stratae.events.binding import Emitter, bind
 from stratae.events.by_pattern import ByPattern
 from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.exceptions import NotConnectedError
@@ -572,7 +572,9 @@ class OutboxProducer[Target]:
 
     def emitter[Payload](
         self, event: PubSub[Payload, Any], config: OutboxConfig[Target], /
-    ) -> EmitCallable[PubSub[Payload, Any], Payload, Hooks[Payload, None], Awaitable[None]]:
+    ) -> Emitter[
+        EmitCallable[PubSub[Payload, Any], Payload, Hooks[Payload, None], Awaitable[None]]
+    ]:
         """
         Route a PubSub event to `config`, and return an emitter of it that holds its route.
 
@@ -581,11 +583,12 @@ class OutboxProducer[Target]:
 
         :param event: The {py:class}`PubSub <stratae.events.patterns.PubSub>` event.
         :param config: The route's {py:class}`OutboxConfig`.
-        :returns: An emitter taking the event, a payload and `hooks=`, returning an awaitable.
+        :returns: An async {py:class}`Emitter <stratae.events.binding.Emitter>`, whose call
+            takes the event, a payload and `hooks=`.
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises ValueError: If the event, or the route's name, is already routed elsewhere.
         """
-        return partial(self._emit_on, self._route(event, config))
+        return Emitter(ASYNC, partial(self._emit_on, self._route(event, config)))
 
     @overload
     def bind[**P, Payload](
@@ -661,7 +664,6 @@ class OutboxProducer[Target]:
             raise LookupError(_NO_ROUTE.format(event.name))
         await self._emit_on(route, event, payload, hooks=hooks)
 
-    @markcoroutinefunction
     def _emit_on[Payload](
         self,
         route: _Route[Target],
