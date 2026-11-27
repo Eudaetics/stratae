@@ -6,8 +6,8 @@ An event pairs a payload schema with a dispatch pattern, one class per pattern:
 {py:class}`Request <stratae.events.patterns.Request>`. Each implements
 {py:class}`EventType <stratae.events.protocols.EventType>`. Events are data: each bus decides
 which patterns it delivers.
-{py:func}`bind <stratae.events.binding.bind>` and
-{py:func}`abind <stratae.events.binding.abind>` turn an event into a callable that emits it.
+{py:func}`bind <stratae.events.binding.bind>` turns an event into a callable that emits it,
+sync or async as its emitter is.
 {py:class}`DirectBus <stratae.events.direct.DirectBus>` and
 {py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>` dispatch in-process;
 other adapters implement the {py:class}`Producer <stratae.events.protocols.Producer>` and
@@ -69,7 +69,7 @@ created user: ada
 ````
 """
 
-from .binding import abind, bind
+from .binding import bind
 from .direct import AsyncDirectBus, DirectBus
 from .dispatch import (
     Dispatch,
@@ -154,7 +154,6 @@ __all__ = [
     "Serializing",
     "SignalEvent",
     "SyncHandler",
-    "abind",
     "bind",
     "destination_of",
     "dispatch_request",

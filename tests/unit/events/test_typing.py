@@ -21,9 +21,9 @@ AsyncDirectBus:
 - A payload-less event binds to a zero-argument coroutine function.
 
 Binding:
-- bind and abind take an emitter for the events it takes: a PubSub-only emitter binds PubSub
+- bind takes an emitter for the events it takes: a PubSub-only emitter binds PubSub
   events, typed by their payload, and refuses a request or hooks for another payload.
-- bind and abind take an emitter without hooks when bound without hooks, typed by the factory,
+- bind takes an emitter without hooks when bound without hooks, typed by the factory,
   payload and reply, and refuse it with hooks.
 - A direct bus's emitter binds with bind, typed by the event's payload and reply, an async
   bus's to an async callable.
@@ -57,7 +57,6 @@ from stratae.events import (
     PubSub,
     Request,
     SyncHandler,
-    abind,
     bind,
 )
 from stratae.events.dispatch import (
@@ -315,7 +314,7 @@ async def _publish_async[S](
 
 async def test_binding_typed_by_the_emitter() -> None:
     """
-    Bind and abind should take an emitter for the events it takes, and refuse any other.
+    Bind should take an emitter for the events it takes, and refuse any other.
 
     Given: A sync and an async emitter that take PubSub events only
     When: PubSub events, and a request, are bound to each
@@ -328,9 +327,9 @@ async def test_binding_typed_by_the_emitter() -> None:
     # Act
     placed = bind(_order_placed, _publish)
     beat = bind(_heartbeat, _publish)
-    place = abind(_order_placed, _publish_async, factory=_OrderPlaced)
+    place = bind(_order_placed, _publish_async, factory=_OrderPlaced)
     bind(_place_order, _publish)  # pyright: ignore[reportCallIssue, reportArgumentType]
-    abind(_place_order, _publish_async)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    bind(_place_order, _publish_async)  # pyright: ignore[reportCallIssue, reportArgumentType]
     bind(_order_placed, _publish, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     # Assert
@@ -389,7 +388,7 @@ async def _ring_async(event: Request[NoPayload, str, Any], payload: NoPayload, /
 
 async def test_binding_an_emitter_without_hooks() -> None:
     """
-    Bind and abind should take an emitter without hooks when bound without hooks.
+    Bind should take an emitter without hooks when bound without hooks.
 
     Given: Sync and async emitters taking only an event and a payload
     When: They're bound with and without a factory, payload-less included, then with hooks
@@ -402,11 +401,11 @@ async def test_binding_an_emitter_without_hooks() -> None:
     place = bind(_place_order, _send, factory=_PlaceOrder)
     place_built = bind(_place_order, _send)
     ping = bind(_ping, _ring)
-    aplace = abind(_place_order, _send_async, factory=_PlaceOrder)
-    aplace_built = abind(_place_order, _send_async)
-    aping = abind(_ping, _ring_async)
+    aplace = bind(_place_order, _send_async, factory=_PlaceOrder)
+    aplace_built = bind(_place_order, _send_async)
+    aping = bind(_ping, _ring_async)
     bind(_place_order, _send, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
-    abind(_place_order, _send_async, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
+    bind(_place_order, _send_async, hooks=order_hooks)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
     # Assert
     assert_type(place(item="desk"), _Order)
