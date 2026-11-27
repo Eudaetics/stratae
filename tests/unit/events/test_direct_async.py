@@ -1344,7 +1344,10 @@ def test_unsupported_pattern_refused_at_handle(bus: AsyncDirectBus):
     Then: A TypeError names the bus and the pattern, and nothing is registered
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="AsyncDirectBus has no dispatcher for _Gather"):
+    with pytest.raises(
+        TypeError,
+        match="AsyncDirectBus doesn't support _Gather events: register one with dispatchers=",
+    ):
         bus.handle(_quotes, lambda query: 1)
     assert bus.handlers(_quotes) == ()
 
@@ -1358,7 +1361,10 @@ def test_unsupported_pattern_refused_at_bind(bus: AsyncDirectBus):
     Then: A TypeError names the bus and the pattern
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="AsyncDirectBus has no dispatcher for _Gather"):
+    with pytest.raises(
+        TypeError,
+        match="AsyncDirectBus doesn't support _Gather events: register one with dispatchers=",
+    ):
         bus.bind(_quotes, factory=_BookQuery)
 
 
@@ -1771,7 +1777,7 @@ async def test_emit_raises_only_when_awaited(bus: AsyncDirectBus):
     assert inspect.iscoroutine(unsupported)
     with pytest.raises(NoResponderError):
         await no_responder
-    with pytest.raises(TypeError, match="no dispatcher"):
+    with pytest.raises(TypeError, match="doesn't support _Gather events"):
         await unsupported
 
 

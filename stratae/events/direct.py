@@ -99,14 +99,15 @@ scheduled shipment for order 1
 """
 
 import threading
-from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator, Iterable
-from functools import partial, singledispatch
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Generator
+from functools import partial
 from inspect import markcoroutinefunction
 from types import CoroutineType
 from typing import Any, NoReturn, Protocol, overload
 
 from stratae.callables import is_async_callable
 from stratae.events.binding import abind, bind
+from stratae.events.by_pattern import ByPattern
 from stratae.events.dispatch import ASYNC_DISPATCHERS, SYNC_DISPATCHERS, Dispatch, Dispatcher
 from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.exceptions import DuplicateHandlerError
@@ -138,34 +139,8 @@ _NONE_RESERVED: frozenset[str] = frozenset()
 _NO_HANDLERS: Handlers[AnyEvent, Any, Any] = Handlers()
 """The handlers of an event nothing handles."""
 
-_UNSUPPORTED_PATTERN = (
-    "{bus} has no dispatcher for {pattern} events; register one with dispatchers="
-)
-
-
-def _no_dispatcher(event: AnyEvent, handlers: Collection[Any], payload: Any) -> Any:
-    """
-    Mark a pattern the bus has no dispatcher for; never called.
-
-    A bus compares its dispatch function's choice against this, and refuses the event with
-    `TypeError` in `handle`, `bind` and `emit`. Every emit goes through that check, so
-    nothing dispatches to this.
-    """
-    ...
-
-
-def _build_dispatcher(
-    pairs: Iterable[tuple[type, Dispatcher[Any]]],
-) -> Callable[[type], Dispatcher[Any]]:
-    """
-    Build a bus's dispatch function from pattern and dispatcher pairs; later pairs win.
-
-    It takes an event's class and returns its dispatcher, or `_no_dispatcher` if there's none.
-    """
-    dispatch = singledispatch(_no_dispatcher)
-    for pattern, dispatcher in pairs:
-        dispatch.register(pattern, dispatcher)
-    return dispatch.dispatch
+_ADD_A_DISPATCHER = "register one with dispatchers="
+"""Why a bus refuses a pattern: it has no dispatcher for it, and can be given one."""
 
 
 _ASYNC_HANDLER_REJECTED = (
@@ -290,9 +265,8 @@ class _Core:
 
     __slots__ = (
         "_asynchronous",
-        "_dispatcher",
+        "_dispatchers",
         "_middleware",
-        "_name",
         "_plain",
         "_publish",
         "_registering",
@@ -318,11 +292,12 @@ class _Core:
         :raises MiddlewareKindError: If any middleware is the wrong kind for the bus.
         """
         middleware.require(name, asynchronous=asynchronous)
-        self._name = name
         self._asynchronous = asynchronous
         self._routes: dict[AnyEvent, _Route] = {}
         self._registering = threading.Lock()
-        self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in dispatchers)
+        self._dispatchers: Callable[[AnyEvent], Dispatcher[Any]] = ByPattern(
+            name, ((d.pattern, d.dispatcher) for d in dispatchers), reason=_ADD_A_DISPATCHER
+        ).__call__
         self._middleware = middleware
         self._publish = _publisher(middleware.publish, factory, asynchronous)
         self._plain = not (middleware.publish or middleware.handle) and factory is None
@@ -352,15 +327,6 @@ class _Core:
 
         return emit_routed
 
-    def _resolve(self, event: AnyEvent) -> Dispatcher[Any]:
-        """Return the dispatcher for the event's pattern, or raise TypeError if there's none."""
-        dispatcher = self._dispatcher(type(event))
-        if dispatcher is _no_dispatcher:
-            raise TypeError(
-                _UNSUPPORTED_PATTERN.format(bus=self._name, pattern=type(event).__name__)
-            )
-        return dispatcher
-
     def _route(self, event: AnyEvent) -> _Route:
         """
         Return the event's route, recording it the first time.
@@ -369,7 +335,7 @@ class _Core:
         """
         route = self._routes.get(event)
         if route is None:
-            route = self._routes.setdefault(event, self._new_route(self._resolve(event)))
+            route = self._routes.setdefault(event, self._new_route(self._dispatchers(event)))
         return route
 
     def _new_route(self, dispatcher: Dispatcher[Any]) -> _Route:
@@ -426,7 +392,7 @@ class _Core:
         """
         route = self._routes.get(event)
         if route is None:
-            dispatcher = self._resolve(event)
+            dispatcher = self._dispatchers(event)
             if hooks is None and self._plain:
                 message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
                 return dispatcher(event, _NO_HANDLERS, message)
