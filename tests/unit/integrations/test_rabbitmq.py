@@ -39,8 +39,8 @@ RabbitMQPublisher:
   mutating the config's properties object.
 - emit stamps envelope ids onto every message as x- headers and native
   fields, chaining a child of the active envelope scope.
-- emit raises NotImplementedError for a request/reply event.
-- bind raises NotImplementedError for a request/reply event.
+- emit raises TypeError for a request/reply event, naming the publisher, pattern and reason.
+- route and bind raise TypeError for a request/reply event.
 - emit publishes an empty body for a schema-less event.
 - emit runs the hooks passed to it around the publish, with a reply of None.
 - A failed publish reaches the failure hook, and still propagates.
@@ -347,7 +347,12 @@ async def test_emit_without_connection_raises(publisher: RabbitMQPublisher):
         await publisher.emit(_order_placed, _OrderPlaced(1))
 
 
-async def test_emit_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
+_REQUEST_REFUSED = (
+    r"^RabbitMQPublisher doesn't support Request events: it publishes PubSub events only$"
+)
+
+
+async def test_emit_refuses_request(publisher: RabbitMQPublisher):
     """
     ``emit`` should refuse a request/reply event, for type checkers and at runtime.
 
@@ -356,32 +361,33 @@ async def test_emit_raises_not_implemented_for_request(publisher: RabbitMQPublis
 
     Given: A publisher, a Request event, and a command (a Request without a reply)
     When: emit is awaited with each
-    Then: Each call is a type error, and raises NotImplementedError
+    Then: Each call is a type error, and raises TypeError naming the publisher, the pattern
+        and the reason
     """
     request_event = Request(_OrderPlaced, reply=_OrderPlaced)
     command_event = Request(_OrderPlaced)
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(TypeError, match=_REQUEST_REFUSED):
         await publisher.emit(
             request_event,  # pyright: ignore[reportArgumentType]
             _OrderPlaced(1),
         )
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(TypeError, match=_REQUEST_REFUSED):
         await publisher.emit(
             command_event,  # pyright: ignore[reportArgumentType]
             _OrderPlaced(1),
         )
 
 
-def test_bind_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
+def test_route_and_bind_refuse_request(publisher: RabbitMQPublisher):
     """
-    ``bind`` should refuse a request/reply event before anything emits it.
+    ``route`` and ``bind`` should refuse a request/reply event before anything emits it.
 
     The `# pyright: ignore[...]` comments mark expected type errors.
 
     Given: A publisher, a Request event, and a command (a Request without a reply)
-    When: Each is bound
-    Then: Each call is a type error, and raises NotImplementedError
+    When: Each is routed, and bound
+    Then: Each call is a type error, and raises TypeError
     """
     # Arrange
     request_event = Request(_OrderPlaced, reply=_OrderPlaced)
@@ -389,7 +395,9 @@ def test_bind_raises_not_implemented_for_request(publisher: RabbitMQPublisher):
 
     # Act / Assert
     for event in (request_event, command_event):
-        with pytest.raises(NotImplementedError, match="PubSub events only"):
+        with pytest.raises(TypeError, match=_REQUEST_REFUSED):
+            publisher.route(event, _config)  # pyright: ignore[reportArgumentType]
+        with pytest.raises(TypeError, match=_REQUEST_REFUSED):
             publisher.bind(  # pyright: ignore[reportCallIssue]
                 event,  # pyright: ignore[reportArgumentType]
                 factory=_OrderPlaced,

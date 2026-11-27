@@ -20,6 +20,7 @@ from stratae.events import (
     reserved_for,
 )
 from stratae.events.binding import abind
+from stratae.events.by_pattern import ByPattern
 from stratae.events.exceptions import NotConnectedError, UnroutableError
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import Middleware
@@ -42,9 +43,6 @@ _NOT_CONNECTED = "publisher is not connected; open it with 'async with' before e
 
 _RECONNECTING = "publisher lost its broker connection and is reconnecting; retry the publish"
 
-_REQUEST_REPLY_NOT_IMPLEMENTED = (
-    "RabbitMQ publishes PubSub events only; request/reply is not yet implemented"
-)
 
 _UNROUTABLE = "message to exchange {!r} with routing key {!r} reached no queue"
 
@@ -82,10 +80,10 @@ def _route(config: RabbitMQConfig) -> _Route:
     return RabbitMQPublish(config, key) if isinstance(key, str) else _Keyed(config, key)
 
 
-def _require_pubsub(event: AnyEvent) -> None:
-    """Raise NotImplementedError for an event that isn't PubSub."""
-    if not isinstance(event, PubSub):
-        raise NotImplementedError(_REQUEST_REPLY_NOT_IMPLEMENTED)
+_PUBLISHES: ByPattern[bool] = ByPattern(
+    "RabbitMQPublisher", [(PubSub, True)], reason="it publishes PubSub events only"
+)
+"""The patterns a publisher publishes; calling it with any other event raises `TypeError`."""
 
 
 class RabbitMQPublisher:
@@ -97,7 +95,7 @@ class RabbitMQPublisher:
     or by `route`, and `emit` publishes on that route. It implements
     {py:class}`PubSub <stratae.events.patterns.PubSub>` and its subclasses only, so it matches
     {py:class}`PubSubProducer <stratae.events.protocols.PubSubProducer>`. Binding or emitting
-    any other event is a type error, and raises `NotImplementedError`.
+    any other event is a type error, and raises `TypeError`.
 
     Publishing uses publisher confirms: `emit` returns only once the broker has taken
     responsibility for the message, and raises if the broker refuses it or the channel closes
@@ -221,11 +219,11 @@ class RabbitMQPublisher:
 
         :param event: The PubSub event to route.
         :param config: Where its messages go.
-        :raises NotImplementedError: If the event isn't
+        :raises TypeError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises ValueError: If the event is already routed to a different config.
         """
-        _require_pubsub(event)
+        _PUBLISHES(event)
         reserved = reserved_for(config, self._envelope_factory.headers)
         routed = self._routes.setdefault(event, (_route(config), reserved))
         if routed[0].route != config:
@@ -257,16 +255,16 @@ class RabbitMQPublisher:
             {py:data}`FAILURE_HEADER <stratae.integrations.rabbitmq.config.FAILURE_HEADER>`.
         :raises NotConnectedError: If the publisher isn't connected.
         :raises LookupError: If the event has no route.
-        :raises NotImplementedError: If the event isn't
+        :raises TypeError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises UnroutableError: If `config.mandatory` is set and the message reached no queue.
         :raises aiormq.exceptions.DeliveryError: If the broker refuses the message.
         :raises aiormq.exceptions.ChannelClosed: If the channel closes before the broker
             confirms, e.g. because the exchange doesn't exist.
         """
-        _require_pubsub(event)
         routed = self._routes.get(event)
         if routed is None:
+            _PUBLISHES(event)
             raise LookupError(_NO_ROUTE.format(event.name))
         route, reserved = routed
         if isinstance(payload, Encoded):
@@ -363,7 +361,7 @@ class RabbitMQPublisher:
         :param config: Where its messages go.
         :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each publish.
         :returns: An async callable that publishes the event.
-        :raises NotImplementedError: If the event isn't
+        :raises TypeError: If the event isn't
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises ValueError: If the event is already routed to a different config.
         """
