@@ -1,10 +1,16 @@
 """
 Callable facades that bind an event definition to a concrete emitter.
 
-{py:func}`bind` and {py:func}`abind` bind an event to a sync or async emitter. With a
-`factory`, the result builds the payload from its arguments. Without one, it takes a built
-payload, or nothing for a payload-less event. An adapter's own `bind` method routes the event,
-if the adapter routes, then calls one of these.
+{py:func}`bind` binds an event to an emitter. A sync emitter gives a sync callable. An async
+one, whose call gives a coroutine, gives an async callable, whose factory may be async too.
+{py:func}`abind` binds an async emitter only. With a `factory`, the result builds the payload
+from its arguments. Without one, it takes a built payload, or nothing for a payload-less
+event. An adapter's `emitter` method gives its emitter for an event, routed if the adapter
+routes, and its own `bind` method binds that.
+
+A sync emitter runs hooks synchronously, so binding one refuses async hooks and an async
+factory. An async emitter that isn't an `async def` is recognised only if it's marked with
+`inspect.markcoroutinefunction`; otherwise it's bound as sync.
 
 The emitter is called with the event and the payload, as an {py:class}`Emitter
 <stratae.events.protocols.Emitter>`. Only binding with `hooks` needs one that also takes
@@ -78,7 +84,15 @@ from stratae.events.protocols import (
     SignalEvent,
 )
 
-_SYNC_FACTORY_REQUIRED = "bind requires a sync factory; resolve async work outside the factory"
+_SYNC_FACTORY_REQUIRED = (
+    "a sync emitter needs a sync factory; resolve async work outside the factory, or bind an"
+    " async emitter"
+)
+
+_SYNC_HOOKS_REQUIRED = (
+    "{!r} is bound to a sync emitter, which runs hooks synchronously; give it sync hooks, or bind"
+    " an async emitter"
+)
 
 _NO_PAYLOAD = NoPayload()
 """What a payload-less event's bound callable passes as its payload."""
@@ -190,6 +204,28 @@ def bind[Payload, HookType: Hooks[Any, Any], Result, Event: PayloadEvent[Any, An
 ) -> Callable[[Payload], Result]: ...
 
 
+@overload
+def bind[**P, Payload, Result, Event: PayloadEvent[Any, Any, Any]](
+    event: Event,
+    emitter: Emitter[Event, Payload, Awaitable[Result]],
+    /,
+    *,
+    factory: Callable[P, Awaitable[Payload]],
+    hooks: None = None,
+) -> Callable[P, Awaitable[Result]]: ...
+
+
+@overload
+def bind[**P, Payload, HookType: Hooks[Any, Any], Result, Event: PayloadEvent[Any, Any, Any]](
+    event: Event,
+    emitter: EmitCallable[Event, Payload, HookType, Awaitable[Result]],
+    /,
+    *,
+    factory: Callable[P, Awaitable[Payload]],
+    hooks: HookType | None = None,
+) -> Callable[P, Awaitable[Result]]: ...
+
+
 def bind(
     event: AnyEvent,
     emitter: EmitCallable[Any, Any, Any, Any] | Emitter[Any, Any, Any],
@@ -199,17 +235,25 @@ def bind(
     hooks: Hooks[Any, Any] | None = None,
 ) -> Callable[..., Any]:
     """
-    Bind an event to a sync emitter.
+    Bind an event to an emitter, sync or async.
+
+    An async emitter, one whose call gives a coroutine, such as an `async def` or one marked
+    with `inspect.markcoroutinefunction`, gives an async callable, whose factory may be async
+    too. Any other emitter gives a sync callable.
 
     :param event: The event to bind.
     :param emitter: Called with the event and payload. Without `hooks`, it needn't take any.
-    :param factory: A sync callable building the payload from the call's arguments. If
-        omitted, the payload is passed directly.
+    :param factory: A callable building the payload from the call's arguments, async only for
+        an async emitter. If omitted, the payload is passed directly.
     :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit,
         passed to `emitter` only when given.
     :returns: A callable that dispatches through `emitter`.
-    :raises TypeError: If `factory` is async.
+    :raises TypeError: If the emitter is sync, and `factory` or a hook is async.
     """
+    if is_async_callable(emitter):
+        return _bind_async(event, emitter, factory, hooks)
+    if hooks is not None and hooks.has_async:
+        raise TypeError(_SYNC_HOOKS_REQUIRED.format(event.name))
     emit = _with_hooks(emitter, hooks)
     if factory is None and event.is_signal:
 
@@ -320,6 +364,17 @@ def abind(
         passed to `emitter` only when given.
     :returns: An async callable that dispatches through `emitter`.
     """
+    return _bind_async(event, emitter, factory, hooks)
+
+
+def _bind_async(
+    event: AnyEvent,
+    emitter: Callable[..., Awaitable[Any]],
+    factory: Callable[..., Any] | None,
+    hooks: Hooks[Any, Any] | None,
+    /,
+) -> Callable[..., Awaitable[Any]]:
+    """Bind an event to an async emitter, as an async callable; its factory may be async."""
     emit = _with_hooks(emitter, hooks)
     if factory is None and event.is_signal:
 

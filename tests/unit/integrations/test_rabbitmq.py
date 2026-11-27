@@ -24,7 +24,7 @@ RabbitMQPublisher:
 - emit refuses an event with no route, and publishes nothing.
 - An event keeps one route: routing or binding it again to an equal config is accepted, and to
   a different config raises ValueError.
-- emitter routes the event, and bound with abind publishes as bind does; it refuses a
+- emitter routes the event, and bound with bind publishes as bind does; it refuses a
   different config with ValueError.
 - A config whose routing key is a function addresses each payload, gives a message's config
   with its key, has its exchange as its destination, and is Addressed.
@@ -120,7 +120,7 @@ from stratae.events import (
     PubSub,
     PubSubProducer,
     Request,
-    abind,
+    bind,
 )
 from stratae.events.envelope import EnvelopeHeaders
 from stratae.events.exceptions import AlreadyConnectedError, NotConnectedError, UnroutableError
@@ -440,7 +440,7 @@ def test_bound_pubsub_events_are_typed_as_giving_none(publisher: RabbitMQPublish
     # Act
     bound = publisher.bind(_order_placed, config=_config)
     signal = publisher.bind(PubSub(name="ping"), config=_config)
-    from_emitter = abind(_order_placed, publisher.emitter(_order_placed, _config))
+    from_emitter = bind(_order_placed, publisher.emitter(_order_placed, _config))
 
     # Assert
     assert_type(bound, Callable[[_OrderPlaced], Awaitable[None]])
@@ -477,7 +477,7 @@ async def test_emitter_routes_and_publishes(publisher: RabbitMQPublisher, channe
     ``emitter`` should route the event, and its bound callable publish as ``bind``'s does.
 
     Given: A connected publisher
-    When: An event's emitter is asked for with a config, bound with abind and awaited, and
+    When: An event's emitter is asked for with a config, bound with bind and awaited, and
         asked for again with a different config
     Then: The payload is published to the config's exchange and routing key, and the different
         config raises ValueError
@@ -486,11 +486,12 @@ async def test_emitter_routes_and_publishes(publisher: RabbitMQPublisher, channe
     payload = _OrderPlaced(7)
 
     # Act
-    place = abind(_order_placed, publisher.emitter(_order_placed, _config))
+    place = bind(_order_placed, publisher.emitter(_order_placed, _config))
     async with publisher:
         await place(payload)
 
     # Assert
+    assert inspect.iscoroutinefunction(place)
     call = channel.basic_publish.await_args
     assert call.args[0] == _encode(payload)
     assert (call.kwargs["exchange"], call.kwargs["routing_key"]) == ("events", "order.placed")

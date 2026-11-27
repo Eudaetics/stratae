@@ -25,7 +25,9 @@ Binding:
   events, typed by their payload, and refuses a request or hooks for another payload.
 - bind and abind take an emitter without hooks when bound without hooks, typed by the factory,
   payload and reply, and refuse it with hooks.
-- A direct bus's emitter binds with bind or abind, typed by the event's payload and reply.
+- A direct bus's emitter binds with bind, typed by the event's payload and reply, an async
+  bus's to an async callable.
+- bind takes an async emitter, with a sync or an async factory, typed as resolving to its reply.
 
 Hooks:
 - Hooks passed to handle, bind and emit are typed by the event's payload and reply.
@@ -339,7 +341,7 @@ async def test_binding_typed_by_the_emitter() -> None:
 
 async def test_direct_bus_emitters_bind() -> None:
     """
-    A direct bus's emitter should bind with bind or abind, typed by the event.
+    A direct bus's emitter should bind with bind, typed by the event.
 
     Given: A DirectBus and an AsyncDirectBus, each with a responder
     When: Each bus's emitter is bound, with and without a factory, payload-less included
@@ -356,8 +358,8 @@ async def test_direct_bus_emitters_bind() -> None:
     place = bind(_place_order, bus.emitter(_place_order), factory=_PlaceOrder)
     place_built = bind(_place_order, bus.emitter(_place_order))
     ping = bind(_ping, bus.emitter(_ping))
-    aplace = abind(_place_order, async_bus.emitter(_place_order), factory=_PlaceOrder)
-    aping = abind(_ping, async_bus.emitter(_ping))
+    aplace = bind(_place_order, async_bus.emitter(_place_order), factory=_PlaceOrder)
+    aping = bind(_ping, async_bus.emitter(_ping))
 
     # Assert
     assert_type(place(item="desk"), _Order)
@@ -415,6 +417,37 @@ async def test_binding_an_emitter_without_hooks() -> None:
     assert_type(await aping(), str)
     assert place_built(_PlaceOrder("desk")).item == "desk"
     assert ping() == "pong"
+
+
+async def _place_async(item: str) -> _PlaceOrder:
+    await asyncio.sleep(0)
+    return _PlaceOrder(item)
+
+
+async def test_bind_takes_async_emitters() -> None:
+    """
+    An async emitter should bind with bind, with a sync or an async factory.
+
+    Given: An async emitter without hooks, and one taking hooks
+    When: Each is bound with bind, without a factory, with a sync factory and an async one
+    Then: Each binding resolves to the event's reply
+    """
+    # Arrange
+    order_hooks: Hooks[_PlaceOrder, _Order] = Hooks(success=(_audit_order,))
+    bus = AsyncDirectBus()
+    bus.handle(_place_order, _make_order)
+
+    # Act
+    built = bind(_place_order, _send_async)
+    sync_factory = bind(_place_order, _send_async, factory=_PlaceOrder)
+    async_factory = bind(_place_order, _send_async, factory=_place_async)
+    hooked = bind(_place_order, bus.emitter(_place_order), factory=_place_async, hooks=order_hooks)
+
+    # Assert
+    assert_type(await built(_PlaceOrder("lamp")), _Order)
+    assert_type(await sync_factory(item="lamp"), _Order)
+    assert_type(await async_factory("lamp"), _Order)
+    assert_type(await hooked("lamp"), _Order)
 
 
 def test_pubsub_handlers_return_none() -> None:

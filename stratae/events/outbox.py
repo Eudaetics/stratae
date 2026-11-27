@@ -115,7 +115,7 @@ from dataclasses import KW_ONLY, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import Enum, auto
 from functools import partial
-from inspect import isawaitable
+from inspect import isawaitable, markcoroutinefunction
 from types import MappingProxyType
 from typing import (
     Any,
@@ -128,7 +128,7 @@ from typing import (
 from uuid import UUID
 
 from stratae.backoff import Backoff, Endless, Exponential, Limited
-from stratae.events.binding import abind
+from stratae.events.binding import bind
 from stratae.events.by_pattern import ByPattern
 from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.exceptions import NotConnectedError
@@ -463,7 +463,7 @@ class OutboxProducer[Target]:
     An async bus that writes events to an outbox store instead of publishing them.
 
     Bind {py:class}`PubSub <stratae.events.patterns.PubSub>` events to it with `bind`, or bind
-    its `emitter` for an event with {py:func}`abind <stratae.events.binding.abind>`.
+    its `emitter` for an event with {py:func}`bind <stratae.events.binding.bind>`.
     Either registers the route, so a relay knows every route before anything is emitted.
     Emitting writes a record. Hooks given to `bind` or `emit` run around that write, inside
     the record's envelope, and publish middleware around them. Headers the middleware adds
@@ -575,8 +575,8 @@ class OutboxProducer[Target]:
         """
         Route a PubSub event to `config`, and return an emitter of it that holds its route.
 
-        Binding it with {py:func}`abind <stratae.events.binding.abind>` gives the same callable
-        as `bind`.
+        Binding it with {py:func}`bind <stratae.events.binding.bind>` gives what its `bind` method
+        does.
 
         :param event: The {py:class}`PubSub <stratae.events.patterns.PubSub>` event.
         :param config: The route's {py:class}`OutboxConfig`.
@@ -625,7 +625,7 @@ class OutboxProducer[Target]:
         """
         Bind an event to the outbox, routing it.
 
-        See {py:func}`abind <stratae.events.binding.abind>`.
+        See {py:func}`bind <stratae.events.binding.bind>`.
 
         :param event: The {py:class}`PubSub <stratae.events.patterns.PubSub>` event to bind.
         :param factory: Builds the payload from the call's arguments, sync or async.
@@ -635,7 +635,7 @@ class OutboxProducer[Target]:
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises ValueError: If the event, or the route's name, is already routed elsewhere.
         """
-        return abind(event, self.emitter(event, config), factory=factory, hooks=hooks)
+        return bind(event, self.emitter(event, config), factory=factory, hooks=hooks)
 
     async def emit[Payload](
         self,
@@ -660,6 +660,7 @@ class OutboxProducer[Target]:
             raise LookupError(_NO_ROUTE.format(event.name))
         await self._emit_on(route, event, payload, hooks=hooks)
 
+    @markcoroutinefunction
     def _emit_on[Payload](
         self,
         route: _Route[Target],
@@ -671,7 +672,7 @@ class OutboxProducer[Target]:
         """
         Write a payload to the outbox on a route that's already registered.
 
-        Typed for any event, so `bind` can hand it to `abind`. Only PubSub events reach it:
+        Typed for any event, so `emitter` can hand it to `bind`. Only PubSub events reach it:
         `bind` and `emit` take nothing else, and refuse anything else at runtime.
         """
         return publish_enveloped_async(

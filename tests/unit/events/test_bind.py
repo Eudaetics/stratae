@@ -16,6 +16,13 @@ bind with hooks:
 - The hooks are forwarded to the emitter.
 - An emitter without a hooks parameter works without hooks, and refuses them loudly.
 
+bind picks sync or async from the emitter:
+- An async emitter gives an async callable, with a sync or an async factory, or none.
+- A plain function marked with inspect.markcoroutinefunction is an async emitter.
+- A plain function returning a coroutine, unmarked, is bound as a sync emitter, and its
+  callable returns the coroutine.
+- A sync emitter refuses async hooks when bound, naming the event, and an async factory.
+
 bound callable signatures:
 - Without a factory, the signature is a payload of the event's schema, returning its reply
   type, and get_type_hints reads the same types.
@@ -28,6 +35,7 @@ bound callable signatures:
 
 import asyncio
 import inspect
+from collections.abc import Coroutine
 from typing import Any, cast, get_type_hints
 from unittest.mock import create_autospec
 
@@ -257,6 +265,117 @@ def test_emitter_without_hooks_parameter() -> None:
     assert received == [payload]
     with pytest.raises(TypeError, match="hooks"):
         hooked(payload)
+
+
+# region: Sync Or Async From The Emitter
+
+
+async def _async_emitter(event: object, payload: _OrderCreated, /) -> str:
+    await asyncio.sleep(0)
+    return payload.status
+
+
+async def _build_async(order_id: int, status: str) -> _OrderCreated:
+    await asyncio.sleep(0)
+    return _OrderCreated(order_id, status)
+
+
+def _sync_emitter(event: object, payload: _OrderCreated, /) -> str:
+    return payload.status
+
+
+async def _async_before(event: object, payload: object) -> None:
+    await asyncio.sleep(0)
+
+
+async def test_async_emitter_gives_async_callable():
+    """
+    An async emitter should give an async callable, whatever its factory.
+
+    Given: An async emitter
+    When: It's bound without a factory, with a sync factory and with an async factory
+    Then: Each callable is a coroutine function, and awaiting it gives the emitter's result
+    """
+    # Arrange
+    event = PubSub(_OrderCreated)
+
+    # Act
+    built = bind(event, _async_emitter)
+    sync_factory = bind(event, _async_emitter, factory=_OrderCreated)
+    async_factory = bind(event, _async_emitter, factory=_build_async)
+
+    # Assert
+    assert all(inspect.iscoroutinefunction(b) for b in (built, sync_factory, async_factory))
+    assert await built(_OrderCreated(1, "built")) == "built"
+    assert await sync_factory(1, "sync") == "sync"
+    assert await async_factory(1, "async") == "async"
+
+
+async def test_marked_emitter_is_async():
+    """
+    A plain function marked as a coroutine function should be bound as an async emitter.
+
+    Given: A plain function returning a coroutine, marked with markcoroutinefunction
+    When: It's bound with an async factory
+    Then: The callable is a coroutine function, and awaiting it gives the emitter's result
+    """
+
+    # Arrange
+    def emitter(event: object, payload: _OrderCreated, /) -> Coroutine[Any, Any, str]:
+        return _async_emitter(event, payload)
+
+    # Act
+    bound = bind(
+        PubSub(_OrderCreated), inspect.markcoroutinefunction(emitter), factory=_build_async
+    )
+
+    # Assert
+    assert inspect.iscoroutinefunction(bound)
+    assert await bound(1, "marked") == "marked"
+
+
+async def test_unmarked_coroutine_emitter_is_sync():
+    """
+    A plain function returning a coroutine, unmarked, should be bound as a sync emitter.
+
+    Given: A plain function returning a coroutine, not marked
+    When: It's bound, and its callable is called
+    Then: The callable isn't a coroutine function, and returns the emitter's coroutine
+    """
+
+    # Arrange
+    def emitter(event: object, payload: _OrderCreated, /) -> Coroutine[Any, Any, str]:
+        return _async_emitter(event, payload)
+
+    # Act
+    bound = bind(PubSub(_OrderCreated), emitter)
+    returned = bound(_OrderCreated(1, "unmarked"))
+
+    # Assert
+    assert not inspect.iscoroutinefunction(bound)
+    assert await returned == "unmarked"
+
+
+def test_sync_emitter_refuses_async_hooks_and_factory():
+    """
+    A sync emitter should refuse async hooks and an async factory when bound.
+
+    Given: A sync emitter
+    When: It's bound with an async hook, then with an async factory
+    Then: Each raises TypeError when binding; the hooks refusal names the event
+    """
+    # Arrange
+    event = PubSub(_OrderCreated)
+    hooks: Hooks[Any, Any] = Hooks(before=(_async_before,))
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="'_OrderCreated' is bound to a sync emitter"):
+        bind(event, cast(_AnyEmitter, _sync_emitter), hooks=hooks)
+    with pytest.raises(TypeError, match="a sync emitter needs a sync factory"):
+        bind(event, _sync_emitter, factory=_build_async)  # pyright: ignore[reportCallIssue, reportArgumentType]
+
+
+# endregion
 
 
 # region: Bound Callable Signatures
