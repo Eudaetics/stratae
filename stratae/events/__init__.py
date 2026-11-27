@@ -20,6 +20,9 @@ meets a bus, typed by that event; {py:class}`Middleware <stratae.events.middlewa
 wraps every emit and handler call on a bus.
 {py:mod}`failure <stratae.events.failure>` decides what a consumer does with a message whose
 handling failed.
+{py:class}`Kind <stratae.events.kind.Kind>` holds what differs between running sync and
+async, as {py:data}`SYNC <stratae.events.kind.SYNC>` and
+{py:data}`ASYNC <stratae.events.kind.ASYNC>`.
 
 ````{example} Create event triggering a logging event
 ```{code-block} python
@@ -84,6 +87,7 @@ from .dispatch import (
 from .envelope import Envelope, EnvelopeFactory, EnvelopeHeaders
 from .handler import AsyncHandler, Handler, Handlers, SyncHandler
 from .hooks import Hooks
+from .kind import ASYNC, SYNC, Kind
 from .middleware import HandleCall, HandleMiddleware, Middleware, PublishCall, PublishMiddleware
 from .patterns import Immutable, NoPayload, PubSub, Request
 from .protocols import (
@@ -113,6 +117,8 @@ from .protocols import (
 )
 
 __all__ = [
+    "ASYNC",
+    "SYNC",
     "Addressed",
     "AnyEvent",
     "AsyncDirectBus",
@@ -137,6 +143,7 @@ __all__ = [
     "Handlers",
     "Hooks",
     "Immutable",
+    "Kind",
     "Middleware",
     "NoPayload",
     "Operating",

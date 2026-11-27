@@ -122,6 +122,7 @@ from stratae._checked import checked_callables
 from stratae.middleware import Next, refuse_kind
 
 if TYPE_CHECKING:
+    from stratae.events.kind import Kind
     from stratae.events.protocols import AnyEvent
 
 NO_HEADERS: Mapping[str, object] = MappingProxyType({})
@@ -230,13 +231,14 @@ class Middleware:
             object.__setattr__(self, half, items)
 
     def require(
-        self, bus: str, *, asynchronous: bool, publish: bool = True, handle: bool = True
+        self, bus: str, kind: "Kind", /, *, publish: bool = True, handle: bool = True
     ) -> None:
         """
         Refuse any middleware in the selected halves of the wrong kind for the bus.
 
         :param bus: The bus's name, for the error message.
-        :param asynchronous: Whether the bus runs middleware asynchronously.
+        :param kind: The bus's {py:class}`Kind <stratae.events.kind.Kind>`: one that awaits
+            takes only an `async def`, and one that doesn't only a sync function.
         :param publish: Whether to check the `publish` half; a consumer doesn't run it.
         :param handle: Whether to check the `handle` half; a publisher doesn't run it.
         :raises MiddlewareKindError: If an async bus is given a middleware that isn't an
@@ -246,4 +248,4 @@ class Middleware:
             *(self.publish if publish else ()),
             *(self.handle if handle else ()),
         )
-        refuse_kind(selected, bus, asynchronous)
+        refuse_kind(selected, bus, kind.awaits)

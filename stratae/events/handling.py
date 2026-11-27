@@ -27,6 +27,7 @@ from stratae.callables import is_async_callable
 from stratae.events.calls import deferred, hooked, hooked_async, payload_call
 from stratae.events.handler import AsyncHandler, Handler, SyncHandler
 from stratae.events.hooks import Hooks
+from stratae.events.kind import Kind
 from stratae.events.middleware import HandleCall, HandleMiddleware
 from stratae.events.protocols import AnyEvent
 from stratae.middleware import chain
@@ -106,13 +107,13 @@ def wrap_handler[HandlerConfig](
     config: HandlerConfig,
     hooks: Hooks[Any, Any] | None,
     middleware: tuple[HandleMiddleware, ...],
-    asynchronous: bool,
+    kind: Kind,
 ) -> Handler[HandlerConfig, Any, ..., Any]:
     """
     Build the handler an adapter registers: the function, its hooks, then middleware.
 
-    It's async if the function is, if any hook is, or if the adapter runs its middleware
-    asynchronously. Otherwise it's sync. Empty hooks are no hooks, so the handler is the same
+    It's async if the function is, if any hook is, or if the adapter's kind awaits its
+    middleware. Otherwise it's sync. Empty hooks are no hooks, so the handler is the same
     as one given `None`.
 
     :param event: The event the handler is for, which hooks see.
@@ -120,7 +121,8 @@ def wrap_handler[HandlerConfig](
     :param config: The handler's routing config.
     :param hooks: The handler's hooks, or `None`.
     :param middleware: The adapter's handle middleware, outermost first.
-    :param asynchronous: Whether the adapter runs middleware asynchronously.
+    :param kind: The adapter's {py:class}`Kind <stratae.events.kind.Kind>`, which fits the call
+        to its middleware.
     :returns: The handler to register, taking the message being handled.
     :raises TypeError: If `fn`, a hook or `config` is unhashable.
     """
@@ -129,8 +131,7 @@ def wrap_handler[HandlerConfig](
     call, is_async = _payload_call_in(hooks, event, fn)
     message_call = unpacking(call)
     if middleware:
-        if asynchronous and not is_async:
-            message_call, is_async = deferred(message_call), True
+        message_call, is_async = kind.fitted(message_call, is_async)
         message_call = handled(middleware, message_call)
     if is_async:
         return AsyncHandler(fn, hooks, message_call, config)

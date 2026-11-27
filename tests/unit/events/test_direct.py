@@ -393,14 +393,14 @@ def test_async_handler_rejected_at_registration(bus: DirectBus):
 
     Given: An async callable
     When: handle is called with it and an event
-    Then: A TypeError should be raised
+    Then: A TypeError names the bus and says it runs handlers synchronously
     """
 
     # Arrange
     async def handler(_: _TaskCreated) -> None: ...
 
     # Act / Assert
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="DirectBus runs handlers synchronously"):
         bus.handle(_task_created, handler)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
@@ -1590,7 +1590,7 @@ def test_async_handle_hooks_refused_at_handle(bus: DirectBus):
     Then: A TypeError names the event, and nothing is registered
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
+    with pytest.raises(TypeError, match="DirectBus runs hooks for '_TaskCreated' synchronously"):
         bus.handle(_task_created, lambda task: None, hooks=Hooks(before=(_async_before,)))
     assert tuple(bus.handlers(_task_created)) == ()
 
@@ -1617,7 +1617,7 @@ def test_async_publish_hooks_refused_at_emit(bus: DirectBus):
     Then: A TypeError names the event, before any hook or handler runs
     """
     # Act / Assert
-    with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
+    with pytest.raises(TypeError, match="DirectBus runs hooks for '_TaskCreated' synchronously"):
         bus.emit(_task_created, _TaskCreated(1), hooks=Hooks(before=(_async_before,)))
 
 
@@ -2260,7 +2260,7 @@ def test_emitter_called_with_async_hooks_is_refused(bus: DirectBus):
     emitter = bus.emitter(_task_created)
 
     # Act / Assert
-    with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
+    with pytest.raises(TypeError, match="DirectBus runs hooks for '_TaskCreated' synchronously"):
         emitter(_task_created, _TaskCreated(1), hooks=hooks)
     assert ran == []
 

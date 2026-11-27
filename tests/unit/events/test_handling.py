@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from stratae.events import HandleCall, Hooks, PubSub, Request
+from stratae.events import ASYNC, SYNC, HandleCall, Hooks, PubSub, Request
 from stratae.events.handler import invoke
 from stratae.events.handling import wrap_handler
 from stratae.events.middleware import NO_HEADERS
@@ -57,7 +57,7 @@ def test_wrap_handler_without_hooks_or_middleware() -> None:
     Then: It's sync, and returns what the handler returns for the message's payload
     """
     # Act
-    handler = wrap_handler(_order_placed, _shout, None, None, (), asynchronous=False)
+    handler = wrap_handler(_order_placed, _shout, None, None, (), SYNC)
 
     # Assert
     assert handler.is_async is False
@@ -84,9 +84,7 @@ def test_wrap_handler_sync_layers() -> None:
         return next(call)
 
     # Act
-    handler = wrap_handler(
-        _order_placed, _shout, None, Hooks(before=(hook,)), (middleware,), asynchronous=False
-    )
+    handler = wrap_handler(_order_placed, _shout, None, Hooks(before=(hook,)), (middleware,), SYNC)
     assert handler.is_async is False
     reply = handler(_received(_Order("lamp")))
 
@@ -126,7 +124,7 @@ async def test_wrap_handler_async(handler: Any, hook_is_async: bool, with_middle
     stack = (middleware,) if with_middleware else ()
 
     # Act
-    built = wrap_handler(_order_placed, handler, None, hooks, stack, asynchronous=True)
+    built = wrap_handler(_order_placed, handler, None, hooks, stack, ASYNC)
     assert built.is_async is True
     reply = await built(_received(_Order("lamp")))
 
@@ -159,7 +157,7 @@ async def test_wrap_handler_sync_handler_runs_when_awaited(through: str) -> None
 
     hooks: Hooks[Any, Any] | None = Hooks(before=(async_hook,)) if through == "async hook" else None
     stack = (middleware,) if through == "async middleware" else ()
-    built = wrap_handler(_order_placed, handler, None, hooks, stack, asynchronous=True)
+    built = wrap_handler(_order_placed, handler, None, hooks, stack, ASYNC)
     order = _Order("lamp")
     assert built.is_async is True
 
@@ -186,7 +184,7 @@ def test_wrap_handler_payload_less() -> None:
     ping = Request(reply=str, name="ping")
 
     # Act
-    handler = wrap_handler(ping, lambda: "pong", None, None, (), asynchronous=False)
+    handler = wrap_handler(ping, lambda: "pong", None, None, (), SYNC)
 
     # Assert
     assert handler.is_async is False
@@ -214,7 +212,9 @@ async def test_wrap_handler_middleware_reads_message_headers(asynchronous: bool)
         return await next(call)
 
     stack = (arecord,) if asynchronous else (record,)
-    handler = wrap_handler(_order_placed, _shout, None, None, stack, asynchronous)
+    handler = wrap_handler(
+        _order_placed, _shout, None, None, stack, ASYNC if asynchronous else SYNC
+    )
 
     async def handle(message: HandleCall) -> None:
         await invoke(handler, message)

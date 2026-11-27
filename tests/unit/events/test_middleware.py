@@ -37,6 +37,8 @@ from typing import Any, cast
 import pytest
 
 from stratae.events import (
+    ASYNC,
+    SYNC,
     AsyncDirectBus,
     DirectBus,
     EnvelopeFactory,
@@ -152,7 +154,7 @@ def test_require_refuses_the_wrong_kind(bus: str, asynchronous: bool, wrong: Any
     Then: MiddlewareKindError names the bus
     """
     with pytest.raises(MiddlewareKindError, match=bus):
-        Middleware(handle=(wrong,)).require(bus, asynchronous=asynchronous)
+        Middleware(handle=(wrong,)).require(bus, ASYNC if asynchronous else SYNC)
 
 
 def test_require_checks_only_selected_half() -> None:
@@ -165,7 +167,7 @@ def test_require_checks_only_selected_half() -> None:
     """
     middleware = Middleware(publish=(_sync,), handle=(_async,))
 
-    middleware.require("DirectBus", asynchronous=False, handle=False)
+    middleware.require("DirectBus", SYNC, handle=False)
 
 
 # endregion
