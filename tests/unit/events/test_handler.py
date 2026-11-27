@@ -14,7 +14,8 @@ SyncHandler and AsyncHandler:
 - An unhashable function or hook is refused with TypeError.
 
 Handlers:
-- Holds its handlers as a tuple, equal to a plain tuple of them.
+- Has a length, and iterates over its handlers in order, but can't be indexed.
+- Is equal to Handlers holding the same handlers in order, never to a plain tuple.
 - Keeps the sync and async handlers apart.
 - Finds a handler by value.
 - adding returns new handlers with the handler added, leaving the original unchanged.
@@ -209,13 +210,13 @@ async def test_calling_handler_wrapping_async_callable_returns_awaitable():
     assert result == 2
 
 
-def test_handlers_equal_plain_tuple():
+def test_handlers_is_a_collection():
     """
-    Handlers should be a tuple of its handlers.
+    Handlers should have a length, and iterate over its handlers in order.
 
     Given: Two handlers
     When: Handlers is built from them
-    Then: It should equal a plain tuple of the same handlers
+    Then: Its length is two, it iterates over them in order, and it can't be indexed
     """
     # Arrange
     first, second = (
@@ -227,7 +228,32 @@ def test_handlers_equal_plain_tuple():
     handlers = Handlers((first, second))
 
     # Assert
-    assert handlers == (first, second)
+    assert len(handlers) == 2
+    assert list(handlers) == [first, second]
+    assert not hasattr(handlers, "__getitem__")
+
+
+def test_handlers_equal_by_handlers_in_order():
+    """
+    Handlers should be equal when they hold the same handlers, in order, and only then.
+
+    Given: Two handlers
+    When: Handlers are built from them in the same order, in the other order, and a tuple
+    Then: The same order is equal and hashes alike; the other order and the tuple are unequal
+    """
+    # Arrange
+    first, second = (
+        _sync(),
+        _async(),
+    )
+    handlers = Handlers((first, second))
+
+    # Act / Assert
+    assert handlers == Handlers((first, second))
+    assert hash(handlers) == hash(Handlers((first, second)))
+    assert handlers != Handlers((second, first))
+    assert handlers != (first, second)
+    assert repr(handlers) == f"Handlers({(first, second)!r})"
 
 
 def test_handlers_keeps_sync_and_async_apart():
@@ -275,9 +301,9 @@ def test_handlers_adding_leaves_original_unchanged():
     result = original.adding(added)
 
     # Assert
-    assert result == (first, added)
+    assert tuple(result) == (first, added)
     assert result.asynchronous == (added,)
-    assert original == (first,)
+    assert tuple(original) == (first,)
     assert original.asynchronous == ()
 
 
@@ -300,9 +326,9 @@ def test_handlers_removing_leaves_original_unchanged():
     result = original.removing(removed)
 
     # Assert
-    assert result == (kept,)
+    assert tuple(result) == (kept,)
     assert result.asynchronous == ()
-    assert original == (kept, removed)
+    assert tuple(original) == (kept, removed)
 
 
 def test_handlers_removing_absent_handler_returns_same_handlers():
@@ -341,7 +367,7 @@ def test_handlers_removing_takes_out_an_equal_handler():
     result = Handlers((kept, held)).removing(equal)
 
     # Assert
-    assert result == (kept,)
+    assert tuple(result) == (kept,)
 
 
 def test_handlers_find_a_handler_by_value():

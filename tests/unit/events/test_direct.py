@@ -360,7 +360,7 @@ def test_equal_event_reaches_handler(bus: DirectBus):
 
     # Assert
     handler.assert_called_once_with(_TaskCreated(4))
-    assert bus.handlers(emitted_event) == (registered,)
+    assert tuple(bus.handlers(emitted_event)) == (registered,)
 
 
 def test_handle_returns_handler(bus: DirectBus):
@@ -492,7 +492,7 @@ def test_emit_without_handlers_reaches_none(bus: DirectBus):
 
     # Assert
     assert result is None
-    assert bus.handlers(_task_created) == ()
+    assert tuple(bus.handlers(_task_created)) == ()
 
 
 def test_handlers_empty_for_event_without_handlers(bus: DirectBus):
@@ -507,7 +507,7 @@ def test_handlers_empty_for_event_without_handlers(bus: DirectBus):
     result = bus.handlers(_task_created)
 
     # Assert
-    assert result == ()
+    assert tuple(result) == ()
 
 
 def test_handlers_returns_registered_handlers(bus: DirectBus):
@@ -546,7 +546,7 @@ def test_handlers_excludes_removed_handler(bus: DirectBus):
     result = bus.handlers(_task_created)
 
     # Assert
-    assert result == (kept,)
+    assert tuple(result) == (kept,)
 
 
 def test_handlers_returns_signal_event_handlers(bus: DirectBus):
@@ -564,7 +564,7 @@ def test_handlers_returns_signal_event_handlers(bus: DirectBus):
     result = bus.handlers(_ping)
 
     # Assert
-    assert result == (responder,)
+    assert tuple(result) == (responder,)
 
 
 def test_handlers_snapshot_unchanged_by_later_registration(bus: DirectBus):
@@ -583,7 +583,7 @@ def test_handlers_snapshot_unchanged_by_later_registration(bus: DirectBus):
     bus.handle(_task_created, Mock())
 
     # Assert
-    assert result == (first,)
+    assert tuple(result) == (first,)
 
 
 def test_handlers_snapshot_unchanged_by_later_removal(bus: DirectBus):
@@ -603,7 +603,7 @@ def test_handlers_snapshot_unchanged_by_later_removal(bus: DirectBus):
     bus.remove(removed)
 
     # Assert
-    assert result == (kept, removed)
+    assert tuple(result) == (kept, removed)
 
 
 def test_handlers_same_value_until_changed(bus: DirectBus):
@@ -785,7 +785,7 @@ def test_same_function_with_equal_hooks_is_refused(bus: DirectBus, register: Cal
     # Act / Assert
     with pytest.raises(DuplicateHandlerError, match="_TaskCreated"):
         register(bus, handler, Hooks(before=(_noted,)))
-    assert bus.handlers(_task_created) == (first,)
+    assert tuple(bus.handlers(_task_created)) == (first,)
 
 
 def test_empty_hooks_count_as_none(bus: DirectBus):
@@ -906,7 +906,7 @@ def test_removed_handler_can_be_registered_again(bus: DirectBus):
     bus.emit(_task_created, _TaskCreated(2))
 
     # Assert
-    assert between == ()
+    assert tuple(between) == ()
     handler.assert_called_once()
 
 
@@ -921,7 +921,7 @@ def test_unhashable_function_is_refused(bus: DirectBus):
     # Act / Assert
     with pytest.raises(TypeError, match="unhashable"):
         bus.handle(_task_created, _Unhashable())
-    assert bus.handlers(_task_created) == ()
+    assert tuple(bus.handlers(_task_created)) == ()
 
 
 def test_emit_dispatches_payload(bus: DirectBus):
@@ -1393,7 +1393,7 @@ def test_unsupported_pattern_refused_at_handle(bus: DirectBus):
         TypeError, match="DirectBus doesn't support _Gather events: register one with dispatchers="
     ):
         bus.handle(_quotes, lambda query: 1)
-    assert bus.handlers(_quotes) == ()
+    assert tuple(bus.handlers(_quotes)) == ()
 
 
 def test_unsupported_pattern_refused_at_bind(bus: DirectBus):
@@ -1584,7 +1584,7 @@ def test_async_handle_hooks_refused_at_handle(bus: DirectBus):
     # Act / Assert
     with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
         bus.handle(_task_created, lambda task: None, hooks=Hooks(before=(_async_before,)))
-    assert bus.handlers(_task_created) == ()
+    assert tuple(bus.handlers(_task_created)) == ()
 
 
 def test_async_publish_hooks_refused_at_bind(bus: DirectBus):

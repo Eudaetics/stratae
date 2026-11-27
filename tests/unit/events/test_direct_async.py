@@ -405,7 +405,7 @@ def test_handlers_empty_for_event_without_handlers(bus: AsyncDirectBus):
     result = bus.handlers(_task_created)
 
     # Assert
-    assert result == ()
+    assert tuple(result) == ()
 
 
 def test_handlers_returns_registered_handlers(bus: AsyncDirectBus):
@@ -444,7 +444,7 @@ def test_handlers_excludes_removed_handler(bus: AsyncDirectBus):
     result = bus.handlers(_task_created)
 
     # Assert
-    assert result == (kept,)
+    assert tuple(result) == (kept,)
 
 
 def test_handlers_returns_signal_event_handlers(bus: AsyncDirectBus):
@@ -462,7 +462,7 @@ def test_handlers_returns_signal_event_handlers(bus: AsyncDirectBus):
     result = bus.handlers(_ping)
 
     # Assert
-    assert result == (responder,)
+    assert tuple(result) == (responder,)
 
 
 def test_handlers_snapshot_unchanged_by_later_registration(bus: AsyncDirectBus):
@@ -481,7 +481,7 @@ def test_handlers_snapshot_unchanged_by_later_registration(bus: AsyncDirectBus):
     bus.handle(_task_created, AsyncMock())
 
     # Assert
-    assert result == (first,)
+    assert tuple(result) == (first,)
 
 
 async def test_dispatcher_receives_registered_handlers_as_given():
@@ -651,7 +651,7 @@ def test_same_function_with_equal_hooks_is_refused(
     # Act / Assert
     with pytest.raises(DuplicateHandlerError, match="_TaskCreated"):
         register(bus, handler, Hooks(before=(_noted,)))
-    assert bus.handlers(_task_created) == (first,)
+    assert tuple(bus.handlers(_task_created)) == (first,)
 
 
 async def test_empty_hooks_count_as_none(bus: AsyncDirectBus):
@@ -1349,7 +1349,7 @@ def test_unsupported_pattern_refused_at_handle(bus: AsyncDirectBus):
         match="AsyncDirectBus doesn't support _Gather events: register one with dispatchers=",
     ):
         bus.handle(_quotes, lambda query: 1)
-    assert bus.handlers(_quotes) == ()
+    assert tuple(bus.handlers(_quotes)) == ()
 
 
 def test_unsupported_pattern_refused_at_bind(bus: AsyncDirectBus):
