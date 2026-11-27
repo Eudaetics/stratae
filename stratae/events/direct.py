@@ -112,6 +112,7 @@ from stratae.events.dispatch import ASYNC_DISPATCHERS, SYNC_DISPATCHERS, Dispatc
 from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.exceptions import DuplicateHandlerError
 from stratae.events.handler import AsyncHandler, Handler, Handlers, SyncHandler
+from stratae.events.handling import wrap_handler
 from stratae.events.hooks import Hooks
 from stratae.events.middleware import (
     NO_HEADERS,
@@ -129,7 +130,6 @@ from stratae.events.pipeline import (
     publish_async,
     publish_enveloped,
     publish_enveloped_async,
-    wrap_handler,
 )
 from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent, reserved_for
 
