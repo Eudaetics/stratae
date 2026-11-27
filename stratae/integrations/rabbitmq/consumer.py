@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast, overload
 
 from stratae.backoff import Backoff
 from stratae.events import (
-    AnyEvent,
     Deserializer,
     EnvelopeFactory,
     Handler,
     NoPayload,
     PubSub,
 )
+from stratae.events.by_pattern import ByPattern
 from stratae.events.exceptions import AlreadyConnectedError, DuplicateHandlerError
 from stratae.events.failure import DeadLetter, Drop, Reject, Retry, failure_action
 from stratae.events.handler import invoke
@@ -39,7 +39,10 @@ if TYPE_CHECKING:
 
 
 _log = logging.getLogger(__name__)
-_PUBSUB_ONLY = "RabbitMQConsumer handles PubSub events only, got {!r}"
+_HANDLES: ByPattern[bool] = ByPattern(
+    "RabbitMQConsumer", [(PubSub, True)], reason="it handles PubSub events only"
+)
+"""The patterns a consumer handles; calling it with any other event raises `TypeError`."""
 
 
 class _Registration:
@@ -284,7 +287,7 @@ class RabbitMQConsumer:
 
     def handle(
         self,
-        event: AnyEvent,
+        event: PubSub[Any, Any],
         fn: Callable[..., Any] | None = None,
         *,
         config: RabbitMQConsumeConfig,
@@ -317,8 +320,7 @@ class RabbitMQConsumer:
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`,
             or `fn`, a hook or `config` is unhashable.
         """
-        if not isinstance(event, PubSub):
-            raise TypeError(_PUBSUB_ONLY.format(event))
+        _HANDLES(event)
         if fn is not None:
             return self._register(event, fn, config, deserializer, hooks)
 
