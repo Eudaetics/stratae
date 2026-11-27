@@ -70,8 +70,9 @@ created user: ada
 """
 
 from .binding import abind, bind
-from .direct import AsyncDirectBus, DirectBus, Dispatch
+from .direct import AsyncDirectBus, DirectBus
 from .dispatch import (
+    Dispatch,
     Dispatcher,
     dispatch_request,
     dispatch_request_async,

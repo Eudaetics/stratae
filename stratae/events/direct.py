@@ -12,10 +12,10 @@ Register handlers with `handle`, keyed by event, and create emitters with `bind`
 
 Each bus delivers the patterns it has a dispatcher for, found by the event's class, so a
 subclass of a supported pattern is delivered as that pattern. Add or replace a pattern with
-`dispatchers=`, a list of {py:class}`Dispatch` pairs, fixed once the bus exists. A dispatcher
-is checked against its pattern: pairing it with the wrong pattern, or returning something other
-than what the pattern emits, is a type error. Registering or binding an event
-of an unsupported pattern raises `TypeError`. With
+`dispatchers=`, a list of {py:class}`Dispatch <stratae.events.dispatch.Dispatch>` pairs, fixed
+once the bus exists. A dispatcher is checked against its pattern: pairing it with the wrong
+pattern, or returning something other than what the pattern emits, is a type error.
+Registering or binding an event of an unsupported pattern raises `TypeError`. With
 `envelope_factory=EnvelopeFactory()`, each emission opens an
 {py:class}`Envelope <stratae.events.envelope.Envelope>`.
 
@@ -107,13 +107,7 @@ from typing import Any, NoReturn, Protocol, overload
 
 from stratae.callables import is_async_callable
 from stratae.events.binding import abind, bind
-from stratae.events.dispatch import (
-    Dispatcher,
-    dispatch_request,
-    dispatch_request_async,
-    fan_out,
-    fan_out_async,
-)
+from stratae.events.dispatch import ASYNC_DISPATCHERS, SYNC_DISPATCHERS, Dispatch, Dispatcher
 from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.exceptions import DuplicateHandlerError
 from stratae.events.handler import AsyncHandler, Handler, Handlers, SyncHandler
@@ -125,7 +119,7 @@ from stratae.events.middleware import (
     PublishMiddleware,
     from_fields,
 )
-from stratae.events.patterns import NoPayload, PubSub, Request
+from stratae.events.patterns import NoPayload
 from stratae.events.pipeline import (
     Outgoing,
     Publishing,
@@ -246,49 +240,6 @@ class _Route:
         self.handlers = handlers
 
 
-class Dispatch:
-    """
-    Pair a pattern class with the dispatcher a direct bus delivers it with.
-
-    The dispatcher is called with the event, its handlers and the message being handled, a
-    {py:class}`HandleCall <stratae.events.middleware.HandleCall>`, and returns what
-    emitting the event returns, or an awaitable resolving to it on an
-    {py:class}`AsyncDirectBus`. The handlers are a
-    {py:class}`Handlers <stratae.events.handler.Handlers>` tuple, which doesn't change while
-    the dispatcher runs, so it can be run as given. It keeps its sync and async handlers apart,
-    and a {py:class}`DirectBus`'s are all sync. A dispatcher may take any collection of
-    handlers in its place. Write it generic in the pattern's type parameters, e.g.
-    `def gather[Payload, Result](event: Gather[Payload, Result],
-    handlers: Handlers[Any, Payload, Result], message: HandleCall) -> list[Result]`,
-    so its body is checked. A dispatcher whose first parameter
-    doesn't accept `pattern` is a type error. That its declared return matches what the
-    pattern emits is the dispatcher author's to ensure.
-    """
-
-    __slots__ = ("dispatcher", "pattern")
-
-    def __init__[Event: AnyEvent](
-        self,
-        pattern: type[Event],
-        dispatcher: Dispatcher[Event],
-    ) -> None:
-        """
-        Pair a pattern with its dispatcher.
-
-        :param pattern: The pattern class. Its subclasses are dispatched the same way.
-        :param dispatcher: Delivers an event of that pattern to its handlers.
-        """
-        self.pattern: type[AnyEvent] = pattern
-        self.dispatcher: Dispatcher[Any] = dispatcher
-
-
-_SYNC_DEFAULTS = (Dispatch(Request, dispatch_request), Dispatch(PubSub, fan_out))
-"""The patterns a DirectBus supports by default."""
-
-_ASYNC_DEFAULTS = (Dispatch(Request, dispatch_request_async), Dispatch(PubSub, fan_out_async))
-"""The patterns an AsyncDirectBus supports by default."""
-
-
 type _Publish = Callable[
     [Send[None, Envelope | None], frozenset[str], AnyEvent, Any, None, Hooks[Any, Any] | None],
     Any,
@@ -326,8 +277,8 @@ class _Core:
     """
     Handler registry and pattern dispatch, for a sync or an async direct bus.
 
-    Whether the bus is async decides its default dispatchers, its shared emit, how it delivers
-    a message, and which handlers and hooks it refuses. All are chosen here, once.
+    Whether the bus is async decides its shared emit, how it delivers a message, and which
+    handlers and hooks it refuses. All are chosen here, once. Its dispatchers are given whole.
 
     An emit called directly goes through `emit`, which looks the event up and refuses one the
     bus can't dispatch. A bound callable emits through `emitter_for`'s emitter instead, which
@@ -362,6 +313,8 @@ class _Core:
 
         :param name: The bus's class name, for error messages.
         :param asynchronous: Whether the bus runs handlers, hooks and middleware asynchronously.
+        :param dispatchers: The bus's whole table of pattern and dispatcher pairs; later pairs
+            win.
         :raises MiddlewareKindError: If any middleware is the wrong kind for the bus.
         """
         middleware.require(name, asynchronous=asynchronous)
@@ -369,8 +322,7 @@ class _Core:
         self._asynchronous = asynchronous
         self._routes: dict[AnyEvent, _Route] = {}
         self._registering = threading.Lock()
-        pairs = (*(_ASYNC_DEFAULTS if asynchronous else _SYNC_DEFAULTS), *dispatchers)
-        self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in pairs)
+        self._dispatcher = _build_dispatcher((d.pattern, d.dispatcher) for d in dispatchers)
         self._middleware = middleware
         self._publish = _publisher(middleware.publish, factory, asynchronous)
         self._plain = not (middleware.publish or middleware.handle) and factory is None
@@ -516,8 +468,9 @@ class DirectBus:
         {py:class}`EnvelopeFactory <stratae.events.envelope.EnvelopeFactory>`. The bus
         refuses its `headers`' names as headers. `None`, the default, opens none, and reserves
         no envelope header names.
-    :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
-        defaults for `Request` and `PubSub`.
+    :param dispatchers: {py:class}`Dispatch <stratae.events.dispatch.Dispatch>` pairs for more
+        patterns, or replacing the defaults for `Request` and `PubSub`,
+        {py:data}`SYNC_DISPATCHERS <stratae.events.dispatch.SYNC_DISPATCHERS>`.
     :param middleware: Sync {py:class}`Middleware <stratae.events.middleware.Middleware>` run
         around every emit and handler call.
     :raises MiddlewareKindError: If any middleware isn't a sync function returning a value.
@@ -531,7 +484,9 @@ class DirectBus:
         middleware: Middleware = Middleware(),
     ) -> None:
         """Create a bus, optionally with envelope tracking, more patterns and middleware."""
-        self._core = _Core("DirectBus", False, envelope_factory, dispatchers, middleware)
+        self._core = _Core(
+            "DirectBus", False, envelope_factory, (*SYNC_DISPATCHERS, *dispatchers), middleware
+        )
 
     def emit[Payload, Result](
         self,
@@ -706,8 +661,10 @@ class AsyncDirectBus:
         {py:class}`EnvelopeFactory <stratae.events.envelope.EnvelopeFactory>`. The bus
         refuses its `headers`' names as headers. `None`, the default, opens none, and reserves
         no envelope header names.
-    :param dispatchers: {py:class}`Dispatch` pairs for more patterns, or replacing the
-        defaults for `Request` and `PubSub`. Their dispatchers return awaitables.
+    :param dispatchers: {py:class}`Dispatch <stratae.events.dispatch.Dispatch>` pairs for more
+        patterns, or replacing the defaults for `Request` and `PubSub`,
+        {py:data}`ASYNC_DISPATCHERS <stratae.events.dispatch.ASYNC_DISPATCHERS>`. Their
+        dispatchers return awaitables.
     :param middleware: {py:class}`Middleware <stratae.events.middleware.Middleware>` run
         around every emit and handler call. Each is an `async def`.
     :raises MiddlewareKindError: If any middleware isn't an `async def`.
@@ -721,7 +678,13 @@ class AsyncDirectBus:
         middleware: Middleware = Middleware(),
     ) -> None:
         """Create a bus, optionally with envelope tracking, more patterns and middleware."""
-        self._core = _Core("AsyncDirectBus", True, envelope_factory, dispatchers, middleware)
+        self._core = _Core(
+            "AsyncDirectBus",
+            True,
+            envelope_factory,
+            (*ASYNC_DISPATCHERS, *dispatchers),
+            middleware,
+        )
 
     @markcoroutinefunction
     def emit[Payload, Result](

@@ -4,9 +4,11 @@ Dispatchers: functions that deliver a message to an event's handlers.
 A dispatcher takes an event, its handlers and the message being handled, a
 {py:class}`HandleCall <stratae.events.middleware.HandleCall>`, and calls each handler with the
 message as the event's pattern requires. A direct bus picks one by the event's class, and
-takes more with `dispatchers=`, as {py:class}`Dispatch <stratae.events.direct.Dispatch>`
-pairs. Each is generic in its pattern's type parameters, so its body is checked against what
-the pattern promises.
+takes more with `dispatchers=`, as {py:class}`Dispatch` pairs. Each is generic in its pattern's
+type parameters, so its body is checked against what the pattern promises.
+{py:data}`SYNC_DISPATCHERS` and {py:data}`ASYNC_DISPATCHERS` are the pairs a
+{py:class}`DirectBus <stratae.events.direct.DirectBus>` and an
+{py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>` start from.
 
 {py:func}`dispatch_request` and {py:func}`dispatch_request_async` call a
 {py:class}`Request <stratae.events.patterns.Request>` event's sole responder.
@@ -240,3 +242,52 @@ async def fan_out_concurrent[Payload](
     )
     failures.extend(result for result in results if isinstance(result, BaseException))
     _raise_failures(failures)
+
+
+class Dispatch:
+    """
+    Pair a pattern class with the dispatcher a direct bus delivers it with.
+
+    The dispatcher is called with the event, its handlers and the message being handled, a
+    {py:class}`HandleCall <stratae.events.middleware.HandleCall>`, and returns what
+    emitting the event returns, or an awaitable resolving to it on an
+    {py:class}`AsyncDirectBus <stratae.events.direct.AsyncDirectBus>`. The handlers are a
+    {py:class}`Handlers <stratae.events.handler.Handlers>` tuple, which doesn't change while
+    the dispatcher runs, so it can be run as given. It keeps its sync and async handlers apart,
+    and a {py:class}`DirectBus <stratae.events.direct.DirectBus>`'s are all sync. A dispatcher
+    may take any collection of handlers in its place. Write it generic in the pattern's type
+    parameters, e.g. `def gather[Payload, Result](event: Gather[Payload, Result],
+    handlers: Handlers[Any, Payload, Result], message: HandleCall) -> list[Result]`,
+    so its body is checked. A dispatcher whose first parameter
+    doesn't accept `pattern` is a type error. That its declared return matches what the
+    pattern emits is the dispatcher author's to ensure.
+    """
+
+    __slots__ = ("dispatcher", "pattern")
+
+    def __init__[Event: AnyEvent](
+        self,
+        pattern: type[Event],
+        dispatcher: Dispatcher[Event],
+    ) -> None:
+        """
+        Pair a pattern with its dispatcher.
+
+        :param pattern: The pattern class. Its subclasses are dispatched the same way.
+        :param dispatcher: Delivers an event of that pattern to its handlers.
+        """
+        self.pattern: type[AnyEvent] = pattern
+        self.dispatcher: Dispatcher[Any] = dispatcher
+
+
+SYNC_DISPATCHERS: tuple[Dispatch, ...] = (
+    Dispatch(Request, dispatch_request),
+    Dispatch(PubSub, fan_out),
+)
+"""The patterns a DirectBus delivers by default: one responder, or every handler collected."""
+
+ASYNC_DISPATCHERS: tuple[Dispatch, ...] = (
+    Dispatch(Request, dispatch_request_async),
+    Dispatch(PubSub, fan_out_async),
+)
+"""The patterns an AsyncDirectBus delivers by default, as {py:data}`SYNC_DISPATCHERS` does."""
