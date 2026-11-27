@@ -129,6 +129,7 @@ from uuid import UUID
 
 from stratae.backoff import Backoff, Endless, Exponential, Limited
 from stratae.events.binding import abind
+from stratae.events.by_pattern import ByPattern
 from stratae.events.envelope import Envelope, EnvelopeFactory
 from stratae.events.exceptions import NotConnectedError
 from stratae.events.failure import Retry, failure_action, failure_reason
@@ -156,9 +157,10 @@ from stratae.events.protocols import (
 
 _log = logging.getLogger(__name__)
 
-_PUBSUB_ONLY = (
-    "the outbox holds fire-and-forget events only, got {!r}: a request needs its reply now"
+_HOLDS: ByPattern[bool] = ByPattern(
+    "OutboxProducer", [(PubSub, True)], reason="it holds PubSub events only"
 )
+"""The patterns an outbox holds; calling it with any other event raises `TypeError`."""
 
 _ROUTE_TAKEN = (
     "outbox route {!r} is already bound to another event or config; give this binding its own route"
@@ -194,12 +196,6 @@ _CREATE = Operation("create", "create")
 def _now() -> datetime:
     """Return the current time, timezone-aware in UTC."""
     return datetime.now(UTC)
-
-
-def _require_pubsub(event: AnyEvent) -> None:
-    """Refuse an event that isn't fire-and-forget: a request needs its reply now."""
-    if not isinstance(event, PubSub):
-        raise TypeError(_PUBSUB_ONLY.format(event))
 
 
 async def _settle[T](result: T | Awaitable[T]) -> T:
@@ -543,14 +539,13 @@ class OutboxProducer[Target]:
         """
         self._route(event, config)
 
-    def _route(self, event: AnyEvent, config: OutboxConfig[Target]) -> _Route[Target]:
+    def _route(self, event: PubSub[Any, Any], config: OutboxConfig[Target]) -> _Route[Target]:
         """
         Return the event's route, adding it if the event has none.
 
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         """
-        if not isinstance(event, PubSub):
-            raise TypeError(_PUBSUB_ONLY.format(event))
+        _HOLDS(event)
         routed = self._routes.routed(event, config)
         if routed is not None:
             return routed
@@ -602,7 +597,7 @@ class OutboxProducer[Target]:
 
     def bind(
         self,
-        event: AnyEvent,
+        event: PubSub[Any, Any],
         *,
         factory: Callable[..., Any] | None = None,
         config: OutboxConfig[Target],
@@ -641,9 +636,9 @@ class OutboxProducer[Target]:
         :raises TypeError: If the event isn't {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises LookupError: If the event has no route.
         """
-        _require_pubsub(event)
         route = self._routes.by_event.get(event)
         if route is None:
+            _HOLDS(event)
             raise LookupError(_NO_ROUTE.format(event.name))
         await self._emit_on(route, event, payload, hooks=hooks)
 
