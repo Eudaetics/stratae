@@ -11,6 +11,7 @@ from aiormq.exceptions import PublishError
 from stratae.backoff import Backoff
 from stratae.events import (
     AnyEvent,
+    EmitCallable,
     Encoded,
     Envelope,
     EnvelopeFactory,
@@ -91,8 +92,8 @@ class RabbitMQPublisher:
     Async RabbitMQ publisher for pub/sub events.
 
     Holds one connection and channel for the `async with` block. Each event is routed to one
-    {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.config.RabbitMQConfig>`, by `bind`
-    or by `route`, and `emit` publishes on that route. It implements
+    {py:class}`RabbitMQConfig <stratae.integrations.rabbitmq.config.RabbitMQConfig>`, by `bind`,
+    `emitter` or `route`, and `emit` publishes on that route. It implements
     {py:class}`PubSub <stratae.events.patterns.PubSub>` and its subclasses only, so it matches
     {py:class}`PubSubProducer <stratae.events.protocols.PubSubProducer>`. Binding or emitting
     any other event is a type error, and raises `TypeError`.
@@ -315,6 +316,25 @@ class RabbitMQPublisher:
         except PublishError as exc:
             raise UnroutableError(_UNROUTABLE.format(route.exchange, publish.routing_key)) from exc
 
+    def emitter[Payload](
+        self, event: PubSub[Payload, Any], config: RabbitMQConfig, /
+    ) -> EmitCallable[PubSub[Payload, Any], Payload, Hooks[Payload, None], Awaitable[None]]:
+        """
+        Route a PubSub event to `config`, and return an emitter of it.
+
+        Binding it with {py:func}`abind <stratae.events.binding.abind>` gives the same callable
+        as `bind`.
+
+        :param event: The PubSub event.
+        :param config: Where its messages go.
+        :returns: An emitter taking the event, a payload and `hooks=`, returning an awaitable.
+        :raises TypeError: If the event isn't
+            {py:class}`PubSub <stratae.events.patterns.PubSub>`.
+        :raises ValueError: If the event is already routed to a different config.
+        """
+        self.route(event, config)
+        return self.emit
+
     @overload
     def bind[**P, Payload](
         self,
@@ -365,8 +385,7 @@ class RabbitMQPublisher:
             {py:class}`PubSub <stratae.events.patterns.PubSub>`.
         :raises ValueError: If the event is already routed to a different config.
         """
-        self.route(event, config)
-        return abind(event, self.emit, factory=factory, hooks=hooks)
+        return abind(event, self.emitter(event, config), factory=factory, hooks=hooks)
 
     async def _declare_exchange(self, channel: AbstractChannel, config: RabbitMQConfig) -> None:
         """Declare config's exchange once, if it carries a type."""

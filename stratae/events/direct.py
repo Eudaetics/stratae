@@ -6,7 +6,9 @@ In-process event buses that dispatch straight to registered handlers, with no br
 {py:class}`PubSub <stratae.events.patterns.PubSub>` handler in its own copy of the context, so
 one handler's context variables never reach another, nor the emitter.
 
-Register handlers with `handle`, keyed by event, and create emitters with `bind`. A
+Register handlers with `handle`, keyed by event, and create emitters with `bind`. `bind` binds
+the bus's `emitter` for the event, which {py:func}`bind <stratae.events.binding.bind>` or
+{py:func}`abind <stratae.events.binding.abind>` can bind too. A
 {py:class}`Request <stratae.events.patterns.Request>` event needs exactly one responder, which
 `handlers` can confirm before anything emits it.
 
@@ -131,7 +133,14 @@ from stratae.events.pipeline import (
     publish_enveloped,
     publish_enveloped_async,
 )
-from stratae.events.protocols import AnyEvent, EventType, PayloadEvent, SignalEvent, reserved_for
+from stratae.events.protocols import (
+    AnyEvent,
+    EmitCallable,
+    EventType,
+    PayloadEvent,
+    SignalEvent,
+    reserved_for,
+)
 
 _NONE_RESERVED: frozenset[str] = frozenset()
 """What a bus that opens no envelope reserves: no header names."""
@@ -256,8 +265,8 @@ class _Core:
     handlers and hooks it refuses. All are chosen here, once. Its dispatchers are given whole.
 
     An emit called directly goes through `emit`, which looks the event up and refuses one the
-    bus can't dispatch. A bound callable emits through `emitter_for`'s emitter instead, which
-    refused the event when it was bound, and holds its route. Either way, a plain emit, with
+    bus can't dispatch. A bound callable emits through `emitter`'s emitter instead, which
+    refused the event when it was made, and holds its route. Either way, a plain emit, with
     no hooks, no middleware and no envelope, is delivered to its handlers directly. Any other
     goes through the shared emit, with the headers its publish middleware set, for handle
     middleware to read.
@@ -303,26 +312,30 @@ class _Core:
         self._plain = not (middleware.publish or middleware.handle) and factory is None
         self._reserved = _NONE_RESERVED if factory is None else reserved_for(None, factory.headers)
 
-    def emitter_for(self, event: AnyEvent) -> Callable[..., Any]:
+    def emitter(self, event: AnyEvent, /) -> Callable[..., Any]:
         """
-        Return what `bind` calls to emit the event: an emitter holding the event's route.
+        Return an emitter of the event that holds its route.
 
-        The route is found by value once, here, and recorded. So a bound call reads the event's
+        The route is found by value once, here, and recorded. So each call reads the event's
         current handlers without looking it up, and an equal event handled or bound elsewhere
-        shares the same route. Hooks the binding was given come in each call, as they do to
-        `emit`; they were checked when it was bound.
+        shares the same route. Hooks come in each call, as they do to `emit`, and a sync bus
+        refuses async ones there.
 
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
         route, plain = self._route(event), self._plain
         publish_, reserved = self._publish, self._reserved
+        asynchronous = self._asynchronous
 
         def emit_routed(
-            event: AnyEvent, payload: Any, *, hooks: Hooks[Any, Any] | None = None
+            event: AnyEvent, payload: Any, /, *, hooks: Hooks[Any, Any] | None = None
         ) -> Any:
-            if hooks is None and plain:
-                message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
-                return route.dispatcher(event, route.handlers, message)
+            if hooks is None:
+                if plain:
+                    message = from_fields(HandleCall, (event, None, payload, NO_HEADERS))
+                    return route.dispatcher(event, route.handlers, message)
+            elif hooks.has_async and not asynchronous:
+                raise TypeError(_ASYNC_HOOKS_REJECTED.format(event.name))
             return publish_(route.send, reserved, event, payload, None, hooks)
 
         return emit_routed
@@ -480,6 +493,24 @@ class DirectBus:
         """
         return self._core.emit(event, payload, hooks)
 
+    def emitter[Payload, Result](
+        self, event: EventType[Payload, Result, Any, Any], /
+    ) -> EmitCallable[
+        EventType[Payload, Result, Any, Any], Payload, Hooks[Payload, Result], Result
+    ]:
+        """
+        Return an emitter of the event that holds its route.
+
+        Binding it with {py:func}`bind <stratae.events.binding.bind>` gives the same callable as
+        `bind`. Each call reads the event's handlers current then, without looking the event up.
+
+        :param event: The event.
+        :returns: An emitter taking the event, a payload and `hooks=`.
+        :raises TypeError: If the bus has no dispatcher for the event's pattern, or, when it's
+            called, if `hooks` includes an async hook.
+        """
+        return self._core.emitter(event)
+
     @overload
     def bind[**P, Payload, Result](
         self,
@@ -524,7 +555,7 @@ class DirectBus:
         """
         if hooks is not None:
             self._core.check_hooks(event, hooks)
-        return bind(event, self._core.emitter_for(event), factory=factory, hooks=hooks)
+        return bind(event, self.emitter(event), factory=factory, hooks=hooks)
 
     @overload
     def handle[Result](
@@ -684,6 +715,23 @@ class AsyncDirectBus:
             return dispatched
         return _await(dispatched)
 
+    def emitter[Payload, Result](
+        self, event: EventType[Payload, Result, Any, Any], /
+    ) -> EmitCallable[
+        EventType[Payload, Result, Any, Any], Payload, Hooks[Payload, Result], Awaitable[Result]
+    ]:
+        """
+        Return an emitter of the event that holds its route.
+
+        Binding it with {py:func}`abind <stratae.events.binding.abind>` gives the same callable as
+        `bind`. Each call reads the event's handlers current then, without looking the event up.
+
+        :param event: The event.
+        :returns: An emitter taking the event, a payload and `hooks=`, returning an awaitable.
+        :raises TypeError: If the bus has no dispatcher for the event's pattern.
+        """
+        return self._core.emitter(event)
+
     @overload
     def bind[**P, Payload, Result](
         self,
@@ -725,7 +773,7 @@ class AsyncDirectBus:
         :returns: An async callable that emits the event on this bus.
         :raises TypeError: If the bus has no dispatcher for the event's pattern.
         """
-        return abind(event, self._core.emitter_for(event), factory=factory, hooks=hooks)
+        return abind(event, self.emitter(event), factory=factory, hooks=hooks)
 
     @overload
     def handle[Result](

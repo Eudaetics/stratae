@@ -79,6 +79,13 @@ DirectBus (middleware):
 - Handle middleware on a bus without publish middleware sees no headers, even inside another
   message's delivery.
 
+DirectBus (emitter):
+- emitter, bound with bind, gives what bind does: a factory-built emit reaching the handler,
+  and its reply.
+- emitter refuses an unsupported pattern.
+- A sync bus's emitter refuses async hooks, bound with it or passed in a call, before any
+  handler runs.
+
 DirectBus (with envelope):
 - Handlers can access the Envelope during dispatch.
 - Each top-level emission creates an independent envelope.
@@ -93,6 +100,7 @@ import threading
 import weakref
 from collections.abc import Callable, Collection
 from contextvars import ContextVar
+from functools import partial
 from typing import Any, Literal, cast
 from unittest.mock import Mock
 from uuid import UUID
@@ -119,6 +127,7 @@ from stratae.events import (
     PubSub,
     Request,
     SyncHandler,
+    bind,
 )
 from stratae.events.exceptions import (
     DuplicateHandlerError,
@@ -2183,3 +2192,67 @@ def test_handlers_see_emitter_context(bus: DirectBus):
 
     # Assert
     assert seen == ["emitter", "emitter"]
+
+
+# region: Emitter
+
+
+def test_emitter_binds_as_bind_does(bus: DirectBus):
+    """
+    The bus's emitter, bound with bind, should give what the bus's bind does.
+
+    Given: A request with a responder
+    When: The bus's emitter is bound with a factory, and so is the bus's bind
+    Then: Both reach the responder with the built payload and return its reply
+    """
+    # Arrange
+    bus.handle(_find_book, lambda query: _BookResult(query.query.title()))
+
+    # Act
+    through_emitter = bind(_find_book, bus.emitter(_find_book), factory=_BookQuery)
+    through_bind = bus.bind(_find_book, factory=_BookQuery)
+
+    # Assert
+    assert through_emitter(query="dune").title == "Dune"
+    assert through_bind(query="dune").title == "Dune"
+
+
+def test_emitter_refuses_unsupported_pattern(bus: DirectBus):
+    """
+    The emitter of an event the bus can't dispatch should be refused.
+
+    Given: An event of a pattern the bus has no dispatcher for
+    When: Its emitter is asked for
+    Then: A TypeError names the bus and the pattern
+    """
+    # Act / Assert
+    with pytest.raises(TypeError, match="DirectBus doesn't support _Gather events"):
+        bus.emitter(_quotes)
+
+
+@pytest.mark.parametrize("through", ["bound", "called"])
+def test_emitter_refuses_async_hooks(bus: DirectBus, through: str):
+    """
+    A sync bus's emitter should refuse async hooks, however they reach it.
+
+    Given: A handler, and hooks including an async hook
+    When: The emitter is bound with them and called, or called with them
+    Then: A TypeError names the event, and the handler doesn't run
+    """
+    # Arrange
+    ran: list[_TaskCreated] = []
+    bus.handle(_task_created, ran.append)
+    hooks: Hooks[Any, Any] = Hooks(before=(_async_before,))
+    emitter = bus.emitter(_task_created)
+    if through == "bound":
+        emit = partial(bind(_task_created, emitter, hooks=hooks), _TaskCreated(1))
+    else:
+        emit = partial(emitter, _task_created, _TaskCreated(1), hooks=hooks)
+
+    # Act / Assert
+    with pytest.raises(TypeError, match="async hooks for '_TaskCreated'"):
+        emit()
+    assert ran == []
+
+
+# endregion
