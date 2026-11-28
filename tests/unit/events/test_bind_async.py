@@ -1,18 +1,18 @@
 """
-Unit tests for abind.
+Unit tests for bind with async emitters.
 
 This test suite verifies the following behaviors:
 
-abind with a factory:
+bind with an async emitter and a factory:
 - Calling the returned callable constructs the payload via the factory and awaits the emitter.
 - Calling the returned callable returns the emitter's result.
 - An async factory is awaited before its result is forwarded to the emitter.
 
-abind without a factory:
+bind with an async emitter and no factory:
 - Calling the returned callable forwards an already-built payload to the emitter.
 - Calling the returned callable returns the emitter's result.
 
-abind with hooks:
+bind with an async emitter and hooks:
 - The hooks are forwarded to the emitter.
 
 bound callable signatures:
@@ -30,14 +30,16 @@ from typing import Any, cast
 from unittest.mock import Mock, create_autospec
 
 from stratae.events import (
+    ASYNC,
     AsyncDirectBus,
     EmitCallable,
+    Emitter,
     EventType,
     Hooks,
     NoPayload,
     PubSub,
     Request,
-    abind,
+    bind,
 )
 
 type _AnyEmitter = EmitCallable[Any, Any, Any, Any]
@@ -62,21 +64,21 @@ class _OrderCreated:
         return self.order_id == other.order_id and self.status == other.status
 
 
-# region: Abind With Factory
+# region: With Factory
 
 
-async def test_abind_with_factory_calling_constructs_schema_and_awaits_emitter() -> None:
+async def test_bind_async_with_factory_calling_constructs_schema_and_awaits_emitter() -> None:
     """
-    Calling a factory-bound callable produced by abind constructs the schema and awaits emitter.
+    A factory-bound callable for an async emitter should build the payload and await the emitter.
 
-    Given: A factory-bound callable produced by abind
+    Given: A factory-bound callable bound to an async emitter
     When: The callable is called with arguments
     Then: The emitter should receive the event and the constructed payload
     """
     # Arrange
     emitter = create_autospec(_async_emit)
     ev = PubSub(_OrderCreated)
-    bound = abind(ev, emitter, factory=_OrderCreated)
+    bound = bind(ev, Emitter(ASYNC, emitter), factory=_OrderCreated)
 
     # Act
     await bound(1, "pending")
@@ -85,9 +87,9 @@ async def test_abind_with_factory_calling_constructs_schema_and_awaits_emitter()
     emitter.assert_awaited_once_with(ev, _OrderCreated(1, "pending"))
 
 
-async def test_abind_with_factory_returns_emitter_result() -> None:
+async def test_bind_async_with_factory_returns_emitter_result() -> None:
     """
-    Calling a factory-bound callable produced by abind returns the emitter's result.
+    Calling a factory-bound callable bound to an async emitter returns the emitter's result.
 
     Given: A factory-bound callable whose emitter returns the constructed payload
     When: The callable is called
@@ -105,7 +107,7 @@ async def test_abind_with_factory_returns_emitter_result() -> None:
 
     emitter.side_effect = _return
     ev = PubSub(_OrderCreated)
-    bound = abind(ev, emitter, factory=_OrderCreated)
+    bound = bind(ev, Emitter(ASYNC, emitter), factory=_OrderCreated)
 
     # Act
     result = await bound(1, "pending")
@@ -114,12 +116,12 @@ async def test_abind_with_factory_returns_emitter_result() -> None:
     assert result == _OrderCreated(1, "pending")
 
 
-async def test_abind_with_factory_awaits_async_factory_then_awaits_emitter() -> None:
+async def test_bind_async_with_factory_awaits_async_factory_then_awaits_emitter() -> None:
     """
-    Abind with an async factory awaits the factory before forwarding to the emitter.
+    An async factory should be awaited the factory before forwarding to the emitter.
 
     Given: An async factory
-    When: The callable produced by abind is called
+    When: The callable bound to an async emitter is called
     Then: The emitter should receive the resolved payload, not the coroutine
     """
     # Arrange
@@ -130,7 +132,7 @@ async def test_abind_with_factory_awaits_async_factory_then_awaits_emitter() -> 
         await asyncio.sleep(0)
         return _OrderCreated(order_id, status)
 
-    bound = abind(ev, emitter, factory=_async_factory)
+    bound = bind(ev, Emitter(ASYNC, emitter), factory=_async_factory)
 
     # Act
     await bound(1, "pending")
@@ -141,21 +143,21 @@ async def test_abind_with_factory_awaits_async_factory_then_awaits_emitter() -> 
 
 # endregion
 
-# region: Abind Without Factory
+# region: Without Factory
 
 
-async def test_abind_without_factory_calling_forwards_payload_to_emitter() -> None:
+async def test_bind_async_without_factory_calling_forwards_payload_to_emitter() -> None:
     """
-    Calling a passthrough callable produced by abind forwards an already-built payload.
+    Calling a passthrough callable bound to an async emitter forwards an already-built payload.
 
-    Given: A passthrough callable produced by abind with no factory
+    Given: A passthrough callable bound to an async emitter with no factory
     When: The callable is called with a ready-made payload
     Then: The emitter should receive the event and that exact payload
     """
     # Arrange
     emitter = create_autospec(_async_emit)
     ev = PubSub(_OrderCreated)
-    bound = abind(ev, cast(_AnyEmitter, emitter))
+    bound = bind(ev, Emitter(ASYNC, cast(_AnyEmitter, emitter)))
     payload = _OrderCreated(1, "pending")
 
     # Act
@@ -165,9 +167,9 @@ async def test_abind_without_factory_calling_forwards_payload_to_emitter() -> No
     emitter.assert_awaited_once_with(ev, payload)
 
 
-async def test_abind_without_factory_returns_emitter_result() -> None:
+async def test_bind_async_without_factory_returns_emitter_result() -> None:
     """
-    Calling a passthrough callable produced by abind returns the emitter's result.
+    Calling a passthrough callable bound to an async emitter returns the emitter's result.
 
     Given: A passthrough callable whose emitter echoes the payload
     When: The callable is called
@@ -185,7 +187,7 @@ async def test_abind_without_factory_returns_emitter_result() -> None:
 
     emitter.side_effect = _return
     ev = PubSub(_OrderCreated)
-    bound = abind(ev, cast(_AnyEmitter, emitter))
+    bound = bind(ev, Emitter(ASYNC, cast(_AnyEmitter, emitter)))
     payload = _OrderCreated(1, "pending")
 
     # Act
@@ -198,12 +200,12 @@ async def test_abind_without_factory_returns_emitter_result() -> None:
 # endregion
 
 
-async def test_abind_awaits_async_callable_factory() -> None:
+async def test_bind_async_awaits_async_callable_factory() -> None:
     """
-    Abind awaits a factory that's an object with async __call__.
+    A factory that's an object with async __call__ should be awaited.
 
     Given: An instance of a class whose __call__ is async, as the factory
-    When: The callable produced by abind is called
+    When: The callable bound to an async emitter is called
     Then: The emitter receives the resolved payload, not a coroutine
     """
     # Arrange
@@ -214,7 +216,7 @@ async def test_abind_awaits_async_callable_factory() -> None:
         async def __call__(self, order_id: int, status: str) -> _OrderCreated:
             return _OrderCreated(order_id, status)
 
-    bound = abind(ev, emitter, factory=Factory())
+    bound = bind(ev, Emitter(ASYNC, emitter), factory=Factory())
 
     # Act
     await bound(1, "pending")
@@ -223,11 +225,11 @@ async def test_abind_awaits_async_callable_factory() -> None:
     emitter.assert_awaited_once_with(ev, _OrderCreated(1, "pending"))
 
 
-async def test_abind_forwards_hooks_to_emitter() -> None:
+async def test_bind_async_forwards_hooks_to_emitter() -> None:
     """
-    Hooks given to abind should be forwarded to the emitter with every call.
+    Hooks given to bind with an async emitter should be forwarded to the emitter with every call.
 
-    Given: A callable produced by abind with hooks
+    Given: A callable bound to an async emitter with hooks
     When: The callable is awaited with a payload
     Then: The emitter should receive the same hooks
     """
@@ -235,7 +237,7 @@ async def test_abind_forwards_hooks_to_emitter() -> None:
     emitter = create_autospec(_async_emit)
     hooks: Hooks[Any, Any] = Hooks()
     ev = PubSub(_OrderCreated)
-    bound = abind(ev, cast(_AnyEmitter, emitter), hooks=hooks)
+    bound = bind(ev, Emitter(ASYNC, cast(_AnyEmitter, emitter)), hooks=hooks)
     payload = _OrderCreated(1, "pending")
 
     # Act
@@ -265,33 +267,33 @@ _payload_signature = inspect.Signature(
 )
 
 
-def test_abound_signature_without_factory_is_schema_to_reply() -> None:
+def test_bound_async_signature_without_factory_is_schema_to_reply() -> None:
     """
     An async bound callable without a factory should report the event's schema and reply.
 
     Given: A request event with a schema and a reply type
-    When: It's bound with abind without a factory
+    When: It's bound with bind without a factory
     Then: It's a coroutine function whose signature is (payload: schema) -> reply
     """
     # Act
-    bound = abind(_place_order, _async_emit)
+    bound = bind(_place_order, Emitter(ASYNC, _async_emit))
 
     # Assert
     assert inspect.iscoroutinefunction(bound)
     assert inspect.signature(bound) == _payload_signature
 
 
-async def test_abound_signal_takes_no_parameters() -> None:
+async def test_bound_async_signal_takes_no_parameters() -> None:
     """
     A payload-less event's async bound callable should take no parameters.
 
     Given: A payload-less request event with a reply type
-    When: It's bound with abind and awaited
+    When: It's bound with bind and awaited
     Then: Its signature is () -> reply, and the emitter receives a NoPayload
     """
     # Arrange
     emitter = Mock(side_effect=_async_emit)
-    bound = abind(Request(name="ping", reply=_Receipt), emitter)
+    bound = bind(Request(name="ping", reply=_Receipt), Emitter(ASYNC, emitter))
 
     # Act
     await bound()
@@ -301,7 +303,7 @@ async def test_abound_signal_takes_no_parameters() -> None:
     assert isinstance(emitter.call_args.args[1], NoPayload)
 
 
-def test_abound_signature_with_async_factory_has_factory_parameters() -> None:
+def test_bound_async_signature_with_async_factory_has_factory_parameters() -> None:
     """
     An async bound callable with an async factory should report the factory's parameters.
 
@@ -316,7 +318,7 @@ def test_abound_signature_with_async_factory_has_factory_parameters() -> None:
         return _Order(sku)
 
     # Act
-    bound = abind(_place_order, _async_emit, factory=order)
+    bound = bind(_place_order, Emitter(ASYNC, _async_emit), factory=order)
 
     # Assert
     assert inspect.signature(bound) == inspect.signature(order).replace(return_annotation=_Receipt)

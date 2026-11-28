@@ -8,7 +8,6 @@ Callable facades that bind an event definition to a concrete emitter.
 callable, whose factory may be async too. An adapter's `emitter` method gives its
 `Emitter` for an event, routed if the adapter routes, and its own `bind` method binds that.
 A plain function is bound by pairing it with its kind, as `Emitter(SYNC, emit)`.
-{py:func}`abind` binds a bare async call.
 
 A sync emitter runs hooks synchronously, so binding one refuses async hooks and an async
 factory.
@@ -329,95 +328,6 @@ def bind_sync(
         return emit(event, factory(*args, **kwargs))
 
     return _typed(construct, _factory_parameters(factory), event)
-
-
-@overload
-def abind[**P, Payload, Result, Event: PayloadEvent[Any, Any, Any]](
-    event: Event,
-    emitter: Emit[Event, Payload, Awaitable[Result]],
-    /,
-    *,
-    factory: Callable[P, Payload] | Callable[P, Awaitable[Payload]],
-    hooks: None = None,
-) -> Callable[P, Awaitable[Result]]: ...
-
-
-@overload
-def abind[Result, Event: SignalEvent[Any, Any]](
-    event: Event,
-    emitter: Emit[Event, NoPayload, Awaitable[Result]],
-    /,
-    *,
-    factory: None = None,
-    hooks: None = None,
-) -> Callable[[], Awaitable[Result]]: ...
-
-
-@overload
-def abind[Payload, Result, Event: PayloadEvent[Any, Any, Any]](
-    event: Event,
-    emitter: Emit[Event, Payload, Awaitable[Result]],
-    /,
-    *,
-    factory: None = None,
-    hooks: None = None,
-) -> Callable[[Payload], Awaitable[Result]]: ...
-
-
-@overload
-def abind[**P, Payload, HookType: Hooks[Any, Any], Result, Event: PayloadEvent[Any, Any, Any]](
-    event: Event,
-    emitter: EmitCallable[Event, Payload, HookType, Awaitable[Result]],
-    /,
-    *,
-    factory: Callable[P, Payload] | Callable[P, Awaitable[Payload]],
-    hooks: HookType | None = None,
-) -> Callable[P, Awaitable[Result]]: ...
-
-
-@overload
-def abind[HookType: Hooks[Any, Any], Result, Event: SignalEvent[Any, Any]](
-    event: Event,
-    emitter: EmitCallable[Event, NoPayload, HookType, Awaitable[Result]],
-    /,
-    *,
-    factory: None = None,
-    hooks: HookType | None = None,
-) -> Callable[[], Awaitable[Result]]: ...
-
-
-@overload
-def abind[Payload, HookType: Hooks[Any, Any], Result, Event: PayloadEvent[Any, Any, Any]](
-    event: Event,
-    emitter: EmitCallable[Event, Payload, HookType, Awaitable[Result]],
-    /,
-    *,
-    factory: None = None,
-    hooks: HookType | None = None,
-) -> Callable[[Payload], Awaitable[Result]]: ...
-
-
-def abind(
-    event: AnyEvent,
-    emitter: EmitCallable[Any, Any, Any, Awaitable[Any]] | Emit[Any, Any, Awaitable[Any]],
-    /,
-    *,
-    factory: Callable[..., Any] | Callable[..., Awaitable[Any]] | None = None,
-    hooks: Hooks[Any, Any] | None = None,
-) -> Callable[..., Awaitable[Any]]:
-    """
-    Bind an event to an async emitter.
-
-    :param event: The event to bind.
-    :param emitter: An async callable taking the event and payload. Without `hooks`, it
-        needn't take any.
-    :param factory: A sync or async callable building the payload from the call's
-        arguments. If omitted, the payload is passed directly.
-    :param hooks: {py:class}`Hooks <stratae.events.hooks.Hooks>` run around each emit,
-        passed to `emitter` only when given.
-    :returns: An async callable that dispatches through `emitter`.
-    """
-    return bind_async(event, emitter, factory, hooks)
 
 
 def bind_async(

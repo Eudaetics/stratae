@@ -12,7 +12,7 @@ PubSubProducer:
 
 AsyncPubSubProducer:
 - AsyncDirectBus satisfies it, and DirectBus, whose emit isn't awaited, is a type error.
-- An event bound with abind through it, with a payload or without, gives an awaitable of
+- An event bound with bind through it, with a payload or without, gives an awaitable of
   `object`.
 
 Consumer:
@@ -42,6 +42,7 @@ import msgspec
 import pytest
 
 from stratae.events import (
+    ASYNC,
     AsyncDirectBus,
     AsyncPubSubProducer,
     Consumer,
@@ -49,13 +50,14 @@ from stratae.events import (
     Destination,
     DirectBus,
     EmitCallable,
+    Emitter,
     EventType,
     Operation,
     Producer,
     PubSub,
     PubSubProducer,
     Serializer,
-    abind,
+    bind,
     destination_of,
     operation_of,
     reserved_for,
@@ -210,11 +212,11 @@ def test_only_async_producers_are_async_pubsub_producers():
 
 async def test_events_bound_through_an_async_pubsub_producer_are_awaited():
     """
-    An event bound with abind to an AsyncPubSubProducer's emit should give an awaitable.
+    An event bound with bind to an AsyncPubSubProducer's emit should give an awaitable.
 
     Given: A producer typed only as AsyncPubSubProducer, and a PubSub event with a payload
         and one without
-    When: Each is bound with abind to its emit, and called
+    When: Each is bound with bind to its emit, and called
     Then: Each emitter is typed as giving `Awaitable[object]`, and its emit reaches the handler
     """
     # Arrange
@@ -226,8 +228,8 @@ async def test_events_bound_through_an_async_pubsub_producer_are_awaited():
     bus.handle(pinged, lambda: seen.append("ping"))
 
     async def emit_through(producer: AsyncPubSubProducer) -> None:
-        place = abind(placed, producer.emit)
-        ping = abind(pinged, producer.emit)
+        place = bind(placed, Emitter(ASYNC, producer.emit))
+        ping = bind(pinged, Emitter(ASYNC, producer.emit))
         assert_type(place, Callable[[int], Awaitable[object]])
         assert_type(ping, Callable[[], Awaitable[object]])
         await place(1)
